@@ -26,7 +26,7 @@ out=/dev/ttyS0; [ -w $out ] || out=/dev/console
   echo "FEEDBACK_SOCKET=$(systemctl is-active fabos-feedback.socket)"
   echo "UPDATE_TIMER=$(systemctl is-active fabos-update-check.timer)"
   echo "SESSION_NAME=$(grep ^Name= /usr/local/share/wayland-sessions/fabos.desktop | cut -d= -f2)"
-  echo "FAB_WALLET=$([ -f /usr/local/share/applications/org.kde.kwalletmanager5.desktop ] && grep -c 'Name=Fab Wallet' /usr/local/share/applications/org.kde.kwalletmanager5.desktop || echo 0)"
+  echo "FAB_WALLET=$([ -f /usr/local/share/applications/org.kde.kwalletmanager.desktop ] && grep -c 'Name=Fab Wallet' /usr/local/share/applications/org.kde.kwalletmanager.desktop || echo 0)"
   echo "PLASMA_THEME=$(runuser -u $U -- kreadconfig6 --file plasmarc --group Theme --key name 2>/dev/null || grep -A1 '^\[Theme\]' /etc/xdg/plasmarc | tail -1)"
   echo "ICON_THEME=$(grep -A2 '^\[Icons\]' /etc/xdg/kdeglobals | grep Theme | cut -d= -f2)"
   echo "RUNNER_DBUS=$([ -f /usr/share/dbus-1/services/in.patienceai.fabos.runner.service ] && echo present || echo missing)"

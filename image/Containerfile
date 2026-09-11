@@ -8,14 +8,14 @@ ARG MIRROR=http://archive.ubuntu.com/ubuntu
 # ---------- stage 1: render brand assets (icons, splash frames, wallpapers, 3D) ----------
 FROM ${BASE} AS assets
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pil fonts-inter fonts-jetbrains-mono librsvg2-bin ca-certificates && rm -rf /var/lib/apt/lists/* && rm -f /var/cache/apt/archives/lock
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pil fonts-inter fonts-jetbrains-mono librsvg2-bin ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY brand /src/brand
 RUN python3 /src/brand/gen/make_assets.py --out /assets
 
 # ---------- stage 2: build the FabOS .deb packages ----------
 FROM ${BASE} AS pkgs
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends dpkg-dev python3 python3-pil xz-utils gpg ca-certificates wget && rm -rf /var/lib/apt/lists/* && rm -f /var/cache/apt/archives/lock
+RUN apt-get update && apt-get install -y --no-install-recommends dpkg-dev python3 python3-pil xz-utils gpg ca-certificates wget && rm -rf /var/lib/apt/lists/*
 COPY brand /src/brand
 COPY packages /src/packages
 # Mozilla's official apt signing key, shipped in fabos-branding so Firefox keeps updating from Mozilla (no snap). Fingerprint pinned.
@@ -32,45 +32,44 @@ ENV DEBIAN_FRONTEND=noninteractive LANG=en_US.UTF-8
 # The container base is "minimized": undo the doc/man exclusion so new packages install complete.
 # (Copyright files were never excluded; legal/UBUNTU-DERIVATIVE-COMPLIANCE.md #5.)
 RUN rm -f /etc/dpkg/dpkg.cfg.d/excludes /etc/apt/apt.conf.d/docker-* && \
-    printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\nAPT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/51fabos-keep-debs && \
     printf 'Package: snapd ubuntu-pro-client ubuntu-advantage-tools ubuntu-report popularity-contest motd-news-config apport whoopsie\nPin: release *\nPin-Priority: -1\n' > /etc/apt/preferences.d/00-fabos-blocklist && \
     printf 'APT::Install-Recommends "true";\nAPT::Install-Suggests "false";\n' > /etc/apt/apt.conf.d/50fabos && \
     sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
-RUN --mount=type=cache,target=/var/cache/apt/archives,id=fabos-apt,sharing=locked apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
       systemd systemd-sysv systemd-resolved systemd-timesyncd systemd-boot-efi udev dbus dbus-user-session polkitd kmod \
       initramfs-tools locales tzdata keyboard-configuration console-setup kbd sudo bash-completion \
       network-manager iproute2 iputils-ping ca-certificates curl wget less nano vim-tiny man-db \
       plymouth plymouth-label plymouth-themes apparmor apparmor-utils cryptsetup cryptsetup-initramfs \
       e2fsprogs dosfstools util-linux pciutils usbutils \
-    && rm -rf /var/lib/apt/lists/* && rm -f /var/cache/apt/archives/lock
+    && rm -rf /var/lib/apt/lists/*
 # Kernel: Ubuntu's own, unmodified (Secure Boot stays intact on real hardware). vm = virtual flavour, no firmware blob.
-RUN --mount=type=cache,target=/var/cache/apt/archives,id=fabos-apt,sharing=locked apt-get update && if [ "$PROFILE" = vm ]; then apt-get install -y --no-install-recommends linux-image-virtual; \
-    else apt-get install -y linux-image-generic linux-firmware casper calamares grub-efi-amd64-signed shim-signed efibootmgr os-prober; fi && rm -rf /var/lib/apt/lists/* && rm -f /var/cache/apt/archives/lock
+RUN apt-get update && if [ "$PROFILE" = vm ]; then apt-get install -y --no-install-recommends linux-image-virtual; \
+    else apt-get install -y linux-image-generic linux-firmware casper calamares grub-efi-amd64-signed shim-signed efibootmgr os-prober; fi && rm -rf /var/lib/apt/lists/*
 # Switch to the build mirror for the big downloads (archive.ubuntu.com is unreliable from some regions).
 # ARG is declared here, not at the top of the stage, so the base/kernel layers above stay cacheable.
 ARG MIRROR
 RUN sed -i "s|http://archive.ubuntu.com/ubuntu|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources
 # Desktop (Plasma 6, Wayland) + apps. Recommends on so Plasma pulls what it needs; blocklist keeps snap/Pro out.
-RUN --mount=type=cache,target=/var/cache/apt/archives,id=fabos-apt,sharing=locked apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y \
       plasma-desktop plasma-workspace kwin-wayland sddm plasma-nm plasma-pa pipewire wireplumber pipewire-pulse \
       konsole dolphin kate ark kde-spectacle plasma-systemmonitor kinfocenter plasma-discover plasma-discover-backend-flatpak flatpak \
       xdg-desktop-portal-kde kscreen powerdevil bluedevil breeze breeze-icon-theme breeze-gtk-theme kde-config-gtk-style \
       fonts-inter fonts-jetbrains-mono fonts-noto-core kwalletmanager okular gwenview kcalc \
       llama.cpp \
-    && rm -rf /var/lib/apt/lists/* && rm -f /var/cache/apt/archives/lock
+    && rm -rf /var/lib/apt/lists/*
 # security.ubuntu.com is a separate line in ubuntu.sources; mirror it too (separate layer so the desktop layer above stays cached)
 RUN sed -i "s|http://security.ubuntu.com/ubuntu|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources
 # Firefox from Mozilla's apt repository (Ubuntu's own firefox package is a snap shim). Pinned above the Ubuntu archive.
 COPY --from=pkgs /src/packages/fabos-branding/usr/share/keyrings/packages.mozilla.org.gpg /usr/share/keyrings/packages.mozilla.org.gpg
 RUN printf 'Types: deb\nURIs: https://packages.mozilla.org/apt\nSuites: mozilla\nComponents: main\nSigned-By: /usr/share/keyrings/packages.mozilla.org.gpg\n' > /etc/apt/sources.list.d/mozilla.sources \
  && printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla \
- && apt-get update && apt-get install -y firefox && rm -rf /var/lib/apt/lists/* && rm -f /var/cache/apt/archives/lock
+ && apt-get update && apt-get install -y firefox && rm -rf /var/lib/apt/lists/*
 # Agent runtime deps (separate layer so the big desktop layer above stays cached)
-RUN --mount=type=cache,target=/var/cache/apt/archives,id=fabos-apt,sharing=locked apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3-dbus python3-gi libnotify-bin wtype unattended-upgrades ubuntu-drivers-common && rm -rf /var/lib/apt/lists/* && rm -f /var/cache/apt/archives/lock
+RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3-dbus python3-gi libnotify-bin wtype unattended-upgrades ubuntu-drivers-common && rm -rf /var/lib/apt/lists/*
 # FabOS packages (identity, desktop experience, AI stack)
 COPY --from=pkgs /out/*.deb /tmp/debs/
-RUN --mount=type=cache,target=/var/cache/apt/archives,id=fabos-apt,sharing=locked apt-get update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
-    && rm -rf /var/lib/apt/lists/* && rm -f /var/cache/apt/archives/lock /tmp/debs
+RUN apt-get update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
+    && apt-get install -y sddm-theme-breeze && apt-get purge -y budgie-sddm-theme 2>/dev/null; apt-get -y autoremove --purge; rm -rf /var/lib/apt/lists/* /tmp/debs
 # System configuration
 RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/; s/^# *en_IN UTF-8/en_IN UTF-8/' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     ln -sf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime && echo Asia/Kolkata > /etc/timezone && \
