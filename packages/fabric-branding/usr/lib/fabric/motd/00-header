@@ -1,0 +1,3 @@
+#!/bin/sh
+. /usr/lib/os-release
+printf "Welcome to %s (%s %s)\n" "$PRETTY_NAME" "$(uname -o)" "$(uname -r)"

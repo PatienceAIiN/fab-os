@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+case "$1" in configure)
+  # make sure the greeter has our background/wordmark images (copied from assets at build)
+  command -v fc-cache >/dev/null 2>&1 && fc-cache -f >/dev/null 2>&1 || true
+;; esac
+exit 0

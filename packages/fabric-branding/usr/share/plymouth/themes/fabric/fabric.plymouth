@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=@DISTRO_NAME@
+Description=@DISTRO_NAME@ boot animation by @VENDOR_NAME@
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/fabric
+ScriptFile=/usr/share/plymouth/themes/fabric/fabric.script

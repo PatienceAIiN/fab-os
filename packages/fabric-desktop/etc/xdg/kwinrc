@@ -1,0 +1,13 @@
+[org.kde.kdecoration2]
+BorderSize=None
+ButtonsOnLeft=M
+ButtonsOnRight=IAX
+library=org.kde.breeze
+theme=Breeze
+
+[Plugins]
+blurEnabled=true
+slideEnabled=true
+
+[Windows]
+Placement=Centered

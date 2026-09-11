@@ -1,0 +1,62 @@
+name: fab-os
+on:
+  push: { branches: [main] }
+  workflow_dispatch: {}
+
+# End-to-end OS update loop:
+#   push to main -> build .debs -> sign apt repo -> publish to fabricos.patienceai.in/apt -> users get `apt upgrade`.
+# Secrets required: VM_HOST, VM_USER, VM_SSH_KEY (rsync target), APT_GPG_PRIVATE_KEY (armored, from build/secrets/fabric-archive-private.asc)
+jobs:
+  packages-and-apt:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage AI binaries
+        run: |
+          mkdir -p build/bin
+          # Until ai-native-os publishes release artifacts, build them here (static musl).
+          if [ -n "${{ secrets.AI_NATIVE_OS_REPO }}" ]; then
+            git clone --depth 1 "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ secrets.AI_NATIVE_OS_REPO }}" ../ai-native-os
+            rustup target add x86_64-unknown-linux-musl
+            (cd ../ai-native-os && cargo build --release --target x86_64-unknown-linux-musl -p aios -p aiosd)
+            cp ../ai-native-os/target/x86_64-unknown-linux-musl/release/{aios,aiosd} build/bin/
+          else
+            echo "AI_NATIVE_OS_REPO secret not set: shipping placeholder binaries" ; printf '#!/bin/sh\necho "aios: not built in CI"\n' > build/bin/aios; cp build/bin/aios build/bin/aiosd; chmod +x build/bin/*
+          fi
+      - name: Import apt signing key
+        run: |
+          mkdir -p build/secrets/gpg-home && chmod 700 build/secrets/gpg-home
+          echo "${{ secrets.APT_GPG_PRIVATE_KEY }}" | GNUPGHOME=build/secrets/gpg-home gpg --batch --import
+      - name: Unit tests (agent + feedback)
+        run: python3 -W ignore tests/agent-test.py && python3 -W ignore tests/feedback-test.py
+      - name: Build packages and signed repository
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq podman
+          mkdir -p build && printf '#!/usr/bin/env bash\nshift; [ "$1" = -- ] && shift; exec "$@"\n' > tools/rg && chmod +x tools/rg   # no cgroup guard needed on the runner
+          scripts/publish-apt.sh --no-deploy
+      - uses: actions/upload-artifact@v4
+        with: { name: fab-os-apt-repo, path: build/apt-repo }
+      - name: Publish to fabricos.patienceai.in/apt
+        if: github.ref == 'refs/heads/main'
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+        run: |
+          mkdir -p ~/.ssh && echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/k && chmod 600 ~/.ssh/k
+          ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/k "$VM_USER@$VM_HOST" "mkdir -p /var/www/fabricos/apt"
+          rsync -az --delete -e "ssh -i ~/.ssh/k" build/apt-repo/ "$VM_USER@$VM_HOST:/var/www/fabricos/apt/"
+
+  image:
+    # Full VM image build (heavy, ~1 GB download). Manual trigger only; the apt job above is the update loop.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq podman dosfstools mtools
+          mkdir -p build/bin && printf '#!/bin/sh\necho placeholder\n' > build/bin/aios && cp build/bin/aios build/bin/aiosd && chmod +x build/bin/*
+          printf '#!/usr/bin/env bash\nshift; [ "$1" = -- ] && shift; exec "$@"\n' > tools/rg && chmod +x tools/rg
+          scripts/build-rootfs.sh vm && tests/branding-check.sh vm
+      - uses: actions/upload-artifact@v4
+        with: { name: fab-os-vm-rootfs, path: build/fabric-root-vm.ext4, compression-level: 9 }

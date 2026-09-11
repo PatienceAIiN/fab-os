@@ -1,0 +1,17 @@
+[Unit]
+Description=@DISTRO_NAME@ autonomous agent service
+Documentation=@DOCS_URL@
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/lib/fabric/agent/fabric_agentd.py
+Restart=on-failure
+RestartSec=2
+EnvironmentFile=-/etc/fabric/agent.env
+EnvironmentFile=-%h/.config/fabric/agent.env
+# The agent must act as the user in their session (open apps, type, run commands), so it is
+# deliberately NOT sandboxed here; authority is bounded by the deterministic policy + approvals.
+
+[Install]
+WantedBy=default.target

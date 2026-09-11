@@ -1,0 +1,3 @@
+#!/bin/sh
+. /usr/lib/os-release
+printf "\n * Documentation:  %s\n * Support:        %s\n * AI:             run 'aios --help' (local-first; cloud is off until you enable it)\n\n" "$DOCUMENTATION_URL" "$SUPPORT_URL"

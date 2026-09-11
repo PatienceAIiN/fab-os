@@ -1,0 +1,13 @@
+Package: fabric-branding
+Version: @DISTRO_VERSION@-1
+Section: misc
+Priority: optional
+Architecture: all
+Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Depends: base-files, plymouth, plymouth-label, dpkg (>= 1.15)
+Recommends: fonts-inter
+Description: @DISTRO_NAME@ system identity, boot splash and legal notices
+ Rebrands an Ubuntu 26.04 LTS base as @DISTRO_NAME@ by @VENDOR_NAME@:
+ os-release, lsb-release, issue, legal text, MOTD, dpkg origin, GRUB title,
+ Plymouth boot animation, distributor logo and icons. Uses dpkg-divert so
+ Ubuntu updates never overwrite the identity files.

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=@DISTRO_NAME@ Command Center
+GenericName=AI Agent Command Center
+Comment=Ask @DISTRO_NAME@ to do anything; watch, approve and manage every task
+Exec=fabric-command-center
+Icon=fabric-os
+Terminal=false
+Categories=System;Utility;Qt;KDE;
+Keywords=AI;agent;assistant;automation;intent;
+StartupWMClass=command_center.py
+X-KDE-Shortcuts=Meta+Space

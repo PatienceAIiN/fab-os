@@ -1,0 +1,15 @@
+[Unit]
+Description=@DISTRO_NAME@ feedback relay (delivers reports to @VENDOR_NAME@)
+Requires=fabric-feedback.socket
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/lib/fabric/feedback/fabric_feedback_relay.py
+DynamicUser=no
+User=root
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

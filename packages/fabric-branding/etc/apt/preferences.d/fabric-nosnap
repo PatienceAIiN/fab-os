@@ -1,0 +1,4 @@
+# @DISTRO_NAME@ does not use snap. Flatpak provides sandboxed apps.
+Package: snapd
+Pin: release *
+Pin-Priority: -1

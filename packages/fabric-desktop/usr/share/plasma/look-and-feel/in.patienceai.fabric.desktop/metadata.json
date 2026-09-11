@@ -1,0 +1,13 @@
+{
+  "KPackageStructure": "Plasma/LookAndFeel",
+  "KPlugin": {
+    "Authors": [{"Email": "support@patienceai.in", "Name": "@VENDOR_NAME@"}],
+    "Description": "@DISTRO_NAME@ look and feel: calm dark surfaces, Inter type, woven accent",
+    "Id": "in.patienceai.fabric.desktop",
+    "License": "Apache-2.0",
+    "Name": "@DISTRO_NAME@",
+    "Version": "@DISTRO_VERSION@",
+    "Website": "@HOME_URL@"
+  },
+  "X-Plasma-APIVersion": "2"
+}

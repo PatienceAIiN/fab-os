@@ -1,0 +1,9 @@
+# @DISTRO_NAME@ feature/branding/AI updates from @VENDOR_NAME@.
+# Ubuntu updates continue to come from the Ubuntu archive unchanged.
+# Enabled: no until the signed repository is published.
+Enabled: no
+Types: deb
+URIs: https://apt.patienceai.in/fabric
+Suites: @DISTRO_CODENAME@
+Components: main
+Signed-By: /usr/share/keyrings/fabric-archive-keyring.gpg

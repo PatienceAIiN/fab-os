@@ -1,0 +1,63 @@
+// Fab OS boot splash — original artwork, Apache-2.0 / CC0-1.0.
+Window.SetBackgroundTopColor(0.055, 0.067, 0.086);     // #0E1116
+Window.SetBackgroundBottomColor(0.055, 0.067, 0.086);
+
+screen_w = Window.GetWidth(); screen_h = Window.GetHeight();
+
+// spinner frames
+frames = []; NUM = 36;
+for (i = 0; i < NUM; i++) {
+  n = i; if (n < 10) n = "0" + n;
+  frames[i] = Image("spinner-" + n + ".png");
+}
+spinner = Sprite(frames[0]);
+spinner.SetX(screen_w / 2 - frames[0].GetWidth() / 2);
+spinner.SetY(screen_h / 2 - frames[0].GetHeight() / 2 - 40);
+spinner.SetZ(10);
+
+wordmark_img = Image("wordmark.png");
+wordmark = Sprite(wordmark_img);
+wordmark.SetX(screen_w / 2 - wordmark_img.GetWidth() / 2);
+wordmark.SetY(screen_h / 2 + 60);
+wordmark.SetOpacity(0);
+
+tick = 0;
+fun refresh_callback () {
+  tick++;
+  spinner.SetImage(frames[Math.Int(tick / 1.5) % NUM]);
+  o = Math.Min(1, tick / 40);           // fade the wordmark in over ~0.8s
+  wordmark.SetOpacity(o);
+}
+Plymouth.SetRefreshFunction(refresh_callback);
+
+// ---- progress bar (subtle, accent colour) ----
+bar_w = 240; bar_h = 3;
+bar_bg = Image("bar-bg.png"); bar_fg = Image("bar-fg.png");
+bar_bg_s = Sprite(bar_bg.Scale(bar_w, bar_h)); bar_bg_s.SetX(screen_w/2 - bar_w/2); bar_bg_s.SetY(screen_h/2 + 130);
+bar_fg_s = Sprite(); bar_fg_s.SetX(screen_w/2 - bar_w/2); bar_fg_s.SetY(screen_h/2 + 130); bar_fg_s.SetZ(2);
+fun progress_callback (duration, progress) {
+  w = Math.Int(bar_w * progress); if (w < 1) w = 1;
+  bar_fg_s.SetImage(bar_fg.Scale(w, bar_h));
+}
+Plymouth.SetBootProgressFunction(progress_callback);
+
+// ---- messages (fsck etc.) ----
+message_sprite = Sprite(); message_sprite.SetPosition(10, screen_h - 30, 10000);
+fun message_callback (text) { message_sprite.SetImage(Image.Text(text, 0.9, 0.9, 0.9)); }
+Plymouth.SetMessageFunction(message_callback);
+
+// ---- password prompt (LUKS) ----
+prompt_sprite = Sprite(); bullets = Sprite();
+fun display_password_callback (prompt, bullets_n) {
+  spinner.SetOpacity(0.35);
+  p = Image.Text(prompt, 1, 1, 1);
+  prompt_sprite.SetImage(p); prompt_sprite.SetPosition(screen_w/2 - p.GetWidth()/2, screen_h/2 + 90, 100);
+  s = ""; for (i = 0; i < bullets_n; i++) s += "•";
+  b = Image.Text(s, 1, 1, 1);
+  bullets.SetImage(b); bullets.SetPosition(screen_w/2 - b.GetWidth()/2, screen_h/2 + 115, 100);
+}
+fun display_normal_callback () { spinner.SetOpacity(1); prompt_sprite.SetImage(Image.Text("", 0,0,0)); bullets.SetImage(Image.Text("", 0,0,0)); }
+Plymouth.SetDisplayPasswordFunction(display_password_callback);
+Plymouth.SetDisplayNormalFunction(display_normal_callback);
+fun quit_callback () { spinner.SetOpacity(1); }
+Plymouth.SetQuitFunction(quit_callback);

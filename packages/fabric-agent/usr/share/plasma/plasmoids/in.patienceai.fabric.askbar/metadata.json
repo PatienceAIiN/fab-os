@@ -1,0 +1,16 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Authors": [{"Email": "support@patienceai.in", "Name": "@VENDOR_NAME@"}],
+    "Category": "Utilities",
+    "Description": "Ask the @DISTRO_NAME@ agent to do anything on this computer",
+    "Icon": "fabric-os",
+    "Id": "in.patienceai.fabric.askbar",
+    "License": "Apache-2.0",
+    "Name": "Ask @DISTRO_NAME@",
+    "Version": "@DISTRO_VERSION@",
+    "Website": "@HOME_URL@"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "X-Plasma-Provides": ["org.kde.plasma.launcher"]
+}

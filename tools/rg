@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# rg — resource guard. Runs any command inside a memory/CPU/IO-limited
+# transient systemd user scope so heavy work (builds, tests, VMs) can never
+# thrash this machine or make the desktop lag.
+#
+# Usage:  tools/rg [--profile build|test|vm|heavy|tiny] -- <command...>
+#         tools/rg -- cargo build            # default profile: build
+#
+# Profiles are sized for a ~7 GB RAM / 12-thread laptop. They cap RAM hard
+# (MemoryMax = OOM-kill the job, never the desktop), throttle before that
+# (MemoryHigh), cap CPU well below 100% of all cores, and lower priority so
+# the UI always wins. Override any knob with RG_MEMMAX / RG_CPU / RG_NICE.
+set -euo pipefail
+
+profile="build"
+if [[ "${1:-}" == "--profile" ]]; then profile="$2"; shift 2; fi
+if [[ "${1:-}" == "--" ]]; then shift; fi
+[[ $# -ge 1 ]] || { echo "rg: no command given" >&2; exit 2; }
+
+case "$profile" in
+  tiny)  memhigh=512M  memmax=768M  cpu=200%  nice=10 ;;
+  build) memhigh=2200M memmax=3000M cpu=600%  nice=10 ;;
+  test)  memhigh=1500M memmax=2200M cpu=500%  nice=10 ;;
+  heavy) memhigh=3000M memmax=3800M cpu=800%  nice=15 ;;
+  vm)    memhigh=2600M memmax=3200M cpu=400%  nice=5  ;;
+  *) echo "rg: unknown profile '$profile'" >&2; exit 2 ;;
+esac
+
+memhigh="${RG_MEMHIGH:-$memhigh}"
+memmax="${RG_MEMMAX:-$memmax}"
+cpu="${RG_CPU:-$cpu}"
+nice="${RG_NICE:-$nice}"
+
+echo "rg[$profile]: MemoryHigh=$memhigh MemoryMax=$memmax CPUQuota=$cpu Nice=$nice :: $*" >&2
+
+exec systemd-run --user --scope --collect \
+  --property=MemoryHigh="$memhigh" \
+  --property=MemoryMax="$memmax" \
+  --property=MemorySwapMax=512M \
+  --property=CPUQuota="$cpu" \
+  --property=CPUWeight=40 \
+  --property=IOWeight=40 \
+  -- nice -n "$nice" ionice -c2 -n6 "$@"

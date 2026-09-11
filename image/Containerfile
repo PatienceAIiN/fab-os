@@ -1,0 +1,82 @@
+# syntax=docker/dockerfile:1
+# Fabric OS rootfs recipe. Profiles: vm (QEMU test image, autologin) | iso (installer media, later).
+ARG PROFILE=vm
+ARG BASE=docker.io/library/ubuntu:26.04
+# Build-time mirror (downloads only). The shipped OS is reset to the official archive at the end.
+ARG MIRROR=http://archive.ubuntu.com/ubuntu
+
+# ---------- stage 1: render brand assets (icons, splash frames, wallpapers, 3D) ----------
+FROM ${BASE} AS assets
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pil fonts-inter fonts-jetbrains-mono && rm -rf /var/lib/apt/lists/*
+COPY brand /src/brand
+RUN python3 /src/brand/gen/make_assets.py --out /assets
+
+# ---------- stage 2: build the Fabric .deb packages ----------
+FROM ${BASE} AS pkgs
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends dpkg-dev python3 python3-pil xz-utils && rm -rf /var/lib/apt/lists/*
+COPY brand /src/brand
+COPY packages /src/packages
+COPY build/bin /src/bin
+COPY --from=assets /assets /src/assets
+RUN bash /src/packages/build-debs.sh /src /out
+
+# ---------- stage 3: the operating system ----------
+FROM ${BASE} AS rootfs
+ARG PROFILE
+ENV DEBIAN_FRONTEND=noninteractive LANG=en_US.UTF-8
+# The container base is "minimized": undo the doc/man exclusion so new packages install complete.
+# (Copyright files were never excluded; legal/UBUNTU-DERIVATIVE-COMPLIANCE.md #5.)
+RUN rm -f /etc/dpkg/dpkg.cfg.d/excludes /etc/apt/apt.conf.d/docker-* && \
+    printf 'Package: snapd ubuntu-pro-client ubuntu-advantage-tools ubuntu-report popularity-contest motd-news-config apport whoopsie\nPin: release *\nPin-Priority: -1\n' > /etc/apt/preferences.d/00-fabric-blocklist && \
+    printf 'APT::Install-Recommends "true";\nAPT::Install-Suggests "false";\n' > /etc/apt/apt.conf.d/50fabric && \
+    sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      systemd systemd-sysv systemd-resolved systemd-timesyncd systemd-boot-efi udev dbus dbus-user-session polkitd kmod \
+      initramfs-tools locales tzdata keyboard-configuration console-setup kbd sudo bash-completion \
+      network-manager iproute2 iputils-ping ca-certificates curl wget less nano vim-tiny man-db \
+      plymouth plymouth-label plymouth-themes apparmor apparmor-utils cryptsetup cryptsetup-initramfs \
+      e2fsprogs dosfstools util-linux pciutils usbutils \
+    && rm -rf /var/lib/apt/lists/*
+# Kernel: Ubuntu's own, unmodified (Secure Boot stays intact on real hardware). vm = virtual flavour, no firmware blob.
+RUN apt-get update && if [ "$PROFILE" = vm ]; then apt-get install -y --no-install-recommends linux-image-virtual; \
+    else apt-get install -y linux-image-generic linux-firmware; fi && rm -rf /var/lib/apt/lists/*
+# Switch to the build mirror for the big downloads (archive.ubuntu.com is unreliable from some regions).
+# ARG is declared here, not at the top of the stage, so the base/kernel layers above stay cacheable.
+ARG MIRROR
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources
+# Desktop (Plasma 6, Wayland) + apps. Recommends on so Plasma pulls what it needs; blocklist keeps snap/Pro out.
+RUN apt-get update && apt-get install -y \
+      plasma-desktop plasma-workspace kwin-wayland sddm plasma-nm plasma-pa pipewire wireplumber pipewire-pulse \
+      konsole dolphin kate ark kde-spectacle plasma-systemmonitor kinfocenter plasma-discover plasma-discover-backend-flatpak flatpak \
+      xdg-desktop-portal-kde kscreen powerdevil bluedevil breeze breeze-icon-theme breeze-gtk-theme kde-config-gtk-style \
+      fonts-inter fonts-jetbrains-mono fonts-noto-core kwalletmanager okular gwenview kcalc \
+      llama.cpp \
+    && rm -rf /var/lib/apt/lists/*
+# security.ubuntu.com is a separate line in ubuntu.sources; mirror it too (separate layer so the desktop layer above stays cached)
+RUN sed -i "s|http://security.ubuntu.com/ubuntu|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources
+# Agent runtime deps (separate layer so the big desktop layer above stays cached)
+RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic libnotify-bin wtype && rm -rf /var/lib/apt/lists/*
+# Fabric packages (identity, desktop experience, AI stack)
+COPY --from=pkgs /out/*.deb /tmp/debs/
+RUN apt-get update && apt-get install -y /tmp/debs/fabric-branding_*.deb /tmp/debs/fabric-desktop_*.deb /tmp/debs/fabric-ai_*.deb /tmp/debs/fabric-agent_*.deb /tmp/debs/fabric-feedback_*.deb /tmp/debs/fabric-desktop-meta_*.deb \
+    && rm -rf /var/lib/apt/lists/* /tmp/debs
+# System configuration
+RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/; s/^# *en_IN UTF-8/en_IN UTF-8/' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
+    ln -sf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime && echo Asia/Kolkata > /etc/timezone && \
+    printf 'LABEL=fabric-root  /         ext4  defaults,discard  0 1\nLABEL=FABRIC-ESP   /boot/efi vfat  umask=0077        0 1\n' > /etc/fstab && mkdir -p /boot/efi && \
+    systemctl enable NetworkManager systemd-resolved systemd-timesyncd sddm fabric-feedback.socket && \
+    truncate -s0 /etc/machine-id && rm -f /var/lib/dbus/machine-id && \
+    flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+# Ship the official archive in the OS, not the build mirror
+COPY image/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources
+COPY image/overlay/common/ /
+# vm profile: test user with autologin, serial console, self-test service. NEVER ship this profile.
+COPY image/overlay/${PROFILE}/ /
+RUN if [ "$PROFILE" = vm ]; then \
+      useradd -m -s /bin/bash -G sudo,adm,video,audio,render,plugdev,netdev fabric && echo 'fabric:fabric' | chpasswd && \
+      systemctl enable serial-getty@ttyS0 fabric-selftest ; fi
+# Make sure the initramfs contains our Plymouth theme and the VM's drm driver, then record the kernel we ship.
+RUN update-initramfs -u -k all && ls -la /boot && dpkg-query -W -f='${binary:Package}\t${Version}\n' > /usr/share/fabric/manifest.txt 2>/dev/null || (mkdir -p /usr/share/fabric && dpkg-query -W -f='${binary:Package}\t${Version}\n' > /usr/share/fabric/manifest.txt)
+CMD ["/bin/bash"]

@@ -1,0 +1,9 @@
+build/*
+!build/bin
+brand/out
+*.img
+*.ext4
+*.tar
+*.iso
+*.log
+.git

@@ -1,0 +1,8 @@
+build/
+brand/out/
+*.img
+*.ext4
+*.tar
+*.iso
+*.log
+image/overlay/*/etc/fabric/feedback.env

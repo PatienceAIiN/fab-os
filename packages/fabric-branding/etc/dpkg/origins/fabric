@@ -1,0 +1,4 @@
+Vendor: @DISTRO_ID_TITLE@
+Vendor-URL: @HOME_URL@
+Bugs: @BUG_REPORT_URL@
+Parent: Ubuntu

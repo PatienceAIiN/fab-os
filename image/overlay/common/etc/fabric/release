@@ -1,0 +1,2 @@
+# Written at image build; augmented by scripts/build-rootfs.sh
+FABRIC_IMAGE_PROFILE=unknown
