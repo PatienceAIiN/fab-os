@@ -34,9 +34,7 @@ podman run --rm -v "$PWD/$OUT:/repo:Z" -e SUITE="$SUITE" -e COMPONENT="$COMPONEN
     gzip -9kf dists/$SUITE/$COMPONENT/binary-$a/Packages
     printf "Archive: %s\nComponent: %s\nOrigin: %s\nLabel: %s\nArchitecture: %s\n" "$SUITE" "$COMPONENT" "$ORIGIN" "$LABEL" "$a" > dists/$SUITE/$COMPONENT/binary-$a/Release
   done
-  # amd64 clients must also see Architecture: all packages
-  cat dists/$SUITE/$COMPONENT/binary-all/Packages >> dists/$SUITE/$COMPONENT/binary-amd64/Packages
-  gzip -9kf dists/$SUITE/$COMPONENT/binary-amd64/Packages
+  # (apt-ftparchive --arch amd64 already includes Architecture: all packages)
   apt-ftparchive -o APT::FTPArchive::Release::Origin="$ORIGIN" -o APT::FTPArchive::Release::Label="$LABEL" -o APT::FTPArchive::Release::Suite="$SUITE" \
      -o APT::FTPArchive::Release::Codename="$SUITE" -o APT::FTPArchive::Release::Architectures="amd64 all" -o APT::FTPArchive::Release::Components="$COMPONENT" \
      -o APT::FTPArchive::Release::Description="$LABEL package updates by $ORIGIN" release dists/$SUITE > dists/$SUITE/Release
