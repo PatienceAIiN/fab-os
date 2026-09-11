@@ -1,0 +1,25 @@
+#!/bin/sh
+# Fab OS: hide upstream vendor names in what the user sees, without touching Ubuntu/KDE package files.
+# Writes overriding .desktop files to /usr/local/share/applications (higher XDG priority). Re-run after upgrades
+# by the apt hook /etc/apt/apt.conf.d/90fabos-rebrand. Safe: originals are untouched; delete the overrides to revert.
+set -eu
+OUT=/usr/local/share/applications; mkdir -p "$OUT"
+rebrand() { # rebrand <src> <dst> <sed-expr>
+  sed -E "$3" "$1" > "$2.tmp" && mv "$2.tmp" "$2"; }
+for f in /usr/share/applications/*.desktop; do
+  b=$(basename "$f"); [ -f "$OUT/$b" ] && [ ! -f "$OUT/$b.fabos" ] && continue   # respect hand-made overrides
+  case "$b" in
+    org.kde.kwalletmanager5.desktop|kwalletmanager5.desktop)
+      rebrand "$f" "$OUT/$b" 's/^(Name(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet/; s/^(GenericName(\[[a-zA-Z_@.]+\])?=).*/\1Password Wallet/; s/^(Comment(\[[a-zA-Z_@.]+\])?=).*/\1Manage the passwords and secrets stored by Fab OS/'; touch "$OUT/$b.fabos" ;;
+    *)
+      if grep -qE '^(Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*(KDE|Plasma)' "$f"; then
+        rebrand "$f" "$OUT/$b" 's/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE Plasma/\1Fab OS/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE Connect/\1Fab Connect/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE /\1/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)Plasma /\1Fab OS /; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*) for KDE/\1/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE/\1Fab OS/'
+        touch "$OUT/$b.fabos"
+      fi ;;
+  esac
+done
+# System Settings modules (KCMs) that carry the KDE name in their title
+for f in /usr/share/applications/kcm_kwallet*.desktop; do [ -f "$f" ] || continue; b=$(basename "$f")
+  rebrand "$f" "$OUT/$b" 's/^(Name(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet/; s/^(Comment(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet configuration/'; touch "$OUT/$b.fabos"; done
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$OUT" || true
+exit 0

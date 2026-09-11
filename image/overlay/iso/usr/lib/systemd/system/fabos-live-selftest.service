@@ -1,0 +1,13 @@
+[Unit]
+Description=Fab OS live-session self-test (serial markers; powers off only under QEMU autotest)
+After=graphical.target
+Wants=graphical.target
+ConditionPathExists=/etc/casper.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/fabos/live-selftest.sh
+StandardOutput=journal+console
+
+[Install]
+WantedBy=graphical.target

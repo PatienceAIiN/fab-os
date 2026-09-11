@@ -1,9 +1,0 @@
-#!/bin/sh
-set -e
-case "$1" in configure)
-  chmod 0600 /etc/fabric/feedback.env || true
-  systemctl daemon-reload 2>/dev/null || true
-  systemctl enable fabric-feedback.socket 2>/dev/null || true
-  systemctl start fabric-feedback.socket 2>/dev/null || true
-;; esac
-exit 0

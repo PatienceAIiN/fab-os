@@ -1,0 +1,21 @@
+[Unit]
+Description=@DISTRO_NAME@ local AI service (System-Wide AI)
+Documentation=@DOCS_URL@
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/aiosd
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%t/ai-native-os %h/.local/share/ai-native-os
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+EnvironmentFile=-/etc/fabos/ai.env
+EnvironmentFile=-%h/.config/fabos/ai.env
+
+[Install]
+WantedBy=default.target

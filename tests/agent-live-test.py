@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Live agent evaluation with a REAL model (needs a key). Runs fabric-agentd in a sandboxed HOME and scores tasks
+"""Live agent evaluation with a REAL model (needs a key). Runs fabos-agentd in a sandboxed HOME and scores tasks
 from easy to hard by checking real side effects on disk, never by trusting the agent's own summary.
 
   ANTHROPIC_API_KEY=sk-ant-... python3 tests/agent-live-test.py            # Claude (default model claude-opus-5)
-  FABRIC_LIVE_PROVIDER=openai OPENAI_API_KEY=... python3 tests/agent-live-test.py
-  FABRIC_LIVE_PROVIDER=gemini GEMINI_API_KEY=... python3 tests/agent-live-test.py
-  FABRIC_LIVE_PROVIDER=local  (llama-server on http://127.0.0.1:8080/v1)
+  FABOS_LIVE_PROVIDER=openai OPENAI_API_KEY=... python3 tests/agent-live-test.py
+  FABOS_LIVE_PROVIDER=gemini GEMINI_API_KEY=... python3 tests/agent-live-test.py
+  FABOS_LIVE_PROVIDER=local  (llama-server on http://127.0.0.1:8080/v1)
 
 Each task: [level] request -> objective checks -> PASS/FAIL, plus honesty check (did the final message claim
 anything the checks disprove?). Results are written to build/agent-live-results.json.
@@ -13,9 +13,9 @@ anything the checks disprove?). Results are written to build/agent-live-results.
 import json, os, shutil, subprocess, sys, tempfile, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DAEMON = os.path.join(ROOT, "packages/fabric-agent/usr/lib/fabric/agent/fabric_agentd.py")
-CLI = os.path.join(ROOT, "packages/fabric-agent/usr/bin/fabric")
-PROVIDER = os.environ.get("FABRIC_LIVE_PROVIDER", "claude")
+DAEMON = os.path.join(ROOT, "packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py")
+CLI = os.path.join(ROOT, "packages/fabos-agent/usr/bin/fabos")
+PROVIDER = os.environ.get("FABOS_LIVE_PROVIDER", "claude")
 KEYS = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "local": None}
 
 
@@ -26,8 +26,8 @@ def main():
         sys.exit("set %s to run live tests (nothing was run)" % keyvar)
     tmp = tempfile.mkdtemp(prefix="fab-live-")
     home = os.path.join(tmp, "home"); os.makedirs(os.path.join(home, "Documents"))
-    env = dict(os.environ, HOME=home, XDG_RUNTIME_DIR=tmp, FABRIC_AGENT_DATA=os.path.join(tmp, "data"), XDG_CONFIG_HOME=os.path.join(tmp, "cfg"), FABRIC_AGENT_PORT="18791")
-    env.pop("FABRIC_AGENT_PROVIDER", None)
+    env = dict(os.environ, HOME=home, XDG_RUNTIME_DIR=tmp, FABOS_AGENT_DATA=os.path.join(tmp, "data"), XDG_CONFIG_HOME=os.path.join(tmp, "cfg"), FABOS_AGENT_PORT="18791")
+    env.pop("FABOS_AGENT_PROVIDER", None)
     proc = subprocess.Popen([sys.executable, DAEMON], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(50):
         try:
@@ -38,7 +38,7 @@ def main():
     def cli(*a):
         r = subprocess.run([sys.executable, CLI, "--json"] + list(a), env=env, capture_output=True, text=True, timeout=60)
         return json.loads(r.stdout) if r.stdout.strip().startswith(("{", "[")) else r.stdout
-    tok = open(os.path.join(tmp, "fabric-agent/token")).read()
+    tok = open(os.path.join(tmp, "fabos-agent/token")).read()
 
     def post(path, body):
         req = urllib.request.Request("http://127.0.0.1:18791" + path, data=json.dumps(body).encode(), headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})

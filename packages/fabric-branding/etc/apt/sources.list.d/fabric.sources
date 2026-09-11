@@ -1,7 +1,0 @@
-# @DISTRO_NAME@ feature/branding/AI updates from @VENDOR_NAME@ (signed; apt verifies every Release file).
-# Ubuntu updates continue to come from the Ubuntu archive unchanged.
-Types: deb
-URIs: http://fabricos.patienceai.in/apt
-Suites: @DISTRO_CODENAME@
-Components: main
-Signed-By: /usr/share/keyrings/fabric-archive-keyring.gpg

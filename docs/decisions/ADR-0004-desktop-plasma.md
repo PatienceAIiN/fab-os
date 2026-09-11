@@ -17,7 +17,7 @@ and a Canonical-controlled store from the base. Flatpak + Discover cover
 sandboxed apps. Firefox therefore comes from Mozilla's apt repo or Flatpak
 (documented, not preinstalled yet).
 
-## Fabric shell
-Fabric AI surfaces (command bar, activity center, settings pane) are delivered
+## FabOS shell
+FabOS AI surfaces (command bar, activity center, settings pane) are delivered
 as Plasma widgets/KCMs and layer-shell clients in later milestones; nothing
 replaces KWin.

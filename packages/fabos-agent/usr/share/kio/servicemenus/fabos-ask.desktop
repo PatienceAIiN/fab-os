@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Service
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+MimeType=all/all;
+Actions=fabosAsk;
+X-KDE-Priority=TopLevel
+Icon=fabos-command-center
+
+[Desktop Action fabosAsk]
+Name=Ask @DISTRO_NAME@ about this…
+Icon=fabos-command-center
+Exec=fabos-command-center --prefill "About these files: %F — "

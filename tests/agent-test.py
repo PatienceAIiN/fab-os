@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""End-to-end test of fabric-agentd with the scripted provider (no network, no GUI).
+"""End-to-end test of fabos-agentd with the scripted provider (no network, no GUI).
 Runs the daemon from packages/, drives it through the CLI + HTTP API, checks policy, approvals, CRUD, watches."""
 import json, os, shutil, subprocess, sys, tempfile, time, urllib.request, unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DAEMON = os.path.join(ROOT, "packages/fabric-agent/usr/lib/fabric/agent/fabric_agentd.py")
-CLI = os.path.join(ROOT, "packages/fabric-agent/usr/bin/fabric")
+DAEMON = os.path.join(ROOT, "packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py")
+CLI = os.path.join(ROOT, "packages/fabos-agent/usr/bin/fabos")
 sys.path.insert(0, os.path.dirname(DAEMON))
-import fabric_agentd as fa  # noqa: E402
+import fabos_agentd as fa  # noqa: E402
 
 
 class Classify(unittest.TestCase):
@@ -36,9 +36,9 @@ class Classify(unittest.TestCase):
 class Daemon(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="fabric-agent-test-")
-        env = dict(os.environ, XDG_RUNTIME_DIR=cls.tmp, FABRIC_AGENT_DATA=os.path.join(cls.tmp, "data"), XDG_CONFIG_HOME=os.path.join(cls.tmp, "cfg"),
-                   FABRIC_AGENT_PROVIDER="fake", FABRIC_AGENT_PORT="18790", HOME=os.path.join(cls.tmp, "home"), PATH="/usr/bin:/bin")
+        cls.tmp = tempfile.mkdtemp(prefix="fabos-agent-test-")
+        env = dict(os.environ, XDG_RUNTIME_DIR=cls.tmp, FABOS_AGENT_DATA=os.path.join(cls.tmp, "data"), XDG_CONFIG_HOME=os.path.join(cls.tmp, "cfg"),
+                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT="18790", HOME=os.path.join(cls.tmp, "home"), PATH="/usr/bin:/bin")
         os.makedirs(env["HOME"]); cls.env = env
         cls.proc = subprocess.Popen([sys.executable, DAEMON], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for _ in range(50):
@@ -74,9 +74,9 @@ class Daemon(unittest.TestCase):
         self.assertIn("Linux", json.dumps(t["steps"]))
 
     def test_03_editor_flow_writes_file(self):
-        r = self.cli("do", "--mode", "bypass", "open editor and write hello fabric"); t = self.wait(r["id"])
+        r = self.cli("do", "--mode", "bypass", "open editor and write hello fabos"); t = self.wait(r["id"])
         self.assertEqual(t["status"], "done", t)
-        self.assertEqual(open(os.path.join(self.env["HOME"], "Documents/fabric-note.txt")).read().strip(), "hello fabric")
+        self.assertEqual(open(os.path.join(self.env["HOME"], "Documents/fabos-note.txt")).read().strip(), "hello fabos")
         self.assertTrue(any(s["name"] == "open_app" for s in t["steps"]))
 
     def test_04_ask_mode_requires_approval_then_deny(self):
@@ -101,10 +101,10 @@ class Daemon(unittest.TestCase):
 
     def test_07_secret_roundtrip(self):
         body = json.dumps({"name": "claude_api_key", "value": "sk-test-123"}).encode()
-        tok = open(os.path.join(self.tmp, "fabric-agent/token")).read()
+        tok = open(os.path.join(self.tmp, "fabos-agent/token")).read()
         req = urllib.request.Request("http://127.0.0.1:18790/secrets", data=body, headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
         self.assertTrue(json.loads(urllib.request.urlopen(req).read())["ok"])
-        os.environ["XDG_CONFIG_HOME"] = self.env["XDG_CONFIG_HOME"]; fa.CONF_DIR = os.path.join(self.env["XDG_CONFIG_HOME"], "fabric", "agent")
+        os.environ["XDG_CONFIG_HOME"] = self.env["XDG_CONFIG_HOME"]; fa.CONF_DIR = os.path.join(self.env["XDG_CONFIG_HOME"], "fabos", "agent")
         self.assertEqual(fa.get_secret("claude_api_key"), "sk-test-123"); self.assertTrue(self.cli("settings")["secrets"]["claude_api_key"])
 
     def test_08_mail_task_without_config_fails_cleanly(self):

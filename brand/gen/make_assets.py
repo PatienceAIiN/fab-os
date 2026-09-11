@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Render every Fabric OS brand asset from brand.conf + the SVG mark.
+"""Render every FabOS OS brand asset from brand.conf + the SVG mark.
 
 Deterministic, dependency-light (Pillow only). Outputs:
-  icons/           hicolor PNG icons (16..512) + fabric-os.svg copies
+  icons/           hicolor PNG icons (16..512) + fabos.svg copies
   pixmaps/         logo + wordmark PNGs (light/dark)
   plymouth/        spinner frames (rotating ring) + wordmark for the boot splash
   wallpapers/      procedural weave wallpapers (dark + light) at 3 sizes
   sddm/            greeter background
-  3d/              fabric-mark.glb + fabric-mark.obj (torus + 3 bars), CC0/Apache-2.0
+  3d/              fabos-mark.glb + fabos-mark.obj (torus + 3 bars), CC0/Apache-2.0
 """
 import argparse, glob, json, math, os, shlex, struct, sys
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -44,7 +44,7 @@ def hexrgb(h, a=255):
 
 # ---------- the mark ----------
 def draw_mark(size, color, rot_deg=-24, ring_dash=None, spin=0.0, bar_phase=0.0, ss=4):
-    """Ring + three woven bars, as in brand/logo/fabric-mark.svg (64-unit grid)."""
+    """Ring + three woven bars, as in brand/logo/fabos-mark.svg (64-unit grid)."""
     S = size * ss; u = S / 64.0
     img = Image.new("RGBA", (S, S), (0,0,0,0)); d = ImageDraw.Draw(img)
     cx = cy = 32*u; r = 20*u; w = 4*u
@@ -166,7 +166,7 @@ def write_gltf(path_glb, path_obj, parts, color):
     a=math.radians(-24); ca,sa=math.cos(a),math.sin(a)
     V=[(x*ca - y*sa, x*sa + y*ca, z) for (x,y,z) in V]; N=[(x*ca - y*sa, x*sa + y*ca, z) for (x,y,z) in N]
     with open(path_obj,"w") as f:
-        f.write("# Fabric OS mark — CC0-1.0 / Apache-2.0\no fabric_mark\n")
+        f.write("# FabOS OS mark — CC0-1.0 / Apache-2.0\no fabos_mark\n")
         for v in V: f.write("v %.5f %.5f %.5f\n"%v)
         for n in N: f.write("vn %.5f %.5f %.5f\n"%n)
         for k in range(0,len(I),3): f.write("f %d//%d %d//%d %d//%d\n"%(I[k]+1,I[k]+1,I[k+1]+1,I[k+1]+1,I[k+2]+1,I[k+2]+1))
@@ -176,10 +176,10 @@ def write_gltf(path_glb, path_obj, parts, color):
     bin_ = pad4(pos)+pad4(nor)+pad4(idx)
     mins=[min(v[k] for v in V) for k in range(3)]; maxs=[max(v[k] for v in V) for k in range(3)]
     c=[int(color[1:3],16)/255,int(color[3:5],16)/255,int(color[5:7],16)/255,1.0]
-    gltf={"asset":{"version":"2.0","generator":"fabric-os make_assets.py","copyright":"2026 Patience AI, CC0-1.0 OR Apache-2.0"},
-      "scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0,"name":"FabricMark"}],
+    gltf={"asset":{"version":"2.0","generator":"fabos make_assets.py","copyright":"2026 Patience AI, CC0-1.0 OR Apache-2.0"},
+      "scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0,"name":"FabOSMark"}],
       "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2,"material":0}]}],
-      "materials":[{"name":"FabricInk","pbrMetallicRoughness":{"baseColorFactor":c,"metallicFactor":0.2,"roughnessFactor":0.45}}],
+      "materials":[{"name":"FabOSInk","pbrMetallicRoughness":{"baseColorFactor":c,"metallicFactor":0.2,"roughnessFactor":0.45}}],
       "buffers":[{"byteLength":len(bin_)}],
       "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":len(pos)},
                      {"buffer":0,"byteOffset":len(pad4(pos)),"byteLength":len(nor)},
@@ -202,8 +202,8 @@ ICON_MAP = {
     ("plasmadiscover", "org.kde.discover", "system-software-install", "flatpak-discover"): ("shopping_bag", "#1F9D57"),
     ("kate", "org.kde.kate", "accessories-text-editor", "text-editor"): ("edit_note", "#B7791F"),
     ("firefox", "firefox-esr", "web-browser", "internet-web-browser", "org.mozilla.firefox"): ("public", "#E0642B"),
-    ("fabric-command-center",): ("smart_toy", "#6E9BFF"),
-    ("fabric-feedback",): ("feedback", "#7C5CFF"),
+    ("fabos-command-center",): ("smart_toy", "#6E9BFF"),
+    ("fabos-feedback",): ("feedback", "#7C5CFF"),
     ("user-trash", "trashcan_empty"): ("delete", "#8892A0"),
     ("user-trash-full", "trashcan_full"): ("delete_sweep", "#8892A0"),
     ("org.kde.gwenview", "gwenview", "image-viewer"): ("image", "#2BA9A0"),
@@ -212,9 +212,8 @@ ICON_MAP = {
     ("org.kde.ark", "ark", "utilities-file-archiver"): ("folder_zip", "#8A6D3B"),
     ("org.kde.plasma-systemmonitor", "plasma-systemmonitor", "utilities-system-monitor"): ("monitoring", "#3B6EF5"),
     ("kinfocenter", "org.kde.kinfocenter", "hwinfo"): ("info", "#5B6472"),
-    ("kwalletmanager", "kwalletmanager5", "org.kde.kwalletmanager5"): ("lock", "#5B6472"),
     ("org.kde.spectacle", "spectacle", "accessories-screenshot"): ("photo_camera", "#7C5CFF"),
-    ("start-here-kde", "start-here", "start-here-kde-plasma", "start-here-symbolic"): ("__fabric_mark__", "#16171A"),
+    ("start-here-kde", "start-here", "start-here-kde-plasma", "start-here-symbolic"): ("__fabos_mark__", "#16171A"),
 }
 
 def fetch_material(symbol, cache_dir):
@@ -251,8 +250,8 @@ def build_icon_theme(out, conf):
             '<rect x="23" y="25" width="4" height="14" rx="2"/><rect x="30" y="22" width="4" height="20" rx="2"/><rect x="37" y="25" width="4" height="14" rx="2"/></g>')
     have_rsvg = shutil.which("rsvg-convert") is not None; made = 0; fetched = 0
     for names, (symbol, color) in ICON_MAP.items():
-        paths = None if symbol == "__fabric_mark__" else fetch_material(symbol, cache)
-        if symbol != "__fabric_mark__" and not paths: continue
+        paths = None if symbol == "__fabos_mark__" else fetch_material(symbol, cache)
+        if symbol != "__fabos_mark__" and not paths: continue
         fetched += 1
         svg = app_icon_svg(paths, color, mark)
         first = names[0]; sdir = os.path.join(theme, "scalable", "apps"); os.makedirs(sdir, exist_ok=True)
@@ -267,6 +266,7 @@ def build_icon_theme(out, conf):
             lp = os.path.join(sdir, alias + ".svg")
             if not os.path.lexists(lp): os.symlink(first + ".svg", lp)
         made += 1
+    # places/preferences names live in apps/ too; KIconLoader searches all listed dirs regardless of Context
     dirs = ",".join(["scalable/apps"] + ["%dx%d/apps" % (s, s) for s in sizes])
     idx = ["[Icon Theme]", "Name=FabOS", "Comment=%s icons: Google Material Symbols on Fab OS tiles; everything else from Breeze" % conf["DISTRO_NAME"],
            "Inherits=breeze-dark,breeze,hicolor", "Directories=" + dirs, "", "[scalable/apps]", "Size=64", "MinSize=16", "MaxSize=512", "Type=Scalable", "Context=Applications", ""]
@@ -283,13 +283,13 @@ def main():
     name=C["DISTRO_NAME"]; vendor=C["VENDOR_NAME"]
     # icons: tile on light for hicolor apps, plus a monochrome symbolic
     for s in (16,22,24,32,48,64,128,256,512):
-        tile(s, ink, light).save(os.path.join(out,"icons",f"fabric-os-{s}.png"))
-    draw_mark(512, white).save(os.path.join(out,"icons","fabric-os-symbolic-white.png"))
-    draw_mark(512, ink).save(os.path.join(out,"icons","fabric-os-symbolic-dark.png"))
+        tile(s, ink, light).save(os.path.join(out,"icons",f"fabos-{s}.png"))
+    draw_mark(512, white).save(os.path.join(out,"icons","fabos-symbolic-white.png"))
+    draw_mark(512, ink).save(os.path.join(out,"icons","fabos-symbolic-dark.png"))
     # pixmaps / lockups
-    logo_lockup(a.font_dir, name, vendor, ink, 72).save(os.path.join(out,"pixmaps","fabric-os-logo.png"))
-    logo_lockup(a.font_dir, name, vendor, white, 72).save(os.path.join(out,"pixmaps","fabric-os-logo-dark.png"))
-    tile(128, ink, light).save(os.path.join(out,"pixmaps","fabric-os.png"))
+    logo_lockup(a.font_dir, name, vendor, ink, 72).save(os.path.join(out,"pixmaps","fabos-logo.png"))
+    logo_lockup(a.font_dir, name, vendor, white, 72).save(os.path.join(out,"pixmaps","fabos-logo-dark.png"))
+    tile(128, ink, light).save(os.path.join(out,"pixmaps","fabos.png"))
     wm,used=wordmark(a.font_dir, name, "by "+vendor, white, 56); wm.save(os.path.join(out,"plymouth","wordmark.png"))
     wordmark(a.font_dir, name, None, white, 40)[0].save(os.path.join(out,"sddm","wordmark.png"))
     # plymouth spinner frames: 36 frames, dashed ring rotating + breathing bars
@@ -306,8 +306,10 @@ def main():
     # 3D
     parts=[torus(20.0,2.0)]
     for (x,h) in ((25,14),(32,20),(39,14)): parts.append(rounded_bar(x-32, 4.0, float(h), 4.0, 2.0))
-    write_gltf(os.path.join(out,"3d","fabric-mark.glb"), os.path.join(out,"3d","fabric-mark.obj"), parts, C["INK"])
+    write_gltf(os.path.join(out,"3d","fabos-mark.glb"), os.path.join(out,"3d","fabos-mark.obj"), parts, C["INK"])
     build_icon_theme(out, C)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import plasma_theme; plasma_theme.write_theme(out, C)
     json.dump({"font_used":used,"conf":C},open(os.path.join(out,"meta","assets.json"),"w"),indent=1)
     print("assets rendered to",out,"| font:",used)
 

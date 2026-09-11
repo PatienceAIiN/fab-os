@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Install Fab OS
+GenericName=System Installer
+Comment=Install Fab OS on this computer
+Exec=pkexec calamares
+Icon=install-fabos
+Terminal=false
+Categories=System;
+StartupNotify=true

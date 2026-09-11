@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Send Feedback to @VENDOR_NAME@
+GenericName=Feedback and bug reports
+Comment=Report a problem or suggest an improvement for @DISTRO_NAME@
+Exec=fabos-feedback
+Icon=fabos-feedback
+Terminal=false
+Categories=System;Qt;KDE;
+Keywords=feedback;bug;report;support;

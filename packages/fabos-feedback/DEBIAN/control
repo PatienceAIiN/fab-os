@@ -1,0 +1,11 @@
+Package: fabos-feedback
+Version: @DISTRO_VERSION@-1
+Section: utils
+Priority: optional
+Architecture: all
+Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Depends: python3, python3-pyqt6, systemd, fabos-branding
+Description: @DISTRO_NAME@ feedback and bug reports to @VENDOR_NAME@
+ Replaces the KDE user-feedback and bug-report channels with a @DISTRO_NAME@
+ dialog (fabos-feedback) that delivers reports to @VENDOR_NAME@ through a
+ root-owned relay service, so mail credentials never reach user processes.

@@ -1,0 +1,12 @@
+[Unit]
+Description=FabOS OS VM self-test (prints boot markers on the serial console)
+After=multi-user.target graphical.target
+Wants=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/fabos/selftest.sh
+StandardOutput=journal+console
+
+[Install]
+WantedBy=graphical.target

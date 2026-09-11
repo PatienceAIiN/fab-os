@@ -12,7 +12,7 @@ unverified and needs root for some steps); Cubic (GUI, not reproducible).
 ## Selected
 - Rootfs is a multi-stage `image/Containerfile` on `ubuntu:26.04`, built with
   rootless podman. Stage `assets` renders artwork, stage `pkgs` builds .debs,
-  stage `rootfs` installs Ubuntu + Plasma + Fabric packages.
+  stage `rootfs` installs Ubuntu + Plasma + FabOS packages.
 - Export with `podman export`, unpack and `mkfs.ext4 -d` inside `podman
   unshare` so ownership is recorded correctly without host root.
 - ESP built with `mkfs.vfat` + `mtools`; GPT written with `sfdisk`; partitions

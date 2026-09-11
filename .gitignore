@@ -5,4 +5,4 @@ brand/out/
 *.tar
 *.iso
 *.log
-image/overlay/*/etc/fabric/feedback.env
+image/overlay/*/etc/fabos/feedback.env

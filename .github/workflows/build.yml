@@ -1,11 +1,12 @@
 name: fab-os
 on:
-  push: { branches: [main] }
+  push: { branches: [main], tags: ['v*'] }
   workflow_dispatch: {}
+# Channels: push to main -> beta suite (loom-beta); tag v* -> stable suite (loom).
 
 # End-to-end OS update loop:
 #   push to main -> build .debs -> sign apt repo -> publish to fabricos.patienceai.in/apt -> users get `apt upgrade`.
-# Secrets required: VM_HOST, VM_USER, VM_SSH_KEY (rsync target), APT_GPG_PRIVATE_KEY (armored, from build/secrets/fabric-archive-private.asc)
+# Secrets required: VM_HOST, VM_USER, VM_SSH_KEY (rsync target), APT_GPG_PRIVATE_KEY (armored, from build/secrets/fabos-archive-private.asc)
 jobs:
   packages-and-apt:
     runs-on: ubuntu-24.04
@@ -33,11 +34,12 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq podman
           mkdir -p build && printf '#!/usr/bin/env bash\nshift; [ "$1" = -- ] && shift; exec "$@"\n' > tools/rg && chmod +x tools/rg   # no cgroup guard needed on the runner
-          scripts/publish-apt.sh --no-deploy
+          CH=beta; case "$GITHUB_REF" in refs/tags/v*) CH=stable;; esac; echo "channel=$CH" >> $GITHUB_ENV
+          scripts/publish-apt.sh --no-deploy --channel $CH
       - uses: actions/upload-artifact@v4
         with: { name: fab-os-apt-repo, path: build/apt-repo }
       - name: Publish to fabricos.patienceai.in/apt
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         env:
           VM_HOST: ${{ secrets.VM_HOST }}
           VM_USER: ${{ secrets.VM_USER }}
@@ -45,7 +47,7 @@ jobs:
           mkdir -p ~/.ssh && echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/k && chmod 600 ~/.ssh/k
           ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null
           ssh -i ~/.ssh/k "$VM_USER@$VM_HOST" "mkdir -p /var/www/fabricos/apt"
-          rsync -az --delete -e "ssh -i ~/.ssh/k" build/apt-repo/ "$VM_USER@$VM_HOST:/var/www/fabricos/apt/"
+          rsync -az -e "ssh -i ~/.ssh/k" build/apt-repo/ "$VM_USER@$VM_HOST:/var/www/fabricos/apt/"
 
   image:
     # Full VM image build (heavy, ~1 GB download). Manual trigger only; the apt job above is the update loop.
@@ -59,4 +61,4 @@ jobs:
           printf '#!/usr/bin/env bash\nshift; [ "$1" = -- ] && shift; exec "$@"\n' > tools/rg && chmod +x tools/rg
           scripts/build-rootfs.sh vm && tests/branding-check.sh vm
       - uses: actions/upload-artifact@v4
-        with: { name: fab-os-vm-rootfs, path: build/fabric-root-vm.ext4, compression-level: 9 }
+        with: { name: fab-os-vm-rootfs, path: build/fabos-root-vm.ext4, compression-level: 9 }

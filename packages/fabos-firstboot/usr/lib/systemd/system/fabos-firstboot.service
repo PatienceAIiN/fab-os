@@ -1,0 +1,16 @@
+[Unit]
+Description=@DISTRO_NAME@ first-boot provisioning (updates, drivers, firmware)
+ConditionPathExists=!/var/lib/fabos/firstboot-done
+ConditionKernelCommandLine=!fabos.nofirstboot
+After=network-online.target NetworkManager.service graphical.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/fabos/firstboot.sh
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=2h
+
+[Install]
+WantedBy=graphical.target

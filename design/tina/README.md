@@ -15,7 +15,7 @@ legal/ARTWORK.md, and confirm the file contains no third-party proprietary asset
 before reproducing them. Fab OS reproduces the *layout, spacing, colour and motion language* with its own assets.
 
 ## Mapping Figma → Plasma 6 (what "whole UI" means technically)
-| Figma element            | Plasma mechanism (package fabric-desktop)                                   |
+| Figma element            | Plasma mechanism (package fabos-desktop)                                   |
 |--------------------------|------------------------------------------------------------------------------|
 | Colours / typography     | `FabOS.colors` KDE colour scheme + kdeglobals fonts (Inter)                  |
 | Top bar / dock / widgets | look-and-feel `layout.js` + custom plasmoids (askbar, dock) + Plasma theme  |

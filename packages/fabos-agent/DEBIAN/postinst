@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+case "$1" in configure)
+  # Start the agent for every user's session (System-Wide AI stays opt-in per provider key; this only runs the local service)
+  systemctl --global enable fabos-agent.service 2>/dev/null || true
+  command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q || true
+  # Ubuntu's python3-anthropic pulls httpx; nothing else to do. Data lives in ~/.local/share/fabos/agent.db per user.
+;; esac
+exit 0

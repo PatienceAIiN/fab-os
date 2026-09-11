@@ -1,0 +1,13 @@
+
+The programs included with @DISTRO_NAME@ are free software; the exact
+distribution terms for each program are described in the individual files
+in /usr/share/doc/*/copyright.
+
+@DISTRO_NAME@ comes with ABSOLUTELY NO WARRANTY, to the extent permitted by
+applicable law.
+
+@DISTRO_NAME@ is published by @VENDOR_NAME@ and is based on Ubuntu.
+Ubuntu is a trademark of Canonical Ltd.; @DISTRO_NAME@ is not affiliated
+with or endorsed by Canonical. Corresponding source for GPL/LGPL components:
+see /usr/share/doc/fabos-branding/SOURCE-OFFER.
+

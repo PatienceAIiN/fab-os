@@ -1,4 +1,0 @@
-#!/bin/sh
-set -e
-case "$1" in remove|deconfigure) systemctl --global disable fabric-agent.service 2>/dev/null || true ;; esac
-exit 0

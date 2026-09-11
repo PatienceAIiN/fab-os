@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+case "$1" in configure) systemctl daemon-reload 2>/dev/null || true; systemctl enable fabos-firstboot.service 2>/dev/null || true ;; esac
+exit 0

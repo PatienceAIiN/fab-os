@@ -7,7 +7,7 @@ Apple, Microsoft or any other party's artwork.
 
 - Logo (`brand/logo/*.svg`), animated logo, Plymouth boot animation frames,
   SDDM background, wallpapers, KSplash artwork, icons, and the 3D logo mesh
-  (`fabric-mark.glb`, `fabric-mark.obj`): copyright 2026 Patience AI, released
+  (`fabos-mark.glb`, `fabos-mark.obj`): copyright 2026 Patience AI, released
   under **Apache-2.0 OR CC0-1.0** at your option. You may use them without
   attribution, but see `TRADEMARKS.md` about using them to identify a product.
 - Wallpapers are procedurally generated (gradient fields plus a subtle weave

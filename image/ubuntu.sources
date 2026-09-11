@@ -1,4 +1,4 @@
-# Ubuntu archive — the official sources shipped on Fabric OS (build mirrors are never shipped).
+# Ubuntu archive — the official sources shipped on FabOS OS (build mirrors are never shipped).
 Types: deb
 URIs: http://archive.ubuntu.com/ubuntu/
 Suites: resolute resolute-updates resolute-backports

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Ask @DISTRO_NAME@
+Comment=Open the Command Center with the ask bar focused
+Exec=fabos-command-center --ask
+Icon=fabos-command-center
+Terminal=false
+NoDisplay=true
+X-KDE-Shortcuts=Meta+Space

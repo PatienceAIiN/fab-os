@@ -1,8 +1,0 @@
-#!/bin/sh
-set -e
-case "$1" in configure)
-  install -d -m 0755 /var/lib/fabric/models
-  # Not enabled by default: System-Wide AI is opt-in per user (spec §63).
-  systemctl --global daemon-reload 2>/dev/null || true
-;; esac
-exit 0

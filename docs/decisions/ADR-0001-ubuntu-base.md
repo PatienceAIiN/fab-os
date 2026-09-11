@@ -26,7 +26,7 @@ compatibility while carrying its own identity and AI layer.
 
 ## Tradeoffs
 - Must strip Canonical trademarks (see legal/) and avoid snap.
-- `ID=fabric` in os-release will make a few Ubuntu-only checks fail; we set
+- `ID=fabos` in os-release will make a few Ubuntu-only checks fail; we set
   `ID_LIKE="ubuntu debian"` and keep `UBUNTU_CODENAME` so PPAs and distro-info
   tooling work, and ship `/etc/upstream-release/lsb-release` (Mint convention).
 

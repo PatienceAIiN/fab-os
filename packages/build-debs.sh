@@ -17,38 +17,39 @@ for pkgdir in "$SRC"/packages/*/; do
   name=$(basename "$pkgdir"); dst="$WORK/$name"; cp -a "$pkgdir" "$dst"
   # --- inject generated assets ---
   case $name in
-    fabric-branding)
-      for s in 16 22 24 32 48 64 128 256 512; do install -Dm644 "$SRC/assets/icons/fabric-os-$s.png" "$dst/usr/share/icons/hicolor/${s}x${s}/apps/fabric-os.png"; done
-      install -Dm644 "$SRC/assets/pixmaps/fabric-os-logo.png" "$dst/usr/share/pixmaps/fabric-os-logo.png"
-      install -Dm644 "$SRC/assets/pixmaps/fabric-os-logo-dark.png" "$dst/usr/share/pixmaps/fabric-os-logo-dark.png"
-      install -Dm644 "$SRC/assets/pixmaps/fabric-os.png" "$dst/usr/share/pixmaps/fabric-os.png"
-      cp "$SRC"/assets/plymouth/spinner-*.png "$SRC/assets/plymouth/wordmark.png" "$SRC/assets/plymouth/mark.png" "$dst/usr/share/plymouth/themes/fabric/"
-      python3 - "$dst/usr/share/plymouth/themes/fabric" <<'PY'
+    fabos-branding)
+      for s in 16 22 24 32 48 64 128 256 512; do install -Dm644 "$SRC/assets/icons/fabos-$s.png" "$dst/usr/share/icons/hicolor/${s}x${s}/apps/fabos.png"; done
+      install -Dm644 "$SRC/assets/pixmaps/fabos-logo.png" "$dst/usr/share/pixmaps/fabos-logo.png"
+      install -Dm644 "$SRC/assets/pixmaps/fabos-logo-dark.png" "$dst/usr/share/pixmaps/fabos-logo-dark.png"
+      install -Dm644 "$SRC/assets/pixmaps/fabos.png" "$dst/usr/share/pixmaps/fabos.png"
+      cp "$SRC"/assets/plymouth/spinner-*.png "$SRC/assets/plymouth/wordmark.png" "$SRC/assets/plymouth/mark.png" "$dst/usr/share/plymouth/themes/fabos/"
+      python3 - "$dst/usr/share/plymouth/themes/fabos" <<'PY'
 import sys; from PIL import Image
 d=sys.argv[1]; Image.new("RGBA",(8,8),(42,49,59,255)).save(d+"/bar-bg.png"); Image.new("RGBA",(8,8),(110,155,255,255)).save(d+"/bar-fg.png")
 PY
       ;;
-    fabric-desktop)
-      LNF=in.patienceai.fabric.desktop
+    fabos-desktop)
+      LNF=in.patienceai.fabos.desktop
       for f in dark-1920x1080 dark-2560x1440 dark-3840x2160 light-1920x1080 light-2560x1440 light-3840x2160; do
-        [ -f "$SRC/assets/wallpapers/$f.png" ] && install -Dm644 "$SRC/assets/wallpapers/$f.png" "$dst/usr/share/wallpapers/Fabric/contents/images/${f#*-}.png"; done
+        [ -f "$SRC/assets/wallpapers/$f.png" ] && install -Dm644 "$SRC/assets/wallpapers/$f.png" "$dst/usr/share/wallpapers/FabOS/contents/images/${f#*-}.png"; done
       # Plasma picks images by resolution name; dark is the default set, light under images_dark? keep light variants alongside
       for f in light-1920x1080 light-2560x1440 light-3840x2160; do
-        [ -f "$SRC/assets/wallpapers/$f.png" ] && install -Dm644 "$SRC/assets/wallpapers/$f.png" "$dst/usr/share/wallpapers/Fabric/contents/images_light/${f#*-}.png"; done
-      install -Dm644 "$SRC/assets/wallpapers/screenshot.png" "$dst/usr/share/wallpapers/Fabric/contents/screenshot.png"
-      install -Dm644 "$SRC/assets/sddm/background.png" "$dst/usr/share/sddm/themes/fabric/background.png"
-      install -Dm644 "$SRC/assets/sddm/wordmark.png"   "$dst/usr/share/sddm/themes/fabric/wordmark.png"
-      install -Dm644 "$SRC/assets/plymouth/mark.png"    "$dst/usr/share/sddm/themes/fabric/mark.png"
+        [ -f "$SRC/assets/wallpapers/$f.png" ] && install -Dm644 "$SRC/assets/wallpapers/$f.png" "$dst/usr/share/wallpapers/FabOS/contents/images_light/${f#*-}.png"; done
+      install -Dm644 "$SRC/assets/wallpapers/screenshot.png" "$dst/usr/share/wallpapers/FabOS/contents/screenshot.png"
+      install -Dm644 "$SRC/assets/sddm/background.png" "$dst/usr/share/sddm/themes/fabos/background.png"
+      install -Dm644 "$SRC/assets/sddm/wordmark.png"   "$dst/usr/share/sddm/themes/fabos/wordmark.png"
+      install -Dm644 "$SRC/assets/plymouth/mark.png"    "$dst/usr/share/sddm/themes/fabos/mark.png"
       install -Dm644 "$SRC/assets/sddm/background.png" "$dst/usr/share/plasma/look-and-feel/$LNF/contents/splash/images/background.png"
       install -Dm644 "$SRC/assets/plymouth/mark.png"    "$dst/usr/share/plasma/look-and-feel/$LNF/contents/splash/images/mark.png"
       install -Dm644 "$SRC/assets/plymouth/wordmark.png" "$dst/usr/share/plasma/look-and-feel/$LNF/contents/splash/images/wordmark.png"
       install -Dm644 "$SRC/assets/wallpapers/screenshot.png" "$dst/usr/share/plasma/look-and-feel/$LNF/contents/previews/preview.png"
       install -Dm644 "$SRC/assets/wallpapers/screenshot.png" "$dst/usr/share/plasma/look-and-feel/$LNF/contents/previews/splash.png"
-      install -Dm644 "$SRC/assets/3d/fabric-mark.glb" "$dst/usr/share/fabric/3d/fabric-mark.glb"
-      install -Dm644 "$SRC/assets/3d/fabric-mark.obj" "$dst/usr/share/fabric/3d/fabric-mark.obj"
+      install -Dm644 "$SRC/assets/3d/fabos-mark.glb" "$dst/usr/share/fabos/3d/fabos-mark.glb"
+      install -Dm644 "$SRC/assets/3d/fabos-mark.obj" "$dst/usr/share/fabos/3d/fabos-mark.obj"
       mkdir -p "$dst/usr/share/icons/FabOS" && cp -a "$SRC"/assets/icon-theme/. "$dst/usr/share/icons/FabOS/"
+      mkdir -p "$dst/usr/share/plasma/desktoptheme/FabOS" && cp -a "$SRC"/assets/plasma-theme/. "$dst/usr/share/plasma/desktoptheme/FabOS/"
       ;;
-    fabric-ai)
+    fabos-ai)
       install -Dm755 "$SRC/bin/aios"  "$dst/usr/bin/aios"
       install -Dm755 "$SRC/bin/aiosd" "$dst/usr/bin/aiosd"
       ;;
@@ -62,7 +63,7 @@ PY
   find "$dst" -type d -exec chmod 755 {} +
   find "$dst" -path "$dst/DEBIAN" -prune -o -type f -exec chmod 644 {} +
   chmod 755 "$dst"/DEBIAN/post* "$dst"/DEBIAN/pre* 2>/dev/null || true
-  chmod 755 "$dst"/usr/bin/* "$dst"/usr/lib/fabric/motd/* 2>/dev/null || true
+  chmod 755 "$dst"/usr/bin/* "$dst"/usr/lib/fabos/motd/* 2>/dev/null || true
   ver=$(sed -n 's/^Version: //p' "$dst/DEBIAN/control"); arch=$(sed -n 's/^Architecture: //p' "$dst/DEBIAN/control")
   dpkg-deb --root-owner-group -Zxz --build "$dst" "$OUT/${name}_${ver}_${arch}.deb"
 done

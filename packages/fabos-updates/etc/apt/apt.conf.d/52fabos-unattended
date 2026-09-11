@@ -1,0 +1,10 @@
+// @DISTRO_NAME@: allow unattended-upgrades to install @VENDOR_NAME@ updates and Ubuntu security updates.
+Unattended-Upgrade::Allowed-Origins {
+    "@VENDOR_NAME@:@DISTRO_CODENAME@";
+    "@VENDOR_NAME@:@DISTRO_CODENAME@-beta";
+    "${distro_id}:${distro_codename}-security";
+    "${distro_id}ESMApps:${distro_codename}-apps-security";
+    "${distro_id}ESM:${distro_codename}-infra-security";
+};
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "false";

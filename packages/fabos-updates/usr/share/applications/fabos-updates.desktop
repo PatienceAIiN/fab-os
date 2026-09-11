@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=@DISTRO_NAME@ Updates
+GenericName=Software Updates
+Comment=Check for and install @DISTRO_NAME@ and Ubuntu updates; choose Standard or Beta channel
+Exec=fabos-updates
+Icon=fabos-updates
+Terminal=false
+Categories=System;Settings;Qt;KDE;
+Keywords=update;upgrade;channel;beta;

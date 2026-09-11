@@ -1,0 +1,8 @@
+[Unit]
+Description=@DISTRO_NAME@ update check (notifies logged-in users)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/fabos/updates/helper.sh notify-check

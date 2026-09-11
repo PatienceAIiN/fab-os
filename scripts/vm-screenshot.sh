@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Take a screenshot of the running Fabric OS VM via the QEMU monitor socket. Usage: scripts/vm-screenshot.sh [name]
+# Take a screenshot of the running FabOS OS VM via the QEMU monitor socket. Usage: scripts/vm-screenshot.sh [name]
 set -euo pipefail; HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"
 name=${1:-shot-$(date +%H%M%S)}; mkdir -p build/screenshots; ppm=build/screenshots/$name.ppm; png=build/screenshots/$name.png
 python3 - "$ppm" <<'PY'

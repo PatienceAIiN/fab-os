@@ -6,7 +6,7 @@
 - AI is local-first. Cloud AI providers (for example Claude) are off until the
   user adds their own API key in Settings and enables them. Keys are stored via
   systemd credentials, never in plaintext config, logs or provenance.
-- Before any data leaves the machine the Fabric AI service checks the user's
+- Before any data leaves the machine the FabOS AI service checks the user's
   privacy preference (local-only / ask / allow) and shows a cloud indicator.
 - Ubuntu package updates fetch metadata from Ubuntu mirrors; Fab OS updates
   from the Patience AI repository. Both are standard apt transactions with no

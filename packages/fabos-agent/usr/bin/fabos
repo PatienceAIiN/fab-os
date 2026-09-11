@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""fabos — command-line client for the Fab OS agent (fabos-agentd).
+
+  fabos do "open editor, write hi and mail it to x@y"   start a task (agent works autonomously)
+  fabos tasks | show ID | cancel ID | retry ID | delete ID | edit ID --title T --request R
+  fabos approvals | approve APPROVAL_ID | deny APPROVAL_ID | answer TASK_ID "text"
+  fabos mode [ask|auto|bypass]      permission mode (ask: approve MEDIUM+, auto: approve CRITICAL only, bypass: never ask)
+  fabos settings [KEY VALUE]         e.g. fabos settings provider openai ; fabos settings mail.smtp_host smtp.example.com
+  fabos set-key claude|openai|mail   store a secret (prompted, never echoed)
+  fabos watches | unwatch ID | log [--limit N] | status [--brief]
+"""
+import argparse, getpass, json, os, sys, time, urllib.request, urllib.error
+
+RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "fabos-agent")
+
+
+def api(method, path, body=None):
+    try:
+        token = open(os.path.join(RUN, "token")).read().strip()
+        port = open(os.path.join(RUN, "port")).read().strip()
+    except FileNotFoundError:
+        sys.exit("fabos-agentd is not running for this user. Start it: systemctl --user start fabos-agent")
+    req = urllib.request.Request("http://127.0.0.1:%s%s" % (port, path), method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            return {"error": json.loads(e.read()).get("error", str(e)), "http": e.code}
+        except Exception:
+            return {"error": str(e), "http": e.code}
+    except urllib.error.URLError as e:
+        sys.exit("cannot reach fabos-agentd: %s (systemctl --user status fabos-agent)" % e.reason)
+
+
+def ts(t):
+    return time.strftime("%H:%M:%S", time.localtime(t)) if t else ""
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="fabos", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--json", action="store_true", help="print raw JSON")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("do"); p.add_argument("text", nargs="+"); p.add_argument("--mode", choices=["ask", "auto", "bypass"]); p.add_argument("--title"); p.add_argument("--wait", action="store_true")
+    p = sub.add_parser("tasks"); p.add_argument("--limit", type=int, default=30)
+    for c in ("show", "cancel", "retry", "delete", "approve", "deny", "unwatch"):
+        sub.add_parser(c).add_argument("id", type=int)
+    p = sub.add_parser("edit"); p.add_argument("id", type=int); p.add_argument("--title"); p.add_argument("--request"); p.add_argument("--mode")
+    p = sub.add_parser("answer"); p.add_argument("id", type=int); p.add_argument("text", nargs="+")
+    sub.add_parser("approvals")
+    p = sub.add_parser("mode"); p.add_argument("value", nargs="?", choices=["ask", "auto", "bypass"])
+    p = sub.add_parser("settings"); p.add_argument("key", nargs="?"); p.add_argument("value", nargs="?")
+    p = sub.add_parser("set-key"); p.add_argument("which", choices=["claude", "openai", "mail"]); p.add_argument("--remove", action="store_true")
+    sub.add_parser("watches")
+    p = sub.add_parser("log"); p.add_argument("--limit", type=int, default=50)
+    p = sub.add_parser("status"); p.add_argument("--brief", action="store_true")
+    a = ap.parse_args()
+    if not a.cmd:
+        ap.print_help(); return
+    out = None
+    if a.cmd == "do":
+        body = {"request": " ".join(a.text)}
+        if a.mode: body["mode"] = a.mode
+        if a.title: body["title"] = a.title
+        out = api("POST", "/tasks", body)
+        if not a.json and "id" in out:
+            print("Task #%d started. Watch it: fabos show %d  |  Command Center: fabos-command-center" % (out["id"], out["id"]))
+            if a.wait:
+                while True:
+                    t = api("GET", "/tasks/%d" % out["id"])
+                    if t["status"] in ("done", "failed", "cancelled"):
+                        print("[%s] %s" % (t["status"], t.get("result") or t.get("error") or "")); break
+                    time.sleep(2)
+            return
+    elif a.cmd == "tasks":
+        out = api("GET", "/tasks?limit=%d" % a.limit)
+        if not a.json:
+            for t in out:
+                print("#%-4d %-17s %s  %s" % (t["id"], t["status"], ts(t["updated"]), t["title"]))
+            return
+    elif a.cmd == "show":
+        out = api("GET", "/tasks/%d" % a.id)
+        if not a.json and "id" in out:
+            print("#%d [%s] %s\nrequest: %s\n" % (out["id"], out["status"], out["title"], out["request"]))
+            for s in out["steps"]:
+                line = "%s %-10s %-14s" % (ts(s["ts"]), s["kind"], s["name"] or "")
+                if s["kind"] == "tool_call": line += " %s %s  %s" % (s["risk"], s["decision"] or "", (s["input"] or "")[:160])
+                else: line += " " + (s["output"] or s["input"] or "")[:300].replace("\n", " ")
+                print(line)
+            for q in out["questions"]:
+                if not q["answer"]: print("\nQUESTION (answer with: fabos answer %d \"...\"): %s" % (out["id"], q["question"]))
+            for ap_ in out["approvals"]:
+                if ap_["status"] == "pending": print("\nAPPROVAL #%d pending: %s %s (%s) -> fabos approve %d | fabos deny %d" % (ap_["id"], ap_["tool"], ap_["input"][:120], ap_["risk"], ap_["id"], ap_["id"]))
+            if out.get("result"): print("\nresult: " + out["result"])
+            if out.get("error"): print("\nerror: " + out["error"])
+            return
+    elif a.cmd in ("cancel", "retry"):
+        out = api("POST", "/tasks/%d/%s" % (a.id, a.cmd))
+    elif a.cmd == "delete":
+        out = api("DELETE", "/tasks/%d" % a.id)
+    elif a.cmd == "edit":
+        out = api("PATCH", "/tasks/%d" % a.id, {k: v for k, v in (("title", a.title), ("request", a.request), ("mode", a.mode)) if v})
+    elif a.cmd == "answer":
+        out = api("POST", "/tasks/%d/answer" % a.id, {"text": " ".join(a.text)})
+    elif a.cmd in ("approve", "deny"):
+        out = api("POST", "/approvals/%d" % a.id, {"decision": "approved" if a.cmd == "approve" else "denied"})
+    elif a.cmd == "approvals":
+        out = api("GET", "/approvals/pending")
+        if not a.json:
+            for x in out: print("#%-4d task #%d %-9s %-12s %s  %s" % (x["id"], x["task_id"], x["risk"], x["tool"], x["reason"], x["input"][:120]))
+            if not out: print("no pending approvals")
+            return
+    elif a.cmd == "mode":
+        out = api("PUT", "/settings", {"mode": a.value}) if a.value else {"mode": api("GET", "/settings").get("mode")}
+    elif a.cmd == "settings":
+        if a.key and a.value is not None: out = api("PUT", "/settings", {a.key: a.value})
+        else:
+            out = api("GET", "/settings")
+            if not a.json:
+                for k in sorted(out):
+                    if k != "secrets": print("%-22s %s" % (k, out[k]))
+                print("secrets: " + ", ".join("%s=%s" % (k, "set" if v else "unset") for k, v in out["secrets"].items())); return
+    elif a.cmd == "set-key":
+        name = {"claude": "claude_api_key", "openai": "openai_api_key", "mail": "mail_password"}[a.which]
+        val = "" if a.remove else getpass.getpass("%s: " % name)
+        out = api("POST", "/secrets", {"name": name, "value": val})
+    elif a.cmd == "watches":
+        out = api("GET", "/watches")
+        if not a.json:
+            for w in out: print("#%-3d task #%d %-8s %-12s every %4ds hits=%d last=%s" % (w["id"], w["task_id"], w["status"], w["kind"], w["interval_s"], w["hits"], (w["last_result"] or "")[:60]))
+            return
+    elif a.cmd == "unwatch":
+        out = api("DELETE", "/watches/%d" % a.id)
+    elif a.cmd == "log":
+        out = api("GET", "/activity?limit=%d" % a.limit)
+        if not a.json:
+            for e in reversed(out): print("%s %-7s %-18s %s %s" % (ts(e["ts"]), e["actor"], e["kind"], ("#%d" % e["task_id"]) if e["task_id"] else "", (e["detail"] or "")[:120].replace("\n", " ")))
+            return
+    elif a.cmd == "status":
+        out = api("GET", "/status")
+        if a.brief and "mode" in out:
+            t = out["tasks"]; parts = []
+            for k in ("running", "waiting_approval", "waiting_user", "queued"):
+                if t.get(k): parts.append("%d %s" % (t[k], k.replace("_", " ")))
+            last = out["latest"][0] if out["latest"] else None
+            s = " · ".join(parts) or "idle"
+            if out["pending_approvals"]: s += " · %d approval%s pending" % (out["pending_approvals"], "s" if out["pending_approvals"] > 1 else "")
+            if last: s += " · last #%d %s: %s" % (last["id"], last["status"], (last["title"] or "")[:50])
+            if not out["provider_ready"]: s = "AI provider not configured — open Command Center → Settings · " + s
+            print(s); return
+    print(json.dumps(out, indent=1, default=str) if out is not None else "")
+
+
+if __name__ == "__main__":
+    main()

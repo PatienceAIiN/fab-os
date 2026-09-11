@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=@DISTRO_NAME@
+Comment=@DISTRO_NAME@ desktop (Wayland)
+Exec=/usr/libexec/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland
+TryExec=/usr/bin/startplasma-wayland
+DesktopNames=KDE
+X-KDE-PluginInfo-Version=@DISTRO_VERSION@

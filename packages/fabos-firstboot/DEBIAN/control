@@ -1,0 +1,12 @@
+Package: fabos-firstboot
+Version: @DISTRO_VERSION@-1
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Depends: network-manager, libnotify-bin, flatpak
+Recommends: ubuntu-drivers-common, fwupd
+Description: @DISTRO_NAME@ first-boot provisioning (updates, drivers, firmware, Flathub)
+ After installation, once the machine is online, installs all pending updates,
+ hardware drivers (ubuntu-drivers), firmware, free codecs and enables Flathub,
+ then marks itself done. Runs in the background; never blocks login.

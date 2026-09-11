@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+case "$1" in configure)
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable fabos-update-check.timer 2>/dev/null || true
+  # automatic updates ON by default (Fab OS + Ubuntu security); users can switch it off in Fab OS Updates
+  [ -f /etc/apt/apt.conf.d/20auto-upgrades ] || printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\nAPT::Periodic::Download-Upgradeable-Packages "1";\nAPT::Periodic::AutocleanInterval "7";\n' > /etc/apt/apt.conf.d/20auto-upgrades
+;; esac
+exit 0

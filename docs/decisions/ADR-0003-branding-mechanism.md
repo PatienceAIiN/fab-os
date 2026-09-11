@@ -1,4 +1,4 @@
-# ADR-0003: Branding via dpkg-divert, os-release ID=fabric, single brand.conf
+# ADR-0003: Branding via dpkg-divert, os-release ID=fabos, single brand.conf
 
 ## Problem
 Identity files (`/usr/lib/os-release`, `/etc/lsb-release`, `/etc/issue`,
@@ -8,14 +8,14 @@ forking base-files means rebuilding an Essential package forever (what Mint
 does).
 
 ## Selected
-`fabric-branding` ships its rendered files under `/usr/lib/fabric/` and in
+`fabos-branding` ships its rendered files under `/usr/lib/fabos/` and in
 postinst uses `dpkg-divert --rename` on each Ubuntu file, then symlinks ours
 into place. Ubuntu updates land on the diverted path and never clobber us;
 `prerm` reverses it cleanly. All values render from `brand/brand.conf`, so a
 rename is one line.
 
-os-release: `ID=fabric`, `ID_LIKE="ubuntu debian"`, `VERSION_CODENAME=loom`,
-`UBUNTU_CODENAME=resolute` (keeps PPAs and distro-info working), `LOGO=fabric-os`
+os-release: `ID=fabos`, `ID_LIKE="ubuntu debian"`, `VERSION_CODENAME=loom`,
+`UBUNTU_CODENAME=resolute` (keeps PPAs and distro-info working), `LOGO=fabos`
 (picked up by KDE About). `/etc/upstream-release/lsb-release` carries Ubuntu's
 values for tools that follow the Mint convention.
 

@@ -1,0 +1,18 @@
+[Desktop Entry]
+Name=@DISTRO_NAME@ agent
+Comment=Type "do <anything>" in search to hand it to the @DISTRO_NAME@ agent
+Icon=fabos-command-center
+Type=Service
+X-KDE-PluginInfo-Author=@VENDOR_NAME@
+X-KDE-PluginInfo-Email=support@patienceai.in
+X-KDE-PluginInfo-Name=fabos-runner
+X-KDE-PluginInfo-Version=@DISTRO_VERSION@
+X-KDE-PluginInfo-License=Apache-2.0
+X-KDE-PluginInfo-EnabledByDefault=true
+X-KDE-ServiceTypes=Plasma/Runner
+X-Plasma-API=DBus
+X-Plasma-DBusRunner-Service=in.patienceai.fabos.runner
+X-Plasma-DBusRunner-Path=/runner
+X-Plasma-Runner-Min-Letter-Count=3
+X-Plasma-Runner-Match-Regex=^(do |fab |fabos |ask |.{40,}|.*\?$)
+X-Plasma-Request-Actions-Once=true

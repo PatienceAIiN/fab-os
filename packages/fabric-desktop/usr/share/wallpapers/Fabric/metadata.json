@@ -1,8 +1,0 @@
-{
-  "KPlugin": {
-    "Authors": [{"Name": "@VENDOR_NAME@"}],
-    "Id": "Fabric",
-    "License": "CC0-1.0",
-    "Name": "Fabric Weave"
-  }
-}

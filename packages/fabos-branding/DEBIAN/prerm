@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+case "$1" in remove|deconfigure)
+  for p in /usr/lib/os-release /etc/lsb-release /etc/issue /etc/issue.net /etc/legal /etc/dpkg/origins/default /etc/update-motd.d/00-header /etc/update-motd.d/10-help-text; do
+    [ -L "$p" ] && rm -f "$p"
+    dpkg-divert --package fabos-branding --remove --rename "$p" 2>/dev/null || true
+  done
+  for f in /usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/systemsettings/kcm_feedback.so /usr/share/applications/kcm_feedback.desktop; do dpkg-divert --package fabos-branding --remove --rename "$f" 2>/dev/null || true; done
+  update-alternatives --remove default.plymouth /usr/share/plymouth/themes/fabos/fabos.plymouth || true
+;; esac
+exit 0

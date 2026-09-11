@@ -4,8 +4,8 @@ import json, os, subprocess, sys, tempfile, threading, time, unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RELAY = os.path.join(ROOT, "packages/fabric-feedback/usr/lib/fabric/feedback/fabric_feedback_relay.py")
-CLIENT = os.path.join(ROOT, "packages/fabric-feedback/usr/lib/fabric/feedback/fabric_feedback.py")
+RELAY = os.path.join(ROOT, "packages/fabos-feedback/usr/lib/fabos/feedback/fabos_feedback_relay.py")
+CLIENT = os.path.join(ROOT, "packages/fabos-feedback/usr/lib/fabos/feedback/fabos_feedback.py")
 received = []
 
 
@@ -28,14 +28,14 @@ class FakeBrevo(BaseHTTPRequestHandler):
 class Feedback(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="fabric-feedback-")
+        cls.tmp = tempfile.mkdtemp(prefix="fabos-feedback-")
         cls.http = HTTPServer(("127.0.0.1", 0), FakeBrevo)
         threading.Thread(target=cls.http.serve_forever, daemon=True).start()
         cls.envfile = os.path.join(cls.tmp, "feedback.env")
         with open(cls.envfile, "w") as f:
             f.write('BREVO_API_KEY=test-key\nBREVO_SENDER_EMAIL=support@example.com\nBREVO_SENDER_NAME="Patience AI"\nFEEDBACK_TO=info@patienceai.in\n')
         cls.sock = os.path.join(cls.tmp, "feedback.sock")
-        cls.env = dict(os.environ, FABRIC_FEEDBACK_ENV=cls.envfile, FABRIC_FEEDBACK_SOCK=cls.sock, BREVO_API_URL="http://127.0.0.1:%d/v3/smtp/email" % cls.http.server_port)
+        cls.env = dict(os.environ, FABOS_FEEDBACK_ENV=cls.envfile, FABOS_FEEDBACK_SOCK=cls.sock, BREVO_API_URL="http://127.0.0.1:%d/v3/smtp/email" % cls.http.server_port)
         cls.proc = subprocess.Popen([sys.executable, RELAY], env=cls.env, stderr=subprocess.PIPE, text=True)
         for _ in range(50):
             if os.path.exists(cls.sock):

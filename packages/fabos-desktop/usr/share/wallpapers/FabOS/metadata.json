@@ -1,0 +1,8 @@
+{
+  "KPlugin": {
+    "Authors": [{"Name": "@VENDOR_NAME@"}],
+    "Id": "FabOS",
+    "License": "CC0-1.0",
+    "Name": "FabOS Weave"
+  }
+}

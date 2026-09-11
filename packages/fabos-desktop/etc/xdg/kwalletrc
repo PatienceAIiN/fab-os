@@ -1,0 +1,11 @@
+[Wallet]
+Enabled=true
+Default Wallet=FabWallet
+Local Wallet=FabWallet
+First Use=false
+Prompt on Open=false
+Close When Idle=false
+Use One Wallet=true
+
+[Auto Allow]
+FabWallet=kded6,kwalletmanager5,fabos-agentd,NetworkManager,KDE Daemon
