@@ -6,7 +6,7 @@ ColorScheme=BreezeDark
 AccentColor=59,110,245
 
 [kdeglobals][Icons]
-Theme=breeze-dark
+Theme=FabOS
 
 [plasmarc][Theme]
 name=default

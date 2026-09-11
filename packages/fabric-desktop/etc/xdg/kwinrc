@@ -8,6 +8,14 @@ theme=Breeze
 [Plugins]
 blurEnabled=true
 slideEnabled=true
+magiclampEnabled=true
+squashEnabled=false
+scaleEnabled=true
+fadeEnabled=true
+dimscreenEnabled=true
+kwin4_effect_translucencyEnabled=true
+zoomEnabled=true
+slidingpopupsEnabled=true
 
 [Windows]
 Placement=Centered

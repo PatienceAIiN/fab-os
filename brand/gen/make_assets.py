@@ -193,6 +193,87 @@ def write_gltf(path_glb, path_obj, parts, color):
         f.write(b"glTF"+struct.pack("<II",2,total)); f.write(struct.pack("<II",len(js),0x4E4F534A)+js)
         f.write(struct.pack("<II",len(bin_),0x004E4942)+bin_)
 
+# ---------- app icon theme: Google Material Symbols (Apache-2.0) on brand-coloured Fab OS tiles ----------
+# icon-theme name(s) -> (material symbol, tile colour). Names cover the Plasma/KDE apps we ship + our own apps.
+ICON_MAP = {
+    ("system-file-manager", "org.kde.dolphin", "folder", "inode-directory"): ("folder", "#3B6EF5"),
+    ("utilities-terminal", "org.kde.konsole", "terminal"): ("terminal", "#1E242D"),
+    ("systemsettings", "preferences-system", "configure", "org.kde.systemsettings"): ("settings", "#5B6472"),
+    ("plasmadiscover", "org.kde.discover", "system-software-install", "flatpak-discover"): ("shopping_bag", "#1F9D57"),
+    ("kate", "org.kde.kate", "accessories-text-editor", "text-editor"): ("edit_note", "#B7791F"),
+    ("firefox", "firefox-esr", "web-browser", "internet-web-browser", "org.mozilla.firefox"): ("public", "#E0642B"),
+    ("fabric-command-center",): ("smart_toy", "#6E9BFF"),
+    ("fabric-feedback",): ("feedback", "#7C5CFF"),
+    ("user-trash", "trashcan_empty"): ("delete", "#8892A0"),
+    ("user-trash-full", "trashcan_full"): ("delete_sweep", "#8892A0"),
+    ("org.kde.gwenview", "gwenview", "image-viewer"): ("image", "#2BA9A0"),
+    ("org.kde.okular", "okular", "document-viewer"): ("description", "#C6362F"),
+    ("kcalc", "org.kde.kcalc", "accessories-calculator"): ("calculate", "#3F7F5F"),
+    ("org.kde.ark", "ark", "utilities-file-archiver"): ("folder_zip", "#8A6D3B"),
+    ("org.kde.plasma-systemmonitor", "plasma-systemmonitor", "utilities-system-monitor"): ("monitoring", "#3B6EF5"),
+    ("kinfocenter", "org.kde.kinfocenter", "hwinfo"): ("info", "#5B6472"),
+    ("kwalletmanager", "kwalletmanager5", "org.kde.kwalletmanager5"): ("lock", "#5B6472"),
+    ("org.kde.spectacle", "spectacle", "accessories-screenshot"): ("photo_camera", "#7C5CFF"),
+    ("start-here-kde", "start-here", "start-here-kde-plasma", "start-here-symbolic"): ("__fabric_mark__", "#16171A"),
+}
+
+def fetch_material(symbol, cache_dir):
+    """Download one Material Symbols (Rounded, 48px) SVG from Google's repo; cached; returns path data list or None."""
+    import urllib.request
+    os.makedirs(cache_dir, exist_ok=True); p = os.path.join(cache_dir, symbol + ".svg")
+    if not os.path.exists(p):
+        url = "https://raw.githubusercontent.com/google/material-design-icons/master/symbols/web/%s/materialsymbolsrounded/%s_48px.svg" % (symbol, symbol)
+        try:
+            with urllib.request.urlopen(url, timeout=30) as r: open(p, "wb").write(r.read())
+        except Exception as e:
+            print("material fetch failed", symbol, e); return None
+    import re as _re
+    return _re.findall(r'\sd="([^"]+)"', open(p).read())
+
+def app_icon_svg(paths, color, mark_svg=None):
+    """64-unit tile with a soft gradient and a white glyph (or the Fab OS mark for the launcher)."""
+    def shade(h, f):
+        r, g, b = int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)
+        return "#%02x%02x%02x" % (min(255, int(r * f)), min(255, int(g * f)), min(255, int(b * f)))
+    top, bot = shade(color, 1.18), shade(color, 0.82)
+    glyph = ("".join('<path d="%s"/>' % d for d in paths)) if paths else ""
+    body = ('<g transform="translate(13 13) scale(0.03958) translate(0 960)" fill="#FFFFFF">%s</g>' % glyph) if paths else \
+           '<g transform="translate(8 8) scale(0.75)" fill="#FFFFFF" stroke="#FFFFFF">%s</g>' % (mark_svg or "")
+    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">'
+            '<stop offset="0" stop-color="%s"/><stop offset="1" stop-color="%s"/></linearGradient></defs>'
+            '<rect width="64" height="64" rx="16" fill="url(#g)"/><rect x="1" y="1" width="62" height="62" rx="15" fill="none" stroke="#FFFFFF" stroke-opacity="0.18"/>%s</svg>') % (top, bot, body)
+
+def build_icon_theme(out, conf):
+    """Writes icons/theme/<size>/apps/<name>.png + scalable/apps/<name>.svg; needs rsvg-convert for PNGs."""
+    import shutil, subprocess
+    theme = os.path.join(out, "icon-theme"); cache = os.path.join(out, "material-cache"); sizes = (16, 22, 24, 32, 48, 64, 128, 256)
+    mark = ('<g transform="rotate(-24 32 32)"><circle cx="32" cy="32" r="20" fill="none" stroke-width="4"/>'
+            '<rect x="23" y="25" width="4" height="14" rx="2"/><rect x="30" y="22" width="4" height="20" rx="2"/><rect x="37" y="25" width="4" height="14" rx="2"/></g>')
+    have_rsvg = shutil.which("rsvg-convert") is not None; made = 0; fetched = 0
+    for names, (symbol, color) in ICON_MAP.items():
+        paths = None if symbol == "__fabric_mark__" else fetch_material(symbol, cache)
+        if symbol != "__fabric_mark__" and not paths: continue
+        fetched += 1
+        svg = app_icon_svg(paths, color, mark)
+        first = names[0]; sdir = os.path.join(theme, "scalable", "apps"); os.makedirs(sdir, exist_ok=True)
+        open(os.path.join(sdir, first + ".svg"), "w").write(svg)
+        for s in sizes:
+            d = os.path.join(theme, "%dx%d" % (s, s), "apps"); os.makedirs(d, exist_ok=True); png = os.path.join(d, first + ".png")
+            if have_rsvg: subprocess.run(["rsvg-convert", "-w", str(s), "-h", str(s), "-o", png, os.path.join(sdir, first + ".svg")], check=True)
+        for alias in names[1:]:  # aliases as symlinks (relative) so the theme resolves every name KDE asks for
+            for s in sizes:
+                d = os.path.join(theme, "%dx%d" % (s, s), "apps"); lp = os.path.join(d, alias + ".png")
+                if have_rsvg and not os.path.lexists(lp): os.symlink(first + ".png", lp)
+            lp = os.path.join(sdir, alias + ".svg")
+            if not os.path.lexists(lp): os.symlink(first + ".svg", lp)
+        made += 1
+    dirs = ",".join(["scalable/apps"] + ["%dx%d/apps" % (s, s) for s in sizes])
+    idx = ["[Icon Theme]", "Name=FabOS", "Comment=%s icons: Google Material Symbols on Fab OS tiles; everything else from Breeze" % conf["DISTRO_NAME"],
+           "Inherits=breeze-dark,breeze,hicolor", "Directories=" + dirs, "", "[scalable/apps]", "Size=64", "MinSize=16", "MaxSize=512", "Type=Scalable", "Context=Applications", ""]
+    for s in sizes: idx += ["[%dx%d/apps]" % (s, s), "Size=%d" % s, "Type=Fixed", "Context=Applications", ""]
+    open(os.path.join(theme, "index.theme"), "w").write("\n".join(idx))
+    print("icon theme: %d icon families (%d glyphs fetched), rsvg=%s" % (made, fetched, have_rsvg))
+
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--out",required=True); ap.add_argument("--conf",default=os.path.join(os.path.dirname(__file__),"..","brand.conf"))
     ap.add_argument("--font-dir",action="append",default=["/usr/share/fonts"]); ap.add_argument("--quick",action="store_true",help="skip 4K wallpapers")
@@ -226,6 +307,7 @@ def main():
     parts=[torus(20.0,2.0)]
     for (x,h) in ((25,14),(32,20),(39,14)): parts.append(rounded_bar(x-32, 4.0, float(h), 4.0, 2.0))
     write_gltf(os.path.join(out,"3d","fabric-mark.glb"), os.path.join(out,"3d","fabric-mark.obj"), parts, C["INK"])
+    build_icon_theme(out, C)
     json.dump({"font_used":used,"conf":C},open(os.path.join(out,"meta","assets.json"),"w"),indent=1)
     print("assets rendered to",out,"| font:",used)
 

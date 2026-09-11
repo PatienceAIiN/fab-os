@@ -1,7 +1,9 @@
 // Fab OS default layout: top bar (global menu feel) + centred floating dock at the bottom.
 var top = new Panel
 top.location = "top"; top.height = Math.round(gridUnit * 1.9); top.floating = false; top.hiding = "none"
-top.addWidget("org.kde.plasma.kickoff")
+var kickoff = top.addWidget("org.kde.plasma.kickoff")
+kickoff.currentConfigGroup = ["General"]
+kickoff.writeConfig("icon", "fabric-os")   // Fab OS mark instead of the KDE logo
 top.addWidget("org.kde.plasma.appmenu")
 top.addWidget("org.kde.plasma.panelspacer")
 top.addWidget("org.kde.plasma.digitalclock")
@@ -14,8 +16,11 @@ dock.location = "bottom"; dock.height = Math.round(gridUnit * 3.2); dock.floatin
 dock.lengthMode = "fit"; dock.alignment = "center"
 var tasks = dock.addWidget("org.kde.plasma.icontasks")
 tasks.currentConfigGroup = ["General"]
-tasks.writeConfig("launchers", ["applications:fabric-command-center.desktop","applications:org.kde.dolphin.desktop","applications:org.kde.konsole.desktop","applications:org.kde.kate.desktop","applications:systemsettings.desktop","applications:org.kde.discover.desktop"])
+tasks.writeConfig("launchers", ["applications:fabric-command-center.desktop","applications:org.kde.dolphin.desktop","applications:org.kde.konsole.desktop","applications:org.kde.kate.desktop","applications:firefox.desktop","applications:systemsettings.desktop","applications:org.kde.discover.desktop"])
 tasks.writeConfig("iconSpacing", 1)
+tasks.writeConfig("highlightWindows", true)
+tasks.writeConfig("indicateAudioPlaying", true)
+tasks.writeConfig("fill", false)
 
 for (var i in screens) {
   var d = new Activity("desktop", screens[i]) // ensure a desktop containment

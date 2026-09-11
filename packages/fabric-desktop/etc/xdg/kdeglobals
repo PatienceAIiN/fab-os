@@ -12,9 +12,9 @@ widgetStyle=Breeze
 activeFont=@UI_FONT@,10,-1,5,600,0,0,0,0,0,0,0,0,0,0,1
 
 [Icons]
-Theme=breeze-dark
+Theme=FabOS
 
 [KDE]
 LookAndFeelPackage=in.patienceai.fabric.desktop
 SingleClick=false
-AnimationDurationFactor=0.75
+AnimationDurationFactor=1

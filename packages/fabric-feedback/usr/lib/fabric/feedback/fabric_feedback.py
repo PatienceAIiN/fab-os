@@ -63,7 +63,6 @@ def gui(args):
     d.setWindowTitle("Send feedback to Patience AI")
     d.setMinimumWidth(560)
     lay = QVBoxLayout(d)
-    lay.addWidget(QLabel("Tell Patience AI what went wrong or what you'd like. This goes to info@patienceai.in, not to KDE or Canonical.", objectName="muted"))
     f = QFormLayout()
     kind = QComboBox()
     kind.addItems(["bug", "feedback", "error"])
@@ -81,9 +80,6 @@ def gui(args):
     lay.addWidget(msg)
     logs = QCheckBox("Include recent system warnings (journal) to help debugging")
     lay.addWidget(logs)
-    info = QLabel("Attached: " + ", ".join("%s=%s" % (k, v) for k, v in system_info().items() if k in ("os", "kernel", "plasma")), objectName="muted")
-    info.setWordWrap(True)
-    lay.addWidget(info)
     bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
     send_btn = bb.addButton("Send", QDialogButtonBox.ButtonRole.AcceptRole)
 

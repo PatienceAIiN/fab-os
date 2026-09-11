@@ -46,6 +46,7 @@ PY
       install -Dm644 "$SRC/assets/wallpapers/screenshot.png" "$dst/usr/share/plasma/look-and-feel/$LNF/contents/previews/splash.png"
       install -Dm644 "$SRC/assets/3d/fabric-mark.glb" "$dst/usr/share/fabric/3d/fabric-mark.glb"
       install -Dm644 "$SRC/assets/3d/fabric-mark.obj" "$dst/usr/share/fabric/3d/fabric-mark.obj"
+      mkdir -p "$dst/usr/share/icons/FabOS" && cp -a "$SRC"/assets/icon-theme/. "$dst/usr/share/icons/FabOS/"
       ;;
     fabric-ai)
       install -Dm755 "$SRC/bin/aios"  "$dst/usr/bin/aios"

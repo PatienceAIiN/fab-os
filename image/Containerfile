@@ -8,16 +8,19 @@ ARG MIRROR=http://archive.ubuntu.com/ubuntu
 # ---------- stage 1: render brand assets (icons, splash frames, wallpapers, 3D) ----------
 FROM ${BASE} AS assets
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pil fonts-inter fonts-jetbrains-mono && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pil fonts-inter fonts-jetbrains-mono librsvg2-bin ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY brand /src/brand
 RUN python3 /src/brand/gen/make_assets.py --out /assets
 
 # ---------- stage 2: build the Fabric .deb packages ----------
 FROM ${BASE} AS pkgs
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends dpkg-dev python3 python3-pil xz-utils && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends dpkg-dev python3 python3-pil xz-utils gpg ca-certificates wget && rm -rf /var/lib/apt/lists/*
 COPY brand /src/brand
 COPY packages /src/packages
+# Mozilla's official apt signing key, shipped in fabric-branding so Firefox keeps updating from Mozilla (no snap). Fingerprint pinned.
+RUN wget -qO /tmp/moz.asc https://packages.mozilla.org/apt/repo-signing-key.gpg && gpg --show-keys --with-fingerprint --with-colons /tmp/moz.asc | grep -q '^fpr:::::::::35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3:' \
+ && install -d /src/packages/fabric-branding/usr/share/keyrings && gpg --dearmor -o /src/packages/fabric-branding/usr/share/keyrings/packages.mozilla.org.gpg /tmp/moz.asc
 COPY build/bin /src/bin
 COPY --from=assets /assets /src/assets
 RUN bash /src/packages/build-debs.sh /src /out
@@ -56,6 +59,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 # security.ubuntu.com is a separate line in ubuntu.sources; mirror it too (separate layer so the desktop layer above stays cached)
 RUN sed -i "s|http://security.ubuntu.com/ubuntu|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources
+# Firefox from Mozilla's apt repository (Ubuntu's own firefox package is a snap shim). Pinned above the Ubuntu archive.
+COPY --from=pkgs /src/packages/fabric-branding/usr/share/keyrings/packages.mozilla.org.gpg /usr/share/keyrings/packages.mozilla.org.gpg
+RUN printf 'Types: deb\nURIs: https://packages.mozilla.org/apt\nSuites: mozilla\nComponents: main\nSigned-By: /usr/share/keyrings/packages.mozilla.org.gpg\n' > /etc/apt/sources.list.d/mozilla.sources \
+ && printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla \
+ && apt-get update && apt-get install -y firefox && rm -rf /var/lib/apt/lists/*
 # Agent runtime deps (separate layer so the big desktop layer above stays cached)
 RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic libnotify-bin wtype && rm -rf /var/lib/apt/lists/*
 # Fabric packages (identity, desktop experience, AI stack)
