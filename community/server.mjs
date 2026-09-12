@@ -67,7 +67,7 @@ function publicPost(row) {
   const comments = db.prepare('SELECT id,parent_id,display_name,body,created_at FROM comments WHERE post_id = ? AND deleted_at IS NULL ORDER BY id ASC').all(row.id);
   const reactions = db.prepare('SELECT kind,COUNT(*) count FROM reactions WHERE post_id = ? GROUP BY kind').all(row.id);
   const counts = Object.fromEntries(reactions.map(item => [item.kind, Number(item.count)]));
-  return { id: row.id, displayName: row.display_name, body: row.body, imageUrl: row.image_key ? `/api/community/media/${encodeURIComponent(row.image_key)}` : null, resharedPostId: row.reshared_post_id, createdAt: row.created_at, updatedAt: row.updated_at, likeCount: counts.like || 0, reshareCount: counts.reshare || 0, comments: comments.map(item => ({ id: item.id, parentId: item.parent_id, displayName: item.display_name, body: item.body, createdAt: item.created_at })) };
+  return { id: row.id, displayName: row.display_name, body: row.body, imageUrl: row.image_key ? `/api/community/media/${encodeURIComponent(row.image_key)}` : null, resharedPostId: row.reshared_post_id, resharedBy: row.reshared_post_id ? row.display_name : null, createdAt: row.created_at, updatedAt: row.updated_at, likeCount: counts.like || 0, reshareCount: counts.reshare || 0, comments: comments.map(item => ({ id: item.id, parentId: item.parent_id, displayName: item.display_name, body: item.body, createdAt: item.created_at })) };
 }
 async function uploadImage(data, id) {
   if (!data) return null;
