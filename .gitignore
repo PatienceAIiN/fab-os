@@ -9,3 +9,4 @@ image/overlay/*/etc/fabos/feedback.env
 community/node_modules/
 community/*.sqlite
 community/*.sqlite-*
+__pycache__/

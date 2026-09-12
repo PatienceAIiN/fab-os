@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Fab OS branded English: generates gettext catalogs for the language variant  en@fabos .
+
+KDE applications translate every visible string through ki18n; a translation catalog therefore renames products
+("Konsole" -> "Fab Terminal") without touching any binary and without length limits.  ki18n never consults catalogs
+for the source language (en / en_US), so the variant  en@fabos  is used: the session sets  LANGUAGE=en@fabos:<user's
+English>  (see /etc/xdg/plasma-workspace/env/50-fabos-language.sh) and untranslated strings fall through unchanged.
+
+Message ids are collected from the catalogs already installed for a few well-translated languages (they all share the
+same msgids), rewritten with the rules below and written to /usr/local/share/locale/en@fabos/LC_MESSAGES/<domain>.mo.
+Copyright lines, author credits, licence texts and URLs are never rewritten (attribution stays intact).
+Re-run by the apt Post-Invoke hook; a stamp skips the work when nothing changed.
+"""
+import glob, hashlib, importlib.util, os, re, struct, sys
+
+OUT_DIR = "/usr/local/share/locale/en@fabos/LC_MESSAGES"
+STAMP = "/var/lib/fabos/catalogs.stamp"
+LOCALE_DIRS = ["/usr/share/locale", "/usr/share/locale-langpack"]
+SRC_LANGS = ["en_GB", "de", "fr", "es", "pt_BR", "uk", "nl", "ca"]
+
+# (regex on the English source string, replacement, regex the gettext domain must match or None)
+RULES = [
+    (r"KDE Wallet Manager|KWallet Manager|KWalletManager", "Fab Wallet Tool", None),
+    (r"KDE Wallet", "Fab Wallet", None), (r"KDE wallet", "Fab wallet", None), (r"\bKWallet\b", "Fab Wallet", None),
+    (r"\bKonsole\b", "Fab Terminal", None),
+    (r"\bDolphin\b", "Fab Files", None),
+    (r"\bKate\b", "Fab Editor", None),
+    (r"\bGwenview\b", "Fab Photos", None),
+    (r"\bOkular\b", "Fab Documents", None),
+    (r"\bKCalc\b", "Fab Calculator", None),
+    (r"\bSpectacle\b", "Fab Screenshot", None),
+    (r"\bArk\b", "Fab Archives", r"^ark$"),
+    (r"\bDiscover\b", "Fab Software", r"discover"),
+    (r"\bKRunner\b", "Fab Search", None),
+    (r"\bKInfoCenter\b|\bInfo Center\b|\bInfo Centre\b", "Fab System Info", None),
+    (r"\bSystem Settings\b", "Fab Settings", None),
+    (r"\bSystem Monitor\b", "Fab Monitor", None),
+    (r"\bElisa\b", "Fab Music", r"^elisa"), (r"\bHaruna\b", "Fab Videos", r"^haruna"),
+    (r"KDE Connect", "Fab Connect", None),
+    (r"About &KDE", "About &Desktop Platform", None), (r"About KDE", "About Desktop Platform", None),
+    (r"KDE Frameworks", "UI Frameworks", None),
+    (r"KDE Plasma|Plasma Desktop|Plasma Workspace", "Fab OS Desktop", None),
+    (r"\bPlasma\b", "Fab OS", None),
+    (r"\bKWin\b", "Window Manager", None),
+]
+# never rewrite attribution, legal text, addresses or links
+SKIP = re.compile(r"Copyright|©|\(c\)|\(C\)|[Aa]uthor|[Mm]aintainer|[Dd]evelop|[Cc]ontribut|KDE e\.V\.|[Ll]icen[sc]e|://|@[a-z0-9-]+\.[a-z]|[Tt]ranslat|EMAIL OF|NAME OF")
+HEADER = (b"Project-Id-Version: fabos-branding\nLanguage: en@fabos\nMIME-Version: 1.0\n"
+          b"Content-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nPlural-Forms: nplurals=2; plural=(n != 1);\n")
+
+
+def binary_rules():
+    """The UTF-8 rules /usr/lib/fabos/rebrand-binaries applies change some msgids inside the binaries; the catalog
+    must also answer for those rewritten ids, so they are mirrored here as alias keys."""
+    p = "/usr/lib/fabos/rebrand-binaries"
+    try:
+        spec = importlib.util.spec_from_loader("rb", importlib.machinery.SourceFileLoader("rb", p))
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        return list(getattr(m, "ALIAS_UTF8", [])), dict(getattr(m, "ALIAS_NUL", []))
+    except Exception:
+        return [], {}
+
+
+def read_keys(path):
+    data = open(path, "rb").read()
+    if len(data) < 28:
+        return []
+    magic = struct.unpack("<I", data[:4])[0]
+    e = "<" if magic == 0x950412DE else ">" if magic == 0xDE120495 else None
+    if not e:
+        return []
+    n, o, t = struct.unpack(e + "3I", data[8:20])
+    keys = []
+    for i in range(n):
+        l, off = struct.unpack(e + "2I", data[o + 8 * i:o + 8 * i + 8])
+        keys.append(data[off:off + l])
+    return keys
+
+
+def write_mo(path, entries):
+    keys = sorted(entries)
+    n = len(keys); o = 28; t = o + 8 * n; s = t + 8 * n
+    ids = b""; strs = b""; io = []; it = []
+    for k in keys:
+        io.append((len(k), len(ids))); ids += k + b"\0"
+        v = entries[k]; it.append((len(v), len(strs))); strs += v + b"\0"
+    out = struct.pack("<7I", 0x950412DE, 0, n, o, t, 0, s)
+    for l, off in io:
+        out += struct.pack("<2I", l, s + off)
+    for l, off in it:
+        out += struct.pack("<2I", l, s + len(ids) + off)
+    out += ids + strs
+    tmp = path + ".tmp"
+    open(tmp, "wb").write(out); os.replace(tmp, path)
+
+
+def rewrite(domain, text):
+    if not text or SKIP.search(text):
+        return None
+    new = text
+    for pat, rep, dom in RULES:
+        if dom and not re.search(dom, domain):
+            continue
+        new = re.sub(pat, rep, new)
+    return new if new != text else None
+
+
+def main():
+    alias_utf8, alias_nul = binary_rules()
+    sources = []
+    for d in LOCALE_DIRS:
+        for lang in SRC_LANGS:
+            sources += glob.glob(f"{d}/{lang}/LC_MESSAGES/*.mo")
+    sources = sorted(sources)
+    sig = hashlib.sha1()
+    for p in sources + ["/usr/lib/fabos/rebrand-catalogs", "/usr/lib/fabos/rebrand-binaries"]:
+        try:
+            st = os.stat(p); sig.update(f"{p}:{st.st_mtime_ns}:{st.st_size}\n".encode())
+        except FileNotFoundError:
+            pass
+    sig = sig.hexdigest()
+    if "--force" not in sys.argv and os.path.exists(STAMP) and open(STAMP).read().strip() == sig and os.path.isdir(OUT_DIR):
+        return
+    domains = {}
+    for p in sources:
+        src = p + ".fabos-orig" if os.path.exists(p + ".fabos-orig") else p     # original msgids, before any byte patching
+        domains.setdefault(os.path.basename(p)[:-3], set()).update(read_keys(src))
+    os.makedirs(OUT_DIR, exist_ok=True)
+    for old in glob.glob(OUT_DIR + "/*.mo"):
+        os.remove(old)
+    written = 0
+    for domain, keys in sorted(domains.items()):
+        entries = {}
+        for key in keys:
+            if not key:
+                continue
+            ctxt, sep, rest = key.partition(b"\x04")
+            if not sep:
+                ctxt, rest = None, key
+            msgid, psep, plural = rest.partition(b"\x00")
+            try:
+                sid = msgid.decode(); spl = plural.decode() if psep else None
+            except UnicodeDecodeError:
+                continue
+            t0 = rewrite(domain, sid); t1 = rewrite(domain, spl) if spl is not None else None
+            if t0 is None and t1 is None:
+                continue
+            value = (t0 or sid).encode() + ((b"\x00" + (t1 or spl).encode()) if spl is not None else b"")
+            variants = {sid}
+            a = sid
+            for x, y in alias_utf8:
+                a = a.replace(x, y)
+            variants.add(alias_nul.get(sid, a))
+            for v in variants:
+                k = (ctxt + b"\x04" if ctxt is not None else b"") + v.encode() + ((b"\x00" + spl.encode()) if spl is not None else b"")
+                entries[k] = value
+        if entries:
+            entries[b""] = HEADER
+            write_mo(f"{OUT_DIR}/{domain}.mo", entries); written += 1
+    os.makedirs(os.path.dirname(STAMP), exist_ok=True)
+    open(STAMP, "w").write(sig + "\n")
+    print(f"fabos catalogs: {written} domains -> {OUT_DIR}")
+
+
+if __name__ == "__main__":
+    main()

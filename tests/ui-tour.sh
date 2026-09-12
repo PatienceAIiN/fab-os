@@ -15,7 +15,7 @@ $K key meta_l; sleep 2; $K type "console"; sleep 2; shot 04-launcher-console; $K
 run "system settings" 7; $K type "wallet"; sleep 2; $K key down; $K key ret; sleep 3; shot 05-settings-wallet
 $K key ctrl-l 2>/dev/null; $K key alt-f4; sleep 1
 launch "Fab Terminal" 6; shot 06-terminal-window; $K key alt-f4; sleep 1
-launch "Fab Software" 10; shot 06b-software-window; $K key alt-f4; sleep 1
+launch "Fab Software" 16; shot 06b-software-window; $K key alt-f4; sleep 1
 launch "Fab Files" 6; shot 06c-files-window; $K key alt-f4; sleep 1
 run "fabos-command-center" 7; shot 07-command-center-dark; $K key alt-f4; sleep 1
 run "plasma-apply-colorscheme BreezeLight" 6; shot 08-desktop-light
@@ -23,6 +23,9 @@ run "fabos-command-center" 7; shot 09-command-center-light; $K key alt-f4; sleep
 run "fabos-updates" 7; shot 10-updates-light; $K key alt-f4; sleep 1
 run "fabos-feedback" 6; shot 11-feedback-light; $K key alt-f4; sleep 1
 run "systemsettings kcm_about-distro" 7; shot 12-about-light; $K key alt-f4; sleep 1
+run "systemsettings kcm_regionandlang" 7; shot 13-region-language-light; $K key alt-f4; sleep 1
+launch "Fab Terminal" 6; shot 14-terminal-light; $K key alt-f4; sleep 1
+launch "Fab Files" 6; shot 15-files-light; $K key alt-f4; sleep 1
 run "plasma-apply-colorscheme BreezeDark" 5
 [ "${1:-}" = "--keep" ] || python3 -c "
 import socket; s=socket.socket(socket.AF_UNIX); s.connect('build/qemu-monitor.sock'); s.sendall(b'quit\n'); s.close()" 2>/dev/null

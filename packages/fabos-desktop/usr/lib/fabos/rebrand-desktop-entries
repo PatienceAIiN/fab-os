@@ -4,15 +4,25 @@
 # by the apt hook /etc/apt/apt.conf.d/90fabos-rebrand. Safe: originals are untouched; delete the overrides to revert.
 set -eu
 OUT=/usr/local/share/applications; mkdir -p "$OUT"
-rebrand() { # rebrand <src> <dst> <sed-expr>
+rebrand() { # rebrand <src> <dst> <sed-expr>   (line rules, every group)
   sed -E "$3" "$1" > "$2.tmp" && mv "$2.tmp" "$2"; }
-# Visible names for upstream apps (launcher, dock, search). Format: file|Name|GenericName
+rebrand_entry() { # rebrand_entry <src> <dst> <name> [<generic>]   Name/GenericName of the [Desktop Entry] group only;
+  # [Desktop Action …] groups keep their own names ("Open a New Window" must not become the app name)
+  awk -v name="$3" -v generic="${4:-}" '
+    /^\[/ { main = ($0 == "[Desktop Entry]") }
+    main && /^Name(\[[^]]+\])?=/ { sub(/=.*/, "=" name) }
+    main && generic != "" && /^GenericName(\[[^]]+\])?=/ { sub(/=.*/, "=" generic) }
+    { print }' "$1" > "$2.tmp" && mv "$2.tmp" "$2"; }
+PRODUCT_RULES='s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)\bKonsole\b/\1Fab Terminal/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)\bDolphin\b/\1Fab Files/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)\bKate\b/\1Fab Editor/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)\bOkular\b/\1Fab Documents/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)\bGwenview\b/\1Fab Photos/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)\bKCalc\b/\1Fab Calculator/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)\bSpectacle\b/\1Fab Screenshot/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)\bKRunner\b/\1Fab Search/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)\bKWin\b/\1Window Manager/'
+KDE_RULES='s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE Plasma/\1Fab OS/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE Connect/\1Fab Connect/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE /\1/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)Plasma’s/\1Fab OS’s/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)Plasma'"'"'s/\1Fab OS'"'"'s/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)Plasma /\1Fab OS /; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*) for KDE/\1/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE/\1Fab OS/'
+# Visible names for upstream apps (launcher, dock, search, shortcuts). Format: file|Name|GenericName
 NAMES="
 org.kde.konsole.desktop|Fab Terminal|Terminal
 org.kde.dolphin.desktop|Fab Files|File Manager
 org.kde.kate.desktop|Fab Editor|Text Editor
 org.kde.discover.desktop|Fab Software|Software Center
 org.kde.gwenview.desktop|Fab Photos|Image Viewer
+org.kde.gwenview_importer.desktop|Fab Photos Importer|Photo Importer
 org.kde.okular.desktop|Fab Documents|Document Viewer
 org.kde.kcalc.desktop|Fab Calculator|Calculator
 org.kde.ark.desktop|Fab Archives|Archiving Tool
@@ -27,6 +37,8 @@ org.kde.partitionmanager.desktop|Fab Disks|Partition Manager
 org.kde.kwalletmanager.desktop|Fab Wallet|Password Wallet
 org.kde.kdeconnect.app.desktop|Fab Connect|Device Connect
 kdesystemsettings.desktop|Fab Settings|System Settings
+kcm_krunnersettings.desktop|Fab Search Setup|
+kcm_kwin_scripts.desktop|WM Scripting|
 systemsettings.desktop|Fab Settings|System Settings
 org.kde.elisa.desktop|Fab Music|Music Player
 org.kde.haruna.desktop|Fab Videos|Media Player
@@ -34,32 +46,47 @@ fabos-command-center.desktop|Fab Command Center|AI Agent Command Center
 fabos-updates.desktop|Fab Updates|Software Updates
 fabos-feedback.desktop|Fab Feedback|Feedback and bug reports
 "
-apply_names() {
-  echo "$NAMES" | while IFS='|' read -r file name generic; do
-    [ -n "$file" ] && [ -f "/usr/share/applications/$file" ] || continue
-    rebrand "/usr/share/applications/$file" "$OUT/$file" "s/^(Name(\[[a-zA-Z_@.]+\])?=).*/\1$name/; s/^(GenericName(\[[a-zA-Z_@.]+\])?=).*/\1$generic/; s/^((Comment)(\[[a-zA-Z_@.]+\])?=.*)KDE /\1/; s/^((Comment)(\[[a-zA-Z_@.]+\])?=.*)KDE/\1Fab OS/"
-    touch "$OUT/$file.fabos"
-  done
-}
+name_for() { echo "$NAMES" | awk -F'|' -v b="$1" '$1==b{print $2}'; }
+generic_for() { echo "$NAMES" | awk -F'|' -v b="$1" '$1==b{print $3}'; }
 
 for f in /usr/share/applications/*.desktop; do
   b=$(basename "$f"); [ -f "$OUT/$b" ] && [ ! -f "$OUT/$b.fabos" ] && continue   # respect hand-made overrides
   case "$b" in
-    org.kde.ksecretd.desktop)
-      rebrand "$f" "$OUT/$b" 's/^(Name(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet Service/'; touch "$OUT/$b.fabos" ;;
+    org.kde.ksecretd.desktop) rebrand_entry "$f" "$OUT/$b" "Fab Wallet Service"; touch "$OUT/$b.fabos" ;;
     org.kde.kwalletmanager.desktop|org.kde.kwalletmanager5.desktop|kwalletmanager5.desktop|kwalletmanager5-kwalletd.desktop)
-      rebrand "$f" "$OUT/$b" 's/^(Name(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet/; s/^(GenericName(\[[a-zA-Z_@.]+\])?=).*/\1Password Wallet/; s/^(Comment(\[[a-zA-Z_@.]+\])?=).*/\1Manage the passwords and secrets stored by Fab OS/'; touch "$OUT/$b.fabos" ;;
+      rebrand_entry "$f" "$OUT/$b" "Fab Wallet" "Password Wallet"
+      rebrand "$OUT/$b" "$OUT/$b" 's/^(Comment(\[[a-zA-Z_@.]+\])?=).*/\1Manage the passwords and secrets stored by Fab OS/'; touch "$OUT/$b.fabos" ;;
     *)
-      if grep -qE '^(Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*(KDE|Plasma)' "$f"; then
-        rebrand "$f" "$OUT/$b" 's/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE Plasma/\1Fab OS/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE Connect/\1Fab Connect/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE /\1/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)Plasma /\1Fab OS /; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*) for KDE/\1/; s/^((Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*)KDE/\1Fab OS/'
-        touch "$OUT/$b.fabos"
+      name=$(name_for "$b")
+      if [ -n "$name" ]; then
+        rebrand_entry "$f" "$OUT/$b" "$name" "$(generic_for "$b")"; rebrand "$OUT/$b" "$OUT/$b" "$KDE_RULES"; touch "$OUT/$b.fabos"
+      elif grep -qE '^(Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*\b(KDE|Plasma|Konsole|Dolphin|Kate|Okular|Gwenview|KCalc|Spectacle|KRunner|KWin)\b' "$f"; then
+        rebrand "$f" "$OUT/$b" "$KDE_RULES; $PRODUCT_RULES"; touch "$OUT/$b.fabos"
       fi ;;
   esac
 done
-apply_names
 # System Settings modules (KCMs) that carry the KDE name in their title
 for f in /usr/share/applications/kcm_kwallet*.desktop; do [ -f "$f" ] || continue; b=$(basename "$f")
-  rebrand "$f" "$OUT/$b" 's/^(Name(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet/; s/^(Comment(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet configuration/'; touch "$OUT/$b.fabos"; done
+  rebrand_entry "$f" "$OUT/$b" "Fab Wallet"; rebrand "$OUT/$b" "$OUT/$b" 's/^(Comment(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet configuration/'; touch "$OUT/$b.fabos"; done
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$OUT" || true
+
+# Shortcuts page (Fab Settings > Shortcuts) lists global-shortcut components by these names
+KG=/usr/local/share/kglobalaccel; mkdir -p "$KG"
+for f in /usr/share/kglobalaccel/*.desktop; do [ -f "$f" ] || continue; b=$(basename "$f"); name=$(name_for "$b")
+  if [ -n "$name" ]; then rebrand_entry "$f" "$KG/$b" "$name"; rebrand "$KG/$b" "$KG/$b" "$KDE_RULES"
+  elif grep -qE '^(Name|Comment)(\[[a-zA-Z_@.]+\])?=.*(KDE|Plasma|KWin)' "$f"; then
+    rebrand "$f" "$KG/$b" "$KDE_RULES; s/^(Name(\[[a-zA-Z_@.]+\])?=)Plasma$/\1Fab OS Desktop/; s/^(Name(\[[a-zA-Z_@.]+\])?=)KWin$/\1Window Manager/"
+  fi
+done
+# Web shortcut "Ubuntu Package Search" is not ours: hide it (same mechanism the Web Shortcuts settings page uses)
+mkdir -p /usr/local/share/kf6/searchproviders
+printf '[Desktop Entry]\nType=Service\nHidden=true\n' > /usr/local/share/kf6/searchproviders/ubuntu.desktop
+# Software Sources dialog (software-properties-qt, opened from Fab Software > Settings): wording only, originals kept
+for f in /usr/lib/python3/dist-packages/softwareproperties/qt/SoftwarePropertiesQt.py /usr/share/software-properties/designer/*.ui; do
+  [ -f "$f" ] || continue; src="$f"; [ -f "$f.fabos-orig" ] && src="$f.fabos-orig"
+  grep -q 'Ubuntu' "$src" || continue; [ -f "$f.fabos-orig" ] || cp -p "$f" "$f.fabos-orig"
+  sed -e 's/Ubuntu Software/Fab OS Software/g; s/Ubuntu updates/Fab OS updates/g; s/Ubuntu developers/Fab OS developers/g' "$f.fabos-orig" > "$f.tmp" && mv "$f.tmp" "$f"
+done
 [ -x /usr/lib/fabos/rebrand-binaries ] && /usr/lib/fabos/rebrand-binaries || true
+[ -x /usr/lib/fabos/rebrand-catalogs ] && /usr/lib/fabos/rebrand-catalogs || true
 exit 0
