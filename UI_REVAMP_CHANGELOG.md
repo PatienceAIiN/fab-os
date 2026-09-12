@@ -1,5 +1,18 @@
 # UI revamp changelog
 
+## 2026-09-13
+- Product names now come from generated `en@fabos` translation catalogs (Fab Terminal, Fab Files, Fab Editor,
+  Fab Software, Fab Photos, Fab Documents, Fab Calculator, Fab Archives, Fab Screenshot, Fab Search, Fab System
+  Info, Fab Monitor, Fab Settings, Fab Wallet, Fab OS Desktop); byte patches reduced to plugin metadata (ADR-0009).
+- Discover (Fab Software) repaired: the bare UTF-16 rule that broke its resource table is gone and rejected.
+- Light mode: icon theme follows the colour scheme (`FollowsColorScheme`), Plasma theme falls back to the
+  scheme-following default theme — tray icons are legible on the light top bar.
+- Kickoff/KRunner: KWin and Plasma-shell runners disabled by their real plugin ids (no "KWin" section).
+- Desktop Actions keep their own names ("Open a New Window"); shortcut component names, AppStream store names and
+  the Software Sources dialog wording rebranded; Ubuntu web shortcut hidden; `ubuntu` account and minimized-MOTD
+  removed from the image.
+- Rounded window corners: kept KWin 6.6 native Breeze rounding; third-party effect rejected (KWin ABI pin risk).
+
 ## 2026-09-12
 - Everything follows the system colour scheme: FabOS Plasma theme uses live scheme colours; ask bar uses
   Kirigami.Theme; Command Center, Updates, Feedback, Welcome use palette roles. Fab Dark / Fab Light schemes added.

@@ -2,6 +2,8 @@
 # Runners that expose upstream product names are off; Fab Search covers apps, files, settings, commands, and the Fab OS agent.
 windowsEnabled=false
 kwinEnabled=false
+krunner_kwinEnabled=false
+krunner_plasma-desktopEnabled=false
 katesessionsEnabled=false
 konsoleprofilesEnabled=false
 helprunnerEnabled=false

@@ -74,7 +74,7 @@ def write_theme(out, conf):
     meta = {"KPlugin": {"Authors": [{"Email": "support@patienceai.in", "Name": conf["VENDOR_NAME"]}],
                         "Description": "%s rounded, translucent Plasma surfaces" % conf["DISTRO_NAME"], "Id": "FabOS", "License": "Apache-2.0",
                         "Name": conf["DISTRO_NAME"], "Version": conf["DISTRO_VERSION"], "Website": conf["HOME_URL"]},
-            "X-Plasma-API": "5.0", "X-Plasma-FallbackTheme": "breeze-dark"}
+            "X-Plasma-API": "5.0", "X-Plasma-FallbackTheme": "default"}
     open(os.path.join(root, "metadata.json"), "w").write(json.dumps(meta, indent=2))
     print("plasma theme:", len(files), "svgs ->", root)
 

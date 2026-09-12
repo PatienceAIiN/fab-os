@@ -82,6 +82,8 @@ COPY image/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources
 COPY image/overlay/common/ /
 # vm profile: test user with autologin, serial console, self-test service. NEVER ship this profile.
 COPY image/overlay/${PROFILE}/ /
+# The Ubuntu base image ships an 'ubuntu' account and the minimized-system MOTD; Fab OS has neither.
+RUN (userdel -r ubuntu 2>/dev/null || true) && rm -f /etc/update-motd.d/60-unminimize /usr/local/sbin/unminimize
 RUN if [ "$PROFILE" = vm ]; then \
       useradd -m -s /bin/bash -G sudo,adm,video,audio,render,plugdev,netdev fabos && echo 'fabos:fabos' | chpasswd && \
       systemctl enable serial-getty@ttyS0 fabos-selftest ; fi
