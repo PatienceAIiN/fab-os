@@ -1,12 +1,30 @@
+# build outputs (never committed; build/secrets holds the apt signing key)
 build/
 brand/out/
 *.img
 *.ext4
+*.qcow2
 *.tar
 *.iso
 *.log
+# python bytecode
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+# local configuration that may contain credentials
 image/overlay/*/etc/fabos/feedback.env
+.env
+.env.*
+# editor / OS junk
+*.swp
+*.swo
+*~
+.DS_Store
+# website / community server
 community/node_modules/
 community/*.sqlite
 community/*.sqlite-*
-__pycache__/
+website/node_modules/
+# design intake exports (pulled from Figma, not redistributable by default)
+design/tina/export/

@@ -22,6 +22,11 @@ more than the cost of physically performing the distribution.
    (`archive.ubuntu.com` / `snapshot.ubuntu.com`) or run
    `scripts/source-offer.sh --download` against the image.
 4. Source for Fab OS's own packages is this repository and the
-   `ai-native-os` repository (Apache-2.0).
+   `ai-native-os` repository (Apache-2.0). The modifications Fab OS applies
+   to upstream display strings are themselves scripts distributed in source
+   form (`/usr/lib/fabos/rebrand-catalogs`, `rebrand-binaries`,
+   `rebrand-desktop-entries` in the `fabos-desktop` package, and
+   `packages/fabos-desktop/usr/lib/fabos/` in this repository); see
+   `legal/PATCHED-BINARIES.md`.
 
-Requests: SUPPORT_URL in `brand/brand.conf`, or by mail to Patience AI.
+Requests: e-mail info@patienceai.in, or the SUPPORT_URL in `brand/brand.conf`.

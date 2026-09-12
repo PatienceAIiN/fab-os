@@ -13,12 +13,12 @@ it. Re-check this list before every public release.
 | 5 | Preserve copyright and license notices | `/usr/share/doc/*/copyright` is never excluded from the image (the Docker base's `dpkg.cfg.d/excludes` is removed before package installation) | done |
 | 6 | License our own additions clearly | `LICENSE` (Apache-2.0), `NOTICE`, `legal/ARTWORK.md` | done |
 | 7 | Do not link GPL libraries into our Apache-licensed daemons in the same process | FabOS AI daemons are static Rust binaries talking to system components over IPC / exec | done |
-| 8 | Proprietary drivers, firmware and patent-encumbered codecs are opt-in | not preinstalled; VM profile uses `linux-image-virtual` without `linux-firmware`; ISO profile documents installer opt-in | done for VM; ISO pending |
+| 8 | Proprietary drivers, firmware and patent-encumbered codecs are opt-in | VM profile: `linux-image-virtual`, no `linux-firmware`. ISO profile: `linux-firmware` (redistributable non-free firmware, as on Ubuntu media) is on the ISO; after installation `fabos-firstboot` runs `ubuntu-drivers autoinstall` and installs `linux-firmware`, `libavcodec-extra` and GStreamer "bad" plugins automatically, without a prompt | VM done; **ACTION for ISO: make first-boot driver/codec installation opt-in in the installer or Welcome wizard, or document it as a default in the release notes** |
 | 9 | No telemetry without consent; privacy law (DPDP Act India, GDPR) | no telemetry; `ubuntu-report`, `apport` autoreport, `motd-news`, `ubuntu-pro-client` not installed; AI local-first | done |
 | 10 | Snap Store terms | snapd not installed and pinned to priority -1 | done |
-| 11 | Product name cleared | see `TRADEMARK-SEARCH.md` | **BLOCKED — rename before public release** |
+| 11 | Product name cleared | see `TRADEMARK-SEARCH.md`: "Fab OS" searched 2026-09-11, no registered software mark found in the sources checked (the earlier Brocade conflict concerned the old name "Fabric OS") | searched; **ACTION: formal clearance (IP India Class 9, EUIPO, USPTO, WIPO) and filing before launch** |
 | 12 | Fonts redistributable | Inter and JetBrains Mono under SIL OFL 1.1 via Ubuntu packages | done |
-| 13 | Firefox trademark | not preinstalled; document Mozilla apt repo or Flatpak for users | pending |
+| 13 | Firefox trademark | Firefox is Mozilla's own unmodified `.deb` from `packages.mozilla.org` (signing key pinned by fingerprint in the build, apt pin 1000, `fabos-branding` ships the source and keyring); Firefox keeps its own branding inside the application; the FabOS launcher tile uses a generic globe glyph, not the Firefox logo; Firefox is never renamed by the catalogs or desktop-entry overrides | done |
 
 ## Notes
 
