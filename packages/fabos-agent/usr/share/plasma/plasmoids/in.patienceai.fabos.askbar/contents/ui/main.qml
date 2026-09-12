@@ -81,7 +81,7 @@ PlasmoidItem {
                 id: field
                 Layout.fillWidth: true
                 Layout.preferredHeight: root.compact ? Math.max(Kirigami.Units.gridUnit * 1.6, root.height - Kirigami.Units.smallSpacing * 2) : Kirigami.Units.gridUnit * 2.2
-                placeholderText: root.configured ? "Ask me to do anything…" : "Ask me to do anything…  (no AI provider yet — right-click to set one up)"
+                placeholderText: "Ask me to do anything…"
                 font.family: "Inter"; font.pixelSize: 15; color: Kirigami.Theme.textColor; placeholderTextColor: Kirigami.Theme.disabledTextColor
                 leftPadding: 14; rightPadding: 14; verticalAlignment: TextInput.AlignVCenter
                 background: Rectangle {

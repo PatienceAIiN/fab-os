@@ -24,7 +24,7 @@ podman unshare bash -euo pipefail -c '
   if [ "'"$PROFILE"'" = iso ]; then
     cp "$mnt"/usr/lib/shim/shimx64.efi.signed.latest build/shimx64.efi; cp "$mnt"/usr/lib/shim/mmx64.efi build/mmx64.efi 2>/dev/null || true
     cp "$mnt"/usr/lib/grub/x86_64-efi-signed/gcdx64.efi.signed build/gcdx64.efi
-    dpkg-query --admindir="$mnt/var/lib/dpkg" -W -f="${binary:Package}\t${Version}\n" > build/filesystem.manifest 2>/dev/null || cp build/manifest-iso.txt build/filesystem.manifest
+    cp build/manifest-iso.txt build/filesystem.manifest
     du -sx --block-size=1 "$mnt" | cut -f1 > build/filesystem.size
     rm -f build/filesystem.squashfs
     tools/rg --profile heavy -- mksquashfs "$mnt" build/filesystem.squashfs -comp zstd -Xcompression-level 15 -b 1M -noappend -wildcards -e "proc/*" "sys/*" "dev/*" "run/*" "tmp/*" "var/lib/apt/lists/*" "var/cache/apt/archives/*.deb"
