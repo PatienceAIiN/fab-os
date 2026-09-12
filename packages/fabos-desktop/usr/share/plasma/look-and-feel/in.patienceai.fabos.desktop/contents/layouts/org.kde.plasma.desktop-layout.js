@@ -1,6 +1,6 @@
 // Fab OS default layout: top bar (global menu feel) + centred floating dock at the bottom.
 var top = new Panel
-top.location = "top"; top.height = Math.round(gridUnit * 1.9); top.floating = false; top.hiding = "none"
+top.location = "top"; top.height = Math.round(gridUnit * 2.9); top.floating = false; top.hiding = "none"
 var kickoff = top.addWidget("org.kde.plasma.kickoff")
 kickoff.currentConfigGroup = ["General"]
 kickoff.writeConfig("icon", "fabos")   // Fab OS mark instead of the KDE logo
@@ -8,8 +8,9 @@ kickoff.writeConfig("showActionButtonCaptions", false)
 kickoff.writeConfig("primaryActions", 0)
 top.addWidget("org.kde.plasma.appmenu")
 top.addWidget("org.kde.plasma.panelspacer")
-top.addWidget("org.kde.plasma.digitalclock")
+top.addWidget("in.patienceai.fabos.askbar")     // "Ask me to do anything…" — centred in the bar on any screen
 top.addWidget("org.kde.plasma.panelspacer")
+top.addWidget("org.kde.plasma.digitalclock")
 top.addWidget("org.kde.plasma.systemtray")
 top.addWidget("org.kde.plasma.showdesktop")
 
@@ -33,9 +34,3 @@ for (var j = 0; j < desktops.length; j++) {
   d.writeConfig("Image", "/usr/share/wallpapers/FabOS/")
 }
 
-// "Ask me to do…": its own floating, centred panel under the top bar — centred on any screen size
-var ask = new Panel
-ask.location = "top"; ask.floating = true; ask.hiding = "none"
-ask.lengthMode = "fit"; ask.alignment = "center"
-ask.height = Math.round(gridUnit * 3.6)
-ask.addWidget("in.patienceai.fabos.askbar")
