@@ -17,7 +17,7 @@ mcopy -i "$ESP" build/vmlinuz ::/fabos/vmlinuz
 mcopy -i "$ESP" build/initrd.img ::/fabos/initrd.img
 T=$(mktemp -d)
 printf 'default fabos.conf\ntimeout 0\nconsole-mode max\neditor no\n' > "$T/loader.conf"
-CMDLINE="root=LABEL=fabos-root rw quiet splash loglevel=3 systemd.show_status=false vt.global_cursor_default=0"
+CMDLINE="root=LABEL=fabos-root rw quiet splash loglevel=0 systemd.show_status=false vt.global_cursor_default=0 plymouth.ignore-serial-consoles"
 printf 'title   %s\nversion %s\nlinux   /fabos/vmlinuz\ninitrd  /fabos/initrd.img\noptions %s\n' "$DISTRO_PRETTY_NAME" "$DISTRO_VERSION" "$CMDLINE" > "$T/fabos.conf"
 printf 'title   %s (verbose)\nlinux   /fabos/vmlinuz\ninitrd  /fabos/initrd.img\noptions root=LABEL=fabos-root rw console=ttyS0,115200 console=tty1\n' "$DISTRO_PRETTY_NAME" > "$T/fabos-verbose.conf"
 mcopy -i "$ESP" "$T/loader.conf" ::/loader/loader.conf
