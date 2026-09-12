@@ -30,7 +30,7 @@ if [ -n "${BREVO_API_KEY:-}" ] && [ -n "$MAIL_TO" ]; then
 vm "fabos status"
 
 approve_pending() { # approve everything pending, print what was approved
-  local ids; ids=$(api GET /approvals/pending | python3 -c 'import sys,json; d=json.load(sys.stdin); print(" ".join(str(a["id"]) for a in (d.get("approvals") or d if isinstance(d,list) else d.get("approvals",[]))))' 2>/dev/null)
+  local ids; ids=$(api GET /approvals/pending | python3 -c 'import sys,json; d=json.load(sys.stdin); print(" ".join(str(a["id"]) for a in (d if isinstance(d,list) else d.get("approvals",[]))))' 2>/dev/null)
   for a in $ids; do api POST "/approvals/$a" '{"decision":"approved"}' >/dev/null; echo "    approved approval #$a"; APPROVED=$((APPROVED+1)); done; }
 run_task() { # run_task NAME TIMEOUT_S MODE MODEL TEXT   -> sets TASK_ID TASK_STATUS TASK_RESULT
   local name=$1 to=$2 mode=$3 model=$4 text=$5 start=$(date +%s); APPROVED=0
