@@ -3,6 +3,7 @@
 set -uo pipefail; PROFILE=${1:-vm}; TAG=fabos:$PROFILE; fail=0
 chk() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fail=1; fi; }
 R() { podman run --rm "$TAG" bash -c "$1"; }
+chk "all fabos packages fully installed"   "! R 'dpkg -l fabos-* | grep -v ^ii | grep -E \"^(i|h|r|u)\"' | grep -q ."
 chk "os-release ID=fabos"               "R 'grep -q ^ID=fabos /usr/lib/os-release && grep -q ID_LIKE=.ubuntu /usr/lib/os-release'"
 chk "os-release keeps UBUNTU_CODENAME"    "R 'grep -q ^UBUNTU_CODENAME=resolute /usr/lib/os-release'"
 chk "lsb_release says FabOS"             "R 'lsb_release -ds' | grep -q 'Fab OS'"
