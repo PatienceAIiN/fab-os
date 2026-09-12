@@ -57,7 +57,7 @@ enabled). Never distribute the VM profile. Live ISO user: `fabos`, no password.
 
 - Ubuntu security and package updates: from Ubuntu mirrors, unchanged.
 - Fab OS features, AI layer and branding: from the signed Patience AI apt
-  repository at fabricos.patienceai.in/apt — suite `loom` (Standard) or
+  repository at fabos.patienceai.in/apt — suite `loom` (Standard) or
   `loom-beta` (Beta, pushed on every commit to main; Standard on `v*` tags).
   Users switch channels in **Fab OS Updates**; automatic installation is on by default.
 

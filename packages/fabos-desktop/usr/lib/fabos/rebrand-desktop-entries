@@ -9,6 +9,8 @@ rebrand() { # rebrand <src> <dst> <sed-expr>
 for f in /usr/share/applications/*.desktop; do
   b=$(basename "$f"); [ -f "$OUT/$b" ] && [ ! -f "$OUT/$b.fabos" ] && continue   # respect hand-made overrides
   case "$b" in
+    org.kde.ksecretd.desktop)
+      rebrand "$f" "$OUT/$b" 's/^(Name(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet Service/'; touch "$OUT/$b.fabos" ;;
     org.kde.kwalletmanager.desktop|org.kde.kwalletmanager5.desktop|kwalletmanager5.desktop|kwalletmanager5-kwalletd.desktop)
       rebrand "$f" "$OUT/$b" 's/^(Name(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet/; s/^(GenericName(\[[a-zA-Z_@.]+\])?=).*/\1Password Wallet/; s/^(Comment(\[[a-zA-Z_@.]+\])?=).*/\1Manage the passwords and secrets stored by Fab OS/'; touch "$OUT/$b.fabos" ;;
     *)

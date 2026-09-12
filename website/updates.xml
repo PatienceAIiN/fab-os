@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel>
   <title>Fab OS updates</title>
-  <link>https://fabricos.patienceai.in/</link>
+  <link>https://fabos.patienceai.in/</link>
   <description>Public release updates for Fab OS by Patience AI.</description>
-  <item><title>Fab OS public preview</title><link>https://fabricos.patienceai.in/#install</link><description>The public image is under hardware validation and is not published yet.</description></item>
+  <item><title>Fab OS public preview</title><link>https://fabos.patienceai.in/#status</link><description>The public image is under hardware validation and is not published yet.</description></item>
 </channel></rss>

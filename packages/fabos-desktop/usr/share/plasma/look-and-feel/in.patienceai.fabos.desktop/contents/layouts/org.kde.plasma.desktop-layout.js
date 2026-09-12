@@ -24,11 +24,12 @@ tasks.writeConfig("highlightWindows", true)
 tasks.writeConfig("indicateAudioPlaying", true)
 tasks.writeConfig("fill", false)
 
-for (var i in screens) {
-  var d = new Activity("desktop", screens[i]) // ensure a desktop containment
+// desktop containments: wallpaper + the "Ask me to do…" bar near the top of the home screen
+var desktops = desktopsForActivity(currentActivity())
+for (var j = 0; j < desktops.length; j++) {
+  var d = desktops[j]
   d.wallpaperPlugin = "org.kde.image"
   d.currentConfigGroup = ["Wallpaper", "org.kde.image", "General"]
   d.writeConfig("Image", "/usr/share/wallpapers/FabOS/")
-  // the "Ask me to do…" bar near the top of the home screen (x, y, w, h in px)
   d.addWidget("in.patienceai.fabos.askbar", 260, 90, 760, 100)
 }
