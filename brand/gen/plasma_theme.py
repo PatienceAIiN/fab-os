@@ -8,15 +8,15 @@ No shadow elements: QtSvg gradients rendered unpredictably, and Plasma/KWin alre
 """
 import json, os
 
-INK = (14, 17, 22)  # #0E1116
+INK = (15, 20, 32)  # #0F1420 tinted ink
 
 
 def _rgba(rgb, a):
     return "rgba(%d,%d,%d,%.3f)" % (rgb[0], rgb[1], rgb[2], a)
 
 
-STYLE = ('<style type="text/css" id="current-color-scheme">.ColorScheme-Text{color:#E6EAF0;}.ColorScheme-Background{color:#0E1116;}'
-         '.ColorScheme-ViewBackground{color:#161B22;}.ColorScheme-Highlight{color:#6E9BFF;}.ColorScheme-ButtonBackground{color:#1E242D;}</style>')
+STYLE = ('<style type="text/css" id="current-color-scheme">.ColorScheme-Text{color:#E6EAF0;}.ColorScheme-Background{color:#0F1420;}'
+         '.ColorScheme-ViewBackground{color:#171D2B;}.ColorScheme-Highlight{color:#6E9BFF;}.ColorScheme-ButtonBackground{color:#1F2737;}</style>')
 
 
 def frame_svg(radius, alpha, margin, border="#2A313B", fill=INK):
@@ -56,16 +56,16 @@ def frame_svg(radius, alpha, margin, border="#2A313B", fill=INK):
 def write_theme(out, conf):
     root = os.path.join(out, "plasma-theme")
     files = {
-        "dialogs/background.svg": frame_svg(18, 0.95, 12),
-        "translucent/dialogs/background.svg": frame_svg(18, 0.82, 12),
-        "opaque/dialogs/background.svg": frame_svg(18, 1.0, 12),
-        "widgets/panel-background.svg": frame_svg(16, 0.93, 4),
-        "translucent/widgets/panel-background.svg": frame_svg(16, 0.74, 4),
-        "opaque/widgets/panel-background.svg": frame_svg(16, 1.0, 4),
-        "widgets/tooltip.svg": frame_svg(12, 0.96, 8),
-        "translucent/widgets/tooltip.svg": frame_svg(12, 0.88, 8),
-        "widgets/background.svg": frame_svg(16, 0.93, 10),
-        "translucent/widgets/background.svg": frame_svg(16, 0.80, 10),
+        "dialogs/background.svg": frame_svg(24, 0.95, 12),
+        "translucent/dialogs/background.svg": frame_svg(24, 0.84, 12),
+        "opaque/dialogs/background.svg": frame_svg(24, 1.0, 12),
+        "widgets/panel-background.svg": frame_svg(20, 0.93, 4),
+        "translucent/widgets/panel-background.svg": frame_svg(20, 0.76, 4),
+        "opaque/widgets/panel-background.svg": frame_svg(20, 1.0, 4),
+        "widgets/tooltip.svg": frame_svg(14, 0.96, 8),
+        "translucent/widgets/tooltip.svg": frame_svg(14, 0.9, 8),
+        "widgets/background.svg": frame_svg(20, 0.93, 10),
+        "translucent/widgets/background.svg": frame_svg(20, 0.82, 10),
     }
     for rel, svg in files.items():
         p = os.path.join(root, rel)

@@ -9,20 +9,7 @@ top.addWidget("org.kde.plasma.appmenu")
 top.addWidget("org.kde.plasma.panelspacer")
 top.addWidget("org.kde.plasma.digitalclock")
 top.addWidget("org.kde.plasma.panelspacer")
-var battery = top.addWidget("org.kde.plasma.battery")
-battery.currentConfigGroup = ["General"]
-battery.writeConfig("showPercentage", true)
-top.addWidget("org.kde.plasma.networkmanagement")
-top.addWidget("org.kde.plasma.volume")
-var tray = top.addWidget("org.kde.plasma.systemtray")
-// the three indicators above are standalone; keep the tray from loading duplicates of them
-tray.currentConfigGroup = ["General"]
-tray.writeConfig("extraItems", ["org.kde.plasma.bluetooth", "org.kde.plasma.brightness", "org.kde.plasma.cameraindicator", "org.kde.plasma.clipboard",
-  "org.kde.plasma.devicenotifier", "org.kde.plasma.keyboardlayout", "org.kde.plasma.manage-inputmethod", "org.kde.plasma.mediacontroller",
-  "org.kde.plasma.notifications", "org.kde.plasma.printmanager", "org.kde.kscreen", "org.kde.plasma.vault"])
-tray.writeConfig("knownItems", ["org.kde.plasma.bluetooth", "org.kde.plasma.brightness", "org.kde.plasma.cameraindicator", "org.kde.plasma.clipboard",
-  "org.kde.plasma.devicenotifier", "org.kde.plasma.keyboardlayout", "org.kde.plasma.manage-inputmethod", "org.kde.plasma.mediacontroller",
-  "org.kde.plasma.notifications", "org.kde.plasma.printmanager", "org.kde.kscreen", "org.kde.plasma.vault"])
+top.addWidget("org.kde.plasma.systemtray")   // battery (with %), Wi-Fi, volume, bluetooth are pinned visible by /usr/lib/fabos/tray-defaults at login
 top.addWidget("org.kde.plasma.showdesktop")
 
 var dock = new Panel
@@ -49,8 +36,8 @@ for (var j = 0; j < desktops.length; j++) {
   d.wallpaperPlugin = "org.kde.image"
   d.currentConfigGroup = ["Wallpaper", "org.kde.image", "General"]
   d.writeConfig("Image", "/usr/share/wallpapers/FabOS/")
-  var sw = 1280, sh = 800
-  try { var g = screenGeometry(d.screen); if (g && g.width > 0) { sw = g.width; sh = g.height } } catch (e) {}
-  var w = Math.min(760, Math.round(sw * 0.6)), h = 124
-  d.addWidget("in.patienceai.fabos.askbar", Math.round((sw - w) / 2), Math.round(sh * 0.36), w, h)
+  // The ask bar is a full-width transparent strip; the card inside centres itself from the real screen width at runtime.
+  var sw = 3840, sh = 1080
+  try { var g = screenGeometry(d.screen >= 0 ? d.screen : 0); if (g && g.width > 0) { sw = g.width; sh = g.height } } catch (e) {}
+  d.addWidget("in.patienceai.fabos.askbar", 0, Math.round(sh * 0.30), sw, 150)
 }

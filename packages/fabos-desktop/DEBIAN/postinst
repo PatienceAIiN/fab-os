@@ -11,21 +11,21 @@ case "$1" in configure)
   D=/usr/share/color-schemes
   if [ -f $D/BreezeDark.colors ]; then
     sed -e 's/^Name=.*/Name=Fab Dark/' -e 's/^ColorScheme=.*/ColorScheme=FabDark/' \
-        -e '/^\[Colors:Window\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=14,17,22/;s/^BackgroundAlternate=.*/BackgroundAlternate=22,27,34/}' \
-        -e '/^\[Colors:View\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=22,27,34/;s/^BackgroundAlternate=.*/BackgroundAlternate=30,36,45/}' \
-        -e '/^\[Colors:Button\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=30,36,45/}' \
-        -e '/^\[Colors:Header\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=14,17,22/}' \
+        -e '/^\[Colors:Window\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=15,20,32/;s/^BackgroundAlternate=.*/BackgroundAlternate=23,29,43/}' \
+        -e '/^\[Colors:View\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=23,29,43/;s/^BackgroundAlternate=.*/BackgroundAlternate=31,39,55/}' \
+        -e '/^\[Colors:Button\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=31,39,55/}' \
+        -e '/^\[Colors:Header\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=15,20,32/}' \
         -e 's/^DecorationFocus=.*/DecorationFocus=110,155,255/' -e 's/^DecorationHover=.*/DecorationHover=110,155,255/' \
         -e '/^\[Colors:Selection\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=59,110,245/}' \
-        -e '/^\[WM\]/,/^\[/{s/^activeBackground=.*/activeBackground=14,17,22/;s/^inactiveBackground=.*/inactiveBackground=22,27,34/}' \
+        -e '/^\[WM\]/,/^\[/{s/^activeBackground=.*/activeBackground=15,20,32/;s/^inactiveBackground=.*/inactiveBackground=23,29,43/}' \
         $D/BreezeDark.colors > $D/FabDark.colors
   fi
   if [ -f $D/BreezeLight.colors ]; then
     sed -e 's/^Name=.*/Name=Fab Light/' -e 's/^ColorScheme=.*/ColorScheme=FabLight/' \
-        -e '/^\[Colors:Window\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=246,247,249/;s/^BackgroundAlternate=.*/BackgroundAlternate=237,239,243/}' \
+        -e '/^\[Colors:Window\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=245,247,253/;s/^BackgroundAlternate=.*/BackgroundAlternate=234,238,248/}' \
         -e 's/^DecorationFocus=.*/DecorationFocus=59,110,245/' -e 's/^DecorationHover=.*/DecorationHover=59,110,245/' \
         -e '/^\[Colors:Selection\]/,/^\[/{s/^BackgroundNormal=.*/BackgroundNormal=59,110,245/}' \
-        -e '/^\[WM\]/,/^\[/{s/^activeBackground=.*/activeBackground=246,247,249/}' \
+        -e '/^\[WM\]/,/^\[/{s/^activeBackground=.*/activeBackground=245,247,253/}' \
         $D/BreezeLight.colors > $D/FabLight.colors
   fi
   # keep the boot splash on screen until the login manager takes over (SDDM quits Plymouth itself with --retain-splash);

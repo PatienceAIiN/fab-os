@@ -81,6 +81,22 @@ def main():
             run("plasma-apply-colorscheme", "BreezeDark" if dark.isChecked() else "BreezeLight")
     dark.toggled.connect(lambda _: apply_scheme())
     light.toggled.connect(lambda _: apply_scheme())
+    # Accent colour (Material-expressive: one strong accent the user picks; applied live system-wide)
+    p2.v.addWidget(QLabel("Accent colour", objectName="muted"))
+    accents = QHBoxLayout()
+    ACCENTS = [("Indigo", "59,110,245"), ("Violet", "124,92,255"), ("Mint", "31,157,87"), ("Coral", "225,29,72"), ("Amber", "183,121,31")]
+
+    def set_accent(rgb):
+        subprocess.run(["kwriteconfig6", "--file", "kdeglobals", "--group", "General", "--key", "AccentColor", rgb], capture_output=True, timeout=10)
+        run("plasma-apply-colorscheme", "FabDark" if dark.isChecked() else "FabLight")   # re-applies so every app picks the accent up
+    for name, rgb in ACCENTS:
+        b = QPushButton(name)
+        r, g, bl = rgb.split(",")
+        b.setStyleSheet("QPushButton{background:rgb(%s);color:white;font-weight:600;border-radius:14px;padding:8px 14px}" % rgb)
+        b.clicked.connect(lambda _, v=rgb: set_accent(v))
+        accents.addWidget(b)
+    accents.addStretch(1)
+    p2.v.addLayout(accents)
     p2.v.addStretch(1)
     w.addPage(p2)
 

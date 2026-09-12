@@ -1,0 +1,13 @@
+#!/bin/sh
+# Applies /usr/lib/fabos/tray-defaults.js once per user via plasmashell's D-Bus scripting interface.
+MARK="${XDG_CONFIG_HOME:-$HOME/.config}/fabos/tray-defaults-done"
+[ -f "$MARK" ] && exit 0
+for i in $(seq 1 60); do
+  if qdbus6 org.kde.plasmashell /PlasmaShell >/dev/null 2>&1 || busctl --user status org.kde.plasmashell >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+sleep 4
+JS=$(cat /usr/lib/fabos/tray-defaults.js)
+if command -v qdbus6 >/dev/null 2>&1; then qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "$JS" >/dev/null 2>&1
+else dbus-send --session --dest=org.kde.plasmashell --type=method_call /PlasmaShell org.kde.PlasmaShell.evaluateScript string:"$JS" >/dev/null 2>&1; fi
+mkdir -p "$(dirname "$MARK")" && date -u +%FT%TZ > "$MARK"
