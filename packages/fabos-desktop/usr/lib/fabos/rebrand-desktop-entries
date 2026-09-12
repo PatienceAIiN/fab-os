@@ -22,4 +22,5 @@ done
 for f in /usr/share/applications/kcm_kwallet*.desktop; do [ -f "$f" ] || continue; b=$(basename "$f")
   rebrand "$f" "$OUT/$b" 's/^(Name(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet/; s/^(Comment(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet configuration/'; touch "$OUT/$b.fabos"; done
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$OUT" || true
+[ -x /usr/lib/fabos/rebrand-binaries ] && /usr/lib/fabos/rebrand-binaries || true
 exit 0

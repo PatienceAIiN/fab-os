@@ -4,6 +4,8 @@ top.location = "top"; top.height = Math.round(gridUnit * 1.9); top.floating = fa
 var kickoff = top.addWidget("org.kde.plasma.kickoff")
 kickoff.currentConfigGroup = ["General"]
 kickoff.writeConfig("icon", "fabos")   // Fab OS mark instead of the KDE logo
+kickoff.writeConfig("showActionButtonCaptions", false)
+kickoff.writeConfig("primaryActions", 0)
 top.addWidget("org.kde.plasma.appmenu")
 top.addWidget("org.kde.plasma.panelspacer")
 top.addWidget("org.kde.plasma.digitalclock")
@@ -27,8 +29,6 @@ for (var i in screens) {
   d.wallpaperPlugin = "org.kde.image"
   d.currentConfigGroup = ["Wallpaper", "org.kde.image", "General"]
   d.writeConfig("Image", "/usr/share/wallpapers/FabOS/")
-  // the "Ask me to do…" bar, centred near the top of the home screen
-  var sw = screenGeometry(screens[i]).width, sh = screenGeometry(screens[i]).height
-  var w = Math.min(760, Math.round(sw * 0.6)), h = Math.round(gridUnit * 5.4)
-  d.addWidget("in.patienceai.fabos.askbar", Math.round((sw - w) / 2), Math.round(sh * 0.12), w, h)
+  // the "Ask me to do…" bar near the top of the home screen (x, y, w, h in px)
+  d.addWidget("in.patienceai.fabos.askbar", 260, 90, 760, 100)
 }

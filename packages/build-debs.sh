@@ -33,8 +33,10 @@ PY
       for f in dark-1920x1080 dark-2560x1440 dark-3840x2160 light-1920x1080 light-2560x1440 light-3840x2160; do
         [ -f "$SRC/assets/wallpapers/$f.png" ] && install -Dm644 "$SRC/assets/wallpapers/$f.png" "$dst/usr/share/wallpapers/FabOS/contents/images/${f#*-}.png"; done
       # Plasma picks images by resolution name; dark is the default set, light under images_dark? keep light variants alongside
-      for f in light-1920x1080 light-2560x1440 light-3840x2160; do
-        [ -f "$SRC/assets/wallpapers/$f.png" ] && install -Dm644 "$SRC/assets/wallpapers/$f.png" "$dst/usr/share/wallpapers/FabOS/contents/images_light/${f#*-}.png"; done
+      for f in dark-1920x1080 dark-2560x1440 dark-3840x2160; do
+        [ -f "$SRC/assets/wallpapers/$f.png" ] && install -Dm644 "$SRC/assets/wallpapers/$f.png" "$dst/usr/share/wallpapers/FabOS/contents/images_dark/${f#*-}.png"; done
+      install -Dm644 "$SRC/assets/pixmaps/fabos.png" "$dst/etc/skel/.face.icon"
+      install -Dm644 "$SRC/assets/pixmaps/fabos.png" "$dst/usr/share/sddm/faces/.face.icon"
       install -Dm644 "$SRC/assets/wallpapers/screenshot.png" "$dst/usr/share/wallpapers/FabOS/contents/screenshot.png"
       install -Dm644 "$SRC/assets/sddm/background.png" "$dst/usr/share/sddm/themes/fabos/background.png"
       install -Dm644 "$SRC/assets/sddm/wordmark.png"   "$dst/usr/share/sddm/themes/fabos/wordmark.png"

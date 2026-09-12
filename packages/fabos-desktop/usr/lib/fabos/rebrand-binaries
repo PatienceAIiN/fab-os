@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Replace 'KDE Wallet' with 'Fab Wallet' (same byte length, UTF-8 and UTF-16LE) inside the wallet plugin/service so
+System Settings and unlock prompts show Fab Wallet. Idempotent; a .fabos-orig copy is kept next to each patched file."""
+import os, shutil, sys
+TARGETS = ["/usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/systemsettings/kcm_kwallet.so", "/usr/bin/kwalletd6",
+           "/usr/lib/x86_64-linux-gnu/libKF6Wallet.so.6", "/usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/kded/kwalletd6.so"]
+PAIRS = [(b"KDE Wallet", b"Fab Wallet"), ("KDE Wallet".encode("utf-16-le"), "Fab Wallet".encode("utf-16-le")),
+         (b"KWallet Manager", b"Fab OS  Wallet "), ("KWallet Manager".encode("utf-16-le"), "Fab OS  Wallet ".encode("utf-16-le"))]
+import glob
+for pat in list(TARGETS) + glob.glob("/usr/lib/x86_64-linux-gnu/libKF6Wallet.so.6.*"):
+    for path in glob.glob(pat):
+        if not os.path.isfile(path) or os.path.islink(path):
+            continue
+        data = open(path, "rb").read()
+        new = data
+        for a, b in PAIRS:
+            assert len(a) == len(b)
+            new = new.replace(a, b)
+        if new != data:
+            if not os.path.exists(path + ".fabos-orig"):
+                shutil.copy2(path, path + ".fabos-orig")
+            tmp = path + ".fabos-tmp"
+            open(tmp, "wb").write(new); shutil.copymode(path, tmp); os.replace(tmp, path)
+            print("patched", path)

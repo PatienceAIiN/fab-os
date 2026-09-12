@@ -2,6 +2,7 @@
 Description=FabOS OS VM self-test (prints boot markers on the serial console)
 After=multi-user.target graphical.target
 Wants=graphical.target
+ConditionKernelCommandLine=fabos.autopoweroff
 
 [Service]
 Type=oneshot

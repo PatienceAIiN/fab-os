@@ -28,6 +28,7 @@ chk "sddm enabled"                        "R 'systemctl is-enabled sddm' | grep 
 chk "FabOS Plasma theme installed"        "R 'test -f /usr/share/plasma/desktoptheme/FabOS/metadata.json && test -f /usr/share/plasma/desktoptheme/FabOS/dialogs/background.svg'"
 chk "FabOS icon theme has Settings icons"  "R 'test -e /usr/share/icons/FabOS/48x48/apps/preferences-system-network.png'"
 chk "Fab OS session entry (no Plasma name)" "R 'grep -q ^Name=Fab\ OS /usr/local/share/wayland-sessions/fabos.desktop && grep -q SessionDir=/usr/local/share/wayland-sessions /etc/sddm.conf.d/zz-fabos.conf'"
+chk "wallet KCM says Fab Wallet (binary)"   "R 'grep -c \"Fab Wallet\" /usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/systemsettings/kcm_kwallet.so' | grep -qv ^0"
 chk "Fab Wallet override present"          "R 'grep -q ^Name=Fab\ Wallet /usr/local/share/applications/org.kde.kwalletmanager.desktop'"
 chk "no visible KDE names in launcher"     "! R 'grep -lE \"^Name=.*KDE\" /usr/share/applications/*.desktop | while read f; do b=\$(basename \$f); test -f /usr/local/share/applications/\$b || echo \$b; done' | grep -q ."
 chk "updates app + polkit + timer"         "R 'test -x /usr/bin/fabos-updates && test -f /usr/share/polkit-1/actions/in.patienceai.fabos.updates.policy && systemctl is-enabled fabos-update-check.timer' | grep -q enabled"

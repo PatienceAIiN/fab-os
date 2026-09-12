@@ -631,6 +631,15 @@ class Agent:
 
     def session_env(self):
         env = dict(os.environ)
+        # inherit the desktop session's environment (theme, display, D-Bus, PATH) so launched apps look and behave like user-launched ones
+        try:
+            out = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                if "=" in line and not line.startswith(("INVOCATION_ID", "JOURNAL_STREAM", "MANAGERPID")):
+                    k, v = line.split("=", 1)
+                    env.setdefault(k, v)
+        except Exception:
+            pass
         env.setdefault("XDG_RUNTIME_DIR", os.path.dirname(RUN_DIR))
         env.setdefault("WAYLAND_DISPLAY", "wayland-0")
         env.setdefault("DISPLAY", ":0")
