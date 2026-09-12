@@ -13,20 +13,19 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "fabos-agent")
 APP = "Fab OS"
 STYLE = """
-QMainWindow, QDialog { background: #0E1116; }
-QWidget { color: #E6EAF0; font-family: Inter, 'Noto Sans', sans-serif; font-size: 14px; }
-QLineEdit, QPlainTextEdit, QComboBox { background: #161B22; border: 1px solid #2A313B; border-radius: 10px; padding: 8px 12px; selection-background-color: #3B6EF5; }
-QLineEdit:focus, QPlainTextEdit:focus { border-color: #6E9BFF; }
+QWidget { font-family: Inter, 'Noto Sans', sans-serif; font-size: 14px; }
+QLineEdit, QPlainTextEdit, QComboBox, QTextBrowser, QListWidget, QTableWidget { background: palette(base); border: 1px solid palette(mid); border-radius: 10px; padding: 6px 10px; selection-background-color: palette(highlight); }
+QLineEdit:focus, QPlainTextEdit:focus { border-color: palette(highlight); }
 QLineEdit#ask { font-size: 17px; padding: 12px 16px; border-radius: 14px; }
-QPushButton { background: #1E242D; border: 1px solid #2A313B; border-radius: 10px; padding: 8px 16px; }
-QPushButton:hover { background: #262d38; } QPushButton#primary { background: #6E9BFF; color: #0E1116; font-weight: 600; border: none; }
+QPushButton { background: palette(button); border: 1px solid palette(mid); border-radius: 10px; padding: 8px 16px; }
+QPushButton:hover { background: palette(light); }
+QPushButton#primary { background: palette(highlight); color: palette(highlighted-text); font-weight: 600; border: none; }
 QPushButton#approve { background: #3FCB7E; color: #0E1116; font-weight: 600; border: none; } QPushButton#deny { background: #F0655D; color: #0E1116; font-weight: 600; border: none; }
-QListWidget, QTableWidget, QTextBrowser { background: #161B22; border: 1px solid #2A313B; border-radius: 12px; padding: 6px; }
-QListWidget::item { padding: 8px 10px; border-radius: 8px; } QListWidget::item:selected { background: #1E2A44; }
-QHeaderView::section { background: #1E242D; border: none; padding: 6px; } QTabBar::tab { padding: 8px 18px; background: #161B22; border-radius: 8px; margin-right: 4px; } QTabBar::tab:selected { background: #1E2A44; }
-QFrame#banner { background: #2A2416; border: 1px solid #E0A64B; border-radius: 12px; } QFrame#qbanner { background: #14233A; border: 1px solid #6E9BFF; border-radius: 12px; }
-QToolBar { background: transparent; border: none; spacing: 6px; } QStatusBar { color: #9AA4B2; }
-QLabel#muted { color: #9AA4B2; }
+QListWidget::item { padding: 8px 10px; border-radius: 8px; } QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }
+QTabBar::tab { padding: 8px 18px; border-radius: 8px; margin-right: 4px; } QTabBar::tab:selected { background: palette(highlight); color: palette(highlighted-text); }
+QFrame#banner { background: rgba(224,166,75,0.18); border: 1px solid #E0A64B; border-radius: 12px; } QFrame#qbanner { background: rgba(110,155,255,0.18); border: 1px solid palette(highlight); border-radius: 12px; }
+QToolBar { background: transparent; border: none; spacing: 6px; }
+QLabel#muted { color: palette(mid); } QLabel#h1 { font-size: 22px; font-weight: 600; }
 """
 STATUS_COLORS = {"running": "#6E9BFF", "queued": "#9AA4B2", "waiting_approval": "#E0A64B", "waiting_user": "#E0A64B", "done": "#3FCB7E", "failed": "#F0655D", "cancelled": "#9AA4B2"}
 
@@ -208,14 +207,14 @@ class CommandCenter(QMainWindow):
         if isinstance(st, dict) and "mode" in st:
             self.mode.blockSignals(True); self.mode.setCurrentText(st["mode"]); self.mode.blockSignals(False)
             on = st.get("ai_enabled", True); self.ai_switch.setChecked(bool(on)); self.ai_switch.setText("System-Wide AI: %s" % ("ON" if on else "OFF"))
-            self.ai_switch.setStyleSheet("background:#12301F;color:#3FCB7E;font-weight:600" if on else "background:#3A1A18;color:#F0655D;font-weight:600")
+            self.ai_switch.setStyleSheet("background:rgba(63,203,126,0.2);color:#1F9D57;font-weight:600" if on else "background:rgba(240,101,93,0.2);color:#C6362F;font-weight:600")
             self.ask.setEnabled(bool(on)); self.ask.setPlaceholderText("Ask me to do…   e.g. open editor, write hi and send mail to someone@example.com, then tell me when they reply" if on else "System-Wide AI is OFF — turn it on to give the agent tasks")
             msg = "mode: %s · provider: %s%s · mail: %s · pending approvals: %d · active watches: %d" % (st["mode"], st["provider"], "" if st["provider_ready"] else " (NOT CONFIGURED — Settings…)", "ready" if st["mail_ready"] else "not configured", st["pending_approvals"], st["active_watches"])
             self.statusBar().showMessage(msg)
         cur = select_id or self.sel_id(); self.list.blockSignals(True); self.list.clear()
         for t in tasks if isinstance(tasks, list) else []:
             it = QListWidgetItem("#%d  %s\n%s · %s" % (t["id"], t["title"], t["status"].replace("_", " "), ts(t["updated"]))); it.setData(Qt.ItemDataRole.UserRole, t["id"])
-            it.setForeground(Qt.GlobalColor.white); it.setToolTip(t.get("result") or t.get("error") or ""); self.list.addItem(it)
+            it.setToolTip(t.get("result") or t.get("error") or ""); self.list.addItem(it)
             if t["id"] == cur: self.list.setCurrentItem(it)
         self.list.blockSignals(False)
         if cur: self.show_task(cur)
@@ -235,8 +234,9 @@ class CommandCenter(QMainWindow):
         t = api("GET", "/tasks/%d" % tid)
         if "id" not in t: return
         self.current = t; col = STATUS_COLORS.get(t["status"], "#9AA4B2")
+        pal = self.palette(); base = pal.base().color().name(); mid = pal.mid().color().name(); alt = pal.alternateBase().color().name()
         h = ['<div style="font-size:18px;font-weight:600">#%d %s <span style="color:%s;font-size:13px">● %s</span></div>' % (t["id"], esc(t["title"]), col, t["status"].replace("_", " ")),
-             '<div style="color:#9AA4B2;margin:4px 0 12px">%s · mode %s · tokens in/out %s/%s</div><div style="background:#0E1116;border-radius:10px;padding:10px;margin-bottom:12px">%s</div>' % (ts(t["created"]), esc(t.get("mode") or "default"), t["cost_in"], t["cost_out"], esc(t["request"]))]
+             '<div style="color:%s;margin:4px 0 12px">%s · mode %s · tokens in/out %s/%s</div><div style="background:%s;border-radius:10px;padding:10px;margin-bottom:12px">%s</div>' % (mid, ts(t["created"]), esc(t.get("mode") or "default"), t["cost_in"], t["cost_out"], alt, esc(t["request"]))]
         for s in t["steps"]:
             k = s["kind"]
             if k == "tool_call":
@@ -244,15 +244,15 @@ class CommandCenter(QMainWindow):
                 try: inp = json.loads(s["input"] or "{}")
                 except Exception: inp = {"raw": s["input"]}
                 summary = inp.get("command") or inp.get("path") or inp.get("to") or inp.get("url") or inp.get("app") or inp.get("question") or inp.get("message") or inp.get("kind") or ""
-                h.append('<div style="margin:6px 0"><span style="color:#9AA4B2">%s</span> <b>%s</b> <span style="color:%s">%s</span> <span style="color:#9AA4B2">%s</span><div style="font-family:JetBrains Mono,monospace;font-size:12px;color:#C9D1DC;margin-left:70px">%s</div>' % (ts(s["ts"]), esc(s["name"]), rc, s["risk"], esc(s["decision"]), esc(str(summary)[:400])))
+                h.append('<div style="margin:6px 0"><span style="color:#9AA4B2">%s</span> <b>%s</b> <span style="color:%s">%s</span> <span style="color:#9AA4B2">%s</span><div style="font-family:JetBrains Mono,monospace;font-size:12px;margin-left:70px">%s</div>' % (ts(s["ts"]), esc(s["name"]), rc, s["risk"], esc(s["decision"]), esc(str(summary)[:400])))
                 if s["output"]:
                     try: out = json.loads(s["output"]); shown = out.get("stdout") or out.get("error") or out.get("content") or json.dumps(out)[:600]
                     except Exception: shown = s["output"][:600]
-                    h.append('<div style="font-family:JetBrains Mono,monospace;font-size:12px;color:%s;margin-left:70px;white-space:pre-wrap">%s</div>' % ("#F0655D" if "error" in (s["output"] or "")[:20] else "#9AA4B2", esc(str(shown)[:1200])))
+                    h.append('<div style="font-family:JetBrains Mono,monospace;font-size:12px;color:%s;margin-left:70px;white-space:pre-wrap">%s</div>' % ("#F0655D" if "error" in (s["output"] or "")[:20] else mid, esc(str(shown)[:1200])))
                 h.append("</div>")
-            elif k == "assistant": h.append('<div style="margin:8px 0;padding:8px 10px;border-left:3px solid #6E9BFF">%s</div>' % esc(s["output"]))
-            elif k == "final": h.append('<div style="margin:12px 0;padding:10px;border-radius:10px;background:#12301F"><b>Result</b><br>%s</div>' % esc(s["output"]))
-            elif k == "error": h.append('<div style="margin:12px 0;padding:10px;border-radius:10px;background:#3A1A18"><b>Error</b><br>%s</div>' % esc(s["output"]))
+            elif k == "assistant": h.append('<div style="margin:8px 0;padding:8px 10px;border-left:3px solid %s">%s</div>' % (pal.highlight().color().name(), esc(s["output"])))
+            elif k == "final": h.append('<div style="margin:12px 0;padding:10px;border-radius:10px;background:rgba(63,203,126,0.18)"><b>Result</b><br>%s</div>' % esc(s["output"]))
+            elif k == "error": h.append('<div style="margin:12px 0;padding:10px;border-radius:10px;background:rgba(240,101,93,0.18)"><b>Error</b><br>%s</div>' % esc(s["output"]))
             elif k in ("question", "answer", "watch_hit"): h.append('<div style="margin:6px 0;color:#E0A64B">%s <b>%s</b>: %s</div>' % (ts(s["ts"]), k, esc(s["output"] or s["input"])))
         self.detail.setHtml("".join(h)); self.detail.verticalScrollBar().setValue(self.detail.verticalScrollBar().maximum())
         pend = [a for a in t["approvals"] if a["status"] == "pending"]

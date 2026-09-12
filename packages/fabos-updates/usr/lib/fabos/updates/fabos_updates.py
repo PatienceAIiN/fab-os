@@ -8,12 +8,19 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QL
 
 HELPER = "/usr/lib/fabos/updates/helper.sh"
 STYLE = """
-QWidget { background: #0E1116; color: #E6EAF0; font-family: Inter, 'Noto Sans'; font-size: 14px; }
-QPlainTextEdit { background: #161B22; border: 1px solid #2A313B; border-radius: 12px; padding: 8px; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
-QPushButton { background: #1E242D; border: 1px solid #2A313B; border-radius: 10px; padding: 9px 18px; } QPushButton:hover { background: #262d38; }
-QPushButton#primary { background: #6E9BFF; color: #0E1116; font-weight: 600; border: none; }
-QComboBox { background: #161B22; border: 1px solid #2A313B; border-radius: 10px; padding: 7px 12px; }
-QLabel#h1 { font-size: 22px; font-weight: 600; } QLabel#muted { color: #9AA4B2; }
+QWidget { font-family: Inter, 'Noto Sans', sans-serif; font-size: 14px; }
+QLineEdit, QPlainTextEdit, QComboBox, QTextBrowser, QListWidget, QTableWidget { background: palette(base); border: 1px solid palette(mid); border-radius: 10px; padding: 6px 10px; selection-background-color: palette(highlight); }
+QLineEdit:focus, QPlainTextEdit:focus { border-color: palette(highlight); }
+QLineEdit#ask { font-size: 17px; padding: 12px 16px; border-radius: 14px; }
+QPushButton { background: palette(button); border: 1px solid palette(mid); border-radius: 10px; padding: 8px 16px; }
+QPushButton:hover { background: palette(light); }
+QPushButton#primary { background: palette(highlight); color: palette(highlighted-text); font-weight: 600; border: none; }
+QPushButton#approve { background: #3FCB7E; color: #0E1116; font-weight: 600; border: none; } QPushButton#deny { background: #F0655D; color: #0E1116; font-weight: 600; border: none; }
+QListWidget::item { padding: 8px 10px; border-radius: 8px; } QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }
+QTabBar::tab { padding: 8px 18px; border-radius: 8px; margin-right: 4px; } QTabBar::tab:selected { background: palette(highlight); color: palette(highlighted-text); }
+QFrame#banner { background: rgba(224,166,75,0.18); border: 1px solid #E0A64B; border-radius: 12px; } QFrame#qbanner { background: rgba(110,155,255,0.18); border: 1px solid palette(highlight); border-radius: 12px; }
+QToolBar { background: transparent; border: none; spacing: 6px; }
+QLabel#muted { color: palette(mid); } QLabel#h1 { font-size: 22px; font-weight: 600; }
 """
 
 

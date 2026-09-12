@@ -6,6 +6,39 @@ set -eu
 OUT=/usr/local/share/applications; mkdir -p "$OUT"
 rebrand() { # rebrand <src> <dst> <sed-expr>
   sed -E "$3" "$1" > "$2.tmp" && mv "$2.tmp" "$2"; }
+# Visible names for upstream apps (launcher, dock, search). Format: file|Name|GenericName
+NAMES="
+org.kde.konsole.desktop|Console|Terminal
+org.kde.dolphin.desktop|Files|File Manager
+org.kde.kate.desktop|Text Editor|Advanced Text Editor
+org.kde.discover.desktop|Software|Software Center
+org.kde.gwenview.desktop|Photos|Image Viewer
+org.kde.okular.desktop|Documents|Document Viewer
+org.kde.kcalc.desktop|Calculator|Scientific Calculator
+org.kde.ark.desktop|Archives|Archiving Tool
+org.kde.spectacle.desktop|Screenshot|Screenshot Capture Utility
+org.kde.kinfocenter.desktop|System Info|Info Center
+org.kde.plasma-systemmonitor.desktop|System Monitor|System Monitor
+org.kde.krunner.desktop|Search|Search
+org.kde.klipper.desktop|Clipboard|Clipboard Manager
+org.kde.kmenuedit.desktop|Menu Editor|Menu Editor
+org.kde.kfontview.desktop|Font Viewer|Font Viewer
+org.kde.partitionmanager.desktop|Disks|Partition Manager
+org.kde.kwalletmanager.desktop|Fab Wallet|Password Wallet
+org.kde.kdeconnect.app.desktop|Fab Connect|Device Connect
+kdesystemsettings.desktop|System Settings|System Settings
+systemsettings.desktop|System Settings|System Settings
+org.kde.elisa.desktop|Music|Music Player
+org.kde.haruna.desktop|Videos|Media Player
+"
+apply_names() {
+  echo "$NAMES" | while IFS='|' read -r file name generic; do
+    [ -n "$file" ] && [ -f "/usr/share/applications/$file" ] || continue
+    rebrand "/usr/share/applications/$file" "$OUT/$file" "s/^(Name(\[[a-zA-Z_@.]+\])?=).*/\1$name/; s/^(GenericName(\[[a-zA-Z_@.]+\])?=).*/\1$generic/; s/^((Comment)(\[[a-zA-Z_@.]+\])?=.*)KDE /\1/; s/^((Comment)(\[[a-zA-Z_@.]+\])?=.*)KDE/\1Fab OS/"
+    touch "$OUT/$file.fabos"
+  done
+}
+
 for f in /usr/share/applications/*.desktop; do
   b=$(basename "$f"); [ -f "$OUT/$b" ] && [ ! -f "$OUT/$b.fabos" ] && continue   # respect hand-made overrides
   case "$b" in
@@ -20,6 +53,7 @@ for f in /usr/share/applications/*.desktop; do
       fi ;;
   esac
 done
+apply_names
 # System Settings modules (KCMs) that carry the KDE name in their title
 for f in /usr/share/applications/kcm_kwallet*.desktop; do [ -f "$f" ] || continue; b=$(basename "$f")
   rebrand "$f" "$OUT/$b" 's/^(Name(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet/; s/^(Comment(\[[a-zA-Z_@.]+\])?=).*/\1Fab Wallet configuration/'; touch "$OUT/$b.fabos"; done
