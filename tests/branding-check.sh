@@ -44,6 +44,7 @@ chk "ki18n renames Kate -> Fab Editor"       "R 'HOME=/tmp LANGUAGE=en@fabos:en_
 chk "Discover binary never byte-patched"     "R 'test ! -f /usr/bin/plasma-discover.fabos-orig'"
 chk "Konsole binaries never byte-patched"      "R 'test ! -f /usr/bin/konsole.fabos-orig && test ! -f /usr/lib/x86_64-linux-gnu/libkonsoleprivate.so.25.12.3.fabos-orig'"
 chk "mime override + hidden Software Sources"  "R 'test -f /usr/share/mime/packages/Override.xml && grep -q Hidden=true /usr/local/share/applications/software-properties-qt.desktop'"
+chk "light + dark Fab look-and-feel"        "R 'test -f /usr/share/plasma/look-and-feel/in.patienceai.fabos.light.desktop/contents/defaults && grep -q DefaultLightLookAndFeel=in.patienceai.fabos.light.desktop /etc/xdg/kdeglobals'"
 chk "KDE donation nag off"                  "R 'grep -q autoload=false /etc/xdg/kded6rc'"
 chk "no ubuntu account"                     "! R 'grep -q ^ubuntu: /etc/passwd'"
 chk "no unminimize MOTD"                    "R 'test ! -f /etc/update-motd.d/60-unminimize'"

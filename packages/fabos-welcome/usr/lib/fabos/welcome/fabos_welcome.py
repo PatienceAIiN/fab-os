@@ -79,6 +79,9 @@ def main():
         name = "FabDark" if dark.isChecked() else "FabLight"
         if not run("plasma-apply-colorscheme", name):
             run("plasma-apply-colorscheme", "BreezeDark" if dark.isChecked() else "BreezeLight")
+        # keep the global theme in step so Fab Settings > Quick Settings highlights the matching Fab OS tile
+        subprocess.run(["kwriteconfig6", "--file", "kdeglobals", "--group", "KDE", "--key", "LookAndFeelPackage",
+                        "in.patienceai.fabos.desktop" if dark.isChecked() else "in.patienceai.fabos.light.desktop"], capture_output=True, timeout=10)
     dark.toggled.connect(lambda _: apply_scheme())
     light.toggled.connect(lambda _: apply_scheme())
     # Accent colour (Material-expressive: one strong accent the user picks; applied live system-wide)
