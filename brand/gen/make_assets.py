@@ -341,7 +341,7 @@ def build_icon_theme(out, conf):
     # places/preferences names live in apps/ too; KIconLoader searches all listed dirs regardless of Context
     dirs = ",".join(["scalable/apps"] + ["%dx%d/apps" % (s, s) for s in sizes])
     idx = ["[Icon Theme]", "Name=FabOS", "Comment=%s icons: Google Material Symbols on Fab OS tiles; everything else from Breeze" % conf["DISTRO_NAME"],
-           "Inherits=breeze-dark,breeze,hicolor", "Directories=" + dirs, "", "[KDE]", "FollowsColorScheme=true", "", "[scalable/apps]", "Size=64", "MinSize=16", "MaxSize=512", "Type=Scalable", "Context=Applications", ""]
+           "Inherits=breeze-dark,breeze,hicolor", "FollowsColorScheme=true", "Directories=" + dirs, "", "[scalable/apps]", "Size=64", "MinSize=16", "MaxSize=512", "Type=Scalable", "Context=Applications", ""]
     for s in sizes: idx += ["[%dx%d/apps]" % (s, s), "Size=%d" % s, "Type=Fixed", "Context=Applications", ""]
     open(os.path.join(theme, "index.theme"), "w").write("\n".join(idx))
     print("icon theme: %d icon families (%d glyphs fetched), rsvg=%s" % (made, fetched, have_rsvg))
