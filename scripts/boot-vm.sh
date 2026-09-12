@@ -14,7 +14,7 @@ VARS_SRC=$(ls /usr/share/OVMF/OVMF_VARS.fd /usr/share/edk2/ovmf/OVMF_VARS.fd 2>/
 [ -f build/OVMF_VARS.fd ] || cp "$VARS_SRC" build/OVMF_VARS.fd
 ACCEL=$([ -e /dev/kvm ] && echo kvm || echo tcg); CPU=$([ -e /dev/kvm ] && echo host || echo max)
 SERIAL=build/serial-vm.log; : > "$SERIAL"
-args=( -name "FabOS OS" -machine q35,accel=$ACCEL -cpu $CPU -smp "$CPUS" -m "$MEM"
+args=( -name "Fab OS" -machine q35,accel=$ACCEL -cpu $CPU -smp "$CPUS" -m "$MEM"
   -drive if=pflash,format=raw,readonly=on,file="$CODE" -drive if=pflash,format=raw,file=build/OVMF_VARS.fd
   -drive file="$DISK",format=raw,if=virtio,cache=writeback,discard=unmap
   -device qemu-xhci -device usb-tablet -device usb-kbd -device virtio-rng-pci
