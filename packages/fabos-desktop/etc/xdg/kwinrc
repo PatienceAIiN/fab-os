@@ -6,6 +6,7 @@ library=org.kde.breeze
 theme=Breeze
 
 [Plugins]
+overviewEnabled=true
 blurEnabled=true
 slideEnabled=true
 magiclampEnabled=true
@@ -17,5 +18,16 @@ kwin4_effect_translucencyEnabled=true
 zoomEnabled=true
 slidingpopupsEnabled=true
 
+# Multitasking: top-left hot corner opens the Overview (all windows + desktops, like GNOME/Fedora); Meta+W does the same.
+[Effect-overview]
+BorderActivate=7
+TouchBorderActivate=7
+
+# Windows-style arrangement: drag a window to the top to maximise, to a side to tile half, to a corner to tile a quarter;
+# Meta+T opens the tile layout editor, Meta+Arrows quick-tile.
 [Windows]
+ElectricBorderMaximize=true
+ElectricBorderTiling=true
+ElectricBorderCornerRatio=0.25
+ElectricBorderDelay=150
 Placement=Centered

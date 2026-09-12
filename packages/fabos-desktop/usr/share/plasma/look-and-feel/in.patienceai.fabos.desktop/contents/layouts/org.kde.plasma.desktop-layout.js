@@ -7,7 +7,11 @@ var top = new Panel
 top.location = "top"; top.height = Math.round(gridUnit * 2.0); top.floating = false; top.hiding = "none"
 top.addWidget("org.kde.plasma.appmenu")
 top.addWidget("org.kde.plasma.panelspacer")
-top.addWidget("org.kde.plasma.digitalclock")
+var clock = top.addWidget("org.kde.plasma.digitalclock")
+clock.currentConfigGroup = ["Appearance"]          // "Sat 13 Sep · 12:47 AM" on one bold line
+clock.writeConfig("showDate", true); clock.writeConfig("dateDisplayFormat", "BesideTime")
+clock.writeConfig("dateFormat", "custom"); clock.writeConfig("customDateFormat", "ddd d MMM")
+clock.writeConfig("autoFontAndSize", false); clock.writeConfig("fontFamily", "Inter"); clock.writeConfig("fontWeight", 700); clock.writeConfig("boldText", true); clock.writeConfig("fontSize", 11)
 top.addWidget("org.kde.plasma.panelspacer")
 top.addWidget("org.kde.plasma.systemtray")   // battery (with %), Wi-Fi, volume, bluetooth are pinned visible by /usr/lib/fabos/tray-defaults at login
 top.addWidget("org.kde.plasma.showdesktop")
@@ -22,7 +26,7 @@ kickoff.writeConfig("showActionButtonCaptions", false)
 kickoff.writeConfig("primaryActions", 0)
 var tasks = dock.addWidget("org.kde.plasma.icontasks")
 tasks.currentConfigGroup = ["General"]
-tasks.writeConfig("launchers", ["applications:fabos-command-center.desktop", "applications:org.kde.dolphin.desktop", "applications:org.kde.konsole.desktop",
+tasks.writeConfig("launchers", ["applications:fabos-overview.desktop", "applications:fabos-command-center.desktop", "applications:org.kde.dolphin.desktop", "applications:org.kde.konsole.desktop",
   "applications:org.kde.kate.desktop", "applications:firefox.desktop", "applications:systemsettings.desktop", "applications:org.kde.discover.desktop"])
 tasks.writeConfig("iconSpacing", 1)
 tasks.writeConfig("highlightWindows", true)
