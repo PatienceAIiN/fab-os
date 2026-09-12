@@ -49,5 +49,6 @@ chk "shortcut component names overridden"    "R 'grep -q ^Name=Fab\ Terminal /us
 chk "Ubuntu web shortcut hidden"            "R 'grep -q Hidden=true /usr/local/share/kf6/searchproviders/ubuntu.desktop'"
 chk "AppStream names for system apps"       "R 'test -f /usr/share/swcatalog/xml/fabos-names.xml'"
 chk "KWin runner disabled by real id"       "R 'grep -q krunner_kwinEnabled=false /etc/xdg/krunnerrc'"
+chk "wired network managed by NetworkManager" "R 'grep -q renderer:\ NetworkManager /etc/netplan/01-fabos-network-manager.yaml'"
 chk "icon theme follows colour scheme"      "R 'grep -q FollowsColorScheme=true /usr/share/icons/FabOS/index.theme'"
 exit $fail

@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -30,6 +30,20 @@ CREATE TABLE IF NOT EXISTS reactions (
 CREATE TABLE IF NOT EXISTS reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL, reason TEXT NOT NULL,
   created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS newsletter_subscribers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE,
+  community INTEGER NOT NULL DEFAULT 1, updates INTEGER NOT NULL DEFAULT 1, product INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'subscribed', manage_token_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, unsubscribed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS releases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT NOT NULL, title TEXT NOT NULL,
+  body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', published_at TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );`);
 
 const r2 = process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && process.env.R2_ENDPOINT
@@ -44,9 +58,20 @@ function token() { return randomBytes(24).toString('base64url'); }
 function hash(value) { return createHash('sha256').update(value).digest('hex'); }
 function clean(value, max) { return String(value ?? '').trim().slice(0, max); }
 function validEmail(value) { return !value || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value); }
+function email(value) { return clean(value, 160).toLowerCase(); }
 function json(response, status, data) { response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(data)); }
 function error(response, status, message) { json(response, status, { error: message }); }
 function clientIp(request) { return String(request.headers['x-forwarded-for'] || request.socket.remoteAddress || 'unknown').split(',')[0].trim(); }
+function cookies(request) { return Object.fromEntries(String(request.headers.cookie || '').split(';').map(part => part.trim().split('=').map(decodeURIComponent)).filter(pair => pair.length === 2)); }
+function sameSecret(left, right) { const a = Buffer.from(String(left)); const b = Buffer.from(String(right)); return a.length === b.length && timingSafeEqual(a, b); }
+function adminSession(request) {
+  const value = cookies(request).fabos_admin;
+  if (!value) return false;
+  const row = db.prepare('SELECT token_hash FROM admin_sessions WHERE token_hash = ? AND expires_at > ?').get(hash(value), now());
+  return Boolean(row);
+}
+function requireAdmin(request, response) { if (!adminSession(request)) { error(response, 401, 'Admin authentication required.'); return false; } return true; }
+function adminCookie(response, value, maxAge) { response.setHeader('Set-Cookie', `fabos_admin=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`); }
 function allow(request, response, bucketName, limit = 20, windowMs = 60_000) {
   const key = `${bucketName}:${clientIp(request)}`;
   const current = rate.get(key) || { count: 0, at: Date.now() };
@@ -87,7 +112,83 @@ async function notify(email, subject, text) {
     await fetch('https://api.brevo.com/v3/smtp/email', { method: 'POST', headers: { 'api-key': process.env.BREVO_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ sender: { email: process.env.BREVO_SENDER_EMAIL, name: process.env.BREVO_SENDER_NAME || 'Patience AI' }, to: [{ email }], subject, textContent: text }) });
   } catch { /* notification failure must not break community actions */ }
 }
+function publicRelease(row) { return { id: row.id, version: row.version, title: row.title, body: row.body, status: row.status, publishedAt: row.published_at, createdAt: row.created_at, updatedAt: row.updated_at }; }
+async function newsletterApi(request, response, url) {
+  if (request.method === 'POST' && url.pathname === '/api/newsletter/subscribe') {
+    if (!allow(request, response, 'newsletter', 5, 300_000)) return;
+    const body = await readJson(request, response); if (!body) return;
+    const address = email(body.email);
+    if (!address || !validEmail(address)) return error(response, 400, 'Enter a valid email address.');
+    if (body.consent !== true) return error(response, 400, 'Please confirm the newsletter subscription.');
+    const selected = { community: body.community !== false ? 1 : 0, updates: body.updates !== false ? 1 : 0, product: body.product !== false ? 1 : 0 };
+    const manageToken = token(); const timestamp = now();
+    const existing = db.prepare('SELECT id FROM newsletter_subscribers WHERE email = ?').get(address);
+    if (existing) db.prepare('UPDATE newsletter_subscribers SET community=?,updates=?,product=?,status=\'subscribed\',manage_token_hash=?,updated_at=?,unsubscribed_at=NULL WHERE email=?').run(selected.community, selected.updates, selected.product, hash(manageToken), timestamp, address);
+    else db.prepare('INSERT INTO newsletter_subscribers(email,community,updates,product,status,manage_token_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').run(address, selected.community, selected.updates, selected.product, 'subscribed', hash(manageToken), timestamp, timestamp);
+    const manageUrl = `https://fabos.patienceai.in/newsletter/?token=${encodeURIComponent(manageToken)}`;
+    void notify(address, 'Welcome to Fab OS updates', `Welcome to Fab OS by Patience AI.\n\nYou are subscribed to public product news, community notes, and release updates.\n\nManage preferences: ${manageUrl}\nOpt out: ${manageUrl}&action=unsubscribe\n\nYou can change your choices or unsubscribe at any time.`);
+    return json(response, 202, { ok: true, message: 'You are subscribed. Check your inbox for the welcome message and manage links.' });
+  }
+  if (url.pathname === '/api/newsletter/manage' && request.method === 'GET') {
+    const manageToken = clean(url.searchParams.get('token'), 160); const row = db.prepare('SELECT email,community,updates,product,status FROM newsletter_subscribers WHERE manage_token_hash = ?').get(hash(manageToken));
+    if (!row) return error(response, 404, 'This newsletter link is not valid or has expired.');
+    return json(response, 200, { email: row.email, community: Boolean(row.community), updates: Boolean(row.updates), product: Boolean(row.product), status: row.status });
+  }
+  if (url.pathname === '/api/newsletter/manage' && request.method === 'POST') {
+    if (!allow(request, response, 'newsletter-manage', 20)) return;
+    const body = await readJson(request, response); if (!body) return;
+    const manageToken = clean(body.token, 160); const row = db.prepare('SELECT id FROM newsletter_subscribers WHERE manage_token_hash = ?').get(hash(manageToken));
+    if (!row) return error(response, 404, 'This newsletter link is not valid or has expired.');
+    const timestamp = now();
+    if (body.action === 'unsubscribe') db.prepare('UPDATE newsletter_subscribers SET status=\'unsubscribed\',updated_at=?,unsubscribed_at=? WHERE id=?').run(timestamp, timestamp, row.id);
+    else db.prepare('UPDATE newsletter_subscribers SET community=?,updates=?,product=?,status=\'subscribed\',updated_at=?,unsubscribed_at=NULL WHERE id=?').run(body.community === true ? 1 : 0, body.updates === true ? 1 : 0, body.product === true ? 1 : 0, timestamp, row.id);
+    return json(response, 200, { ok: true });
+  }
+  return error(response, 404, 'Newsletter route not found.');
+}
+async function adminApi(request, response, url) {
+  if (request.method === 'POST' && url.pathname === '/api/admin/login') {
+    if (!allow(request, response, 'admin-login', 8, 900_000)) return;
+    const body = await readJson(request, response); if (!body) return;
+    const username = clean(body.username, 80); const password = String(body.password || '');
+    if (!sameSecret(username, process.env.ADMIN_USERNAME || 'admin') || !process.env.ADMIN_PASSWORD || !sameSecret(password, process.env.ADMIN_PASSWORD)) return error(response, 401, 'Invalid admin credentials.');
+    const session = token(); const timestamp = Date.now(); const expires = new Date(timestamp + 8 * 60 * 60 * 1000).toISOString();
+    db.prepare('INSERT INTO admin_sessions(token_hash,created_at,expires_at) VALUES(?,?,?)').run(hash(session), new Date(timestamp).toISOString(), expires);
+    db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(now());
+    adminCookie(response, session, 8 * 60 * 60);
+    return json(response, 200, { ok: true });
+  }
+  if (request.method === 'POST' && url.pathname === '/api/admin/logout') { adminCookie(response, '', 0); return json(response, 200, { ok: true }); }
+  if (!requireAdmin(request, response)) return;
+  if (request.method === 'GET' && url.pathname === '/api/admin/overview') {
+    const subscribers = db.prepare('SELECT id,email,community,updates,product,status,created_at,updated_at FROM newsletter_subscribers ORDER BY id DESC').all();
+    const posts = db.prepare('SELECT * FROM posts WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200').all().map(row => ({ ...publicPost(row), email: row.email }));
+    const reports = db.prepare('SELECT * FROM reports ORDER BY id DESC LIMIT 200').all();
+    const releases = db.prepare('SELECT * FROM releases ORDER BY id DESC').all().map(publicRelease);
+    return json(response, 200, { subscribers, posts, reports, releases });
+  }
+  const subscriberMatch = url.pathname.match(/^\/api\/admin\/subscribers\/(\d+)$/);
+  if (subscriberMatch && request.method === 'DELETE') { db.prepare('DELETE FROM newsletter_subscribers WHERE id=?').run(Number(subscriberMatch[1])); return json(response, 200, { ok: true }); }
+  const postMatch = url.pathname.match(/^\/api\/admin\/community\/posts\/(\d+)$/);
+  if (postMatch && request.method === 'DELETE') { db.prepare('UPDATE posts SET deleted_at=? WHERE id=?').run(now(), Number(postMatch[1])); return json(response, 200, { ok: true }); }
+  const commentMatch = url.pathname.match(/^\/api\/admin\/community\/comments\/(\d+)$/);
+  if (commentMatch && request.method === 'DELETE') { db.prepare('UPDATE comments SET deleted_at=? WHERE id=?').run(now(), Number(commentMatch[1])); return json(response, 200, { ok: true }); }
+  if (url.pathname === '/api/admin/releases' && request.method === 'POST') {
+    const body = await readJson(request, response); if (!body) return;
+    const version = clean(body.version, 40); const title = clean(body.title, 160); const text = clean(body.body, 5000); const status = ['draft', 'published', 'archived'].includes(body.status) ? body.status : 'draft';
+    if (!version || !title || !text) return error(response, 400, 'Version, title, and notes are required.');
+    const timestamp = now(); const published = status === 'published' ? timestamp : null;
+    const result = db.prepare('INSERT INTO releases(version,title,body,status,published_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(version, title, text, status, published, timestamp, timestamp);
+    return json(response, 201, { release: publicRelease(db.prepare('SELECT * FROM releases WHERE id=?').get(Number(result.lastInsertRowid))) });
+  }
+  const releaseMatch = url.pathname.match(/^\/api\/admin\/releases\/(\d+)$/);
+  if (releaseMatch && request.method === 'DELETE') { db.prepare('DELETE FROM releases WHERE id=?').run(Number(releaseMatch[1])); return json(response, 200, { ok: true }); }
+  return error(response, 404, 'Admin route not found.');
+}
 async function api(request, response, url) {
+  if (url.pathname.startsWith('/api/newsletter/')) return newsletterApi(request, response, url);
+  if (url.pathname.startsWith('/api/admin/')) return adminApi(request, response, url);
+  if (request.method === 'GET' && url.pathname === '/api/releases') return json(response, 200, { releases: db.prepare('SELECT * FROM releases WHERE status = \'published\' ORDER BY published_at DESC').all().map(publicRelease) });
   if (request.method === 'GET' && url.pathname === '/api/community/posts') {
     const posts = db.prepare('SELECT * FROM posts WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 100').all();
     return json(response, 200, { posts: posts.map(publicPost) });
