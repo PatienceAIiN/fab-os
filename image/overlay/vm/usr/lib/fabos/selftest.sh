@@ -23,6 +23,10 @@ out=/dev/ttyS0; [ -w $out ] || out=/dev/console
   echo "AGENT_TASK=$TID:$ST"
   echo "AGENT_NOTE=$(cat /home/$U/Documents/fabos-note.txt 2>/dev/null | head -1)"
   echo "AGENT_KATE=$(pgrep -c -u $U kate)"
+  RT=$($RU fabos --json do --mode bypass "check the system as root" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  for i in $(seq 1 20); do RS=$($RU fabos --json show "$RT" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))"); case "$RS" in done|failed|cancelled) break;; esac; sleep 1; done
+  echo "AGENT_ROOT=$RS:$($RU fabos --json show "$RT" 2>/dev/null | python3 -c "
+import sys,json; t=json.load(sys.stdin); o=[s for s in t['steps'] if s['name']=='run_shell']; print(json.loads(o[0]['output']).get('stdout','').replace(chr(10),'/') if o else 'no-step')")"
   echo "FEEDBACK_SOCKET=$(systemctl is-active fabos-feedback.socket)"
   echo "UPDATE_TIMER=$(systemctl is-active fabos-update-check.timer)"
   echo "SESSION_NAME=$(grep ^Name= /usr/local/share/wayland-sessions/fabos.desktop | cut -d= -f2)"

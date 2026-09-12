@@ -5,18 +5,22 @@ import org.kde.plasma.plasmoid
 import org.kde.plasma.plasma5support as P5Support
 import org.kde.kirigami as Kirigami
 
-// "Ask me to do…" bar that lives on the Fab OS desktop. Hands the request to the Fab OS agent (fabos-agentd)
-// through the `fabos` CLI and shows the agent's live status underneath.
+// "Ask me to do…" — lives in its own centred floating panel under the top bar. Hands the request to the Fab OS
+// agent (fabos-agentd) through the `fabos` CLI. Status is shown only when it matters (not configured / working).
 PlasmoidItem {
     id: root
+    Kirigami.Theme.colorSet: Kirigami.Theme.Window
+    Kirigami.Theme.inherit: false
     preferredRepresentation: fullRepresentation
-    Layout.minimumWidth: Kirigami.Units.gridUnit * 24
-    Layout.minimumHeight: Kirigami.Units.gridUnit * 5
-    Layout.preferredWidth: Kirigami.Units.gridUnit * 36
-    Layout.preferredHeight: Kirigami.Units.gridUnit * 5.4
+    Layout.preferredWidth: Kirigami.Units.gridUnit * 38
+    Layout.minimumWidth: Kirigami.Units.gridUnit * 26
+    Layout.fillHeight: true
 
-    property string status: "Fab OS agent"
-    property string lastTask: ""
+    property string status: ""
+    property bool configured: true
+    property bool busy: false
+    property bool sending: false
+    readonly property bool showStatus: !configured || busy || sending
 
     function shellQuote(s) { return "'" + s.replace(/'/g, "'\\''") + "'" }
 
@@ -28,62 +32,102 @@ PlasmoidItem {
             var out = (data["stdout"] || "").trim()
             disconnectSource(source)
             if (source.indexOf("fabos do ") === 0) {
-                root.lastTask = out.length ? out : "Task started"
-                root.status = root.lastTask
-            } else if (source.indexOf("fabos status") === 0 && out.length) {
-                root.status = out
+                root.sending = false
+                root.status = out.length ? out : "Task started"
+                root.busy = true
+            } else if (source.indexOf("fabos status") === 0) {
+                root.configured = out.indexOf("not configured") === -1
+                root.busy = /running|queued|awaiting|approval|waiting/.test(out)
+                root.status = root.configured ? (root.busy ? out : "") : "AI provider not configured — click here to open Command Center → Settings"
             }
         }
     }
-    Timer { interval: 4000; running: true; repeat: true; triggeredOnStart: true
-            onTriggered: exec.connectSource("fabos status --brief 2>/dev/null || echo 'Fab OS agent is starting…'") }
+    Timer { interval: 3000; running: true; repeat: true; triggeredOnStart: true
+            onTriggered: exec.connectSource("fabos status --brief 2>/dev/null") }
 
-    Rectangle {
+    function submit() {
+        var t = field.text.trim()
+        if (!t.length || root.sending) return
+        root.sending = true
+        exec.connectSource("fabos do " + root.shellQuote(t) + " 2>&1 | head -1")
+        field.text = ""
+    }
+
+    ColumnLayout {
         anchors.fill: parent
-        radius: 18
-        color: Qt.rgba(0.086, 0.106, 0.133, 0.92)
-        border.color: field.activeFocus ? "#6E9BFF" : "#2A313B"
-        border.width: 1
-
+        anchors.leftMargin: Kirigami.Units.smallSpacing * 2
+        anchors.rightMargin: Kirigami.Units.smallSpacing * 2
+        spacing: 2
         RowLayout {
-            id: row
-            anchors { left: parent.left; right: parent.right; top: parent.top; margins: 10 }
-            spacing: 10
-            Kirigami.Icon { source: "fabos"; Layout.preferredWidth: 30; Layout.preferredHeight: 30 }
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignVCenter
+            spacing: Kirigami.Units.smallSpacing * 2
+            Kirigami.Icon {
+                source: "fabos"
+                Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium + 6
+                Layout.preferredHeight: Layout.preferredWidth
+                Rectangle {   // state dot: green = ready, amber = working, red = not configured
+                    width: 9; height: 9; radius: 4.5; anchors.right: parent.right; anchors.bottom: parent.bottom
+                    color: !root.configured ? "#F0655D" : (root.busy || root.sending ? "#E0A64B" : "#3FCB7E")
+                    border.color: Kirigami.Theme.backgroundColor; border.width: 1.5
+                    Behavior on color { ColorAnimation { duration: 250 } }
+                }
+            }
             QQC2.TextField {
                 id: field
                 Layout.fillWidth: true
-                placeholderText: "Ask me to do…   e.g. open editor, write hi and mail it to someone@example.com"
-                font.family: "Inter"; font.pixelSize: 15; color: "white"; placeholderTextColor: "#8892A0"
-                background: Rectangle { radius: 10; color: "#0E1116"; border.color: field.activeFocus ? "#6E9BFF" : "#2A313B" }
-                onAccepted: {
-                    var t = text.trim()
-                    if (!t.length) return
-                    root.status = "Sending to the agent…"
-                    exec.connectSource("fabos do " + root.shellQuote(t) + " 2>&1 | head -1")
-                    text = ""
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 2.2
+                placeholderText: root.configured ? "Ask me to do anything…" : "Ask me to do anything… (add an AI provider first)"
+                font.family: "Inter"; font.pixelSize: 15; color: Kirigami.Theme.textColor; placeholderTextColor: Kirigami.Theme.disabledTextColor
+                leftPadding: 14; rightPadding: 14; verticalAlignment: TextInput.AlignVCenter
+                background: Rectangle {
+                    radius: height / 2; color: Kirigami.Theme.backgroundColor
+                    border.color: field.activeFocus ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor; border.width: field.activeFocus ? 1.5 : 1
+                    Behavior on border.color { ColorAnimation { duration: 180 } }
                 }
+                onAccepted: root.submit()
             }
-            QQC2.Button {
-                text: "Do it"
-                Layout.preferredWidth: Kirigami.Units.gridUnit * 5; Layout.preferredHeight: field.height
-                font.family: "Inter"; font.weight: Font.DemiBold
-                contentItem: Text { text: parent.text; font: parent.font; color: "#0E1116"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                background: Rectangle { radius: 10; color: parent.down ? "#5A86E8" : "#6E9BFF" }
-                onClicked: field.accepted()
-            }
-            QQC2.ToolButton {
-                icon.name: "view-list-details"
-                QQC2.ToolTip.text: "Open Command Center (history, approvals, settings)"
-                QQC2.ToolTip.visible: hovered
-                onClicked: exec.connectSource("setsid -f fabos-command-center >/dev/null 2>&1; echo opened")
+            // Do it — animated pill button
+            Rectangle {
+                id: go
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 5.2
+                Layout.preferredHeight: field.height
+                radius: height / 2
+                color: goArea.pressed ? Qt.darker(Kirigami.Theme.highlightColor, 1.2) : (goArea.containsMouse ? Qt.lighter(Kirigami.Theme.highlightColor, 1.15) : Kirigami.Theme.highlightColor)
+                scale: goArea.pressed ? 0.95 : (goArea.containsMouse ? 1.04 : 1.0)
+                opacity: field.text.trim().length || root.sending ? 1.0 : 0.65
+                Behavior on color { ColorAnimation { duration: 160 } }
+                Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutBack } }
+                Behavior on opacity { NumberAnimation { duration: 160 } }
+                Text {
+                    anchors.centerIn: parent
+                    text: root.sending ? "" : "Do it"
+                    color: Kirigami.Theme.highlightedTextColor; font.family: "Inter"; font.pixelSize: 14; font.weight: Font.DemiBold
+                }
+                Kirigami.Icon {   // spinner while sending
+                    anchors.centerIn: parent; width: 18; height: 18; source: "fabos"; visible: root.sending
+                    RotationAnimation on rotation { from: 0; to: 360; duration: 900; loops: Animation.Infinite; running: root.sending }
+                }
+                MouseArea {
+                    id: goArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.submit()
+                }
             }
         }
         Text {
-            anchors { left: parent.left; right: parent.right; bottom: parent.bottom; leftMargin: 52; rightMargin: 14; bottomMargin: 7 }
+            id: statusText
+            Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.iconSizes.smallMedium + 6 + Kirigami.Units.smallSpacing * 2
+            visible: root.showStatus && root.status.length > 0
             text: root.status
-            color: "#9AA4B2"; font.family: "Inter"; font.pixelSize: 11; elide: Text.ElideRight
+            color: root.configured ? Kirigami.Theme.disabledTextColor : Kirigami.Theme.neutralTextColor
+            font.family: "Inter"; font.pixelSize: 11; elide: Text.ElideRight
+            opacity: visible ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 200 } }
             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: exec.connectSource("setsid -f fabos-command-center >/dev/null 2>&1; echo opened") }
         }
     }
+    // right-click / middle-click anywhere: open Command Center
+    MouseArea { anchors.fill: parent; acceptedButtons: Qt.RightButton | Qt.MiddleButton; z: -1
+                onClicked: exec.connectSource("setsid -f fabos-command-center >/dev/null 2>&1; echo opened") }
 }

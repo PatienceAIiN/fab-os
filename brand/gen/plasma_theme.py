@@ -15,9 +15,13 @@ def _rgba(rgb, a):
     return "rgba(%d,%d,%d,%.3f)" % (rgb[0], rgb[1], rgb[2], a)
 
 
+STYLE = ('<style type="text/css" id="current-color-scheme">.ColorScheme-Text{color:#E6EAF0;}.ColorScheme-Background{color:#0E1116;}'
+         '.ColorScheme-ViewBackground{color:#161B22;}.ColorScheme-Highlight{color:#6E9BFF;}.ColorScheme-ButtonBackground{color:#1E242D;}</style>')
+
+
 def frame_svg(radius, alpha, margin, border="#2A313B", fill=INK):
     R, M = radius, margin
-    c = _rgba(fill, alpha)
+    c = "__SCHEME_BG__"   # replaced below with class-based currentColor so light/dark follow the system scheme
     # Corner pieces: R x R squares with the OUTER corner rounded (arc sweep chosen so the curve bulges outward).
     paths = {
         "topleft":     "M 0 %d A %d %d 0 0 1 %d 0 L %d %d L 0 %d Z" % (R, R, R, R, R, R, R),
@@ -31,10 +35,12 @@ def frame_svg(radius, alpha, margin, border="#2A313B", fill=INK):
 
     def pieces(prefix, color, dx):
         out = ['<g transform="translate(%d,0)">' % dx]
+        def attrs(col):
+            return ('class="ColorScheme-Background" style="fill:currentColor;fill-opacity:%.3f"' % alpha) if col == "__SCHEME_BG__" else 'fill="%s"' % col
         for n, d in paths.items():
-            out.append('<path id="%s%s" d="%s" fill="%s"/>' % (prefix, n, d, color))
+            out.append('<path id="%s%s" d="%s" %s/>' % (prefix, n, d, attrs(color)))
         for n, (x, y, w, h) in rects.items():
-            out.append('<rect id="%s%s" x="%d" y="%d" width="%d" height="%d" fill="%s"/>' % (prefix, n, x, y, w, h, color))
+            out.append('<rect id="%s%s" x="%d" y="%d" width="%d" height="%d" %s/>' % (prefix, n, x, y, w, h, attrs(color)))
         out.append("</g>")
         return out
     body = pieces("", c, 0) + pieces("mask-", "#000000", 3 * R + 10)
@@ -43,8 +49,8 @@ def frame_svg(radius, alpha, margin, border="#2A313B", fill=INK):
     for i, side in enumerate(("top", "bottom", "left", "right")):
         w, h = (1, M) if side in ("top", "bottom") else (M, 1)
         hints.append('<rect id="hint-%s-margin" x="%d" y="0" width="%d" height="%d" fill="none"/>' % (side, hx + i * 12, w, h))
-    return ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d">%s%s</svg>'
-            % (hx + 60, 3 * R + 4, "".join(body), "".join(hints)))
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d"><defs>%s</defs>%s%s</svg>'
+            % (hx + 60, 3 * R + 4, STYLE, "".join(body), "".join(hints)))
 
 
 def write_theme(out, conf):

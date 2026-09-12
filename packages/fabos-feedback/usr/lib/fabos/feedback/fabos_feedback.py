@@ -57,8 +57,7 @@ def gui(args):
     from PyQt6.QtWidgets import QApplication, QDialog, QVBoxLayout, QFormLayout, QComboBox, QLineEdit, QPlainTextEdit, QCheckBox, QDialogButtonBox, QLabel, QMessageBox
     app = QApplication(sys.argv)
     app.setApplicationName("Fab OS Feedback")
-    app.setStyleSheet("QDialog{background:#0E1116} QWidget{color:#E6EAF0;font-family:Inter,'Noto Sans';font-size:14px} QLineEdit,QPlainTextEdit,QComboBox{background:#161B22;border:1px solid #2A313B;border-radius:10px;padding:8px}"
-                      " QPushButton{background:#6E9BFF;color:#0E1116;border-radius:10px;padding:8px 16px;font-weight:600} QLabel#muted{color:#9AA4B2}")
+    app.setStyleSheet("QWidget{font-family:Inter,'Noto Sans';font-size:14px} QLineEdit,QPlainTextEdit,QComboBox{border:1px solid palette(mid);border-radius:10px;padding:8px} QPushButton{border-radius:10px;padding:8px 16px} QLabel#muted{color:palette(mid)}")
     d = QDialog()
     d.setWindowTitle("Send feedback to Patience AI")
     d.setMinimumWidth(560)

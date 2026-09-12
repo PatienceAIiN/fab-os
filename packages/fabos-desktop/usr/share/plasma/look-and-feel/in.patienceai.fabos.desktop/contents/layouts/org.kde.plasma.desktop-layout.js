@@ -31,5 +31,11 @@ for (var j = 0; j < desktops.length; j++) {
   d.wallpaperPlugin = "org.kde.image"
   d.currentConfigGroup = ["Wallpaper", "org.kde.image", "General"]
   d.writeConfig("Image", "/usr/share/wallpapers/FabOS/")
-  d.addWidget("in.patienceai.fabos.askbar", 260, 90, 760, 100)
 }
+
+// "Ask me to do…": its own floating, centred panel under the top bar — centred on any screen size
+var ask = new Panel
+ask.location = "top"; ask.floating = true; ask.hiding = "none"
+ask.lengthMode = "fit"; ask.alignment = "center"
+ask.height = Math.round(gridUnit * 3.6)
+ask.addWidget("in.patienceai.fabos.askbar")

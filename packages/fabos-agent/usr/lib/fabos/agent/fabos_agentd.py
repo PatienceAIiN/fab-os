@@ -135,7 +135,8 @@ def del_secret(name):
 TOOLS = [
     {"name": "run_shell",
      "description": "Run a shell command on this computer (bash). Use for anything the OS can do: inspect files, run programs, git, compilers, tests, package managers (privileged commands need approval). Returns stdout, stderr and exit code. Start long-running GUI apps with open_app instead.",
-     "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string", "description": "working directory (default: home)"}, "timeout_s": {"type": "integer", "default": 120}}, "required": ["command"]}},
+     "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string", "description": "working directory (default: home)"}, "timeout_s": {"type": "integer", "default": 120},
+                                                       "as_root": {"type": "boolean", "default": False, "description": "run as root for system administration (apt, systemctl, modprobe, sysctl, /etc, disks). CRITICAL risk: requires the user's approval unless their mode is bypass. Do not write sudo in the command."}}, "required": ["command"]}},
     {"name": "read_file", "description": "Read a text file (UTF-8). Returns up to 200 KB.",
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
     {"name": "write_file", "description": "Create or overwrite a text file (creates parent directories). Use append=true to append.",
@@ -252,6 +253,8 @@ def classify(tool, inp):
         return "MEDIUM", "background job with notifications"
     if tool == "run_shell":
         c = inp.get("command", "")
+        if inp.get("as_root"):
+            return "CRITICAL", "runs as root"
         worst, why = "MEDIUM", "runs a command"
         for pat, risk, reason in DANGER:
             if re.search(pat, c, re.I) and RISK.index(risk) > RISK.index(worst):
@@ -292,9 +295,41 @@ class Tools:
         except Exception as e:
             return {"error": "%s: %s" % (type(e).__name__, e)}, True
 
+    def run_as_root(self, task_id, command, cwd, timeout):
+        """Root execution through /usr/lib/fabos/agent/rootexec. The policy gate has already allowed this CRITICAL step;
+        a one-time authorization record (owned by the user, 10-minute validity) is consumed by the sudoers-whitelisted
+        executor, so nothing runs as root that the daemon did not explicitly authorize."""
+        authz_dir = os.path.join(RUN_DIR, "authz")
+        os.makedirs(authz_dir, mode=0o700, exist_ok=True)
+        aid = uuid.uuid4().hex
+        rec = {"command": command, "cwd": cwd if cwd.startswith("/") else "/", "timeout_s": timeout, "task_id": task_id, "created": time.time()}
+        p = os.path.join(authz_dir, aid + ".json")
+        with open(p, "w") as f:
+            json.dump(rec, f)
+        os.chmod(p, 0o600)
+        try:
+            r = subprocess.run(["sudo", "-n", "/usr/lib/fabos/agent/rootexec", aid], capture_output=True, text=True, timeout=timeout + 15)
+        except subprocess.TimeoutExpired:
+            return {"error": "timeout after %ss (root)" % timeout}
+        finally:
+            try:
+                os.remove(p)
+            except FileNotFoundError:
+                pass
+        if r.returncode != 0 and not r.stdout.strip().startswith("{"):
+            return {"error": "root execution unavailable: %s" % (r.stderr.strip() or "sudo refused (user not in the sudo group, or the fabos-agent sudoers rule is missing)")}
+        try:
+            out = json.loads(r.stdout.strip().splitlines()[-1])
+        except Exception:
+            out = {"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stderr": r.stderr[-10000:]}
+        self.store.activity("agent", "root_exec", task_id, command[:300])
+        return out
+
     def t_run_shell(self, task_id, inp):
         cwd = os.path.expanduser(inp.get("cwd") or HOME)
         to = min(int(inp.get("timeout_s") or 120), 1800)
+        if inp.get("as_root"):
+            return self.run_as_root(task_id, inp["command"], cwd, to)
         try:
             r = subprocess.run(["bash", "-lc", inp["command"]], cwd=cwd, capture_output=True, text=True, timeout=to, env=self.agent.session_env())
             return {"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stderr": r.stderr[-10000:]}
@@ -484,6 +519,7 @@ How to work:
 - For coding tasks: create a project under ~/Projects/<name>, write the code and tests, run them with run_shell, fix failures, then summarise what was built and how it was verified.
 - For email: send_email to send; check_email to read. To wait for a reply after sending, call schedule_watch(kind="email_reply", from_contains=<recipient address>, ...) so the user is notified and, if asked, a follow-up task runs automatically. Then finish; never poll in a loop.
 - Applications: every installed app (system, Flatpak, user) is available to you the moment it is installed. Use list_apps to discover names, launch commands and supported file types, open_app to launch them, and their CLI or D-Bus interfaces via run_shell (KDE apps: qdbus6 / kdialog / kioclient). Installed now ({app_count} apps): {app_names}.
+- System administration (packages, services, kernel modules, sysctl, disks, files under /etc or /usr) is done with run_shell(as_root=true). It is CRITICAL risk: the user approves it unless their mode is bypass. Never put sudo in the command; as_root already runs it as root. Verify the result afterwards (e.g. systemctl is-active, dpkg -s, lsmod).
 - Every tool call passes a deterministic policy check (risk LOW/MEDIUM/HIGH/CRITICAL against the user's permission mode). A denied call returns an error: respect it, explain, and find an allowed way or stop.
 - Never fabosate results. Report exactly what happened, including partial failures. Keep the final message short: what was done, where outputs are, what the user should look at.
 - Current user: {user}. Home: {home}. Date/time: {now}. Permission mode: {mode}."""
@@ -606,6 +642,8 @@ class FakeProvider:
                 plan.append(tu("schedule_watch", {"kind": "email_reply", "from_contains": addr, "notify_message": "Reply received to your Fab OS note", "interval_minutes": 2}))
         elif "fail" in low:
             plan = [tu("run_shell", {"command": "exit 3"})]
+        elif "as root" in low:
+            plan = [tu("run_shell", {"command": "id -u; systemctl is-active sddm; sysctl -n kernel.hostname", "as_root": True})]
         elif "privileged" in low:
             plan = [tu("run_shell", {"command": "sudo -n true"})]
         else:

@@ -65,6 +65,7 @@ PY
   find "$dst" -path "$dst/DEBIAN" -prune -o -type f -exec chmod 644 {} +
   chmod 755 "$dst"/DEBIAN/post* "$dst"/DEBIAN/pre* 2>/dev/null || true
   chmod 755 "$dst"/usr/bin/* "$dst"/usr/lib/fabos/motd/* 2>/dev/null || true
+  [ -f "$dst/etc/sudoers.d/fabos-agent" ] && chmod 0440 "$dst/etc/sudoers.d/fabos-agent"
   find "$dst/usr/lib/fabos" -type f \( -name "*.sh" -o -name "*.py" -o -name "rebrand-*" \) -exec chmod 755 {} + 2>/dev/null || true
   ver=$(sed -n 's/^Version: //p' "$dst/DEBIAN/control"); arch=$(sed -n 's/^Architecture: //p' "$dst/DEBIAN/control")
   dpkg-deb --root-owner-group -Zxz --build "$dst" "$OUT/${name}_${ver}_${arch}.deb"

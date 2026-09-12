@@ -1,25 +1,72 @@
 #!/usr/bin/env python3
-"""Replace 'KDE Wallet' with 'Fab Wallet' (same byte length, UTF-8 and UTF-16LE) inside the wallet plugin/service so
-System Settings and unlock prompts show Fab Wallet. Idempotent; a .fabos-orig copy is kept next to each patched file."""
-import os, shutil, sys
-TARGETS = ["/usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/*/kcm_kwallet*.so", "/usr/bin/kwalletd6", "/usr/bin/ksecretd", "/usr/bin/kwalletmanager5",
-           "/usr/lib/x86_64-linux-gnu/libKF6Wallet.so.6", "/usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/kded/kwalletd6.so",
-           "/usr/share/locale/en*/LC_MESSAGES/kcmkwallet.mo", "/usr/share/locale/en*/LC_MESSAGES/kwalletd6.mo", "/usr/share/locale/en*/LC_MESSAGES/kwalletmanager.mo"]
-PAIRS = [(b"KDE Wallet", b"Fab Wallet"), ("KDE Wallet".encode("utf-16-le"), "Fab Wallet".encode("utf-16-le")),
-         (b"KWallet Manager", b"Fab OS  Wallet "), ("KWallet Manager".encode("utf-16-le"), "Fab OS  Wallet ".encode("utf-16-le"))]
-import glob
-for pat in list(TARGETS) + glob.glob("/usr/lib/x86_64-linux-gnu/libKF6Wallet.so.6.*"):
-    for path in glob.glob(pat):
-        if not os.path.isfile(path) or os.path.islink(path):
-            continue
-        data = open(path, "rb").read()
-        new = data
-        for a, b in PAIRS:
-            assert len(a) == len(b)
-            new = new.replace(a, b)
-        if new != data:
-            if not os.path.exists(path + ".fabos-orig"):
-                shutil.copy2(path, path + ".fabos-orig")
-            tmp = path + ".fabos-tmp"
-            open(tmp, "wb").write(new); shutil.copymode(path, tmp); os.replace(tmp, path)
-            print("patched", path)
+"""Fab OS vendor-string rebrand for a short list of binaries and English message catalogs.
+
+Rules are strictly LENGTH-PRESERVING and applied only to display strings:
+  * UTF-16LE literals (Qt QString data) are never part of ELF symbol names, so they are replaced anywhere.
+  * UTF-8 replacements in ELF files only for patterns that contain a space (mangled C++ symbols never do),
+    so dynamic linking is never affected.  .mo catalogs have no symbols and get the full rule set.
+Originals are kept as <file>.fabos-orig; idempotent; re-run by the apt Post-Invoke hook after upgrades.
+See legal/PATCHED-BINARIES.md.
+"""
+import glob, os, shutil
+
+ELF_TARGETS = [
+    "/usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/*/kcm_kwallet*.so",
+    "/usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/*/kcm_about-distro.so",
+    "/usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/kded/kwalletd6.so",
+    "/usr/lib/x86_64-linux-gnu/libKF6Wallet.so.6*", "/usr/lib/x86_64-linux-gnu/libKF6XmlGui.so.6*",
+    "/usr/lib/x86_64-linux-gnu/libKF6WidgetsAddons.so.6*",
+    "/usr/bin/kwalletd6", "/usr/bin/ksecretd", "/usr/bin/kwalletmanager5", "/usr/bin/konsole", "/usr/bin/kinfocenter",
+    "/usr/lib/x86_64-linux-gnu/libkonsoleprivate.so.1*", "/usr/lib/x86_64-linux-gnu/libkonsoleapp.so.1*",
+]
+MO_TARGETS = ["/usr/share/locale/en*/LC_MESSAGES/kcmkwallet.mo", "/usr/share/locale/en*/LC_MESSAGES/kwalletd6.mo",
+              "/usr/share/locale/en*/LC_MESSAGES/kwalletmanager.mo", "/usr/share/locale/en*/LC_MESSAGES/kcm_about-distro.mo",
+              "/usr/share/locale/en*/LC_MESSAGES/kxmlgui6.mo", "/usr/share/locale/en*/LC_MESSAGES/konsole.mo"]
+
+# (old, new) — identical byte length per encoding
+COMMON = [
+    ("KDE Wallet", "Fab Wallet"), ("KDE wallet", "Fab wallet"),
+    ("KWallet Manager", "Fab Wallet Tool"), ("KWallet ", "Wallet  "),
+    ("About &KDE", "About &Fab"), ("About KDE", "About Fab"),
+    ("KDE Plasma Version", "Desktop UI Version"), ("KDE Frameworks Version", "UI Frameworks Version "),
+    ("KDE Plasma", "Fab OS UI "), ("KDE Frameworks", "UI Frameworks "),
+    ("Konsole ", "Console "), (" Konsole", " Console"), ("— Konsole", "— Console"),
+]
+UTF16_ONLY = [("KWalletManager", "Fab Wallet App"), ("KWallet", "Wallet "), ("Konsole", "Console"), ("KDE", "Fab")]
+MO_EXTRA = [("KWallet", "Wallet "), ("Konsole", "Console"), ("KDE e.V.", "Fab OS  ")]
+
+
+def patch(path, rules_utf8, rules_utf16):
+    data = open(path, "rb").read()
+    new = data
+    for a, b in rules_utf16:
+        ea, eb = a.encode("utf-16-le"), b.encode("utf-16-le")
+        assert len(ea) == len(eb), (a, b)
+        new = new.replace(ea, eb)
+    for a, b in rules_utf8:
+        ea, eb = a.encode(), b.encode()
+        assert len(ea) == len(eb), (a, b)
+        new = new.replace(ea, eb)
+    if new != data:
+        if not os.path.exists(path + ".fabos-orig"):
+            shutil.copy2(path, path + ".fabos-orig")
+        tmp = path + ".fabos-tmp"
+        open(tmp, "wb").write(new)
+        shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+        print("patched", path)
+
+
+def main():
+    for pat in ELF_TARGETS:
+        for p in glob.glob(pat):
+            if os.path.isfile(p) and not os.path.islink(p) and not p.endswith((".fabos-orig", ".fabos-tmp")):
+                patch(p, COMMON, COMMON + UTF16_ONLY)
+    for pat in MO_TARGETS:
+        for p in glob.glob(pat):
+            if os.path.isfile(p) and not p.endswith(".fabos-orig"):
+                patch(p, COMMON + MO_EXTRA, [])
+
+
+if __name__ == "__main__":
+    main()

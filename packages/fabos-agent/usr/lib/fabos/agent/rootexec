@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""fabos rootexec — the agent's only path to root. Invoked as `sudo -n /usr/lib/fabos/agent/rootexec <authz-id>`
+(sudoers: members of the sudo group may run exactly this program without a password).
+
+It executes a command as root ONLY if the calling user's agent daemon wrote an authorization record for it:
+  $XDG_RUNTIME_DIR/fabos-agent/authz/<authz-id>.json  {"command": ..., "cwd": ..., "created": ts}
+owned by the invoking user (SUDO_UID), younger than 10 minutes, consumed once. The record is written by
+fabos-agentd after the deterministic policy + the user's mode/approval allowed a CRITICAL as_root step.
+Output: JSON {exit_code, stdout, stderr} on stdout."""
+import json, os, subprocess, sys, time
+
+def fail(msg, code=2):
+    print(json.dumps({"error": msg}))
+    sys.exit(code)
+
+if len(sys.argv) != 2 or not sys.argv[1].replace("-", "").isalnum():
+    fail("usage: rootexec <authz-id>")
+uid = os.environ.get("SUDO_UID")
+if not uid or os.geteuid() != 0:
+    fail("must be run through sudo by a logged-in user")
+uid = int(uid)
+path = "/run/user/%d/fabos-agent/authz/%s.json" % (uid, sys.argv[1])
+try:
+    st = os.lstat(path)
+except FileNotFoundError:
+    fail("no authorization record for this action")
+if st.st_uid != uid or os.path.islink(path):
+    fail("authorization record not owned by caller")
+if time.time() - st.st_mtime > 600:
+    os.remove(path)
+    fail("authorization expired")
+rec = json.load(open(path))
+os.remove(path)  # single use
+cmd = rec.get("command", "")
+if not cmd.strip():
+    fail("empty command")
+env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LANG": "C.UTF-8", "DEBIAN_FRONTEND": "noninteractive",
+       "FABOS_AGENT_ROOT_TASK": str(rec.get("task_id", ""))}
+try:
+    r = subprocess.run(["bash", "-lc", cmd], cwd=rec.get("cwd") or "/", capture_output=True, text=True, timeout=min(int(rec.get("timeout_s") or 300), 3600), env=env)
+    print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stderr": r.stderr[-10000:]}))
+except subprocess.TimeoutExpired:
+    print(json.dumps({"error": "timeout"}))
