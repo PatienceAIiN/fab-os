@@ -38,11 +38,18 @@ UTF16_ONLY = [("KWalletManager", "Fab Wallet App"), ("KWallet", "Wallet "), ("Ko
               ("System Monitor", "Fab OS Monitor"), ("Info Center", "System Info"), ("Discover", "Software")]
 # NOTE: never add a bare ("KDE", ...) rule for binaries: UTF-16 literals such as KDE_FULL_SESSION are functional.
 MO_EXTRA = [("KWallet", "Wallet "), ("Konsole", "Console"), ("KDE e.V.", "Fab OS  ")]
+# Whole-word UTF-8 literals terminated by NUL (C string literals such as i18n("Konsole")): a NUL-terminated whole word
+# cannot be part of a mangled symbol (which never ends right after the product name), so these are safe in ELF files.
+UTF8_NUL = [("Konsole", "Console"), ("Discover", "Software")]
 
 
-def patch(path, rules_utf8, rules_utf16):
+def patch(path, rules_utf8, rules_utf16, rules_nul=()):
     data = open(path, "rb").read()
     new = data
+    for a, b in rules_nul:
+        ea, eb = a.encode() + b"\x00", b.encode() + b"\x00"
+        assert len(ea) == len(eb), (a, b)
+        new = new.replace(b"\x00" + ea, b"\x00" + eb)   # require a NUL before too: a standalone literal, not a suffix
     for a, b in rules_utf16:
         ea, eb = a.encode("utf-16-le"), b.encode("utf-16-le")
         assert len(ea) == len(eb), (a, b)
@@ -65,7 +72,7 @@ def main():
     for pat in ELF_TARGETS:
         for p in glob.glob(pat, recursive=True):
             if os.path.isfile(p) and not os.path.islink(p) and not p.endswith((".fabos-orig", ".fabos-tmp")):
-                patch(p, COMMON, COMMON + UTF16_ONLY)
+                patch(p, COMMON, COMMON + UTF16_ONLY, UTF8_NUL)
     for pat in MO_TARGETS:
         for p in glob.glob(pat):
             if os.path.isfile(p) and not p.endswith(".fabos-orig"):

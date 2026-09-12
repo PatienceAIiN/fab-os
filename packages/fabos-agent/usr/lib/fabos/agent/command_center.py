@@ -268,7 +268,10 @@ def main():
     app = QApplication(sys.argv); app.setApplicationName(APP + " Command Center"); app.setDesktopFileName("fabos-command-center"); app.setStyleSheet(STYLE)
     f = QFont("Inter", 10); app.setFont(f)
     pre = sys.argv[sys.argv.index("--prefill") + 1] if "--prefill" in sys.argv and len(sys.argv) > sys.argv.index("--prefill") + 1 else ""
-    w = CommandCenter(focus_ask="--ask" in sys.argv, prefill=pre); w.show(); sys.exit(app.exec())
+    w = CommandCenter(focus_ask="--ask" in sys.argv, prefill=pre); w.show()
+    if "--settings" in sys.argv:
+        QTimer.singleShot(300, w.settings)   # open the Settings dialog on top (AI provider tab is where the keys go)
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
