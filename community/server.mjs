@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS newsletter_subscribers (
   id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE,
   community INTEGER NOT NULL DEFAULT 1, updates INTEGER NOT NULL DEFAULT 1, product INTEGER NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'subscribed', manage_token_hash TEXT NOT NULL,
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, unsubscribed_at TEXT
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, unsubscribed_at TEXT, manage_token_expires_at TEXT
 );
 CREATE TABLE IF NOT EXISTS admin_sessions (
   token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL
@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS releases (
   body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', published_at TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );`);
+try { db.exec('ALTER TABLE newsletter_subscribers ADD COLUMN manage_token_expires_at TEXT'); } catch { /* already present */ }
 
 const r2 = process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && process.env.R2_ENDPOINT
   ? new S3Client({ endpoint: process.env.R2_ENDPOINT, region: 'auto', credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY } })
@@ -121,23 +122,23 @@ async function newsletterApi(request, response, url) {
     if (!address || !validEmail(address)) return error(response, 400, 'Enter a valid email address.');
     if (body.consent !== true) return error(response, 400, 'Please confirm the newsletter subscription.');
     const selected = { community: body.community !== false ? 1 : 0, updates: body.updates !== false ? 1 : 0, product: body.product !== false ? 1 : 0 };
-    const manageToken = token(); const timestamp = now();
+    const manageToken = token(); const timestamp = now(); const manageExpires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     const existing = db.prepare('SELECT id FROM newsletter_subscribers WHERE email = ?').get(address);
-    if (existing) db.prepare('UPDATE newsletter_subscribers SET community=?,updates=?,product=?,status=\'subscribed\',manage_token_hash=?,updated_at=?,unsubscribed_at=NULL WHERE email=?').run(selected.community, selected.updates, selected.product, hash(manageToken), timestamp, address);
-    else db.prepare('INSERT INTO newsletter_subscribers(email,community,updates,product,status,manage_token_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').run(address, selected.community, selected.updates, selected.product, 'subscribed', hash(manageToken), timestamp, timestamp);
+    if (existing) db.prepare('UPDATE newsletter_subscribers SET community=?,updates=?,product=?,status=\'subscribed\',manage_token_hash=?,updated_at=?,unsubscribed_at=NULL,manage_token_expires_at=? WHERE email=?').run(selected.community, selected.updates, selected.product, hash(manageToken), timestamp, manageExpires, address);
+    else db.prepare('INSERT INTO newsletter_subscribers(email,community,updates,product,status,manage_token_hash,created_at,updated_at,manage_token_expires_at) VALUES(?,?,?,?,?,?,?,?,?)').run(address, selected.community, selected.updates, selected.product, 'subscribed', hash(manageToken), timestamp, timestamp, manageExpires);
     const manageUrl = `https://fabos.patienceai.in/newsletter/?token=${encodeURIComponent(manageToken)}`;
     void notify(address, 'Welcome to Fab OS updates', `Welcome to Fab OS by Patience AI.\n\nYou are subscribed to public product news, community notes, and release updates.\n\nManage preferences: ${manageUrl}\nOpt out: ${manageUrl}&action=unsubscribe\n\nYou can change your choices or unsubscribe at any time.`);
     return json(response, 202, { ok: true, message: 'You are subscribed. Check your inbox for the welcome message and manage links.' });
   }
   if (url.pathname === '/api/newsletter/manage' && request.method === 'GET') {
-    const manageToken = clean(url.searchParams.get('token'), 160); const row = db.prepare('SELECT email,community,updates,product,status FROM newsletter_subscribers WHERE manage_token_hash = ?').get(hash(manageToken));
+    const manageToken = clean(url.searchParams.get('token'), 160); const row = db.prepare('SELECT email,community,updates,product,status FROM newsletter_subscribers WHERE manage_token_hash = ? AND manage_token_expires_at > ?').get(hash(manageToken), now());
     if (!row) return error(response, 404, 'This newsletter link is not valid or has expired.');
     return json(response, 200, { email: row.email, community: Boolean(row.community), updates: Boolean(row.updates), product: Boolean(row.product), status: row.status });
   }
   if (url.pathname === '/api/newsletter/manage' && request.method === 'POST') {
     if (!allow(request, response, 'newsletter-manage', 20)) return;
     const body = await readJson(request, response); if (!body) return;
-    const manageToken = clean(body.token, 160); const row = db.prepare('SELECT id FROM newsletter_subscribers WHERE manage_token_hash = ?').get(hash(manageToken));
+    const manageToken = clean(body.token, 160); const row = db.prepare('SELECT id FROM newsletter_subscribers WHERE manage_token_hash = ? AND manage_token_expires_at > ?').get(hash(manageToken), now());
     if (!row) return error(response, 404, 'This newsletter link is not valid or has expired.');
     const timestamp = now();
     if (body.action === 'unsubscribe') db.prepare('UPDATE newsletter_subscribers SET status=\'unsubscribed\',updated_at=?,unsubscribed_at=? WHERE id=?').run(timestamp, timestamp, row.id);
@@ -168,6 +169,12 @@ async function adminApi(request, response, url) {
     return json(response, 200, { subscribers, posts, reports, releases });
   }
   const subscriberMatch = url.pathname.match(/^\/api\/admin\/subscribers\/(\d+)$/);
+  if (subscriberMatch && request.method === 'PATCH') {
+    const body = await readJson(request, response); if (!body) return;
+    const status = body.status === 'unsubscribed' ? 'unsubscribed' : 'subscribed';
+    db.prepare('UPDATE newsletter_subscribers SET status=?,community=?,updates=?,product=?,updated_at=?,unsubscribed_at=? WHERE id=?').run(status, body.community === true ? 1 : 0, body.updates === true ? 1 : 0, body.product === true ? 1 : 0, now(), status === 'unsubscribed' ? now() : null, Number(subscriberMatch[1]));
+    return json(response, 200, { ok: true });
+  }
   if (subscriberMatch && request.method === 'DELETE') { db.prepare('DELETE FROM newsletter_subscribers WHERE id=?').run(Number(subscriberMatch[1])); return json(response, 200, { ok: true }); }
   const postMatch = url.pathname.match(/^\/api\/admin\/community\/posts\/(\d+)$/);
   if (postMatch && request.method === 'DELETE') { db.prepare('UPDATE posts SET deleted_at=? WHERE id=?').run(now(), Number(postMatch[1])); return json(response, 200, { ok: true }); }
@@ -182,6 +189,15 @@ async function adminApi(request, response, url) {
     return json(response, 201, { release: publicRelease(db.prepare('SELECT * FROM releases WHERE id=?').get(Number(result.lastInsertRowid))) });
   }
   const releaseMatch = url.pathname.match(/^\/api\/admin\/releases\/(\d+)$/);
+  if (releaseMatch && request.method === 'PATCH') {
+    const body = await readJson(request, response); if (!body) return;
+    const existing = db.prepare('SELECT * FROM releases WHERE id=?').get(Number(releaseMatch[1])); if (!existing) return error(response, 404, 'Release note not found.');
+    const version = clean(body.version, 40); const title = clean(body.title, 160); const text = clean(body.body, 5000); const status = ['draft', 'published', 'archived'].includes(body.status) ? body.status : existing.status;
+    if (!version || !title || !text) return error(response, 400, 'Version, title, and notes are required.');
+    const timestamp = now(); const published = status === 'published' ? (existing.published_at || timestamp) : null;
+    db.prepare('UPDATE releases SET version=?,title=?,body=?,status=?,published_at=?,updated_at=? WHERE id=?').run(version, title, text, status, published, timestamp, Number(releaseMatch[1]));
+    return json(response, 200, { release: publicRelease(db.prepare('SELECT * FROM releases WHERE id=?').get(Number(releaseMatch[1]))) });
+  }
   if (releaseMatch && request.method === 'DELETE') { db.prepare('DELETE FROM releases WHERE id=?').run(Number(releaseMatch[1])); return json(response, 200, { ok: true }); }
   return error(response, 404, 'Admin route not found.');
 }
@@ -271,6 +287,6 @@ function staticFile(response, pathname) {
 createServer(async (request, response) => {
   const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
   if (url.pathname.startsWith('/api/community/media/')) return media(response, decodeURIComponent(url.pathname.slice('/api/community/media/'.length)));
-  if (url.pathname.startsWith('/api/community/')) return api(request, response, url);
+  if (url.pathname.startsWith('/api/')) return api(request, response, url);
   return staticFile(response, url.pathname);
 }).listen(port, '127.0.0.1', () => console.log(`Fab OS community: http://127.0.0.1:${port}/community/`));
