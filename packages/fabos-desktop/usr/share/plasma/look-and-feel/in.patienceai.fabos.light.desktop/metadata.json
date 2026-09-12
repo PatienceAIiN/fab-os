@@ -2,10 +2,10 @@
   "KPackageStructure": "Plasma/LookAndFeel",
   "KPlugin": {
     "Authors": [{"Email": "support@patienceai.in", "Name": "@VENDOR_NAME@"}],
-    "Description": "@DISTRO_NAME@ look and feel: calm dark surfaces, Inter type, woven accent",
-    "Id": "in.patienceai.fabos.desktop",
+    "Description": "@DISTRO_NAME@ look and feel: bright surfaces, Inter type, woven accent",
+    "Id": "in.patienceai.fabos.light.desktop",
     "License": "Apache-2.0",
-    "Name": "@DISTRO_NAME@ Dark",
+    "Name": "@DISTRO_NAME@ Light",
     "Version": "@DISTRO_VERSION@",
     "Website": "@HOME_URL@"
   },

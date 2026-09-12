@@ -16,5 +16,7 @@ Theme=FabOS
 
 [KDE]
 LookAndFeelPackage=in.patienceai.fabos.desktop
+DefaultDarkLookAndFeel=in.patienceai.fabos.desktop
+DefaultLightLookAndFeel=in.patienceai.fabos.light.desktop
 SingleClick=false
 AnimationDurationFactor=1
