@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Welcome to @DISTRO_NAME@
+Exec=fabos-welcome
+Icon=fabos
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=2
+NoDisplay=true
