@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+case "$1" in remove|deconfigure) systemctl unmask plymouth-quit.service plymouth-quit-wait.service 2>/dev/null || true ;; esac
+exit 0
