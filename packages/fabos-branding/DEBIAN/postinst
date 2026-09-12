@@ -13,6 +13,7 @@ case "$1" in configure)
   divert /etc/issue.net            /usr/lib/fabos/issue.net
   divert /etc/legal                /usr/lib/fabos/legal
   divert /etc/dpkg/origins/default /etc/dpkg/origins/fabos
+  divert /etc/plymouth/plymouthd.conf /usr/lib/fabos/plymouthd.conf
   divert /etc/update-motd.d/00-header    /usr/lib/fabos/motd/00-header
   divert /etc/update-motd.d/10-help-text /usr/lib/fabos/motd/10-help-text
   # KDE telemetry / user-feedback KCM: hide it (reports go to Patience AI via fabos-feedback instead)

@@ -1,0 +1,21 @@
+[Unit]
+Description=Fab OS community API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fab-os-community
+EnvironmentFile=/etc/fabos-community.env
+ExecStart=/usr/bin/node /opt/fab-os-community/server.mjs
+Restart=always
+RestartSec=3
+User=www-data
+Group=www-data
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/fab-os-community
+
+[Install]
+WantedBy=multi-user.target
