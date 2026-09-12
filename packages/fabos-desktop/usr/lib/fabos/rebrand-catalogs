@@ -27,24 +27,38 @@ RULES = [
     (r"\bKate\b", "Fab Editor", None),
     (r"\bGwenview\b", "Fab Photos", None),
     (r"\bOkular\b", "Fab Documents", None),
-    (r"\bKCalc\b", "Fab Calculator", None),
+    (r"KDE Calculator", "Fab OS Calculator", r"^kcalc$"), (r"\bKCalc\b", "Fab Calculator", None),
+    (r"KDE Screenshot Utility", "Fab OS Screenshot Utility", r"^spectacle$"),
+    (r"KWin Screencasting is not available\.", "Fab OS screencasting is unavailable.", r"^spectacle$"),
     (r"\bSpectacle\b", "Fab Screenshot", None),
+    (r"KDE Archiving tool", "Fab OS Archiving tool", r"^ark$"),
+    (r"\bArk's\b", "Fab Archives'", r"^ark$"), (r"Close &Ark after extraction", "Close Fab &Archives after extraction", r"^ark$"),
     (r"\bArk\b", "Fab Archives", r"^ark$"),
-    (r"\bDiscover\b", "Fab Software", r"discover"),
+    (r"\bDiscover\b", "Fab Software", r"discover|^kio6$|^gwenview$|^xdg-desktop-portal-kde$"),
     (r"\bKRunner\b", "Fab Search", None),
+    (r"\bKlipper\b", "Fab Clipboard", r"^klipper$"),
     (r"\bKInfoCenter\b|\bInfo Center\b|\bInfo Centre\b", "Fab System Info", None),
-    (r"\bSystem Settings\b", "Fab Settings", None),
+    (r"KDE System Settings", "Fab Settings", None), (r"\bSystem Settings\b", "Fab Settings", None),
+    (r"Central configuration (center|centre) by KDE\.", r"The configuration \1 for Fab OS.", r"^systemsettings$"),
     (r"\bSystem Monitor\b", "Fab Monitor", None),
     (r"\bElisa\b", "Fab Music", r"^elisa"), (r"\bHaruna\b", "Fab Videos", r"^haruna"),
     (r"KDE Connect", "Fab Connect", None),
     (r"About &KDE", "About &Desktop Platform", None), (r"About KDE", "About Desktop Platform", None),
     (r"KDE Frameworks", "UI Frameworks", None),
+    (r"KDE Wayland Compositor", "Fab OS Wayland Compositor", r"^kwin$"),
     (r"KDE Plasma|Plasma Desktop|Plasma Workspace", "Fab OS Desktop", None),
     (r"\bPlasma\b", "Fab OS", None),
     (r"\bKWin\b", "Window Manager", None),
+    (r"KDE SSL Information", "SSL Information", r"^kio6$"), (r"KDE programs\b", "Fab OS programs", r"^kio6$"),
+    (r"KDE program\b", "Fab OS program", r"^kio6$"), (r"KDE detected", "Fab OS detected", r"^kio6$"),
+    (r"KDE is able", "Fab OS is able", r"^kio6$"), (r"update of KDE\.", "update of Fab OS.", r"^kio6$"),
+    (r"KDE input/output", "Fab OS input/output", r"^kio6$"),
+    (r"in all KDE applications", "in all Fab OS applications", r"^dolphin$|^kcm_dolphin"),
+    (r"KDED is not running\.", "Service unavailable.", r"^kcm_disks$"),
+    (r"KDE Certificate Manager \(kleopatra\) not found", "Certificate Manager (kleopatra) was not found", r"^okular$"),
 ]
 # never rewrite attribution, legal text, addresses or links
-SKIP = re.compile(r"Copyright|©|\(c\)|\(C\)|[Aa]uthor|[Mm]aintainer|[Dd]evelop|[Cc]ontribut|KDE e\.V\.|[Ll]icen[sc]e|://|@[a-z0-9-]+\.[a-z]|[Tt]ranslat|EMAIL OF|NAME OF")
+SKIP = re.compile(r"Copyright|©|\(c\)|\(C\)|[Aa]uthor|[Mm]aintainer|[Dd]evelop|[Cc]ontribut|KDE e\.V\.|[Ll]icen[sc]e|://|@[a-z0-9-]+\.[a-z]|[Tt]ranslat|EMAIL OF|NAME OF|Designer of")
 HEADER = (b"Project-Id-Version: fabos-branding\nLanguage: en@fabos\nMIME-Version: 1.0\n"
           b"Content-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nPlural-Forms: nplurals=2; plural=(n != 1);\n")
 

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fab OS: display names of a few file types (shared-mime-info applies Override.xml last). -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/vnd.kde.okular-archive"><comment>Fab Documents archive</comment></mime-type>
+  <mime-type type="application/x-kcolorscheme"><comment>Colour scheme</comment></mime-type>
+  <mime-type type="application/x-ksysguard"><comment>Fab Monitor page</comment></mime-type>
+  <mime-type type="application/x-ktheme"><comment>Desktop theme</comment></mime-type>
+</mime-info>
