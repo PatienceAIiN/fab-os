@@ -12,9 +12,11 @@ PlasmoidItem {
     Kirigami.Theme.colorSet: Kirigami.Theme.Window
     Kirigami.Theme.inherit: false
     preferredRepresentation: fullRepresentation
-    Layout.preferredWidth: Kirigami.Units.gridUnit * 38
-    Layout.minimumWidth: Kirigami.Units.gridUnit * 26
+    Layout.preferredWidth: Kirigami.Units.gridUnit * 34
+    Layout.minimumWidth: Kirigami.Units.gridUnit * 22
+    Layout.maximumWidth: Kirigami.Units.gridUnit * 40
     Layout.fillHeight: true
+    readonly property bool compact: height < Kirigami.Units.gridUnit * 3.4   // inside a panel: one row, status as tooltip
 
     property string status: ""
     property bool configured: true
@@ -55,8 +57,10 @@ PlasmoidItem {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.leftMargin: Kirigami.Units.smallSpacing * 2
-        anchors.rightMargin: Kirigami.Units.smallSpacing * 2
+        anchors.leftMargin: Kirigami.Units.smallSpacing
+        anchors.rightMargin: Kirigami.Units.smallSpacing
+        anchors.topMargin: root.compact ? Kirigami.Units.smallSpacing : 0
+        anchors.bottomMargin: root.compact ? Kirigami.Units.smallSpacing : 0
         spacing: 2
         RowLayout {
             Layout.fillWidth: true
@@ -76,8 +80,8 @@ PlasmoidItem {
             QQC2.TextField {
                 id: field
                 Layout.fillWidth: true
-                Layout.preferredHeight: Kirigami.Units.gridUnit * 2.2
-                placeholderText: root.configured ? "Ask me to do anything…" : "Ask me to do anything… (add an AI provider first)"
+                Layout.preferredHeight: root.compact ? Math.max(Kirigami.Units.gridUnit * 1.6, root.height - Kirigami.Units.smallSpacing * 2) : Kirigami.Units.gridUnit * 2.2
+                placeholderText: root.configured ? "Ask me to do anything…" : "Ask me to do anything…  (no AI provider yet — right-click to set one up)"
                 font.family: "Inter"; font.pixelSize: 15; color: Kirigami.Theme.textColor; placeholderTextColor: Kirigami.Theme.disabledTextColor
                 leftPadding: 14; rightPadding: 14; verticalAlignment: TextInput.AlignVCenter
                 background: Rectangle {
@@ -118,7 +122,7 @@ PlasmoidItem {
             id: statusText
             Layout.fillWidth: true
             Layout.leftMargin: Kirigami.Units.iconSizes.smallMedium + 6 + Kirigami.Units.smallSpacing * 2
-            visible: root.showStatus && root.status.length > 0
+            visible: !root.compact && root.showStatus && root.status.length > 0
             text: root.status
             color: root.configured ? Kirigami.Theme.disabledTextColor : Kirigami.Theme.neutralTextColor
             font.family: "Inter"; font.pixelSize: 11; elide: Text.ElideRight
@@ -127,6 +131,9 @@ PlasmoidItem {
             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: exec.connectSource("setsid -f fabos-command-center >/dev/null 2>&1; echo opened") }
         }
     }
+    QQC2.ToolTip.visible: root.compact && root.showStatus && root.status.length > 0 && hoverHandler.hovered
+    QQC2.ToolTip.text: root.status
+    HoverHandler { id: hoverHandler }
     // right-click / middle-click anywhere: open Command Center
     MouseArea { anchors.fill: parent; acceptedButtons: Qt.RightButton | Qt.MiddleButton; z: -1
                 onClicked: exec.connectSource("setsid -f fabos-command-center >/dev/null 2>&1; echo opened") }

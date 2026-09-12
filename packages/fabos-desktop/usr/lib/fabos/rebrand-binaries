@@ -12,7 +12,7 @@ import glob, os, shutil
 
 ELF_TARGETS = [
     "/usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/*/kcm_kwallet*.so",
-    "/usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/*/kcm_about-distro.so",
+    "/usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/**/*about-distro*.so", "/usr/lib/x86_64-linux-gnu/libsystemsettingsview.so*",
     "/usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/kded/kwalletd6.so",
     "/usr/lib/x86_64-linux-gnu/libKF6Wallet.so.6*", "/usr/lib/x86_64-linux-gnu/libKF6XmlGui.so.6*",
     "/usr/lib/x86_64-linux-gnu/libKF6WidgetsAddons.so.6*",
@@ -32,6 +32,7 @@ COMMON = [
     ("KDE Plasma Version", "Desktop UI Version"), ("KDE Frameworks Version", "UI Frameworks Version "),
     ("KDE Plasma", "Fab OS UI "), ("KDE Frameworks", "UI Frameworks "),
     ("Konsole ", "Console "), (" Konsole", " Console"), ("— Konsole", "— Console"),
+    ("System Settings", "Fab OS Settings"), ("System Monitor", "Fab OS Monitor"), ("Info Center", "System Info"),
 ]
 UTF16_ONLY = [("KWalletManager", "Fab Wallet App"), ("KWallet", "Wallet "), ("Konsole", "Console"), ("System Settings", "Fab OS Settings"),
               ("System Monitor", "Fab OS Monitor"), ("Info Center", "System Info"), ("Discover", "Software")]
@@ -62,7 +63,7 @@ def patch(path, rules_utf8, rules_utf16):
 
 def main():
     for pat in ELF_TARGETS:
-        for p in glob.glob(pat):
+        for p in glob.glob(pat, recursive=True):
             if os.path.isfile(p) and not os.path.islink(p) and not p.endswith((".fabos-orig", ".fabos-tmp")):
                 patch(p, COMMON, COMMON + UTF16_ONLY)
     for pat in MO_TARGETS:
