@@ -86,9 +86,11 @@ class SettingsDialog(QDialog):
         # --- mail
         w = QWidget(); f = QFormLayout(w); self.m = {}
         for key, label, default in (("mail.user", "Account (login / address)", ""), ("mail.from", "From address (optional)", ""), ("mail.imap_host", "IMAP host", ""), ("mail.imap_port", "IMAP port", "993"),
-                                    ("mail.smtp_host", "SMTP host", ""), ("mail.smtp_port", "SMTP port", "587"), ("mail.smtp_security", "SMTP security (starttls/ssl/none)", "starttls")):
+                                    ("mail.smtp_host", "SMTP host", ""), ("mail.smtp_port", "SMTP port", "587"), ("mail.smtp_security", "SMTP security (starttls/ssl/none)", "starttls"),
+                                    ("mail.transport", "Transport (smtp / brevo)", "smtp"), ("mail.from_name", "Sender name (brevo)", "")):
             e = QLineEdit(s.get(key, default)); self.m[key] = e; f.addRow(label, e)
         self.mail_pw = QLineEdit(); self.mail_pw.setEchoMode(QLineEdit.EchoMode.Password); self.mail_pw.setPlaceholderText("stored" if s["secrets"].get("mail_password") else "password or app password"); f.addRow("Password", self.mail_pw)
+        self.mail_api = QLineEdit(); self.mail_api.setEchoMode(QLineEdit.EchoMode.Password); self.mail_api.setPlaceholderText("stored" if s["secrets"].get("mail_api_key") else "Brevo API key (transport brevo)"); f.addRow("API key", self.mail_api)
         tabs.addTab(w, "Mail")
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel); bb.accepted.connect(self.save); bb.rejected.connect(self.reject); lay.addWidget(bb)
 
@@ -103,6 +105,7 @@ class SettingsDialog(QDialog):
         for pid, (m, u, k) in self.pfields.items():
             if k.text(): api("POST", "/secrets", {"name": pid + "_api_key", "value": k.text()})
         if self.mail_pw.text(): api("POST", "/secrets", {"name": "mail_password", "value": self.mail_pw.text()})
+        if self.mail_api.text(): api("POST", "/secrets", {"name": "mail_api_key", "value": self.mail_api.text()})
         self.accept()
 
 

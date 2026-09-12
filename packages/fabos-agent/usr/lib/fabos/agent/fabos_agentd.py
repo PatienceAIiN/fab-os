@@ -149,7 +149,7 @@ TOOLS = [
      "description": "Type text into the currently focused window through the Wayland virtual keyboard. Prefer write_file + open_app when the goal is to put text in a document; use this only when typing into a live app is required.",
      "input_schema": {"type": "object", "properties": {"text": {"type": "string"}, "press_enter": {"type": "boolean", "default": False}, "delay_ms": {"type": "integer", "default": 800, "description": "wait before typing so the window can focus"}}, "required": ["text"]}},
     {"name": "send_email",
-     "description": "Send an email from the user's configured mail account (SMTP). Requires mail settings; if missing, tell the user to configure Mail in Command Center settings.",
+     "description": "Send an email from the user's configured mail account (SMTP, or the Brevo API transport). Requires mail settings; if missing, tell the user to configure Mail in Command Center settings.",
      "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"}, "cc": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}}}, "required": ["to", "subject", "body"]}},
     {"name": "check_email",
      "description": "Search the user's inbox (IMAP) and return recent message summaries. Filters: from_contains, subject_contains, since_hours, unseen_only, limit.",
@@ -378,14 +378,49 @@ class Tools:
     # ---- mail
     def _mail(self):
         s = self.store
-        cfg = {k: s.setting("mail." + k) for k in ("imap_host", "imap_port", "smtp_host", "smtp_port", "user", "from", "smtp_security")}
+        cfg = {k: s.setting("mail." + k) for k in ("imap_host", "imap_port", "smtp_host", "smtp_port", "user", "from", "from_name", "smtp_security", "transport")}
         cfg["password"] = get_secret("mail_password")
+        cfg["api_key"] = get_secret("mail_api_key")
+        cfg["transport"] = (cfg["transport"] or "smtp").lower()
+        if cfg["transport"] == "brevo":
+            # Brevo transactional API (same channel Fab Feedback uses): needs a verified sender address and an API key
+            if not (cfg["from"] and cfg["api_key"]):
+                raise RuntimeError("Mail is not configured. Ask the user to fill Settings → Mail in Fab OS Command Center (transport brevo needs a From address and the API key).")
+            return cfg
         if not (cfg["user"] and cfg["password"] and (cfg["smtp_host"] or cfg["imap_host"])):
             raise RuntimeError("Mail is not configured. Ask the user to fill Settings → Mail in Fab OS Command Center (IMAP/SMTP host, user, password).")
         return cfg
 
+    def _send_brevo(self, task_id, cfg, inp):
+        import base64
+        def addrs(v):
+            return [{"email": a.strip()} for a in re.split(r"[,;]", v or "") if a.strip()]
+        payload = {"sender": {"email": cfg["from"], "name": cfg["from_name"] or "Fab OS"}, "to": addrs(inp["to"]),
+                   "subject": inp["subject"], "textContent": inp["body"]}
+        if inp.get("cc"):
+            payload["cc"] = addrs(inp["cc"])
+        atts = []
+        for a in inp.get("attachments") or []:
+            ap = os.path.expanduser(a)
+            with open(ap, "rb") as f:
+                atts.append({"name": os.path.basename(ap), "content": base64.b64encode(f.read()).decode()})
+        if atts:
+            payload["attachment"] = atts
+        req = urllib.request.Request("https://api.brevo.com/v3/smtp/email", data=json.dumps(payload).encode(), method="POST",
+                                     headers={"api-key": cfg["api_key"], "content-type": "application/json", "accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                resp = json.loads(r.read().decode() or "{}")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")[:300]
+            raise RuntimeError("Mail provider rejected the message (HTTP %s): %s" % (e.code, detail))
+        self.store.activity("agent", "email_sent", task_id, "via=brevo to=%s subject=%s" % (inp["to"], inp["subject"]))
+        return {"sent": True, "message_id": resp.get("messageId"), "to": inp["to"], "via": "brevo"}
+
     def t_send_email(self, task_id, inp):
         cfg = self._mail()
+        if cfg["transport"] == "brevo":
+            return self._send_brevo(task_id, cfg, inp)
         msg = EmailMessage()
         sender = cfg["from"] or cfg["user"]
         msg["From"] = sender
@@ -531,7 +566,7 @@ PROVIDERS = {
     "gemini": {"label": "Google Gemini", "secret": "gemini_api_key", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-2.5-pro"},
     "local": {"label": "Local model (llama-server / any OpenAI-compatible)", "secret": "local_api_key", "base_url": "http://127.0.0.1:8080/v1", "model": "local"},
 }
-SECRET_NAMES = ("claude_api_key", "openai_api_key", "gemini_api_key", "local_api_key", "mail_password")
+SECRET_NAMES = ("claude_api_key", "openai_api_key", "gemini_api_key", "local_api_key", "mail_password", "mail_api_key")
 
 
 class ClaudeProvider:

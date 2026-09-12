@@ -66,6 +66,8 @@ RUN printf 'Types: deb\nURIs: https://packages.mozilla.org/apt\nSuites: mozilla\
  && apt-get update && apt-get install -y firefox && rm -rf /var/lib/apt/lists/*
 # Agent runtime deps (separate layer so the big desktop layer above stays cached)
 RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3-dbus python3-gi libnotify-bin wtype unattended-upgrades ubuntu-drivers-common && rm -rf /var/lib/apt/lists/*
+# Bundled applications (own layer): LibreOffice with KDE integration, VLC, KWeather, extra Plasma widgets (weather, etc.)
+RUN apt-get update && apt-get install -y libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-kf6 libreoffice-style-breeze hunspell-en-us vlc kweather plasma-widgets-addons && rm -rf /var/lib/apt/lists/*
 # FabOS packages (identity, desktop experience, AI stack)
 COPY --from=pkgs /out/*.deb /tmp/debs/
 RUN apt-get update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-welcome_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
@@ -85,8 +87,9 @@ COPY image/overlay/${PROFILE}/ /
 # The Ubuntu base image ships an 'ubuntu' account and the minimized-system MOTD; Fab OS has neither.
 RUN (userdel -r ubuntu 2>/dev/null || true) && rm -f /etc/update-motd.d/60-unminimize /usr/local/sbin/unminimize
 RUN if [ "$PROFILE" = vm ]; then \
+      apt-get update && apt-get install -y --no-install-recommends openssh-server && rm -rf /var/lib/apt/lists/* && \
       useradd -m -s /bin/bash -G sudo,adm,video,audio,render,plugdev,netdev fabos && echo 'fabos:fabos' | chpasswd && \
-      systemctl enable serial-getty@ttyS0 fabos-selftest ; fi
+      systemctl enable serial-getty@ttyS0 fabos-selftest ssh ; fi
 RUN if [ "$PROFILE" = iso ]; then \
       install -d /etc/skel/Desktop && cp /usr/share/applications/fabos-install.desktop /etc/skel/Desktop/ && chmod +x /etc/skel/Desktop/fabos-install.desktop && \
       useradd -m -s /bin/bash -G sudo,adm,video,audio,render,plugdev,netdev,lpadmin fabos && passwd -d fabos && \

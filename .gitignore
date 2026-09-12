@@ -10,3 +10,4 @@ community/node_modules/
 community/*.sqlite
 community/*.sqlite-*
 __pycache__/
+.claude/
