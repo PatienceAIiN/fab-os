@@ -28,6 +28,9 @@ case "$1" in configure)
         -e '/^\[WM\]/,/^\[/{s/^activeBackground=.*/activeBackground=246,247,249/}' \
         $D/BreezeLight.colors > $D/FabLight.colors
   fi
+  # keep the boot splash on screen until the login manager takes over (SDDM quits Plymouth itself with --retain-splash);
+  # without this the console is visible for several seconds between plymouth-quit and sddm.
+  systemctl mask plymouth-quit.service plymouth-quit-wait.service 2>/dev/null || true
   [ -x /usr/lib/fabos/rebrand-desktop-entries ] && /usr/lib/fabos/rebrand-desktop-entries || true
 ;; esac
 exit 0
