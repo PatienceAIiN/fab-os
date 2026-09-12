@@ -1,0 +1,3 @@
+# Fab OS: the yearly KDE donation notification is not shown on this desktop
+[Module-donationmessage]
+autoload=false

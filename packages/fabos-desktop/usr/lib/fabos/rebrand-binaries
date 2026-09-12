@@ -19,21 +19,19 @@ PLUG = LIB + "/qt6/plugins"
 # --- rule sets (old, new): identical byte length per encoding -------------------------------------------------------
 WALLET = [("KDE Wallet", "Fab Wallet"), ("KDE wallet", "Fab wallet"), ("KWallet Manager", "Fab Wallet Tool"), ("KWallet ", "Wallet  ")]
 ABOUT = [("About &KDE", "About &Fab"), ("About KDE", "About Fab"),
-         ("KDE Plasma Version", "Desktop UI Version"), ("KDE Frameworks Version", "UI Frameworks Version "),
+         ("KDE Plasma Version", "Desktop UI Version"), ("KDE Frameworks Version", "App Frameworks Version"),
          ("KDE Plasma", "Fab OS UI "), ("KDE Frameworks", "UI Frameworks ")]
 NAMES = [("System Settings", "Fab OS Settings"), ("System Monitor", "Fab OS Monitor"), ("Info Center", "System Info")]
-KONSOLE = [("Konsole ", "Console "), (" Konsole", " Console"), ("— Konsole", "— Console")]
 PLASMA = ABOUT + [("Plasma ", "Fab OS "),                       # "Plasma Style" -> "Fab OS Style", "Plasma Search" -> "Fab OS Search", ...
                   ("KWin Scripts", "WM Scripting"), ("Manage KWin scripts", "Manage WM scripting"),
                   ("KRunner Settings", "Fab Search Setup"), ("Configure KRunner behavior", "Set up Fab Search behavior")]
-COMMON = WALLET + ABOUT + NAMES + KONSOLE
+COMMON = WALLET + ABOUT + NAMES
 # whole NUL-terminated words (\0word\0): standalone C literals only
-NUL_KONSOLE = [("Konsole", "Console")]
 NUL_PACKAGEKIT = [("Ubuntu ", "Fab OS ")]                        # origin label shown by Fab Software for archive packages
 
 # exported for rebrand-catalogs: msgids these UTF-8 rules rewrite inside binaries need alias entries in the catalogs
 ALIAS_UTF8 = COMMON
-ALIAS_NUL = NUL_KONSOLE
+ALIAS_NUL = []
 
 # --- targets: (globs, utf8 rules, utf16 rules, nul rules) ----------------------------------------------------------
 GROUPS = [
@@ -42,17 +40,13 @@ GROUPS = [
       "/usr/bin/kwalletd6", "/usr/bin/ksecretd", "/usr/bin/kwalletmanager5", "/usr/bin/kinfocenter", "/usr/bin/systemsettings",
       "/usr/bin/plasma-systemmonitor"],
      COMMON, COMMON, []),
-    (["/usr/bin/konsole", LIB + "/libkonsoleprivate.so.*", LIB + "/libkonsoleapp.so.*", PLUG + "/kf6/parts/konsolepart.so"],
-     COMMON, COMMON, NUL_KONSOLE),
     ([PLUG + "/plasma/kcms/**/*.so", PLUG + "/kf6/kded/*.so", PLUG + "/kf6/krunner/*.so", PLUG + "/plasma/applets/*.so",
-      PLUG + "/kf6/kfileitemaction/*.so", "/usr/bin/krunner", "/usr/bin/kded6"],
+      PLUG + "/kf6/kfileitemaction/*.so", "/usr/bin/krunner", "/usr/bin/kded6", "/usr/bin/ksmserver"],
      PLASMA, PLASMA, []),
+    ([PLUG + "/kf6/ktexteditor/katebacktracebrowserplugin.so"], [("KDE development", "app development")], [], []),
     ([LIB + "/packagekit-backend/libpk_backend_apt.so"], [], [], NUL_PACKAGEKIT),
 ]
-MO_TARGETS = ["/usr/share/locale/en*/LC_MESSAGES/kcmkwallet.mo", "/usr/share/locale/en*/LC_MESSAGES/kwalletd6.mo",
-              "/usr/share/locale/en*/LC_MESSAGES/kwalletmanager.mo", "/usr/share/locale/en*/LC_MESSAGES/kcm_about-distro.mo",
-              "/usr/share/locale/en*/LC_MESSAGES/kxmlgui6.mo", "/usr/share/locale/en*/LC_MESSAGES/konsole.mo"]
-MO_EXTRA = [("KWallet", "Wallet "), ("Konsole", "Console"), ("KDE e.V.", "Fab OS  ")]
+MO_TARGETS = []     # retired: English variants get the en@fabos catalogs first; earlier patched .mo files are restored by the sweep
 
 
 def _check(rules, enc):
@@ -105,10 +99,6 @@ def main():
                 a += [r for r in u8 if r not in a]; b += [r for r in u16 if r not in b]; c += [r for r in nul if r not in c]
     for p, (u8, u16, nul) in sorted(plan.items()):
         patch(p, u8, u16, nul)
-    for pat in MO_TARGETS:
-        for p in glob.glob(pat):
-            if os.path.isfile(p) and not p.endswith((".fabos-orig", ".fabos-tmp")):
-                p = os.path.realpath(p); plan[p] = None; patch(p, COMMON + MO_EXTRA, [])
     # binaries/catalogs patched by an earlier rule set that are no longer targets: put the originals back
     # (only where this script writes; text files patched by rebrand-desktop-entries keep their own .fabos-orig)
     sweep = glob.glob("/usr/bin/*.fabos-orig") + glob.glob(LIB + "/**/*.fabos-orig", recursive=True) + glob.glob("/usr/share/locale/**/*.fabos-orig", recursive=True)

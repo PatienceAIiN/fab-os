@@ -159,7 +159,7 @@ async function adminApi(request, response, url) {
     adminCookie(response, session, 8 * 60 * 60);
     return json(response, 200, { ok: true });
   }
-  if (request.method === 'POST' && url.pathname === '/api/admin/logout') { adminCookie(response, '', 0); return json(response, 200, { ok: true }); }
+  if (request.method === 'POST' && url.pathname === '/api/admin/logout') { const session = cookies(request).fabos_admin; if (session) db.prepare('DELETE FROM admin_sessions WHERE token_hash=?').run(hash(session)); adminCookie(response, '', 0); return json(response, 200, { ok: true }); }
   if (!requireAdmin(request, response)) return;
   if (request.method === 'GET' && url.pathname === '/api/admin/overview') {
     const subscribers = db.prepare('SELECT id,email,community,updates,product,status,created_at,updated_at FROM newsletter_subscribers ORDER BY id DESC').all();

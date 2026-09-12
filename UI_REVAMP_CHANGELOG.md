@@ -12,6 +12,9 @@
   the Software Sources dialog wording rebranded; Ubuntu web shortcut hidden; `ubuntu` account and minimized-MOTD
   removed from the image.
 - Rounded window corners: kept KWin 6.6 native Breeze rounding; third-party effect rejected (KWin ABI pin risk).
+- Audit follow-up: Konsole byte rules removed (they touched functional bytes), `.mo` patching retired, 20 more catalog
+  rules (KIO, Ark, Spectacle, KCalc, Klipper, kaccess…), notification/store/device-action names, MIME descriptions,
+  Software Sources hidden (cannot run on Fab OS), KDE donation nag off, wired Ethernet managed by NetworkManager.
 
 ## 2026-09-12
 - Everything follows the system colour scheme: FabOS Plasma theme uses live scheme colours; ask bar uses

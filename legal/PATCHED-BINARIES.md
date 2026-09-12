@@ -22,9 +22,11 @@ used first and everything else falls through to the normal English text. Other l
 ## 2. Length-preserving byte patches (`/usr/lib/fabos/rebrand-binaries`)
 
 Used only where no catalog can reach: System Settings module names live in JSON/CBOR plugin metadata inside the
-`.so`, and a few literals are not translated. Replacements are **byte-length-preserving** (for example
-`KDE Wallet` → `Fab Wallet`, `Plasma Style` → `Fab OS Style`, `\0Konsole\0` → `\0Console\0`, PackageKit origin label
-`Ubuntu ` → `Fab OS `). Rules and the exact file groups are in the script.
+`.so`, and a few literals are not translated (`ksmserver`'s "Plasma is unable to start."). Replacements are
+**byte-length-preserving** (for example `KDE Wallet` → `Fab Wallet`, `Plasma Style` → `Fab OS Style`, PackageKit origin
+label `Ubuntu ` → `Fab OS `). Konsole, Discover, Dolphin, Kate and the other applications are **not** byte-patched at all
+(an audit showed the earlier Konsole rules also touched functional bytes; the catalogs make them unnecessary).
+`.mo` translation files are no longer modified either. Rules and the exact file groups are in the script.
 
 Facts and obligations:
 
@@ -47,5 +49,8 @@ Facts and obligations:
 
 Desktop entries, global-shortcut component names and the Ubuntu web shortcut are overridden with files in
 `/usr/local/share` (higher XDG priority, originals untouched). The Software Sources dialog (`software-properties-qt`,
-GPL-2.0+) has three wording lines changed in its Python/UI sources with `.fabos-orig` copies kept. AppStream names of
-bundled system apps are supplied as merge components in `/usr/share/swcatalog/xml/fabos-names.xml`.
+GPL-2.0+) is hidden because it cannot run on Fab OS (no python-apt distribution template); Fab Updates covers channel
+management. KConfig-localised files that neither catalogs nor desktop overrides reach (notification sources,
+device-action and store-source names, one plasmoid's metadata) are rewritten in place with `.fabos-orig` copies kept.
+AppStream names of bundled system apps are supplied as merge components in `/usr/share/swcatalog/xml/fabos-names.xml`;
+a few MIME type descriptions come from `/usr/share/mime/packages/Override.xml`.
