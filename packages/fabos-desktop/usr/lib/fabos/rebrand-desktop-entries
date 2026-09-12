@@ -38,6 +38,7 @@ org.kde.kwalletmanager.desktop|Fab Wallet|Password Wallet
 org.kde.kdeconnect.app.desktop|Fab Connect|Device Connect
 kdesystemsettings.desktop|Fab Settings|System Settings
 kcm_krunnersettings.desktop|Fab Search Setup|
+org.kde.kded6.desktop|Fab OS Background Services|
 kcm_kwin_scripts.desktop|WM Scripting|
 systemsettings.desktop|Fab Settings|System Settings
 org.kde.elisa.desktop|Fab Music|Music Player
@@ -60,7 +61,7 @@ for f in /usr/share/applications/*.desktop; do
       name=$(name_for "$b")
       if [ -n "$name" ]; then
         rebrand_entry "$f" "$OUT/$b" "$name" "$(generic_for "$b")"; rebrand "$OUT/$b" "$OUT/$b" "$KDE_RULES"; touch "$OUT/$b.fabos"
-      elif grep -qE '^(Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*\b(KDE|Plasma|Konsole|Dolphin|Kate|Okular|Gwenview|KCalc|Spectacle|KRunner|KWin)\b' "$f"; then
+      elif grep -qE '^(Name|Comment|GenericName)(\[[a-zA-Z_@.]+\])?=.*(KDE|Plasma|\b(Konsole|Dolphin|Kate|Okular|Gwenview|KCalc|Spectacle|KRunner|KWin)\b)' "$f"; then
         rebrand "$f" "$OUT/$b" "$KDE_RULES; $PRODUCT_RULES"; touch "$OUT/$b.fabos"
       fi ;;
   esac
