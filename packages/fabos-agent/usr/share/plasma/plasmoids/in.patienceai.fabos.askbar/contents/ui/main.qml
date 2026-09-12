@@ -50,6 +50,12 @@ PlasmoidItem {
     function submit() {
         var t = field.text.trim()
         if (!t.length || root.sending) return
+        if (!root.configured) {
+            // check the real configuration at click time, tell the user, and take them straight to Settings
+            root.status = "No AI provider is configured yet — opening Fab Command Center → Settings so you can add one (Claude, OpenAI, Gemini or a local model)."
+            exec.connectSource("setsid -f fabos-command-center --settings --prefill " + root.shellQuote(t) + " >/dev/null 2>&1; echo opened")
+            return
+        }
         root.sending = true
         exec.connectSource("fabos do " + root.shellQuote(t) + " 2>&1 | head -1")
         field.text = ""
@@ -124,6 +130,7 @@ PlasmoidItem {
             Layout.leftMargin: Kirigami.Units.iconSizes.smallMedium + 6 + Kirigami.Units.smallSpacing * 2
             visible: !root.compact && root.showStatus && root.status.length > 0
             text: root.status
+            wrapMode: Text.WordWrap; maximumLineCount: 2
             color: root.configured ? Kirigami.Theme.disabledTextColor : Kirigami.Theme.neutralTextColor
             font.family: "Inter"; font.pixelSize: 11; elide: Text.ElideRight
             opacity: visible ? 1 : 0
