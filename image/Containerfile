@@ -68,7 +68,7 @@ RUN printf 'Types: deb\nURIs: https://packages.mozilla.org/apt\nSuites: mozilla\
 RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3-dbus python3-gi libnotify-bin wtype unattended-upgrades ubuntu-drivers-common && rm -rf /var/lib/apt/lists/*
 # FabOS packages (identity, desktop experience, AI stack)
 COPY --from=pkgs /out/*.deb /tmp/debs/
-RUN apt-get update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
+RUN apt-get update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-welcome_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
     && apt-get install -y sddm-theme-breeze && apt-get purge -y budgie-sddm-theme 2>/dev/null; apt-get -y autoremove --purge; rm -rf /var/lib/apt/lists/* /tmp/debs
 # System configuration
 RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/; s/^# *en_IN UTF-8/en_IN UTF-8/' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \

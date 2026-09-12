@@ -8,28 +8,31 @@ rebrand() { # rebrand <src> <dst> <sed-expr>
   sed -E "$3" "$1" > "$2.tmp" && mv "$2.tmp" "$2"; }
 # Visible names for upstream apps (launcher, dock, search). Format: file|Name|GenericName
 NAMES="
-org.kde.konsole.desktop|Console|Terminal
-org.kde.dolphin.desktop|Files|File Manager
-org.kde.kate.desktop|Text Editor|Advanced Text Editor
-org.kde.discover.desktop|Software|Software Center
-org.kde.gwenview.desktop|Photos|Image Viewer
-org.kde.okular.desktop|Documents|Document Viewer
-org.kde.kcalc.desktop|Calculator|Scientific Calculator
-org.kde.ark.desktop|Archives|Archiving Tool
-org.kde.spectacle.desktop|Screenshot|Screenshot Capture Utility
-org.kde.kinfocenter.desktop|System Info|Info Center
-org.kde.plasma-systemmonitor.desktop|System Monitor|System Monitor
-org.kde.krunner.desktop|Search|Search
-org.kde.klipper.desktop|Clipboard|Clipboard Manager
-org.kde.kmenuedit.desktop|Menu Editor|Menu Editor
-org.kde.kfontview.desktop|Font Viewer|Font Viewer
-org.kde.partitionmanager.desktop|Disks|Partition Manager
+org.kde.konsole.desktop|Fab Terminal|Terminal
+org.kde.dolphin.desktop|Fab Files|File Manager
+org.kde.kate.desktop|Fab Editor|Text Editor
+org.kde.discover.desktop|Fab Software|Software Center
+org.kde.gwenview.desktop|Fab Photos|Image Viewer
+org.kde.okular.desktop|Fab Documents|Document Viewer
+org.kde.kcalc.desktop|Fab Calculator|Calculator
+org.kde.ark.desktop|Fab Archives|Archiving Tool
+org.kde.spectacle.desktop|Fab Screenshot|Screenshot Capture
+org.kde.kinfocenter.desktop|Fab System Info|System Information
+org.kde.plasma-systemmonitor.desktop|Fab Monitor|System Monitor
+org.kde.krunner.desktop|Fab Search|Search
+org.kde.klipper.desktop|Fab Clipboard|Clipboard Manager
+org.kde.kmenuedit.desktop|Fab Menu Editor|Menu Editor
+org.kde.kfontview.desktop|Fab Fonts|Font Viewer
+org.kde.partitionmanager.desktop|Fab Disks|Partition Manager
 org.kde.kwalletmanager.desktop|Fab Wallet|Password Wallet
 org.kde.kdeconnect.app.desktop|Fab Connect|Device Connect
-kdesystemsettings.desktop|System Settings|System Settings
-systemsettings.desktop|System Settings|System Settings
-org.kde.elisa.desktop|Music|Music Player
-org.kde.haruna.desktop|Videos|Media Player
+kdesystemsettings.desktop|Fab Settings|System Settings
+systemsettings.desktop|Fab Settings|System Settings
+org.kde.elisa.desktop|Fab Music|Music Player
+org.kde.haruna.desktop|Fab Videos|Media Player
+fabos-command-center.desktop|Fab Command Center|AI Agent Command Center
+fabos-updates.desktop|Fab Updates|Software Updates
+fabos-feedback.desktop|Fab Feedback|Feedback and bug reports
 "
 apply_names() {
   echo "$NAMES" | while IFS='|' read -r file name generic; do

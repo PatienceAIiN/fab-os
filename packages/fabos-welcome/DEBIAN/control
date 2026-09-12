@@ -1,0 +1,12 @@
+Package: fabos-welcome
+Version: @DISTRO_VERSION@-1
+Section: misc
+Priority: optional
+Architecture: all
+Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Depends: python3, python3-pyqt6, fabos-branding
+Recommends: fabos-agent
+Description: Welcome to @DISTRO_NAME@ — first-run experience
+ Appearance (Fab Light / Fab Dark), privacy summary, optional AI provider
+ setup and quick links to language, keyboard, network and display settings.
+ Runs once per user at first login; `fabos-welcome --again` reopens it.

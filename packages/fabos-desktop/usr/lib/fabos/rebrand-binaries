@@ -18,6 +18,7 @@ ELF_TARGETS = [
     "/usr/lib/x86_64-linux-gnu/libKF6WidgetsAddons.so.6*",
     "/usr/bin/kwalletd6", "/usr/bin/ksecretd", "/usr/bin/kwalletmanager5", "/usr/bin/konsole", "/usr/bin/kinfocenter",
     "/usr/lib/x86_64-linux-gnu/libkonsoleprivate.so.1*", "/usr/lib/x86_64-linux-gnu/libkonsoleapp.so.1*",
+    "/usr/bin/systemsettings", "/usr/bin/plasma-discover", "/usr/bin/plasma-systemmonitor", "/usr/lib/x86_64-linux-gnu/libDiscoverCommon.so*",
 ]
 MO_TARGETS = ["/usr/share/locale/en*/LC_MESSAGES/kcmkwallet.mo", "/usr/share/locale/en*/LC_MESSAGES/kwalletd6.mo",
               "/usr/share/locale/en*/LC_MESSAGES/kwalletmanager.mo", "/usr/share/locale/en*/LC_MESSAGES/kcm_about-distro.mo",
@@ -32,7 +33,9 @@ COMMON = [
     ("KDE Plasma", "Fab OS UI "), ("KDE Frameworks", "UI Frameworks "),
     ("Konsole ", "Console "), (" Konsole", " Console"), ("— Konsole", "— Console"),
 ]
-UTF16_ONLY = [("KWalletManager", "Fab Wallet App"), ("KWallet", "Wallet "), ("Konsole", "Console"), ("KDE", "Fab")]
+UTF16_ONLY = [("KWalletManager", "Fab Wallet App"), ("KWallet", "Wallet "), ("Konsole", "Console"), ("System Settings", "Fab OS Settings"),
+              ("System Monitor", "Fab OS Monitor"), ("Info Center", "System Info"), ("Discover", "Software")]
+# NOTE: never add a bare ("KDE", ...) rule for binaries: UTF-16 literals such as KDE_FULL_SESSION are functional.
 MO_EXTRA = [("KWallet", "Wallet "), ("Konsole", "Console"), ("KDE e.V.", "Fab OS  ")]
 
 

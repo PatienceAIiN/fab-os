@@ -2,7 +2,7 @@
 widgetStyle=Breeze
 
 [kdeglobals][General]
-ColorScheme=BreezeDark
+ColorScheme=FabDark
 AccentColor=59,110,245
 
 [kdeglobals][Icons]
