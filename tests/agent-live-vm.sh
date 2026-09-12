@@ -42,7 +42,7 @@ run_task() { # run_task NAME TIMEOUT_S MODE MODEL TEXT   -> sets TASK_ID TASK_ST
     local t; t=$(api GET "/tasks/$TASK_ID"); TASK_STATUS=$(echo "$t" | jget '["status"]')
     case "$TASK_STATUS" in done|failed|cancelled) break;; esac
     approve_pending
-    local q; q=$(echo "$t" | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("question") or d.get("pending_question") or ""))' 2>/dev/null)
+    local q; q=$(echo "$t" | python3 -c 'import sys,json; d=json.load(sys.stdin); qs=[x for x in d.get("questions",[]) if not x.get("answer")]; print(qs[-1]["question"][:200] if qs else "")' 2>/dev/null)
     if [ -n "$q" ]; then echo "    agent asked: $q -> answering 'yes, go ahead'"; api POST "/tasks/$TASK_ID/answer" '{"text":"yes, go ahead"}' >/dev/null; fi
     [ $(( $(date +%s) - start )) -gt "$to" ] && { echo "    timeout after ${to}s — cancelling"; api POST "/tasks/$TASK_ID/cancel" >/dev/null; TASK_STATUS=timeout; break; }
     sleep 5
