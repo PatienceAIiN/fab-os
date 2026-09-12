@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /build/
+Disallow: /api/
+
+Sitemap: https://fabricos.patienceai.in/sitemap.xml

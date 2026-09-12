@@ -3,6 +3,10 @@ set -e
 case "$1" in configure)
   # make sure the greeter has our background/wordmark images (copied from assets at build)
   command -v fc-cache >/dev/null 2>&1 && fc-cache -f >/dev/null 2>&1 || true
+  # default user avatar (greeter + launcher): divert sddm's placeholder so upgrades never clobber ours
+  f=/usr/share/sddm/faces/.face.icon
+  if [ -e "$f" ] && ! dpkg-divert --list "$f" | grep -q fabos-desktop; then dpkg-divert --package fabos-desktop --add --rename --divert "$f.sddm" "$f"; fi
+  ln -sfn /usr/share/pixmaps/fabos.png "$f"
   [ -x /usr/lib/fabos/rebrand-desktop-entries ] && /usr/lib/fabos/rebrand-desktop-entries || true
 ;; esac
 exit 0
