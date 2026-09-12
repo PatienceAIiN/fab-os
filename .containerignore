@@ -3,7 +3,10 @@ build/*
 brand/out
 *.img
 *.ext4
+*.qcow2
 *.tar
 *.iso
 *.log
+__pycache__
+*.pyc
 .git

@@ -1,10 +1,13 @@
-Copyright 2011 The Comfortaa Project Authors 
-(https://github.com/alexeiva/comfortaa), with Reserved Font Name "Comfortaa".
+SIL Open Font License 1.1 — applies to the fonts shipped on Fab OS images:
 
-This Font Software is licensed under the SIL Open Font License, Version 1.1.
-This license is copied below, and is also available with a FAQ at:
-http://scripts.sil.org/OFL
+- Inter: Copyright 2016-2023 The Inter Project Authors (https://github.com/rsms/inter),
+  Ubuntu package fonts-inter.
+- JetBrains Mono: Copyright 2020 JetBrains s.r.o. (https://www.jetbrains.com/lp/mono/),
+  Ubuntu package fonts-jetbrains-mono.
+- Noto Sans: The Noto Project Authors (https://github.com/notofonts), Ubuntu package fonts-noto-core.
 
+The fonts are redistributed unmodified as Ubuntu packages. The exact notice for each font, including its
+Reserved Font Name, is in /usr/share/doc/<package>/copyright on an installed system. The licence text follows.
 
 -----------------------------------------------------------
 SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
