@@ -7,3 +7,4 @@ brand/out
 *.iso
 *.log
 .git
+.claude
