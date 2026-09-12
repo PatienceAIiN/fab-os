@@ -109,7 +109,7 @@ class SettingsDialog(QDialog):
 class CommandCenter(QMainWindow):
     def __init__(self, focus_ask=False, prefill=""):
         super().__init__()
-        self.setWindowTitle(APP + " Command Center"); self.setWindowIcon(QIcon.fromTheme("fabos")); self.resize(1180, 740); self.current = None
+        self.setWindowTitle(APP + " Command Center"); self.setWindowIcon(QIcon.fromTheme("fabos-command-center")); self.resize(1180, 740); self.current = None
         root = QWidget(); self.setCentralWidget(root); v = QVBoxLayout(root); v.setContentsMargins(18, 14, 18, 10); v.setSpacing(12)
         # ask bar
         row = QHBoxLayout(); self.ask = QLineEdit(objectName="ask"); self.ask.setPlaceholderText("Ask me to do…   e.g. open editor, write hi and send mail to someone@example.com, then tell me when they reply")

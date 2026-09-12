@@ -47,6 +47,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Welcome to Fab OS")
     app.setDesktopFileName("fabos-welcome")
+    app.setWindowIcon(QIcon.fromTheme("fabos"))
     app.setStyleSheet(STYLE)
     w = QWizard()
     w.setWindowTitle("Welcome to Fab OS")

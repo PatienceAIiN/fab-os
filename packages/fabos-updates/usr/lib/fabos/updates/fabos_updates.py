@@ -4,6 +4,7 @@ and turn automatic updates on or off. Privileged steps run through pkexec + /usr
 (polkit action in.patienceai.fabos.updates). Launch: fabos-updates [--check]"""
 import os, subprocess, sys
 from PyQt6.QtCore import QProcess, Qt
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QCheckBox, QPlainTextEdit, QMessageBox)
 
 HELPER = "/usr/lib/fabos/updates/helper.sh"
@@ -133,6 +134,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Fab OS Updates")
     app.setDesktopFileName("fabos-updates")
+    app.setWindowIcon(QIcon.fromTheme("fabos-updates"))
     app.setStyleSheet(STYLE)
     w = Updates(autocheck="--check" in sys.argv)
     w.show()

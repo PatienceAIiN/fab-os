@@ -54,9 +54,12 @@ def send(report):
 
 
 def gui(args):
+    from PyQt6.QtGui import QIcon
     from PyQt6.QtWidgets import QApplication, QDialog, QVBoxLayout, QFormLayout, QComboBox, QLineEdit, QPlainTextEdit, QCheckBox, QDialogButtonBox, QLabel, QMessageBox
     app = QApplication(sys.argv)
     app.setApplicationName("Fab OS Feedback")
+    app.setDesktopFileName("fabos-feedback")
+    app.setWindowIcon(QIcon.fromTheme("fabos-feedback"))
     app.setStyleSheet("QWidget{font-family:Inter,'Noto Sans';font-size:14px} QLineEdit,QPlainTextEdit,QComboBox{border:1px solid palette(mid);border-radius:10px;padding:8px} QPushButton{border-radius:10px;padding:8px 16px} QLabel#muted{color:palette(mid)}")
     d = QDialog()
     d.setWindowTitle("Send feedback to Patience AI")
