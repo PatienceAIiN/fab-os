@@ -1,5 +1,5 @@
 #!/bin/bash
-sleep 25; out=/dev/ttyS0; [ -w $out ] || out=/dev/console
+sleep 55; out=/dev/ttyS0; [ -w $out ] || out=/dev/console
 modprobe qemu_fw_cfg 2>/dev/null || true
 {
   echo "FABOS_LIVE_BEGIN"; . /usr/lib/os-release; echo "PRETTY_NAME=$PRETTY_NAME"; echo "KERNEL=$(uname -r)"

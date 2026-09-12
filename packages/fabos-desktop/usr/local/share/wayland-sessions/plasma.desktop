@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=@DISTRO_NAME@
+Comment=Compatibility alias of the @DISTRO_NAME@ session
+Exec=/usr/lib/x86_64-linux-gnu/libexec/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland
+TryExec=/usr/bin/startplasma-wayland
+DesktopNames=KDE
+Hidden=true
