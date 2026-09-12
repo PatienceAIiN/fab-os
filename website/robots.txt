@@ -3,4 +3,4 @@ Allow: /
 Disallow: /build/
 Disallow: /api/
 
-Sitemap: https://fabricos.patienceai.in/sitemap.xml
+Sitemap: https://fabos.patienceai.in/sitemap.xml

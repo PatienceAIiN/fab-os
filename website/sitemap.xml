@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://fabricos.patienceai.in/</loc></url>
-  <url><loc>https://fabricos.patienceai.in/docs/</loc></url>
-  <url><loc>https://fabricos.patienceai.in/#agent</loc></url>
-  <url><loc>https://fabricos.patienceai.in/#security</loc></url>
-  <url><loc>https://fabricos.patienceai.in/#about</loc></url>
-  <url><loc>https://fabricos.patienceai.in/#install</loc></url>
-  <url><loc>https://fabricos.patienceai.in/#faq</loc></url>
+  <url><loc>https://fabos.patienceai.in/</loc></url>
+  <url><loc>https://fabos.patienceai.in/docs/</loc></url>
+  <url><loc>https://fabos.patienceai.in/#overview</loc></url>
+  <url><loc>https://fabos.patienceai.in/#principles</loc></url>
+  <url><loc>https://fabos.patienceai.in/#status</loc></url>
+  <url><loc>https://fabos.patienceai.in/#contact</loc></url>
 </urlset>
