@@ -36,7 +36,6 @@ PY
       for f in dark-1920x1080 dark-2560x1440 dark-3840x2160; do
         [ -f "$SRC/assets/wallpapers/$f.png" ] && install -Dm644 "$SRC/assets/wallpapers/$f.png" "$dst/usr/share/wallpapers/FabOS/contents/images_dark/${f#*-}.png"; done
       install -Dm644 "$SRC/assets/pixmaps/fabos.png" "$dst/etc/skel/.face.icon"
-      install -Dm644 "$SRC/assets/pixmaps/fabos.png" "$dst/usr/share/sddm/faces/.face.icon"
       install -Dm644 "$SRC/assets/wallpapers/screenshot.png" "$dst/usr/share/wallpapers/FabOS/contents/screenshot.png"
       install -Dm644 "$SRC/assets/sddm/background.png" "$dst/usr/share/sddm/themes/fabos/background.png"
       install -Dm644 "$SRC/assets/sddm/wordmark.png"   "$dst/usr/share/sddm/themes/fabos/wordmark.png"

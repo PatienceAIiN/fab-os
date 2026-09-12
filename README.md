@@ -7,9 +7,9 @@ works unchanged — with its own identity, a KDE Plasma 6 desktop tuned by
 Patience AI, and the FabOS AI stack (intents, agents, deterministic governor,
 provenance, rollback) built in as first-class OS services.
 
-> Naming notice: "Fab OS" is an internal codename. It collides with a
-> registered Brocade/Broadcom mark and must be renamed before public release.
-> See `legal/TRADEMARK-SEARCH.md`. Renaming is one line in `brand/brand.conf`.
+> Naming notice: "Fab OS" is the current working product name. Trademark
+> clearance is still required before a broad public launch; see
+> `legal/TRADEMARK-SEARCH.md`. The name is maintained in `brand/brand.conf`.
 
 ## Layout
 
