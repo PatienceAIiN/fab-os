@@ -66,6 +66,7 @@ PlasmoidItem {
             }
             QQC2.Button {
                 text: "Do it"
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 5; Layout.preferredHeight: field.height
                 font.family: "Inter"; font.weight: Font.DemiBold
                 contentItem: Text { text: parent.text; font: parent.font; color: "#0E1116"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 background: Rectangle { radius: 10; color: parent.down ? "#5A86E8" : "#6E9BFF" }
