@@ -11,7 +11,7 @@ same msgids), rewritten with the rules below and written to /usr/local/share/loc
 Copyright lines, author credits, licence texts and URLs are never rewritten (attribution stays intact).
 Re-run by the apt Post-Invoke hook; a stamp skips the work when nothing changed.
 """
-import glob, hashlib, importlib.util, os, re, struct, sys
+import glob, hashlib, importlib.machinery, importlib.util, os, re, struct, sys
 
 OUT_DIR = "/usr/local/share/locale/en@fabos/LC_MESSAGES"
 STAMP = "/var/lib/fabos/catalogs.stamp"

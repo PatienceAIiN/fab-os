@@ -26,6 +26,8 @@ run "systemsettings kcm_about-distro" 7; shot 12-about-light; $K key alt-f4; sle
 run "systemsettings kcm_regionandlang" 7; shot 13-region-language-light; $K key alt-f4; sleep 1
 launch "Fab Terminal" 6; shot 14-terminal-light; $K key alt-f4; sleep 1
 launch "Fab Files" 6; shot 15-files-light; $K key alt-f4; sleep 1
+$K key meta_l; sleep 2; shot 16-launcher-light; $K key esc; sleep 1
+run "plasmashell --replace" 14; shot 17-desktop-light-shell-restarted
 run "plasma-apply-colorscheme BreezeDark" 5
 [ "${1:-}" = "--keep" ] || python3 -c "
 import socket; s=socket.socket(socket.AF_UNIX); s.connect('build/qemu-monitor.sock'); s.sendall(b'quit\n'); s.close()" 2>/dev/null

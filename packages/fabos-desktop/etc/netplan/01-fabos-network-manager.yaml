@@ -1,0 +1,5 @@
+# Fab OS: NetworkManager manages every interface (wired included), like Ubuntu Desktop.
+# Without this, Ubuntu's network-manager only manages Wi-Fi/WWAN and wired links stay unconfigured.
+network:
+  version: 2
+  renderer: NetworkManager
