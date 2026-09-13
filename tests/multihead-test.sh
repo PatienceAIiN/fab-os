@@ -4,10 +4,12 @@
 set -uo pipefail; HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"
 pgrep -f qemu-system-x86_64 >/dev/null && { echo "a VM is already running; stop it first"; exit 1; }
 (scripts/boot-vm.sh --headless --heads 2 --mem 2048 --cpus 4 > build/boot-multihead.out 2>&1 &)
-for i in $(seq 1 60); do [ -S build/qemu-monitor.sock ] && break; sleep 2; done; sleep 90
+for i in $(seq 1 60); do [ -S build/qemu-monitor.sock ] && break; sleep 2; done
+SSH="sshpass -p fabos ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -p 2222 fabos@127.0.0.1"
+for i in $(seq 1 100); do $SSH "pgrep -x plasmashell >/dev/null" 2>/dev/null && break; sleep 3; done; sleep 25
+$SSH "kscreen-doctor -o 2>/dev/null | grep -E 'Output|enabled|Geometry' | head -8" 2>/dev/null
 scripts/vm-screenshot.sh multihead-0 0 >/dev/null 2>&1 && echo "  shot head 0"
 scripts/vm-screenshot.sh multihead-1 1 >/dev/null 2>&1 && echo "  shot head 1"
-scripts/vm-key.sh key alt-f2; sleep 1.5; scripts/vm-key.sh type "kscreen-doctor -o"; sleep 1; scripts/vm-key.sh key esc
 python3 - <<'PY'
 from PIL import Image, ImageStat
 import os, sys
