@@ -19,8 +19,8 @@ for h in (0,1):
     if not os.path.exists(p): print("head %d: no frame"%h); ok=False; continue
     im=Image.open(p).convert("RGB"); st=ImageStat.Stat(im); mean=sum(st.mean)/3; var=sum(st.var)/3
     print("head %d: %dx%d mean=%.0f var=%.0f"%(h, im.width, im.height, mean, var))
-    if var < 50: print("  looks blank"); ok=False
-print("MULTIHEAD", "PASS" if ok else "FAIL"); sys.exit(0 if ok else 1)
+    if var < 50 or (h == 1 and mean < 12): print("  head not active (QEMU shows a placeholder for heads without a display window; verify multi-monitor with the GUI: View > virtio-gpu (1))"); ok=False
+print("MULTIHEAD", "PASS" if ok else "NOT VERIFIED (headless)"); sys.exit(0 if ok else 1)
 PY
 rc=$?
 python3 -c "
