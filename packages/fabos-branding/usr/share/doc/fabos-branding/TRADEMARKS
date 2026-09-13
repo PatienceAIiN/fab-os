@@ -39,12 +39,18 @@ in a way that suggests it is published or endorsed by Patience AI. Forks must
 choose their own name and logo (this repository makes that a one-line change
 in `brand/brand.conf`).
 
-**Naming status:** see `TRADEMARK-SEARCH.md`. "Fab OS" is currently an
-internal codename pending clearance; it collides with a registered Brocade /
-Broadcom mark and must be changed before public distribution.
+**Naming status:** "Fab OS" is not a registered trademark of Patience AI and
+Patience AI claims no registration it does not hold. The search recorded in
+`TRADEMARK-SEARCH.md` (2026-09-11) found no registered software mark for
+"Fab OS" in the sources checked; the earlier conflict concerned the previous
+name "Fabric OS". A formal clearance search and an Indian Class 9 application
+are still recommended before a wide public launch.
 
 ## Third parties
 
-KDE, Plasma, Firefox, Flatpak, Inter, JetBrains Mono and other names are
-trademarks of their respective owners and are used only to identify the
-software.
+KDE and Plasma are trademarks of KDE e.V.; Firefox is a trademark of the
+Mozilla Foundation (Fab OS ships Mozilla's own unmodified Firefox package and
+does not use the Firefox logo in its own artwork); Flatpak, Inter, JetBrains
+Mono and other names are trademarks of their respective owners. All are used
+only to identify the software. Fab OS is not endorsed by or affiliated with
+KDE e.V. or the Mozilla Foundation.

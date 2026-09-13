@@ -11,3 +11,21 @@ community/*.sqlite
 community/*.sqlite-*
 __pycache__/
 .claude/
+# build outputs (never committed; build/secrets holds the apt signing key)
+*.qcow2
+# python bytecode
+**/__pycache__/
+*.pyc
+*.pyo
+# local configuration that may contain credentials
+.env
+.env.*
+# editor / OS junk
+*.swp
+*.swo
+*~
+.DS_Store
+# website / community server
+website/node_modules/
+# design intake exports (pulled from Figma, not redistributable by default)
+design/tina/export/
