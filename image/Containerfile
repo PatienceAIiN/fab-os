@@ -95,6 +95,9 @@ RUN if [ "$PROFILE" = iso ]; then \
       useradd -m -s /bin/bash -G sudo,adm,video,audio,render,plugdev,netdev,lpadmin fabos && passwd -d fabos && \
       printf '# live session (casper): no password for the live user\nfabos ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/fabos-live && chmod 0440 /etc/sudoers.d/fabos-live && \
       systemctl enable fabos-live-selftest serial-getty@ttyS0; fi
+# Pre-fetch the archive index and the AppStream catalogue so Fab Software lists applications on the very first boot
+# (official archive; tolerated failure — the daily apt timer and PackageKit refresh it later anyway).
+RUN (apt-get update || true) && (appstreamcli refresh --force || true) && du -sh /var/lib/apt/lists /var/cache/swcatalog 2>/dev/null || true
 # Make sure the initramfs contains our Plymouth theme and the VM's drm driver, then record the kernel we ship.
 RUN if [ "$PROFILE" = iso ]; then install -d /etc/calamares/branding/fabos && cp /usr/share/pixmaps/fabos.png /etc/calamares/branding/fabos/logo.png && cp /usr/share/pixmaps/fabos-logo-dark.png /etc/calamares/branding/fabos/wordmark.png \
  && cp /usr/share/wallpapers/FabOS/contents/images/1920x1080.png /etc/calamares/branding/fabos/slide.png && install -d /etc/skel/Desktop && cp /usr/share/applications/fabos-install.desktop /etc/skel/Desktop/ && chmod +x /etc/skel/Desktop/fabos-install.desktop; fi
