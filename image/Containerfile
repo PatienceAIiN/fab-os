@@ -97,7 +97,7 @@ RUN if [ "$PROFILE" = iso ]; then \
       systemctl enable fabos-live-selftest serial-getty@ttyS0; fi
 # Pre-fetch the archive index and the AppStream catalogue so Fab Software lists applications on the very first boot
 # (official archive; tolerated failure — the daily apt timer and PackageKit refresh it later anyway).
-RUN (apt-get update || true) && (appstreamcli refresh --force || true) && du -sh /var/lib/apt/lists /var/cache/swcatalog 2>/dev/null || true
+RUN (apt-get update || true) && (appstreamcli refresh --force || true) && du -sh /var/lib/swcatalog /var/cache/swcatalog 2>/dev/null; rm -rf /var/lib/apt/lists/*   # keep the AppStream catalogue (~45 MB), drop the 175 MB package lists (PackageKit refreshes them on first use)
 # Make sure the initramfs contains our Plymouth theme and the VM's drm driver, then record the kernel we ship.
 RUN if [ "$PROFILE" = iso ]; then install -d /etc/calamares/branding/fabos && cp /usr/share/pixmaps/fabos.png /etc/calamares/branding/fabos/logo.png && cp /usr/share/pixmaps/fabos-logo-dark.png /etc/calamares/branding/fabos/wordmark.png \
  && cp /usr/share/wallpapers/FabOS/contents/images/1920x1080.png /etc/calamares/branding/fabos/slide.png && install -d /etc/skel/Desktop && cp /usr/share/applications/fabos-install.desktop /etc/skel/Desktop/ && chmod +x /etc/skel/Desktop/fabos-install.desktop; fi

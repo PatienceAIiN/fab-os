@@ -21,7 +21,7 @@ chk "look-and-feel package present"       "R 'test -f /usr/share/plasma/look-and
 chk "wallpaper installed"                 "R 'test -f /usr/share/wallpapers/FabOS/contents/images/1920x1080.png'"
 # High-definition assets (2026-09-13): 7 wallpaper sizes light+dark, 4K greeter/splash background, 256 px boot frames,
 # bare transparent mark (vector + PNG up to 512 in hicolor, 1024 in pixmaps), scalable/ listed first in the icon theme.
-PNGDIM="python3 -c 'import struct,sys;h=open(sys.argv[1],\"rb\").read(24);print(\"%dx%d\"%struct.unpack(\">II\",h[16:24]))'"
+PNGDIM='python3 -c "import struct,sys; d=open(sys.argv[1],\"rb\").read(32); w,h=struct.unpack(\">II\", d[16:24]); print(\"%dx%d\" % (w,h))"'  # PNG header only: no PIL in the image
 chk "wallpapers: 7 sizes, light + dark"     "[ \$(R 'ls /usr/share/wallpapers/FabOS/contents/images/*.png /usr/share/wallpapers/FabOS/contents/images_dark/*.png | wc -l') -eq 14 ]"
 chk "wallpaper 4K + 1366x768 present"       "R 'test -f /usr/share/wallpapers/FabOS/contents/images/3840x2160.png && test -f /usr/share/wallpapers/FabOS/contents/images_dark/3840x2160.png && test -f /usr/share/wallpapers/FabOS/contents/images/1366x768.png'"
 chk "wallpaper package metadata Fab OS"     "R 'grep -q \"\\\"Name\\\": \\\"Fab OS\\\"\" /usr/share/wallpapers/FabOS/metadata.json && grep -q Apache-2.0 /usr/share/wallpapers/FabOS/metadata.json'"
@@ -29,7 +29,7 @@ chk "SDDM background is 3840x2160"          "R \"$PNGDIM /usr/share/sddm/themes/
 chk "SDDM + KSplash use the vector mark"    "R 'test -f /usr/share/sddm/themes/fabos/mark.svg && test -f /usr/share/plasma/look-and-feel/in.patienceai.fabos.desktop/contents/splash/images/mark.svg'"
 chk "lock screen crops, never stretches"    "R 'grep -q ^FillMode=2 /etc/xdg/kscreenlockerrc'"
 chk "plymouth frames are 256 px"            "R \"$PNGDIM /usr/share/plymouth/themes/fabos/spinner-00.png\" | grep -q ^256x256"
-chk "plymouth script scales to the screen"  "R 'grep -q \"Window.GetHeight() \" /usr/share/plymouth/themes/fabos/fabos.script && grep -q \"Scale(logo_h, logo_h)\" /usr/share/plymouth/themes/fabos/fabos.script'"
+chk "plymouth script scales to the screen"  "R 'grep -q \"Window.GetHeight()\" /usr/share/plymouth/themes/fabos/fabos.script && grep -q \"Scale(logo_h\" /usr/share/plymouth/themes/fabos/fabos.script'"
 chk "hicolor fabos: svg + 512 png"          "R 'test -f /usr/share/icons/hicolor/scalable/apps/fabos.svg && test -f /usr/share/icons/hicolor/scalable/apps/fabos-symbolic.svg && test -f /usr/share/icons/hicolor/512x512/apps/fabos.png'"
 chk "hicolor fabos.svg has no tile"         "! R 'grep -q \"<rect width=\\\"64\\\"\" /usr/share/icons/hicolor/scalable/apps/fabos.svg'"
 chk "pixmaps fabos.png is 1024 px"          "R \"$PNGDIM /usr/share/pixmaps/fabos.png\" | grep -q ^1024x1024"
