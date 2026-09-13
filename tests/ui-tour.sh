@@ -18,7 +18,7 @@ $K key meta_l; sleep 2; $K type "console"; sleep 2; shot 04-launcher-console; $K
 run "system settings" 7; $K type "wallet"; sleep 2; $K key down; $K key ret; sleep 3; shot 05-settings-wallet
 $K key ctrl-l 2>/dev/null; $K key alt-f4; sleep 1
 launch "Fab Terminal" 6; shot 06-terminal-window; $K key alt-f4; sleep 1
-launch "Fab Software" 16; shot 06b-software-window; $K key alt-f4; sleep 1
+launch "Fab Software" 45; shot 06b-software-window; $K key alt-f4; sleep 1
 launch "Fab Files" 6; shot 06c-files-window; $K key alt-f4; sleep 1
 run "fabos-command-center" 7; shot 07-command-center-dark; $K key alt-f4; sleep 1
 run "plasma-apply-colorscheme BreezeLight" 6; shot 08-desktop-light
