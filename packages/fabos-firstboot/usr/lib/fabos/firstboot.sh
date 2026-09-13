@@ -14,7 +14,7 @@ if [ "${1:-}" = extras ]; then
   export DEBIAN_FRONTEND=noninteractive
   notify_all "Installing extras" "Proprietary drivers and media codecs are being installed in the background."
   apt-get update -q || true
-  if command -v ubuntu-drivers >/dev/null 2>&1; then LOG "drivers (including proprietary)"; ubuntu-drivers autoinstall || LOG "ubuntu-drivers had errors"; fi
+  if command -v ubuntu-drivers >/dev/null 2>&1; then LOG "drivers (including proprietary)"; ubuntu-drivers install --include-dkms || LOG "ubuntu-drivers had errors"; fi
   LOG "codecs"; apt-get -y install --no-install-recommends gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav libavcodec-extra 2>/dev/null || true
   date -u +%FT%TZ > /var/lib/fabos/extras-done
   notify_all "Extras installed" "Restart to load new drivers."; LOG "extras done"; exit 0
@@ -27,7 +27,7 @@ notify_all "Setting up Fab OS" "Connected. Installing updates and drivers in the
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q || true
 LOG "updates"; apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade || LOG "upgrade had errors"
-if command -v ubuntu-drivers >/dev/null 2>&1; then LOG "drivers (free only; proprietary ones are opt-in via Welcome)"; ubuntu-drivers autoinstall --free-only || LOG "ubuntu-drivers had errors"; fi
+if command -v ubuntu-drivers >/dev/null 2>&1; then LOG "drivers (free only; proprietary ones are opt-in via Welcome)"; ubuntu-drivers install --free-only --no-oem || LOG "ubuntu-drivers had errors"; fi
 LOG "firmware"; apt-get -y install --no-install-recommends linux-firmware fwupd 2>/dev/null || true
 LOG "flathub"; flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
 LOG "codecs (free)"; apt-get -y install --no-install-recommends gstreamer1.0-plugins-good 2>/dev/null || true
