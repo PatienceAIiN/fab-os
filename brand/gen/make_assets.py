@@ -254,6 +254,7 @@ ICON_MAP = {
     ("firefox", "firefox-esr", "web-browser", "internet-web-browser", "org.mozilla.firefox"): ("public", "#E0642B"),
     ("fabos-command-center",): ("smart_toy", "#6E9BFF"),
     ("fabos-feedback",): ("feedback", "#7C5CFF"),
+    ("fabos-overview",): ("grid_view", "#4B3BD6"),          # Task view / Overview button in the dock
     ("user-trash", "trashcan_empty"): ("delete", "#8892A0"),
     ("user-trash-full", "trashcan_full"): ("delete_sweep", "#8892A0"),
     ("org.kde.gwenview", "gwenview", "image-viewer"): ("image", "#2BA9A0"),
