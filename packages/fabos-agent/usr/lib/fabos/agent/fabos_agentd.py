@@ -330,11 +330,20 @@ class Tools:
         to = min(int(inp.get("timeout_s") or 120), 1800)
         if inp.get("as_root"):
             return self.run_as_root(task_id, inp["command"], cwd, to)
+        # own session/process group, registered on the task: cancelling the task kills the whole tree (see Agent.cancel_task)
+        p = subprocess.Popen(["bash", "-lc", inp["command"]], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             env=self.agent.session_env(), start_new_session=True)
+        self.agent.procs.setdefault(task_id, set()).add(p)
         try:
-            r = subprocess.run(["bash", "-lc", inp["command"]], cwd=cwd, capture_output=True, text=True, timeout=to, env=self.agent.session_env())
-            return {"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stderr": r.stderr[-10000:]}
+            out, err = p.communicate(timeout=to)
+            if task_id in self.agent.cancel:
+                return {"error": "cancelled by user"}
+            return {"exit_code": p.returncode, "stdout": out[-30000:], "stderr": err[-10000:]}
         except subprocess.TimeoutExpired:
-            return {"error": "timeout after %ss" % to}
+            kill_tree(p)
+            return {"error": "timeout after %ss (process killed)" % to}
+        finally:
+            self.agent.procs.get(task_id, set()).discard(p)
 
     def t_read_file(self, task_id, inp):
         p = os.path.expanduser(inp["path"])
@@ -607,6 +616,24 @@ def compact_messages(messages, limit):
 
 
 
+def kill_tree(p, grace=2.0):
+    """Terminate a Popen started with start_new_session=True together with everything it spawned."""
+    import signal
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        p.terminate()
+    try:
+        p.wait(grace)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except Exception:
+            p.kill()
+
+
 class _ClaudeHTTPError(Exception):
     def __init__(self, status, body):
         super().__init__("HTTP %s: %s" % (status, body[:400])); self.status = status; self.body = body
@@ -776,6 +803,8 @@ class FakeProvider:
                 plan.append(tu("schedule_watch", {"kind": "email_reply", "from_contains": addr, "notify_message": "Reply received to your Fab OS note", "interval_minutes": 2}))
         elif "fail" in low:
             plan = [tu("run_shell", {"command": "exit 3"})]
+        elif "long sleep" in low:
+            plan = [tu("run_shell", {"command": "sleep 45 && echo finished", "timeout_s": 120})]
         elif "huge output" in low:
             # emulate a small-context model: a tool result longer than 2000 chars makes the "request" overflow
             plan = [tu("run_shell", {"command": "seq 1 20000"}), tu("run_shell", {"command": "echo compacted-ok"})]
@@ -802,6 +831,7 @@ class Agent:
         self.tools = Tools(store, self)
         self.events = {}
         self.cancel = set()
+        self.procs = {}          # task id -> running shell subprocesses (killed on cancel)
         self.answers = {}
         self.sem = threading.Semaphore(int(store.setting("agent.max_parallel", "2")))
         for r in store.all("SELECT id FROM tasks WHERE status IN ('running','waiting_approval','waiting_user')"):
@@ -932,6 +962,8 @@ class Agent:
     def cancel_task(self, tid):
         self.cancel.add(tid)
         self.store.q("UPDATE tasks SET status='cancelled', updated=? WHERE id=? AND status IN ('queued','running','waiting_approval','waiting_user')", time.time(), tid)
+        for p in list(self.procs.get(tid, ())):      # stop whatever the task is running right now (own process groups)
+            threading.Thread(target=kill_tree, args=(p,), daemon=True).start()
         for a in self.store.all("SELECT id FROM approvals WHERE task_id=? AND status='pending'", tid):
             self.decide(a["id"], "denied", "system")
         for k, ev in list(self.events.items()):
