@@ -18,11 +18,16 @@ pass=0; fail=0
 verdict() { if [ "$1" = PASS ]; then pass=$((pass+1)); else fail=$((fail+1)); fi; echo ">>> $1: $2"; }
 
 echo "### Fab OS agent live test — $(date -u +%FT%TZ) — model=$MODEL heavy=$HEAVY_MODEL mail_to=${MAIL_TO:-none}"
-pgrep -f qemu-system-x86_64 >/dev/null || { echo "booting VM"; (scripts/boot-vm.sh --headless --mem 3072 --cpus 4 > build/boot-headless.out 2>&1 &); }
+pgrep -f qemu-system-x86_64 >/dev/null || { echo "booting VM"; (scripts/boot-vm.sh --headless --mem ${VM_MEM:-2048} --cpus 4 > build/boot-headless.out 2>&1 &); }
 for i in $(seq 1 100); do vm true 2>/dev/null && break; sleep 3; done; vm true || { echo "no ssh to the VM"; exit 1; }
 for i in $(seq 1 60); do api GET /health 2>/dev/null | grep -q '"ok"' && break; sleep 3; done
 api GET /health | grep -q '"ok"' || { echo "agent daemon not reachable in the session"; exit 1; }
 
+if [ "${INJECT:-0}" = 1 ]; then   # test the working-tree agent code without rebuilding the image
+  echo "### injecting working-tree agent files into the VM"
+  sshpass -p fabos scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -P 2222 packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py packages/fabos-agent/usr/lib/fabos/agent/command_center.py packages/fabos-agent/usr/bin/fabos fabos@127.0.0.1:/tmp/ >/dev/null
+  vm "echo fabos | sudo -S install -m 755 /tmp/fabos_agentd.py /tmp/command_center.py /usr/lib/fabos/agent/ 2>/dev/null; echo fabos | sudo -S install -m 755 /tmp/fabos /usr/bin/fabos 2>/dev/null; systemctl --user restart fabos-agent; sleep 3; systemctl --user is-active fabos-agent"
+fi
 echo "### configure provider + mail"
 vm "fabos settings provider claude >/dev/null; fabos settings claude.model $MODEL >/dev/null; fabos settings ai.enabled true >/dev/null; fabos mode auto >/dev/null; printf '%s\n' '$ANTHROPIC_API_KEY' | fabos set-key claude >/dev/null 2>&1"
 if [ -n "${BREVO_API_KEY:-}" ] && [ -n "$MAIL_TO" ]; then
