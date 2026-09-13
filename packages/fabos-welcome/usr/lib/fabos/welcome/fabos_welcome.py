@@ -131,6 +131,9 @@ def main():
 
     # 5 Finish
     p5 = Page("You're ready", "Fab OS is set up. A few things you may want to adjust:")
+    extras = QCheckBox("Install proprietary drivers and media codecs (NVIDIA, some Wi-Fi chips, MP4/H.264 playback) — optional, needs your password")
+    extras.setChecked(False)
+    p5.v.addWidget(extras)
     for label, kcm in (("Language & region", "kcm_regionandlang"), ("Keyboard layout", "kcm_keyboard"), ("Network", "kcm_networkmanagement"), ("Displays", "kcm_kscreen")):
         bb = QPushButton(label)
         bb.clicked.connect(lambda _, k=kcm: run("systemsettings", k))
@@ -143,6 +146,8 @@ def main():
 
     def finish():
         subprocess.run(["fabos", "settings", "ai.enabled", "true" if ai_on.isChecked() else "false"], capture_output=True, timeout=10)
+        if extras.isChecked():
+            run("pkexec", "/usr/lib/fabos/firstboot.sh", "extras")
         os.makedirs(os.path.dirname(MARK), exist_ok=True)
         open(MARK, "w").write("done\n")
     w.accepted.connect(finish)
