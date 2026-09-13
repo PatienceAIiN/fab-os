@@ -134,7 +134,9 @@ PlasmoidItem {
                     Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutBack } }
                     Behavior on opacity { NumberAnimation { duration: 160 } }
                     Text { anchors.centerIn: parent; text: root.sending ? "" : "Do it"; color: Kirigami.Theme.highlightedTextColor; font.family: "Inter"; font.pixelSize: 15; font.weight: Font.DemiBold }
-                    Kirigami.Icon { anchors.centerIn: parent; width: 18; height: 18; source: "fabos"; visible: root.sending
+                    // the mark spins on the accent pill while sending: monochrome variant recoloured to the pill's text colour
+                    // (the identity icon "fabos" is itself accent-coloured and would vanish here)
+                    Kirigami.Icon { anchors.centerIn: parent; width: 18; height: 18; source: "fabos-symbolic"; isMask: true; color: Kirigami.Theme.highlightedTextColor; visible: root.sending
                         RotationAnimation on rotation { from: 0; to: 360; duration: 900; loops: Animation.Infinite; running: root.sending } }
                     MouseArea { id: goArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.submit() }
                 }

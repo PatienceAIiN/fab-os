@@ -1,2 +1,4 @@
 [Greeter][Wallpaper][org.kde.image][General]
 Image=/usr/share/wallpapers/FabOS/
+# 2 = Image.PreserveAspectCrop: the best-matching render (images/ or images_dark/, up to 3840x2160) is cropped to the screen, never stretched
+FillMode=2
