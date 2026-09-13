@@ -351,11 +351,15 @@ class Tools:
 
     def t_list_dir(self, task_id, inp):
         p = os.path.expanduser(inp["path"])
+        names = sorted(os.listdir(p))
         ents = []
-        for n in sorted(os.listdir(p))[:500]:
+        for n in names[:500]:
             fp = os.path.join(p, n)
             ents.append({"name": n, "dir": os.path.isdir(fp), "size": os.path.getsize(fp) if os.path.isfile(fp) else None})
-        return {"path": p, "entries": ents}
+        out = {"path": p, "total": len(names), "entries": ents}
+        if len(names) > 500:
+            out["truncated"] = True
+        return out
 
     def t_open_app(self, task_id, inp):
         app = inp["app"]
@@ -567,6 +571,40 @@ PROVIDERS = {
     "local": {"label": "Local model (llama-server / any OpenAI-compatible)", "secret": "local_api_key", "base_url": "http://127.0.0.1:8080/v1", "model": "local"},
 }
 SECRET_NAMES = ("claude_api_key", "openai_api_key", "gemini_api_key", "local_api_key", "mail_password", "mail_api_key")
+# Characters of a tool result handed back to the model (the full output is always kept in history). Local models have
+# small context windows (llama-server default 4-8k tokens), so they get a much tighter default; override with the
+# setting agent.tool_result_max_chars.
+RESULT_LIMIT_CLOUD, RESULT_LIMIT_LOCAL = 60000, 8000
+TRUNCATED_MARK = "\n...[truncated %d chars; the full output is saved in the task history]...\n"
+
+
+class ContextOverflow(RuntimeError):
+    """The provider rejected the request because the conversation no longer fits its context window."""
+
+
+def clip(text, limit):
+    """Bound text to `limit` chars keeping the head and the tail (exit codes and errors usually sit at the end)."""
+    if limit <= 0 or len(text) <= limit:
+        return text
+    mark = TRUNCATED_MARK % (len(text) - limit)
+    keep = max(limit - len(mark), 200)
+    head = int(keep * 0.7)
+    return text[:head] + mark + text[len(text) - (keep - head):]
+
+
+def compact_messages(messages, limit):
+    """Shrink every tool_result already in the conversation to `limit` chars so the next request fits the context.
+    Returns the number of results that were shortened."""
+    n = 0
+    for m in messages:
+        if m["role"] != "user" or isinstance(m["content"], str):
+            continue
+        for b in m["content"]:
+            if b.get("type") == "tool_result" and isinstance(b.get("content"), str) and len(b["content"]) > limit:
+                b["content"] = clip(b["content"], limit)
+                n += 1
+    return n
+
 
 
 class _ClaudeHTTPError(Exception):
@@ -579,6 +617,7 @@ class ClaudeProvider:
     (the SDK's optional native deps such as jiter are not always installed) — identical behaviour either way."""
     name = "claude"
     API = "https://api.anthropic.com/v1/messages"
+    result_limit = RESULT_LIMIT_CLOUD
 
     def __init__(self, api_key, model, fallbacks=True):
         self.key, self.model, self.fallbacks = api_key, model, fallbacks
@@ -648,9 +687,14 @@ class ClaudeProvider:
 class OpenAICompatProvider:
     """Any /v1/chat/completions endpoint with tool calling (llama-server, vLLM, other vendors)."""
     name = "openai-compatible"
+    result_limit = RESULT_LIMIT_CLOUD
 
-    def __init__(self, base_url, api_key, model):
+    def __init__(self, base_url, api_key, model, name=None, result_limit=None):
         self.base, self.key, self.model = base_url.rstrip("/"), api_key or "none", model
+        if name:
+            self.name = name
+        if result_limit:
+            self.result_limit = result_limit
 
     def step(self, system, messages, tools, on_usage=None):
         msgs = [{"role": "system", "content": system}]
@@ -675,8 +719,23 @@ class OpenAICompatProvider:
                 "tools": [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}} for t in tools]}
         req = urllib.request.Request(self.base + "/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json", "Authorization": "Bearer " + self.key})
-        with urllib.request.urlopen(req, timeout=600) as r:
-            d = json.loads(r.read())
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r:
+                d = json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            # surface the server's own message (llama-server/vLLM/vendors put it in {"error": {"message": ...}}) instead of a bare "400 Bad Request"
+            raw = e.read().decode("utf-8", "replace")[:2000]
+            try:
+                err = json.loads(raw).get("error", raw)
+                msg = err.get("message") if isinstance(err, dict) else str(err)
+            except Exception:
+                msg = raw
+            msg = (msg or str(e)).strip()
+            if e.code in (400, 413, 422) and re.search(r"context|too many tokens|maximum.*length|exceed", msg, re.I):
+                raise ContextOverflow("%s (HTTP %d from %s)" % (msg, e.code, self.base))
+            raise RuntimeError("%s provider error HTTP %d: %s" % (self.name, e.code, msg))
+        except urllib.error.URLError as e:
+            raise RuntimeError("%s provider unreachable at %s: %s" % (self.name, self.base, e.reason))
         ch = d["choices"][0]["message"]
         content = []
         if ch.get("content"):
@@ -717,6 +776,14 @@ class FakeProvider:
                 plan.append(tu("schedule_watch", {"kind": "email_reply", "from_contains": addr, "notify_message": "Reply received to your Fab OS note", "interval_minutes": 2}))
         elif "fail" in low:
             plan = [tu("run_shell", {"command": "exit 3"})]
+        elif "huge output" in low:
+            # emulate a small-context model: a tool result longer than 2000 chars makes the "request" overflow
+            plan = [tu("run_shell", {"command": "seq 1 20000"}), tu("run_shell", {"command": "echo compacted-ok"})]
+            for m in messages:
+                if m["role"] == "user" and not isinstance(m["content"], str):
+                    for b in m["content"]:
+                        if b.get("type") == "tool_result" and len(b.get("content") or "") > 2000:
+                            raise ContextOverflow("simulated: request exceeds the available context size")
         elif "as root" in low:
             plan = [tu("run_shell", {"command": "id -u; systemctl is-active sddm; sysctl -n kernel.hostname", "as_root": True})]
         elif "privileged" in low:
@@ -779,8 +846,32 @@ class Agent:
             key = get_secret(pre["secret"])
             if not key and kind != "local":
                 raise RuntimeError("No %s API key configured. Open Fab OS Command Center → Settings → AI provider." % pre["label"])
-            return OpenAICompatProvider(self.store.setting(kind + ".base_url", pre["base_url"]), key, self.store.setting(kind + ".model", pre["model"]))
+            return OpenAICompatProvider(self.store.setting(kind + ".base_url", pre["base_url"]), key, self.store.setting(kind + ".model", pre["model"]),
+                                        name=kind, result_limit=RESULT_LIMIT_LOCAL if kind == "local" else RESULT_LIMIT_CLOUD)
         raise RuntimeError("unknown provider " + kind)
+
+    def result_limit(self, prov):
+        """Max chars of a tool result shown to the model (setting agent.tool_result_max_chars overrides the provider default)."""
+        try:
+            return int(self.store.setting("agent.tool_result_max_chars") or getattr(prov, "result_limit", RESULT_LIMIT_CLOUD))
+        except ValueError:
+            return getattr(prov, "result_limit", RESULT_LIMIT_CLOUD)
+
+    def model_step(self, tid, prov, system, messages, usage):
+        """One provider call. If the conversation no longer fits the model's context, compact earlier tool outputs and retry
+        (twice, progressively harder) instead of failing the task with an opaque HTTP error."""
+        limits = (1500, 300)  # chars per earlier tool result after the 1st and 2nd overflow
+        for attempt in range(len(limits) + 1):
+            try:
+                return prov.step(system, messages, TOOLS, usage)
+            except ContextOverflow as e:
+                if attempt == len(limits):
+                    raise RuntimeError("The model's context window is too small for this task even after compacting tool outputs (%s). "
+                                       "Use a larger context (llama-server -c) or a smaller agent.tool_result_max_chars." % e)
+                limit = limits[attempt]
+                n = compact_messages(messages, limit)
+                self.store.step(tid, "compact", "context", str(e)[:500], "shortened %d earlier tool outputs to %d chars and retried" % (n, limit))
+                LOG("task", tid, "context overflow:", str(e)[:200], "-> compacted", n, "results to", limit)
 
     def mode(self, task=None):
         return (task or {}).get("mode") or self.store.setting("mode", "auto")
@@ -890,6 +981,7 @@ class Agent:
                                           now=datetime.now().strftime("%Y-%m-%d %H:%M %Z"), mode=self.mode(task))
             messages = [{"role": "user", "content": task["request"]}]
             final = ""
+            limit = self.result_limit(prov)
 
             def usage(i, o):
                 self.store.q("UPDATE tasks SET cost_in=cost_in+?, cost_out=cost_out+? WHERE id=?", i, o, tid)
@@ -897,7 +989,7 @@ class Agent:
                 for turn in range(int(self.store.setting("agent.max_turns", "60"))):
                     if tid in self.cancel:
                         raise RuntimeError("cancelled by user")
-                    resp = prov.step(system, messages, TOOLS, usage)
+                    resp = self.model_step(tid, prov, system, messages, usage)
                     content = resp["content"]
                     messages.append({"role": "assistant", "content": content})
                     for b in content:
@@ -920,7 +1012,7 @@ class Agent:
                         else:
                             out, err = self.tools.run(tid, c["name"], inp)
                         self.store.q("UPDATE steps SET output=? WHERE id=?", json.dumps(out)[:40000], sid)
-                        res = {"type": "tool_result", "tool_use_id": c["id"], "content": json.dumps(out)[:60000]}
+                        res = {"type": "tool_result", "tool_use_id": c["id"], "content": clip(json.dumps(out), limit)}
                         if err:
                             res["is_error"] = True
                         results.append(res)
