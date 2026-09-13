@@ -8,7 +8,10 @@ run() { $K key alt-f2; sleep 1.5; $K type "$1"; sleep 1.5; $K key ret; sleep "${
 launch() { $K key meta_l; sleep 1.8; $K type "$1"; sleep 1.8; $K key ret; sleep "${2:-6}"; }   # launcher search: applications by name
 pgrep -f qemu-system-x86_64 >/dev/null && { echo "a VM is already running; stop it first"; exit 1; }
 (scripts/boot-vm.sh --headless --mem 2048 --cpus 4 > build/boot-headless.out 2>&1 &)
-for i in $(seq 1 60); do [ -S build/qemu-monitor.sock ] && break; sleep 2; done; sleep 80
+for i in $(seq 1 60); do [ -S build/qemu-monitor.sock ] && break; sleep 2; done
+# wait for the desktop itself (vm profile has sshd): plasmashell running + agent daemon answering, then settle
+SSH="sshpass -p fabos ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -p 2222 fabos@127.0.0.1"
+for i in $(seq 1 100); do $SSH "pgrep -x plasmashell >/dev/null && test -s \$XDG_RUNTIME_DIR/fabos-agent/token" 2>/dev/null && break; sleep 3; done; sleep 20
 shot 01-desktop-dark
 $K key meta_l; sleep 2; shot 02-launcher; $K type "wallet"; sleep 2; shot 03-launcher-wallet; $K key esc; sleep 1
 $K key meta_l; sleep 2; $K type "console"; sleep 2; shot 04-launcher-console; $K key esc; sleep 1
