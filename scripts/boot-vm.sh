@@ -20,7 +20,7 @@ args=( -name "Fab OS" -machine q35,accel=$ACCEL -cpu $CPU -smp "$CPUS" -m "$MEM"
   -device qemu-xhci -device usb-tablet -device usb-kbd -device virtio-rng-pci
   -netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22 -device virtio-net-pci,netdev=n0
   -serial file:"$SERIAL" -monitor unix:build/qemu-monitor.sock,server,nowait -rtc base=utc )
-if [ $HEADLESS = 1 ]; then args+=( -display none -device virtio-vga,max_outputs=$HEADS ); elif [ $GL = 1 ]; then args+=( -device virtio-vga-gl,max_outputs=$HEADS -display gtk,gl=on,show-cursor=on ); else args+=( -device virtio-vga,max_outputs=$HEADS -display gtk,show-cursor=on,zoom-to-fit=on ); fi
+if [ $HEADLESS = 1 ]; then args+=( -display none -device virtio-vga,id=vga0,max_outputs=$HEADS ); elif [ $GL = 1 ]; then args+=( -device virtio-vga-gl,id=vga0,max_outputs=$HEADS -display gtk,gl=on,show-cursor=on ); else args+=( -device virtio-vga,id=vga0,max_outputs=$HEADS -display gtk,show-cursor=on,zoom-to-fit=on ); fi
 if [ $AUTOTEST = 1 ]; then args+=( -no-reboot -smbios type=11,value=io.systemd.boot.kernel-cmdline-extra=fabos.autopoweroff\ console=ttyS0 ); fi
 export RG_MEMMAX=${RG_MEMMAX:-$((MEM+1100))M} RG_MEMHIGH=${RG_MEMHIGH:-$((MEM+800))M}
 echo "== booting $DISK  mem=${MEM}M cpus=$CPUS accel=$ACCEL headless=$HEADLESS autotest=$AUTOTEST  (serial -> $SERIAL)"
