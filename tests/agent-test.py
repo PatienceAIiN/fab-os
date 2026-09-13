@@ -33,6 +33,18 @@ class Classify(unittest.TestCase):
         self.assertFalse(a.needs_approval("HIGH", "auto")); self.assertTrue(a.needs_approval("CRITICAL", "auto"))
         self.assertFalse(a.needs_approval("CRITICAL", "bypass"))
 
+    def test_clip_and_compact(self):
+        # tool results shown to the model are bounded (head + tail kept), the marker says how much was cut
+        big = "".join("line %d\n" % i for i in range(5000))
+        self.assertEqual(fa.clip("short", 100), "short")
+        c = fa.clip(big, 1000)
+        self.assertLessEqual(len(c), 1000); self.assertTrue(c.startswith("line 0\n")); self.assertTrue(c.endswith("line 4999\n")); self.assertIn("truncated", c)
+        msgs = [{"role": "user", "content": "task"}, {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "run_shell", "input": {}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": big}, {"type": "tool_result", "tool_use_id": "t2", "content": "ok"}]}]
+        self.assertEqual(fa.compact_messages(msgs, 300), 1)
+        self.assertLessEqual(len(msgs[2]["content"][0]["content"]), 300); self.assertEqual(msgs[2]["content"][1]["content"], "ok")
+        self.assertEqual(fa.compact_messages(msgs, 300), 0)
+
 
 class Daemon(unittest.TestCase):
     @classmethod
@@ -111,6 +123,25 @@ class Daemon(unittest.TestCase):
     def test_08_mail_task_without_config_fails_cleanly(self):
         r = self.cli("do", "--mode", "bypass", "open editor, write hi and send mail to someone@example.com"); t = self.wait(r["id"])
         self.assertEqual(t["status"], "done"); self.assertIn("Mail is not configured", json.dumps(t["steps"]))
+
+    def test_09_context_overflow_is_compacted_and_task_finishes(self):
+        # a huge tool output makes the (fake, small-context) model reject the request: the daemon must shorten earlier
+        # tool outputs, retry and finish instead of failing with an opaque HTTP error; history keeps the full output
+        r = self.cli("do", "--mode", "bypass", "run something with huge output"); t = self.wait(r["id"], timeout=60)
+        self.assertEqual(t["status"], "done", t)
+        self.assertTrue(any(s["kind"] == "compact" for s in t["steps"]), [s["kind"] for s in t["steps"]])
+        first = [s for s in t["steps"] if s["kind"] == "tool_call"][0]
+        self.assertIn("20000", first["output"]); self.assertGreater(len(first["output"]), 20000)
+        self.assertIn("compacted-ok", json.dumps(t["steps"]))
+
+    def test_10_tool_result_limit_setting_prevents_overflow(self):
+        self.cli("settings", "agent.tool_result_max_chars", "500")
+        try:
+            r = self.cli("do", "--mode", "bypass", "run something with huge output"); t = self.wait(r["id"], timeout=60)
+            self.assertEqual(t["status"], "done", t)
+            self.assertFalse(any(s["kind"] == "compact" for s in t["steps"]))  # already clipped => no overflow at all
+        finally:
+            self.cli("settings", "agent.tool_result_max_chars", "")
 
 
 if __name__ == "__main__":
