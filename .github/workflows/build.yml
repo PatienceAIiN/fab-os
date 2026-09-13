@@ -5,7 +5,7 @@ on:
 # Channels: push to main -> beta suite (loom-beta); tag v* -> stable suite (loom).
 
 # End-to-end OS update loop:
-#   push to main -> build .debs -> sign apt repo -> publish to fabricos.patienceai.in/apt -> users get `apt upgrade`.
+#   push to main -> build .debs -> sign apt repo -> publish to fabos.patienceai.in/apt -> users get `apt upgrade`.
 # Secrets required: VM_HOST, VM_USER, VM_SSH_KEY (rsync target), APT_GPG_PRIVATE_KEY (armored, from build/secrets/fabos-archive-private.asc)
 jobs:
   packages-and-apt:
@@ -38,7 +38,7 @@ jobs:
           scripts/publish-apt.sh --no-deploy --channel $CH
       - uses: actions/upload-artifact@v4
         with: { name: fab-os-apt-repo, path: build/apt-repo }
-      - name: Publish to fabricos.patienceai.in/apt
+      - name: Publish to fabos.patienceai.in/apt
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         env:
           VM_HOST: ${{ secrets.VM_HOST }}

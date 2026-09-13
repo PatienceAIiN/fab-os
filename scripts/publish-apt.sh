@@ -50,8 +50,8 @@ cat > "$OUT/index.html" <<HTML
 <style>body{font-family:Inter,system-ui;max-width:720px;margin:48px auto;padding:0 20px;color:#1B1F27}code,pre{background:#EDEFF3;padding:2px 6px;border-radius:6px}</style>
 <h1>$DISTRO_NAME package repository</h1><p>Signed updates for $DISTRO_NAME by $VENDOR_NAME. Suite <code>$SUITE</code>, component <code>$COMPONENT</code>.</p>
 <p>On $DISTRO_NAME this repository is preconfigured. On stock Ubuntu ${BASE_VERSION_ID}:</p>
-<pre>sudo curl -fsSL https://fabricos.patienceai.in/apt/fabos-archive-keyring.gpg -o /usr/share/keyrings/fabos-archive-keyring.gpg
-echo 'deb [signed-by=/usr/share/keyrings/fabos-archive-keyring.gpg] https://fabricos.patienceai.in/apt $SUITE $COMPONENT' | sudo tee /etc/apt/sources.list.d/fabos.list
+<pre>sudo curl -fsSL https://fabos.patienceai.in/apt/fabos-archive-keyring.gpg -o /usr/share/keyrings/fabos-archive-keyring.gpg
+echo 'deb [signed-by=/usr/share/keyrings/fabos-archive-keyring.gpg] https://fabos.patienceai.in/apt $SUITE $COMPONENT' | sudo tee /etc/apt/sources.list.d/fabos.list
 sudo apt update &amp;&amp; sudo apt install fabos-desktop-meta</pre>
 <p>Packages: $(ls "$DEBS" | sed 's/_.*//' | sort -u | tr '\n' ' ')</p><p>Built $(date -u +%FT%TZ)</p>
 HTML
@@ -63,5 +63,5 @@ if [ "${1:-}" != "--no-deploy" ]; then
   host=${TARGET%%:*}; path=${TARGET#*:}
   ssh -o BatchMode=yes -i "$SSHKEY" "$host" "mkdir -p '$path'"
   rsync -az -e "ssh -o BatchMode=yes -i $SSHKEY" "$OUT/" "$TARGET/"
-  echo "== published: http://fabricos.patienceai.in/apt/  (suite $SUITE, channel $CHANNEL)"
+  echo "== published: https://fabos.patienceai.in/apt/  (suite $SUITE, channel $CHANNEL)"
 fi
