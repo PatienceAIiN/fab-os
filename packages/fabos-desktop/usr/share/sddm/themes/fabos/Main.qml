@@ -3,6 +3,9 @@ import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import SddmComponents 2.0
 
+// Fab OS greeter. Resolution-independent by construction: the background is a 3840x2160 render drawn with
+// PreserveAspectCrop (never stretched), the mark is the vector fabos.svg rasterised at 2x its on-screen size, and the
+// wordmark is live Inter text — nothing here is a fixed-size bitmap that would blur on a Full-HD or HiDPI panel.
 Rectangle {
     id: root
     width: 1920; height: 1080
@@ -10,7 +13,7 @@ Rectangle {
     property int sessionIndex: sessionModel.lastIndex
     TextConstants { id: textConstants }
 
-    Image { anchors.fill: parent; source: "background.png"; fillMode: Image.PreserveAspectCrop; smooth: true }
+    Image { anchors.fill: parent; source: "background.png"; fillMode: Image.PreserveAspectCrop; smooth: true; mipmap: true; asynchronous: false }
     Rectangle { anchors.fill: parent; color: "#000000"; opacity: 0.25 }
 
     Connections {
@@ -42,7 +45,8 @@ Rectangle {
             NumberAnimation { target: card; property: "anchors.horizontalCenterOffset"; to: 0; duration: 50 } }
         Column {
             anchors { fill: parent; margins: 28 } spacing: 14
-            Image { source: "mark.png"; width: 56; height: 56; anchors.horizontalCenter: parent.horizontalCenter; smooth: true }
+            // the Fab OS mark: vector, rendered at 2x the shown size so it is crisp on HiDPI too; no tile behind it
+            Image { source: "mark.svg"; width: 56; height: 56; sourceSize: Qt.size(112, 112); anchors.horizontalCenter: parent.horizontalCenter; smooth: true; mipmap: true }
             TextField { id: user; width: parent.width; placeholderText: textConstants.userName; text: userModel.lastUser
                         font.family: "Inter"; font.pixelSize: 15; color: "white"; placeholderTextColor: "#8892A0"
                         background: Rectangle { radius: 10; color: "#0E1116"; border.color: user.activeFocus ? "#6E9BFF" : "#2A313B" }
@@ -70,5 +74,10 @@ Rectangle {
         Button { text: textConstants.reboot; font.family: "Inter"; visible: sddm.canReboot; onClicked: sddm.reboot() }
         Button { text: textConstants.shutdown; font.family: "Inter"; visible: sddm.canPowerOff; onClicked: sddm.powerOff() }
     }
-    Image { source: "wordmark.png"; anchors { left: parent.left; bottom: parent.bottom; margins: 28 } height: 28; fillMode: Image.PreserveAspectFit; smooth: true; opacity: 0.85 }
+    // wordmark as live text (Inter Bold + Medium), not a bitmap: sharp at any DPI. Names come from brand.conf at build time.
+    Row {
+        anchors { left: parent.left; bottom: parent.bottom; margins: 28 } spacing: 8; opacity: 0.85
+        Text { id: wordmark; text: "@DISTRO_NAME@"; color: "white"; font.family: "Inter"; font.pixelSize: 22; font.weight: Font.Bold }
+        Text { text: "by @VENDOR_NAME@"; color: "#C9D1DC"; font.family: "Inter"; font.pixelSize: 14; font.weight: Font.Medium; anchors.baseline: wordmark.baseline }
+    }
 }

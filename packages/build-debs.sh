@@ -18,11 +18,16 @@ for pkgdir in "$SRC"/packages/*/; do
   # --- inject generated assets ---
   case $name in
     fabos-branding)
+      # the identity icon: bare accent mark on transparency (no tile) — vector first, then every hicolor size up to 512
       for s in 16 22 24 32 48 64 128 256 512; do install -Dm644 "$SRC/assets/icons/fabos-$s.png" "$dst/usr/share/icons/hicolor/${s}x${s}/apps/fabos.png"; done
+      install -Dm644 "$SRC/assets/icons/fabos.svg"          "$dst/usr/share/icons/hicolor/scalable/apps/fabos.svg"
+      install -Dm644 "$SRC/assets/icons/fabos-symbolic.svg" "$dst/usr/share/icons/hicolor/scalable/apps/fabos-symbolic.svg"
       install -Dm644 "$SRC/assets/pixmaps/fabos-logo.png" "$dst/usr/share/pixmaps/fabos-logo.png"
       install -Dm644 "$SRC/assets/pixmaps/fabos-logo-dark.png" "$dst/usr/share/pixmaps/fabos-logo-dark.png"
-      install -Dm644 "$SRC/assets/pixmaps/fabos.png" "$dst/usr/share/pixmaps/fabos.png"
-      cp "$SRC"/assets/plymouth/spinner-*.png "$SRC/assets/plymouth/wordmark.png" "$SRC/assets/plymouth/mark.png" "$dst/usr/share/plymouth/themes/fabos/"
+      install -Dm644 "$SRC/assets/pixmaps/fabos.png"      "$dst/usr/share/pixmaps/fabos.png"        # 1024 px mark: About page, installer
+      install -Dm644 "$SRC/assets/pixmaps/fabos-face.png" "$dst/usr/share/pixmaps/fabos-face.png"   # 512 px mark with a thin halo: default avatar
+      # boot splash: 36 frames at 256 px + the 2x wordmark; fabos.script scales both to the screen (12 % / 11 % of its height)
+      cp "$SRC"/assets/plymouth/spinner-*.png "$SRC/assets/plymouth/wordmark.png" "$dst/usr/share/plymouth/themes/fabos/"
       python3 - "$dst/usr/share/plymouth/themes/fabos" <<'PY'
 import sys; from PIL import Image
 d=sys.argv[1]; Image.new("RGBA",(8,8),(42,49,59,255)).save(d+"/bar-bg.png"); Image.new("RGBA",(8,8),(110,155,255,255)).save(d+"/bar-fg.png")
@@ -30,19 +35,17 @@ PY
       ;;
     fabos-desktop)
       LNF=in.patienceai.fabos.desktop
-      for f in dark-1920x1080 dark-2560x1440 dark-3840x2160 light-1920x1080 light-2560x1440 light-3840x2160; do
-        [ -f "$SRC/assets/wallpapers/$f.png" ] && install -Dm644 "$SRC/assets/wallpapers/$f.png" "$dst/usr/share/wallpapers/FabOS/contents/images/${f#*-}.png"; done
-      # Plasma picks images by resolution name; dark is the default set, light under images_dark? keep light variants alongside
-      for f in dark-1920x1080 dark-2560x1440 dark-3840x2160; do
-        [ -f "$SRC/assets/wallpapers/$f.png" ] && install -Dm644 "$SRC/assets/wallpapers/$f.png" "$dst/usr/share/wallpapers/FabOS/contents/images_dark/${f#*-}.png"; done
-      install -Dm644 "$SRC/assets/pixmaps/fabos.png" "$dst/etc/skel/.face.icon"
+      # Wallpaper package: Plasma picks the file whose name best matches the screen (1280x800 … 3840x2160) and crops it
+      # (PreserveAspectCrop). images/ = light set (default), images_dark/ = dark set (used with a dark colour scheme).
+      for f in "$SRC"/assets/wallpapers/light-*.png; do b=$(basename "$f" .png); install -Dm644 "$f" "$dst/usr/share/wallpapers/FabOS/contents/images/${b#light-}.png"; done
+      for f in "$SRC"/assets/wallpapers/dark-*.png;  do b=$(basename "$f" .png); install -Dm644 "$f" "$dst/usr/share/wallpapers/FabOS/contents/images_dark/${b#dark-}.png"; done
+      install -Dm644 "$SRC/assets/pixmaps/fabos-face.png" "$dst/etc/skel/.face.icon"                  # default avatar: the mark, transparent, thin halo
       install -Dm644 "$SRC/assets/wallpapers/screenshot.png" "$dst/usr/share/wallpapers/FabOS/contents/screenshot.png"
+      # Greeter + session splash: 3840x2160 background (QML crops it), vector mark (QML rasterises it at 2x the shown size)
       install -Dm644 "$SRC/assets/sddm/background.png" "$dst/usr/share/sddm/themes/fabos/background.png"
-      install -Dm644 "$SRC/assets/sddm/wordmark.png"   "$dst/usr/share/sddm/themes/fabos/wordmark.png"
-      install -Dm644 "$SRC/assets/plymouth/mark.png"    "$dst/usr/share/sddm/themes/fabos/mark.png"
+      install -Dm644 "$SRC/assets/icons/fabos.svg"     "$dst/usr/share/sddm/themes/fabos/mark.svg"
       install -Dm644 "$SRC/assets/sddm/background.png" "$dst/usr/share/plasma/look-and-feel/$LNF/contents/splash/images/background.png"
-      install -Dm644 "$SRC/assets/plymouth/mark.png"    "$dst/usr/share/plasma/look-and-feel/$LNF/contents/splash/images/mark.png"
-      install -Dm644 "$SRC/assets/plymouth/wordmark.png" "$dst/usr/share/plasma/look-and-feel/$LNF/contents/splash/images/wordmark.png"
+      install -Dm644 "$SRC/assets/icons/fabos.svg"     "$dst/usr/share/plasma/look-and-feel/$LNF/contents/splash/images/mark.svg"
       install -Dm644 "$SRC/assets/wallpapers/screenshot.png" "$dst/usr/share/plasma/look-and-feel/$LNF/contents/previews/preview.png"
       install -Dm644 "$SRC/assets/wallpapers/screenshot.png" "$dst/usr/share/plasma/look-and-feel/$LNF/contents/previews/splash.png"
       install -Dm644 "$SRC/assets/3d/fabos-mark.glb" "$dst/usr/share/fabos/3d/fabos-mark.glb"

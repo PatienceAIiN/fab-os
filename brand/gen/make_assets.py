@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
-"""Render every FabOS OS brand asset from brand.conf + the SVG mark.
+"""Render every Fab OS brand asset from brand.conf + the SVG mark.
 
-Deterministic, dependency-light (Pillow only). Outputs:
-  icons/           hicolor PNG icons (16..512) + fabos.svg copies
-  pixmaps/         logo + wordmark PNGs (light/dark)
-  plymouth/        spinner frames (rotating ring) + wordmark for the boot splash
-  wallpapers/      procedural weave wallpapers (dark + light) at 3 sizes
-  sddm/            greeter background
-  3d/              fabos-mark.glb + fabos-mark.obj (torus + 3 bars), CC0/Apache-2.0
+Deterministic (seeded noise only), dependency-light (Pillow; rsvg-convert for the app-tile PNGs). Outputs:
+  icons/           fabos.svg + fabos-symbolic.svg (vector) and fabos-<16..1024>.png: the bare mark (ring + three
+                   bars) in the accent colour on a transparent background — no tile behind it
+  pixmaps/         fabos.png (1024, About page / installer), fabos-face.png (512, default avatar, thin white halo),
+                   fabos-logo.png + fabos-logo-dark.png (mark + wordmark lockups, rendered at 2x)
+  plymouth/        36 spinner frames (256 px, white) + wordmark (2x) for the boot splash; the script scales them
+  wallpapers/      procedural weave wallpapers, light + dark, at 7 sizes from 1280x800 to 3840x2160, anti-aliased
+                   (shapes drawn at 2x, LANCZOS) and dithered (+-1/255 seeded noise) so long gradients do not band
+  3d/              fabos-mark.glb + fabos-mark.obj (torus + 3 bars)
+  icon-theme/      the FabOS icon theme (Material Symbols on colour tiles for apps; the bare mark for "fabos")
+  plasma-theme/    KSvg frames for panels/popups (plasma_theme.py)
+  meta/            assets.json: conf, font, and a WxH inventory of every raster written
 """
-import argparse, glob, json, math, os, shlex, struct, sys
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+import argparse, glob, json, math, os, random, shlex, struct, sys
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
+
+WALLPAPER_SIZES = [(3840, 2160), (2560, 1440), (2560, 1600), (1920, 1080), (1920, 1200), (1366, 768), (1280, 800)]
+QUICK_SIZES = [(1920, 1080), (1366, 768)]
+MARK_SIZES = (16, 22, 24, 32, 48, 64, 128, 256, 512, 1024)     # bare-mark PNGs (hicolor takes 16..512, 1024 -> pixmaps)
+THEME_SIZES = (16, 22, 24, 32, 48, 64, 128, 256, 512)          # fixed-size dirs of the FabOS icon theme
+SPINNER_PX, SPINNER_FRAMES = 256, 36                            # boot-splash frames; 2x the old 128 px
+SCREENSHOT = (1280, 720)
 
 def load_conf(path):
     conf = {}
@@ -43,34 +55,49 @@ def hexrgb(h, a=255):
     h = h.lstrip("#"); return (int(h[0:2],16), int(h[2:4],16), int(h[4:6],16), a)
 
 # ---------- the mark ----------
-def draw_mark(size, color, rot_deg=-24, ring_dash=None, spin=0.0, bar_phase=0.0, ss=4):
-    """Ring + three woven bars, as in brand/logo/fabos-mark.svg (64-unit grid)."""
-    S = size * ss; u = S / 64.0
-    img = Image.new("RGBA", (S, S), (0,0,0,0)); d = ImageDraw.Draw(img)
-    cx = cy = 32*u; r = 20*u; w = 4*u
-    box = [cx-r, cy-r, cx+r, cy+r]
-    if ring_dash is None:
-        d.ellipse(box, outline=color, width=int(w))
-    else:
-        start = (spin*360) % 360; d.arc(box, start, start+ring_dash, fill=color, width=int(w))
-        # round caps
-        for ang in (start, start+ring_dash):
-            a = math.radians(ang); px, py = cx + r*math.cos(a), cy + r*math.sin(a)
-            d.ellipse([px-w/2, py-w/2, px+w/2, py+w/2], fill=color)
-    for i,(x,h0) in enumerate(((23,14),(30,20),(37,14))):
-        # breathing bars for animation frames (bar_phase 0 = static)
-        amp = 3*u*math.sin(bar_phase*2*math.pi + i*0.9) if bar_phase else 0
-        h = h0*u + (amp if i != 1 else -amp)
-        y = cy - h/2
-        d.rounded_rectangle([x*u, y, x*u+4*u, y+h], radius=2*u, fill=color)
-    img = img.rotate(-rot_deg, resample=Image.BICUBIC, center=(cx,cy))
-    return img.resize((size,size), Image.LANCZOS)
+# Geometry (64-unit grid, brand/logo/fabos-mark.svg): ring centre (32,32), stroke 4 centred on r=20 (outer 22, inner 18);
+# bars 4 wide at x=23/30/37, 14/20/14 tall, centred on y=32, rx=2; the whole thing rotated -24 deg about the centre.
+# `view` is how many grid units the output canvas spans (centred): 64 = the loose SVG canvas, 48 = tight icon framing
+# (ring outer edge at 44/48 of the canvas, like a Breeze app icon).
+BARS = ((-9, 14), (-2, 20), (5, 14))   # (left edge relative to centre, height)
 
-def tile(size, fg, bg, radius_frac=0.25, ss=4):
-    S = size*ss; img = Image.new("RGBA",(S,S),(0,0,0,0)); d = ImageDraw.Draw(img)
-    d.rounded_rectangle([0,0,S-1,S-1], radius=int(S*radius_frac), fill=bg)
-    m = draw_mark(size, fg, ss=ss).resize((S,S), Image.LANCZOS)
-    img.alpha_composite(m); return img.resize((size,size), Image.LANCZOS)
+def draw_mark(size, color, rot_deg=-24, ring_dash=None, spin=0.0, bar_phase=0.0, ss=4, view=48, outline=None):
+    """Ring + three woven bars, supersampled ss x and LANCZOS-downsampled. ring_dash/spin/bar_phase animate the
+    boot spinner. outline=(rgba, width_units) draws a thin halo behind the mark for contrast over wallpapers."""
+    S = size * ss; u = S / float(view); cx = cy = S / 2.0; r = 20 * u; w = 4 * u
+    def shapes(d, col, grow):
+        ww = w + 2 * grow; ro = r + ww / 2
+        box = [cx - ro, cy - ro, cx + ro, cy + ro]
+        if ring_dash is None:
+            d.ellipse(box, outline=col, width=int(round(ww)))
+        else:
+            start = (spin * 360) % 360; d.arc(box, start, start + ring_dash, fill=col, width=int(round(ww)))
+            for ang in (start, start + ring_dash):   # round caps
+                a = math.radians(ang); px, py = cx + r * math.cos(a), cy + r * math.sin(a)
+                d.ellipse([px - ww / 2, py - ww / 2, px + ww / 2, py + ww / 2], fill=col)
+        for i, (dx, h0) in enumerate(BARS):
+            amp = 3 * u * math.sin(bar_phase * 2 * math.pi + i * 0.9) if bar_phase else 0   # breathing bars (frames only)
+            h = h0 * u + (amp if i != 1 else -amp); x = cx + dx * u; y = cy - h / 2
+            d.rounded_rectangle([x - grow, y - grow, x + 4 * u + grow, y + h + grow], radius=2 * u + grow, fill=col)
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    if outline:
+        halo = Image.new("RGBA", (S, S), (0, 0, 0, 0)); shapes(ImageDraw.Draw(halo), outline[0], outline[1] * u); img.alpha_composite(halo)
+    fg = Image.new("RGBA", (S, S), (0, 0, 0, 0)); shapes(ImageDraw.Draw(fg), color, 0); img.alpha_composite(fg)
+    img = img.rotate(-rot_deg, resample=Image.BICUBIC, center=(cx, cy))
+    return img.resize((size, size), Image.LANCZOS)
+
+def mark_svg(fill=None, symbolic=False, view=48, title="Fab OS"):
+    """The mark as a standalone SVG. fill=colour -> the identity icon; symbolic=True -> monochrome with the KDE
+    current-color-scheme stylesheet + class="ColorScheme-Text" so KIconLoader recolours it to the panel text colour."""
+    ring = "M32 10a22 22 0 1 0 0 44a22 22 0 1 0 0-44zm0 4a18 18 0 1 1 0 36a18 18 0 1 1 0-36z"
+    attrs = 'class="ColorScheme-Text" style="fill:currentColor;fill-opacity:1;stroke:none"' if symbolic else 'fill="%s"' % fill
+    shapes = '<path fill-rule="evenodd" d="%s" %s/>' % (ring, attrs) + "".join(
+        '<rect x="%d" y="%d" width="4" height="%d" rx="2" %s/>' % (32 + dx, 32 - h // 2, h, attrs) for dx, h in BARS)
+    defs = ('<defs id="defs"><style type="text/css" id="current-color-scheme">.ColorScheme-Text{color:#232629;}</style></defs>'
+            if symbolic else "")
+    o = (64 - view) / 2.0
+    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="%g %g %d %d" width="%d" height="%d" role="img" aria-labelledby="t">'
+            '<title id="t">%s</title>%s<g transform="rotate(-24 32 32)">%s</g></svg>\n' % (o, o, view, view, view, view, title, defs, shapes))
 
 def wordmark(font_dirs, text, sub, fg, size_px):
     f1, used = font(font_dirs, "Inter", "Bold", size_px)
@@ -84,7 +111,7 @@ def wordmark(font_dirs, text, sub, fg, size_px):
     return img, used
 
 def logo_lockup(font_dirs, name, vendor, fg, size_px):
-    mark = draw_mark(int(size_px*1.6), fg)
+    mark = draw_mark(int(size_px*1.25), fg)
     wm, _ = wordmark(font_dirs, name, "by " + vendor, fg, size_px)
     gap = size_px//3
     W = mark.width + gap + wm.width; H = max(mark.height, wm.height)
@@ -93,33 +120,55 @@ def logo_lockup(font_dirs, name, vendor, fg, size_px):
     return img
 
 # ---------- wallpaper ----------
-def weave_wallpaper(W, H, dark=True, accent="#3B6EF5", accent2="#6E9BFF", bg="#0E1116"):
-    base = hexrgb(bg) if dark else hexrgb("#F6F7F9")
-    img = Image.new("RGBA",(W,H), base)
-    glow = Image.new("RGBA",(W,H),(0,0,0,0)); g = ImageDraw.Draw(glow)
-    blobs = [(0.72,0.28,0.55,accent,150 if dark else 90),(0.18,0.78,0.45,accent2,110 if dark else 60),
-             (0.50,0.95,0.60,"#1F9D57",45 if dark else 30),(0.05,0.10,0.35,accent2,70 if dark else 40)]
-    for fx,fy,fr,col,alpha in blobs:
-        r = fr*W*0.45; cx,cy = fx*W, fy*H
-        g.ellipse([cx-r,cy-r*0.7,cx+r,cy+r*0.7], fill=hexrgb(col, alpha))
-    glow = glow.filter(ImageFilter.GaussianBlur(W*0.09))
-    img.alpha_composite(glow)
-    # subtle woven texture: two families of diagonal threads
-    weave = Image.new("RGBA",(W,H),(0,0,0,0)); wd = ImageDraw.Draw(weave)
-    step = max(6, W//160); a = 14 if dark else 10
-    col1 = (255,255,255,a) if dark else (0,0,0,a); col2 = (0,0,0,a) if dark else (255,255,255,a+6)
-    for k in range(-H, W+H, step):
-        wd.line([(k,0),(k+H,H)], fill=col1, width=1)
-        wd.line([(k,H),(k+H,0)], fill=col2, width=1)
-    weave = weave.filter(ImageFilter.GaussianBlur(0.6))
-    img.alpha_composite(weave)
+_NOISE = None
+def noise_tile(T=256, seed=0xFAB05):
+    """One seeded 256x256 tile of values {0,1,2}; the same every run, so the output stays reproducible."""
+    global _NOISE
+    if _NOISE is None:
+        rng = random.Random(seed); _NOISE = Image.frombytes("L", (T, T), bytes(rng.choice((0, 1, 2)) for _ in range(T * T)))
+    return _NOISE
+
+def dither(rgb):
+    """Add -1/0/+1 per pixel (same offset on R,G,B): breaks the 8-bit steps of the long soft gradients without visible grain."""
+    W, H = rgb.size; n = noise_tile(); T = n.width
+    tiled = Image.new("L", (W, H))
+    for y in range(0, H, T):
+        for x in range(0, W, T): tiled.paste(n, (x, y))
+    return ImageChops.add(rgb, Image.merge("RGB", (tiled, tiled, tiled)), 1.0, -1)
+
+def weave_wallpaper(W, H, dark=True, accent="#3B6EF5", accent2="#6E9BFF", bg="#0E1116", bg_light="#F6F7F9"):
+    """Soft accent glow field + a fine diagonal weave + vignette. Smooth layers (glow, vignette) are rendered at 1/4 size
+    and upsampled bicubic (identical after the blur, 16x cheaper at 4K); the weave threads are drawn at 2x and
+    downsampled with LANCZOS so they are anti-aliased at every size; the result is dithered before saving."""
+    base = hexrgb(bg) if dark else hexrgb(bg_light)
+    img = Image.new("RGBA", (W, H), base)
+    q = 4; w4, h4 = max(1, W // q), max(1, H // q)
+    glow = Image.new("RGBA", (w4, h4), (0, 0, 0, 0)); g = ImageDraw.Draw(glow)
+    blobs = [(0.72, 0.28, 0.55, accent, 150 if dark else 90), (0.18, 0.78, 0.45, accent2, 110 if dark else 60),
+             (0.50, 0.95, 0.60, "#1F9D57", 45 if dark else 30), (0.05, 0.10, 0.35, accent2, 70 if dark else 40)]
+    for fx, fy, fr, col, alpha in blobs:
+        r = fr * w4 * 0.45; cx, cy = fx * w4, fy * h4
+        g.ellipse([cx - r, cy - r * 0.7, cx + r, cy + r * 0.7], fill=hexrgb(col, alpha))
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(w4 * 0.09)).resize((W, H), Image.BICUBIC))
+    # woven texture: two families of diagonal threads, thread width follows the resolution (1 px at 1080p, 2 px at 4K)
+    ss = 2; W2, H2 = W * ss, H * ss
+    step = max(6, W // 160) * ss; lw = max(1, round(W / 1920.0)) * ss
+    a1 = 14 if dark else 10; a2 = 14 if dark else 16
+    fam = []
+    for flip in (False, True):
+        m = Image.new("L", (W2, H2), 0); d = ImageDraw.Draw(m)
+        for k in range(-H2, W2 + H2, step):
+            d.line([(k, H2), (k + H2, 0)] if flip else [(k, 0), (k + H2, H2)], fill=255, width=lw)
+        fam.append(m.resize((W, H), Image.LANCZOS))
+    for m, col, a in ((fam[0], (255, 255, 255) if dark else (0, 0, 0), a1), (fam[1], (0, 0, 0) if dark else (255, 255, 255), a2)):
+        layer = Image.new("RGBA", (W, H), col + (0,)); layer.putalpha(m.point(lambda v, a=a: v * a // 255)); img.alpha_composite(layer)
     # vignette
-    vig = Image.new("L",(W,H),0); vd = ImageDraw.Draw(vig)
-    vd.ellipse([-W*0.2,-H*0.3,W*1.2,H*1.3], fill=255); vig = vig.filter(ImageFilter.GaussianBlur(W*0.12))
-    shade = Image.new("RGBA",(W,H),(0,0,0,0) if not dark else (0,0,0,90))
-    shade.putalpha(Image.eval(vig, lambda v: int((255-v)*(0.55 if dark else 0.15))))
+    vig = Image.new("L", (w4, h4), 0); vd = ImageDraw.Draw(vig)
+    vd.ellipse([-w4 * 0.2, -h4 * 0.3, w4 * 1.2, h4 * 1.3], fill=255)
+    vig = vig.filter(ImageFilter.GaussianBlur(w4 * 0.12)).resize((W, H), Image.BICUBIC)
+    shade = Image.new("RGBA", (W, H), (0, 0, 0, 0)); shade.putalpha(vig.point(lambda v: int((255 - v) * (0.55 if dark else 0.15))))
     img.alpha_composite(shade)
-    return img.convert("RGB")
+    return dither(img.convert("RGB"))
 
 # ---------- 3D mesh (glTF 2.0 binary) ----------
 def torus(R, r, seg=96, ring=32):
@@ -166,7 +215,7 @@ def write_gltf(path_glb, path_obj, parts, color):
     a=math.radians(-24); ca,sa=math.cos(a),math.sin(a)
     V=[(x*ca - y*sa, x*sa + y*ca, z) for (x,y,z) in V]; N=[(x*ca - y*sa, x*sa + y*ca, z) for (x,y,z) in N]
     with open(path_obj,"w") as f:
-        f.write("# FabOS OS mark — CC0-1.0 / Apache-2.0\no fabos_mark\n")
+        f.write("# Fab OS mark — CC0-1.0 / Apache-2.0\no fabos_mark\n")
         for v in V: f.write("v %.5f %.5f %.5f\n"%v)
         for n in N: f.write("vn %.5f %.5f %.5f\n"%n)
         for k in range(0,len(I),3): f.write("f %d//%d %d//%d %d//%d\n"%(I[k]+1,I[k]+1,I[k+1]+1,I[k+1]+1,I[k+2]+1,I[k+2]+1))
@@ -195,6 +244,7 @@ def write_gltf(path_glb, path_obj, parts, color):
 
 # ---------- app icon theme: Google Material Symbols (Apache-2.0) on brand-coloured Fab OS tiles ----------
 # icon-theme name(s) -> (material symbol, tile colour). Names cover the Plasma/KDE apps we ship + our own apps.
+# The Fab OS identity icon itself ("fabos") is NOT a tile: see build_icon_theme.
 ICON_MAP = {
     ("system-file-manager", "org.kde.dolphin", "folder", "inode-directory"): ("folder", "#3B6EF5"),
     ("utilities-terminal", "org.kde.konsole", "terminal"): ("terminal", "#1E242D"),
@@ -314,22 +364,25 @@ def app_icon_svg(paths, color, mark_svg=None):
             '<stop offset="0" stop-color="%s"/><stop offset="1" stop-color="%s"/></linearGradient></defs>'
             '<rect width="64" height="64" rx="16" fill="url(#g)"/><rect x="1" y="1" width="62" height="62" rx="15" fill="none" stroke="#FFFFFF" stroke-opacity="0.18"/>%s</svg>') % (top, bot, body)
 
-def build_icon_theme(out, conf):
-    """Writes icons/theme/<size>/apps/<name>.png + scalable/apps/<name>.svg; needs rsvg-convert for PNGs."""
+def build_icon_theme(out, conf, marks):
+    """Writes icon-theme/<size>/apps/<name>.png + scalable/apps/<name>.svg; needs rsvg-convert for the tile PNGs.
+    `marks` = {size: RGBA image} of the bare accent mark, installed as the "fabos" identity icon (no tile)."""
     import shutil, subprocess
-    theme = os.path.join(out, "icon-theme"); cache = os.path.join(out, "material-cache"); sizes = (16, 22, 24, 32, 48, 64, 128, 256)
+    theme = os.path.join(out, "icon-theme"); cache = os.path.join(out, "material-cache"); sizes = THEME_SIZES
     mark = ('<g transform="rotate(-24 32 32)"><circle cx="32" cy="32" r="20" fill="none" stroke-width="4"/>'
             '<rect x="23" y="25" width="4" height="14" rx="2"/><rect x="30" y="22" width="4" height="20" rx="2"/><rect x="37" y="25" width="4" height="14" rx="2"/></g>')
     have_rsvg = shutil.which("rsvg-convert") is not None; made = 0; fetched = 0
+    sdir = os.path.join(theme, "scalable", "apps"); os.makedirs(sdir, exist_ok=True)
+    for s in sizes: os.makedirs(os.path.join(theme, "%dx%d" % (s, s), "apps"), exist_ok=True)
     for names, (symbol, color) in ICON_MAP.items():
         paths = None if symbol == "__fabos_mark__" else fetch_material(symbol, cache)
         if symbol != "__fabos_mark__" and not paths: continue
         fetched += 1
         svg = app_icon_svg(paths, color, mark)
-        first = names[0]; sdir = os.path.join(theme, "scalable", "apps"); os.makedirs(sdir, exist_ok=True)
+        first = names[0]
         open(os.path.join(sdir, first + ".svg"), "w").write(svg)
         for s in sizes:
-            d = os.path.join(theme, "%dx%d" % (s, s), "apps"); os.makedirs(d, exist_ok=True); png = os.path.join(d, first + ".png")
+            d = os.path.join(theme, "%dx%d" % (s, s), "apps"); png = os.path.join(d, first + ".png")
             if have_rsvg: subprocess.run(["rsvg-convert", "-w", str(s), "-h", str(s), "-o", png, os.path.join(sdir, first + ".svg")], check=True)
         for alias in names[1:]:  # aliases as symlinks (relative) so the theme resolves every name KDE asks for
             for s in sizes:
@@ -338,51 +391,74 @@ def build_icon_theme(out, conf):
             lp = os.path.join(sdir, alias + ".svg")
             if not os.path.lexists(lp): os.symlink(first + ".svg", lp)
         made += 1
-    # places/preferences names live in apps/ too; KIconLoader searches all listed dirs regardless of Context
+    # The identity icon: bare mark, accent colour, transparent background (start button, ask bar, Welcome, About);
+    # plus the monochrome symbolic variant KDE recolours for panels. Vector first, PNG for every fixed size.
+    open(os.path.join(sdir, "fabos.svg"), "w").write(mark_svg(conf["ACCENT"], title=conf["DISTRO_NAME"]))
+    open(os.path.join(sdir, "fabos-symbolic.svg"), "w").write(mark_svg(symbolic=True, title=conf["DISTRO_NAME"]))
+    for s in sizes: marks[s].save(os.path.join(theme, "%dx%d" % (s, s), "apps", "fabos.png"))
+    # places/preferences names live in apps/ too; KIconLoader searches all listed dirs regardless of Context.
+    # scalable/ is listed FIRST so KIconLoader picks the SVG whenever the requested size is within MinSize..MaxSize.
     dirs = ",".join(["scalable/apps"] + ["%dx%d/apps" % (s, s) for s in sizes])
     idx = ["[Icon Theme]", "Name=FabOS", "Comment=%s icons: Google Material Symbols on Fab OS tiles; everything else from Breeze" % conf["DISTRO_NAME"],
-           "Inherits=breeze-dark,breeze,hicolor", "FollowsColorScheme=true", "Directories=" + dirs, "", "[scalable/apps]", "Size=64", "MinSize=16", "MaxSize=512", "Type=Scalable", "Context=Applications", ""]
+           "Inherits=breeze-dark,breeze,hicolor", "FollowsColorScheme=true", "Directories=" + dirs, "",
+           "[scalable/apps]", "Size=64", "MinSize=16", "MaxSize=1024", "Type=Scalable", "Context=Applications", ""]
     for s in sizes: idx += ["[%dx%d/apps]" % (s, s), "Size=%d" % s, "Type=Fixed", "Context=Applications", ""]
     open(os.path.join(theme, "index.theme"), "w").write("\n".join(idx))
-    print("icon theme: %d icon families (%d glyphs fetched), rsvg=%s" % (made, fetched, have_rsvg))
+    print("icon theme: %d icon families (%d glyphs fetched) + fabos/fabos-symbolic, rsvg=%s" % (made, fetched, have_rsvg))
+
+def inventory(out):
+    """{relative path: 'WxH'} for every PNG under out/ except the icon theme and the glyph cache (spinner frames collapsed)."""
+    inv = {}
+    for dp, _, fn in os.walk(out):
+        rel = os.path.relpath(dp, out)
+        if rel.startswith(("icon-theme", "material-cache")): continue
+        for f in sorted(fn):
+            if f.endswith(".png"):
+                with Image.open(os.path.join(dp, f)) as im: inv[os.path.normpath(os.path.join(rel, f))] = "%dx%d" % im.size
+    frames = [k for k in inv if "/spinner-" in k]
+    if frames: inv["plymouth/spinner-NN.png x%d" % len(frames)] = inv[frames[0]]
+    for k in frames: del inv[k]
+    return inv
 
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--out",required=True); ap.add_argument("--conf",default=os.path.join(os.path.dirname(__file__),"..","brand.conf"))
-    ap.add_argument("--font-dir",action="append",default=["/usr/share/fonts"]); ap.add_argument("--quick",action="store_true",help="skip 4K wallpapers")
+    ap.add_argument("--font-dir",action="append",default=["/usr/share/fonts"]); ap.add_argument("--quick",action="store_true",help="only 1920x1080 + 1366x768 wallpapers")
     a=ap.parse_args(); C=load_conf(a.conf); out=a.out
     for d in ("icons","pixmaps","plymouth","wallpapers","sddm","3d","meta"): os.makedirs(os.path.join(out,d),exist_ok=True)
-    ink=hexrgb(C["INK"]); white=(255,255,255,255); accent=hexrgb(C["ACCENT"]); light=hexrgb(C["BG_LIGHT"]); dark=hexrgb(C["BG_DARK"])
+    ink=hexrgb(C["INK"]); white=(255,255,255,255); accent=hexrgb(C["ACCENT"])
     name=C["DISTRO_NAME"]; vendor=C["VENDOR_NAME"]
-    # icons: tile on light for hicolor apps, plus a monochrome symbolic
-    for s in (16,22,24,32,48,64,128,256,512):
-        tile(s, ink, light).save(os.path.join(out,"icons",f"fabos-{s}.png"))
-    draw_mark(512, white).save(os.path.join(out,"icons","fabos-symbolic-white.png"))
-    draw_mark(512, ink).save(os.path.join(out,"icons","fabos-symbolic-dark.png"))
-    # pixmaps / lockups
-    logo_lockup(a.font_dir, name, vendor, ink, 72).save(os.path.join(out,"pixmaps","fabos-logo.png"))
-    logo_lockup(a.font_dir, name, vendor, white, 72).save(os.path.join(out,"pixmaps","fabos-logo-dark.png"))
-    tile(128, ink, light).save(os.path.join(out,"pixmaps","fabos.png"))
-    wm,used=wordmark(a.font_dir, name, "by "+vendor, white, 56); wm.save(os.path.join(out,"plymouth","wordmark.png"))
-    wordmark(a.font_dir, name, None, white, 40)[0].save(os.path.join(out,"sddm","wordmark.png"))
-    # plymouth spinner frames: 36 frames, dashed ring rotating + breathing bars
-    for k in range(36):
-        draw_mark(128, white, ring_dash=250, spin=k/36.0, bar_phase=k/36.0).save(os.path.join(out,"plymouth",f"spinner-{k:02d}.png"))
-    draw_mark(128, white).save(os.path.join(out,"plymouth","mark.png"))
-    # wallpapers
-    sizes=[(1920,1080),(2560,1440)] + ([] if a.quick else [(3840,2160)])
+    # --- the identity mark: accent colour on transparency, no tile. Vector + 16..1024 PNG ---
+    marks = {s: draw_mark(s, accent) for s in MARK_SIZES}
+    for s, im in marks.items(): im.save(os.path.join(out,"icons",f"fabos-{s}.png"))
+    open(os.path.join(out,"icons","fabos.svg"),"w").write(mark_svg(C["ACCENT"], title=name))
+    open(os.path.join(out,"icons","fabos-symbolic.svg"),"w").write(mark_svg(symbolic=True, title=name))
+    marks[1024].save(os.path.join(out,"pixmaps","fabos.png"))                      # About page logo, installer
+    draw_mark(512, accent, outline=((255,255,255,190), 1.25)).save(os.path.join(out,"pixmaps","fabos-face.png"))   # default avatar: thin white halo for contrast over the wallpaper
+    # --- lockups (mark + wordmark), rendered at 2x; consumers scale down ---
+    logo_lockup(a.font_dir, name, vendor, ink, 144).save(os.path.join(out,"pixmaps","fabos-logo.png"))
+    logo_lockup(a.font_dir, name, vendor, white, 144).save(os.path.join(out,"pixmaps","fabos-logo-dark.png"))
+    # --- plymouth: 36 spinner frames (dashed ring rotating + breathing bars) at 256 px + the wordmark at 2x; the script scales both to the screen ---
+    wm,used=wordmark(a.font_dir, name, "by "+vendor, white, 112); wm.save(os.path.join(out,"plymouth","wordmark.png"))
+    for k in range(SPINNER_FRAMES):
+        draw_mark(SPINNER_PX, white, ring_dash=250, spin=k/float(SPINNER_FRAMES), bar_phase=k/float(SPINNER_FRAMES)).save(os.path.join(out,"plymouth",f"spinner-{k:02d}.png"))
+    # --- wallpapers: light + dark at every common laptop/desktop size; SDDM + KSplash use the dark 4K one ---
+    sizes = QUICK_SIZES if a.quick else WALLPAPER_SIZES
+    largest = None
     for (W,H) in sizes:
-        weave_wallpaper(W,H,True,C["ACCENT"],C["ACCENT_DARK"],C["BG_DARK"]).save(os.path.join(out,"wallpapers",f"dark-{W}x{H}.png"), optimize=True)
-        weave_wallpaper(W,H,False,C["ACCENT"],C["ACCENT_DARK"],C["BG_DARK"]).save(os.path.join(out,"wallpapers",f"light-{W}x{H}.png"), optimize=True)
-    wp=Image.open(os.path.join(out,"wallpapers","dark-1920x1080.png")); wp.resize((400,225),Image.LANCZOS).save(os.path.join(out,"wallpapers","screenshot.png"))
-    wp.save(os.path.join(out,"sddm","background.png"))
-    # 3D
+        for dark, tag in ((True,"dark"),(False,"light")):
+            wp = weave_wallpaper(W,H,dark,C["ACCENT"],C["ACCENT_DARK"],C["BG_DARK"],C["BG_LIGHT"])
+            wp.save(os.path.join(out,"wallpapers",f"{tag}-{W}x{H}.png"), compress_level=9)
+            if dark and (largest is None or W*H > largest.width*largest.height): largest = wp
+    largest.resize(SCREENSHOT, Image.LANCZOS).save(os.path.join(out,"wallpapers","screenshot.png"), compress_level=9)
+    largest.save(os.path.join(out,"sddm","background.png"), compress_level=9)
+    # --- 3D ---
     parts=[torus(20.0,2.0)]
     for (x,h) in ((25,14),(32,20),(39,14)): parts.append(rounded_bar(x-32, 4.0, float(h), 4.0, 2.0))
     write_gltf(os.path.join(out,"3d","fabos-mark.glb"), os.path.join(out,"3d","fabos-mark.obj"), parts, C["INK"])
-    build_icon_theme(out, C)
+    build_icon_theme(out, C, marks)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import plasma_theme; plasma_theme.write_theme(out, C)
-    json.dump({"font_used":used,"conf":C},open(os.path.join(out,"meta","assets.json"),"w"),indent=1)
+    json.dump({"font_used":used,"conf":C,"rasters":inventory(out)},open(os.path.join(out,"meta","assets.json"),"w"),indent=1)
     print("assets rendered to",out,"| font:",used)
 
 if __name__=="__main__": main()

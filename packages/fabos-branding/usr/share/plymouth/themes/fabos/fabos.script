@@ -1,24 +1,39 @@
 // Fab OS boot splash — original artwork, Apache-2.0 / CC0-1.0.
+//
+// Everything on screen is sized from the display, never in fixed pixels: the spinner frames ship at 256 px and are
+// scaled ONCE at load to 12 % of the screen height (130 px at 1080p, 173 px at 1440p, 259 px at 4K), the wordmark
+// (rendered at 2x) to 11 % and the progress bar to 12.5 % of the screen width. So the splash looks identical, and
+// stays sharp, on a 1366x768 laptop, a Full-HD panel and a 4K monitor. Animation timing is unchanged
+// (one frame per 1.5 refresh ticks, wordmark fade over 40 ticks).
 Window.SetBackgroundTopColor(0.055, 0.067, 0.086);     // #0E1116
 Window.SetBackgroundBottomColor(0.055, 0.067, 0.086);
 
 screen_w = Window.GetWidth(); screen_h = Window.GetHeight();
+unit = screen_h / 1080;                          // 1.0 at 1080p, 1.33 at 1440p, 2.0 at 4K: turns old pixel offsets into ratios
+logo_h = Math.Int(screen_h * 0.12);              // the mark: 12 % of the screen height
+if (logo_h < 64) logo_h = 64;
 
-// spinner frames
+// ---- spinner frames: scaled to the screen once, here; refresh_callback only swaps sprites ----
 frames = []; NUM = 36;
 for (i = 0; i < NUM; i++) {
   n = i; if (n < 10) n = "0" + n;
-  frames[i] = Image("spinner-" + n + ".png");
+  frames[i] = Image("spinner-" + n + ".png").Scale(logo_h, logo_h);
 }
 spinner = Sprite(frames[0]);
-spinner.SetX(screen_w / 2 - frames[0].GetWidth() / 2);
-spinner.SetY(screen_h / 2 - frames[0].GetHeight() / 2 - 40);
+spinner_y = screen_h / 2 - logo_h / 2 - Math.Int(40 * unit);
+spinner.SetX(screen_w / 2 - logo_h / 2);
+spinner.SetY(spinner_y);
 spinner.SetZ(10);
 
-wordmark_img = Image("wordmark.png");
+// ---- wordmark: keep its aspect ratio, height = 11 % of the screen (the PNG has generous padding, so the text itself is ~8 %) ----
+wordmark_src = Image("wordmark.png");
+wm_h = Math.Int(screen_h * 0.11);
+wm_w = Math.Int(wordmark_src.GetWidth() * wm_h / wordmark_src.GetHeight());
+wordmark_img = wordmark_src.Scale(wm_w, wm_h);
 wordmark = Sprite(wordmark_img);
-wordmark.SetX(screen_w / 2 - wordmark_img.GetWidth() / 2);
-wordmark.SetY(screen_h / 2 + 60);
+wordmark_y = spinner_y + logo_h + Math.Int(20 * unit);
+wordmark.SetX(screen_w / 2 - wm_w / 2);
+wordmark.SetY(wordmark_y);
 wordmark.SetOpacity(0);
 
 tick = 0;
@@ -30,11 +45,12 @@ fun refresh_callback () {
 }
 Plymouth.SetRefreshFunction(refresh_callback);
 
-// ---- progress bar (subtle, accent colour) ----
-bar_w = 240; bar_h = 3;
+// ---- progress bar (subtle, accent colour): 12.5 % of the screen width, 3 px at 1080p / 6 px at 4K ----
+bar_w = Math.Int(screen_w * 0.125); bar_h = Math.Int(3 * unit); if (bar_h < 2) bar_h = 2;
+bar_y = wordmark_y + Math.Int(wm_h * 0.8) + Math.Int(30 * unit);
 bar_bg = Image("bar-bg.png"); bar_fg = Image("bar-fg.png");
-bar_bg_s = Sprite(bar_bg.Scale(bar_w, bar_h)); bar_bg_s.SetX(screen_w/2 - bar_w/2); bar_bg_s.SetY(screen_h/2 + 130);
-bar_fg_s = Sprite(); bar_fg_s.SetX(screen_w/2 - bar_w/2); bar_fg_s.SetY(screen_h/2 + 130); bar_fg_s.SetZ(2);
+bar_bg_s = Sprite(bar_bg.Scale(bar_w, bar_h)); bar_bg_s.SetX(screen_w/2 - bar_w/2); bar_bg_s.SetY(bar_y);
+bar_fg_s = Sprite(); bar_fg_s.SetX(screen_w/2 - bar_w/2); bar_fg_s.SetY(bar_y); bar_fg_s.SetZ(2);
 fun progress_callback (duration, progress) {
   w = Math.Int(bar_w * progress); if (w < 1) w = 1;
   bar_fg_s.SetImage(bar_fg.Scale(w, bar_h));
@@ -42,19 +58,20 @@ fun progress_callback (duration, progress) {
 Plymouth.SetBootProgressFunction(progress_callback);
 
 // ---- messages (fsck etc.) ----
-message_sprite = Sprite(); message_sprite.SetPosition(10, screen_h - 30, 10000);
+message_sprite = Sprite(); message_sprite.SetPosition(Math.Int(10 * unit), screen_h - Math.Int(30 * unit), 10000);
 fun message_callback (text) { message_sprite.SetImage(Image.Text(text, 0.9, 0.9, 0.9)); }
 Plymouth.SetMessageFunction(message_callback);
 
-// ---- password prompt (LUKS) ----
+// ---- password prompt (LUKS): below the progress bar, spaced by the same screen-relative unit ----
+prompt_y = bar_y + bar_h + Math.Int(24 * unit);
 prompt_sprite = Sprite(); bullets = Sprite();
 fun display_password_callback (prompt, bullets_n) {
   spinner.SetOpacity(0.35);
   p = Image.Text(prompt, 1, 1, 1);
-  prompt_sprite.SetImage(p); prompt_sprite.SetPosition(screen_w/2 - p.GetWidth()/2, screen_h/2 + 90, 100);
+  prompt_sprite.SetImage(p); prompt_sprite.SetPosition(screen_w/2 - p.GetWidth()/2, prompt_y, 100);
   s = ""; for (i = 0; i < bullets_n; i++) s += "•";
   b = Image.Text(s, 1, 1, 1);
-  bullets.SetImage(b); bullets.SetPosition(screen_w/2 - b.GetWidth()/2, screen_h/2 + 115, 100);
+  bullets.SetImage(b); bullets.SetPosition(screen_w/2 - b.GetWidth()/2, prompt_y + p.GetHeight() + Math.Int(6 * unit), 100);
 }
 fun display_normal_callback () { spinner.SetOpacity(1); prompt_sprite.SetImage(Image.Text("", 0,0,0)); bullets.SetImage(Image.Text("", 0,0,0)); }
 Plymouth.SetDisplayPasswordFunction(display_password_callback);

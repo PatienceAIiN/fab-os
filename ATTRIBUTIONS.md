@@ -26,6 +26,8 @@ texts are in `THIRD_PARTY_LICENSES/` (index: `THIRD_PARTY_LICENSES/README.md`) a
 | anthropic Python SDK | Anthropic | MIT (THIRD_PARTY_LICENSES/MIT.txt) | 2023 Anthropic, PBC | No | keep notice |
 | ai-native-os agent stack (aios, aiosd) | Patience AI | Apache-2.0 | Patience AI | Fab OS packaging | — |
 
-Fab OS-created material (Apache-2.0; artwork additionally CC0-1.0): brand assets, Plymouth/SDDM/KSplash themes,
-FabOS Plasma theme, FabOS icon tiles, wallpapers, 3D logo, packaging, build scripts, fabos-agent, Command Center,
-Updates, Feedback, Welcome, website, documentation. Copyright © 2026 Patience AI where so marked.
+Fab OS-created material (Apache-2.0; artwork additionally CC0-1.0): brand assets (identity icon, avatar, lockups),
+Plymouth/SDDM/KSplash themes, FabOS Plasma theme, FabOS icon tiles, wallpapers, 3D logo, packaging, build scripts,
+fabos-agent, Command Center, Updates, Feedback, Welcome, website, documentation. Copyright © 2026 Patience AI where
+so marked. The Plasma wallpaper package (`/usr/share/wallpapers/FabOS`, Name "Fab OS", Author "Patience AI") declares
+**Apache-2.0** as its licence; see legal/ARTWORK.md.

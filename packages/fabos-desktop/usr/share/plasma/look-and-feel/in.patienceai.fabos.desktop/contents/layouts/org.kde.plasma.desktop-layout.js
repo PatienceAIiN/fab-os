@@ -40,6 +40,7 @@ for (var j = 0; j < desktops.length; j++) {
   d.wallpaperPlugin = "org.kde.image"
   d.currentConfigGroup = ["Wallpaper", "org.kde.image", "General"]
   d.writeConfig("Image", "/usr/share/wallpapers/FabOS/")
+  d.writeConfig("FillMode", 2)   // PreserveAspectCrop: the best-matching render is cropped to the screen, never stretched
   // The ask bar is a full-width transparent strip; the card inside centres itself from the real screen width at runtime.
   var sw = 3840, sh = 1080
   try { var g = screenGeometry(d.screen >= 0 ? d.screen : 0); if (g && g.width > 0) { sw = g.width; sh = g.height } } catch (e) {}
