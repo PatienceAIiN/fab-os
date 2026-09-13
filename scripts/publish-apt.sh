@@ -4,7 +4,7 @@
 #
 # Usage: scripts/publish-apt.sh [--no-deploy] [--channel stable|beta]   (beta publishes to suite <codename>-beta)
 # Env:   APT_GNUPGHOME (default build/secrets/gpg-home)  APT_KEY_ID ("Fab OS Archive")
-#        APT_DEPLOY_TARGET (default APT_DEPLOY_TARGET:/var/www/fabricos/apt)  APT_SSH_KEY (default ~/.ssh/google_compute_engine)
+#        APT_DEPLOY_TARGET (required for deploy: user@host:/path, no default)  APT_SSH_KEY (default ~/.ssh/id_ed25519)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"
 . brand/brand.conf
@@ -13,8 +13,8 @@ SUITE=$DISTRO_CODENAME; [ "$CHANNEL" = beta ] && SUITE="$DISTRO_CODENAME-beta"; 
 OUT=build/apt-repo/$SUITE; DEBS=build/debs
 GNUPGHOME=${APT_GNUPGHOME:-$PWD/build/secrets/gpg-home}; export GNUPGHOME
 KEY=${APT_KEY_ID:-"Fab OS Archive"}
-TARGET=${APT_DEPLOY_TARGET:-APT_DEPLOY_TARGET:/var/www/fabricos/apt}
-SSHKEY=${APT_SSH_KEY:-$HOME/.ssh/google_compute_engine}
+TARGET=${APT_DEPLOY_TARGET:-}
+SSHKEY=${APT_SSH_KEY:-$HOME/.ssh/id_ed25519}
 
 echo "== 1. build packages (pkgs stage)"
 [ -x build/bin/aios ] || scripts/stage-ai-binaries.sh
@@ -58,6 +58,7 @@ HTML
 du -sh "$OUT"; find "$OUT/dists" -type f | sed "s|$OUT/||"
 
 if [ "${1:-}" != "--no-deploy" ]; then
+  [ -n "$TARGET" ] || { echo "APT_DEPLOY_TARGET is not set (user@host:/path); use --no-deploy to build only" >&2; exit 1; }
   echo "== 4. deploy -> $TARGET"
   host=${TARGET%%:*}; path=${TARGET#*:}
   ssh -o BatchMode=yes -i "$SSHKEY" "$host" "mkdir -p '$path'"

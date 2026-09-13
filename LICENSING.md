@@ -23,8 +23,13 @@ removed at build so copyright files are always present.
   the product identity is Fab OS by Patience AI. Naming clearance status: legal/TRADEMARK-SEARCH.md.
 - **Fonts**: OFL fonts are redistributed unmodified with their licence text (THIRD_PARTY_LICENSES/SIL-OFL-1.1.txt).
 - **Material Symbols**: Apache-2.0 notice retained (THIRD_PARTY_LICENSES/Apache-2.0.txt).
+- **Licence texts**: every licence family in use has its verbatim text in THIRD_PARTY_LICENSES/ (GPL-2.0, GPL-3.0,
+  LGPL-2.1, LGPL-3.0, MPL-2.0, MIT, OFL-1.1, Apache-2.0, CC0-1.0; index in THIRD_PARTY_LICENSES/README.md).
+- **Firefox**: Mozilla's own unmodified package from packages.mozilla.org; Fab OS does not rebuild, rename or re-brand it.
+- **Release review**: legal/OPEN-SOURCE-RELEASE-CHECKLIST.md.
 
 ## Not yet cleared
 
-- Final product name (see legal/TRADEMARK-SEARCH.md).
+- Formal trademark clearance and filing for the product name (see legal/TRADEMARK-SEARCH.md); "Fab OS" is not a
+  registered mark of Patience AI.
 - HTTPS for the update server (signatures already protect integrity).

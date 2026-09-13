@@ -1,10 +1,60 @@
 # Security policy
 
-Report vulnerabilities privately via the SUPPORT_URL in `brand/brand.conf`.
-Do not open public issues for security bugs.
+## Reporting a vulnerability
 
-Posture: unmodified Ubuntu kernel and shim (Secure Boot works), AppArmor on,
-LUKS full-disk encryption offered by the installer, no snap, no telemetry,
-AI is local-first and every model output is treated as untrusted data.
-The VM test profile has a known password and autologin and must never be
-distributed.
+E-mail **info@patienceai.in** with the subject `Fab OS security`. Do not open a public issue for a
+security problem. Include the affected component (package name and version, or file path in this
+repository), a reproduction, and the impact you see. We reply within seven days, keep you informed while we
+work on a fix, and credit you in the release notes if you want. Please give us 90 days before publishing
+details, or agree a different timeline with us if a fix is straightforward or the issue is already public.
+
+There is **no bug bounty**; Fab OS is a pre-release project.
+
+## Scope
+
+In scope:
+
+- The Fab OS packages in `packages/` (`fabos-branding`, `fabos-desktop`, `fabos-agent`, `fabos-ai`,
+  `fabos-feedback`, `fabos-updates`, `fabos-firstboot`, `fabos-welcome`, `fabos-desktop-meta`).
+- The image recipe (`image/`), build and publish scripts (`scripts/`), and the CI workflow.
+- The rebranding scripts that modify upstream files on the installed system
+  (`/usr/lib/fabos/rebrand-*`) if they can be made to alter anything other than display strings.
+- The Fab OS apt repository (signing, channel switching in Fab OS Updates).
+- The website and community server in `website/` and `community/`.
+
+Out of scope: vulnerabilities in unmodified Ubuntu, KDE, Mozilla or other upstream packages (report them
+upstream; tell us as well if Fab OS's default configuration makes them worse), and the VM test profile,
+which has a known password and autologin by design and is never distributed.
+
+## The agent's root path
+
+The agent (`fabos-agentd`) runs with the logged-in user's privileges. Root is reachable only through
+`/usr/lib/fabos/agent/rootexec`, which `sudoers.d/fabos-agent` lets members of the `sudo` group run without
+a password. `rootexec` executes a command only if the calling user's own agent daemon wrote a single-use
+authorization record for it under the user's runtime directory (`/run/user/<uid>/fabos-agent/authz/`)
+after the deterministic policy classified the step as CRITICAL and the user's mode allowed it (approval
+in `ask` and `auto` modes; `bypass` mode is an explicit user opt-in). Records must be owned by the caller,
+must not be symlinks, expire after ten minutes and are deleted on use.
+
+We treat the following as vulnerabilities and want to hear about them privately:
+
+- any way for a process that is not the user's agent daemon to create or reuse an authorization record;
+- any way for model or tool output (prompt injection) to run a CRITICAL step without the approval the
+  user's mode requires, or to change the mode or the System-Wide AI switch without a user action;
+- policy classification bypasses that let a command reach `run_shell` with `as_root` while being
+  classified below CRITICAL;
+- leakage of provider API keys or mail credentials from the daemon, the Command Center or logs;
+- privilege escalation through the feedback relay (`fabos-feedback-relay`, root, socket-activated) or the
+  updates helper (`pkexec` + polkit action `in.patienceai.fabos.updates`).
+
+The design is described in `docs/decisions/ADR-0005-agent-architecture.md`; the code is in
+`packages/fabos-agent/usr/lib/fabos/agent/`.
+
+## Posture
+
+Unmodified Ubuntu kernel and shim (Secure Boot works on the ISO), AppArmor on, LUKS full-disk encryption
+offered by the installer, no snap, no telemetry (`legal/PRIVACY.md`). Cloud AI providers are off until the
+user adds a key; model output is treated as untrusted data. Fab OS updates are apt packages signed with the
+Fab OS Archive key; Ubuntu updates come from Ubuntu unchanged. Known gap: the Fab OS repository is served
+over HTTP until a certificate is issued for the host (integrity is protected by signatures; package names
+are not private).
