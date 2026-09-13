@@ -105,10 +105,11 @@ check "tests pass" "cd ~/work/todo && python3 -m unittest -q 2>&1 | tail -1 | gr
 run_task heavy-1 1500 auto "$HEAVY_MODEL" "Build a static site generator in Python under ~/site: read Markdown files from ~/site/content, convert them to HTML with a simple template (title, nav, body) into ~/site/out, and generate an index page linking all posts. Create three sample posts, build the site, start 'python3 -m http.server 8123' in the background serving ~/site/out, and fetch http://127.0.0.1:8123/ to confirm the index lists the three posts."
 check "site served" "curl -s http://127.0.0.1:8123/ | grep -ci '<a ' | awk '\$1>=3'" && verdict PASS "heavy-1 static site built and served" || verdict FAIL "heavy-1 ($TASK_STATUS)"
 # ---------- CONTROLS: cancel / retry / delete / ai off / bypass
-run_task ctl-cancel 20 auto "$MODEL" "Count slowly from 1 to 100000 printing each number with a 1 second pause between them."
-[ "$TASK_STATUS" = timeout ] || [ "$TASK_STATUS" = cancelled ] && verdict PASS "ctl cancel works" || verdict FAIL "ctl cancel status=$TASK_STATUS"
-api POST "/tasks/$TASK_ID/retry" >/dev/null; sleep 5; st=$(api GET "/tasks/$TASK_ID" | jget '["status"]'); api POST "/tasks/$TASK_ID/cancel" >/dev/null
-[ "$st" = running ] || [ "$st" = queued ] && verdict PASS "ctl retry restarts" || verdict FAIL "ctl retry status=$st"
+run_task ctl-cancel 20 auto "$MODEL" "Run the shell command: sleep 240 && echo finished. Wait for it to complete, then report its output."
+sleep 4; st=$(api GET "/tasks/$TASK_ID" | jget '["status"]'); child=$(vm "pgrep -f 'sleep 240' | wc -l")
+[ "$st" = cancelled ] && [ "${child:-1}" = 0 ] && verdict PASS "ctl cancel: task cancelled and its shell child killed" || verdict FAIL "ctl cancel status=$st children_left=$child"
+newid=$(api POST "/tasks/$TASK_ID/retry" | jget '["id"]'); sleep 6; st=$(api GET "/tasks/${newid:-$TASK_ID}" | jget '["status"]'); api POST "/tasks/${newid:-$TASK_ID}/cancel" >/dev/null; sleep 3
+{ [ "$st" = running ] || [ "$st" = queued ]; } && verdict PASS "ctl retry restarts (new task #$newid)" || verdict FAIL "ctl retry status=$st"
 api DELETE "/tasks/$TASK_ID" >/dev/null; api GET "/tasks/$TASK_ID" | grep -q '"id"' && verdict FAIL "ctl delete" || verdict PASS "ctl delete removes history"
 vm "fabos settings ai.enabled false >/dev/null"; r=$(api POST /tasks '{"request":"say hi"}'); echo "$r" | grep -qi "disabled\|off\|error" && verdict PASS "ai.enabled=false refuses tasks" || verdict FAIL "ai off accepted: $r"; vm "fabos settings ai.enabled true >/dev/null"
 run_task bypass-1 300 bypass "$MODEL" "Create ~/work/bypass.txt containing the word ok using a shell command."

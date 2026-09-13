@@ -134,6 +134,18 @@ class Daemon(unittest.TestCase):
         self.assertIn("20000", first["output"]); self.assertGreater(len(first["output"]), 20000)
         self.assertIn("compacted-ok", json.dumps(t["steps"]))
 
+    def test_11_cancel_kills_running_shell_child(self):
+        r = self.cli("do", "--mode", "bypass", "long sleep please"); tid = r["id"]
+        for _ in range(50):
+            if subprocess.run(["pgrep", "-f", "sleep 45 && echo finished"], capture_output=True).returncode == 0: break
+            time.sleep(0.2)
+        self.cli("cancel", str(tid)); t = self.wait(tid, states=("cancelled", "done", "failed"), timeout=20)
+        self.assertEqual(t["status"], "cancelled", t)
+        for _ in range(50):   # the process group is killed asynchronously; give it up to 10 s
+            if subprocess.run(["pgrep", "-f", "sleep 45 && echo finished"], capture_output=True).returncode != 0: break
+            time.sleep(0.2)
+        self.assertNotEqual(subprocess.run(["pgrep", "-f", "sleep 45 && echo finished"], capture_output=True).returncode, 0, "shell child survived the cancel")
+
     def test_10_tool_result_limit_setting_prevents_overflow(self):
         self.cli("settings", "agent.tool_result_max_chars", "500")
         try:
