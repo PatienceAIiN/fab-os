@@ -569,15 +569,55 @@ PROVIDERS = {
 SECRET_NAMES = ("claude_api_key", "openai_api_key", "gemini_api_key", "local_api_key", "mail_password", "mail_api_key")
 
 
+class _ClaudeHTTPError(Exception):
+    def __init__(self, status, body):
+        super().__init__("HTTP %s: %s" % (status, body[:400])); self.status = status; self.body = body
+
+
 class ClaudeProvider:
+    """Anthropic Messages API. Uses the official SDK when it is importable, otherwise a small built-in HTTPS client
+    (the SDK's optional native deps such as jiter are not always installed) — identical behaviour either way."""
     name = "claude"
+    API = "https://api.anthropic.com/v1/messages"
 
     def __init__(self, api_key, model, fallbacks=True):
-        import anthropic
-        self.anthropic = anthropic
-        self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = model
-        self.fallbacks = fallbacks
+        self.key, self.model, self.fallbacks = api_key, model, fallbacks
+        self.client = None
+        try:
+            import anthropic
+            self.anthropic = anthropic
+            self.client = anthropic.Anthropic(api_key=api_key)
+        except Exception as e:                       # ImportError or a missing optional dependency inside the SDK
+            LOG("anthropic SDK unavailable (%s) — using the built-in HTTPS client" % e)
+
+    def _http_create(self, kw):
+        body = {k: kw[k] for k in ("model", "max_tokens", "system", "messages", "tools") if k in kw}
+        body.update(kw.get("extra_body") or {})
+        headers = {"x-api-key": self.key, "anthropic-version": "2023-06-01", "content-type": "application/json", "accept": "application/json"}
+        headers.update(kw.get("extra_headers") or {})
+        data = json.dumps(body).encode()
+        for attempt in range(4):
+            req = urllib.request.Request(self.API, data=data, headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=600) as r:
+                    return json.loads(r.read().decode())
+            except urllib.error.HTTPError as e:
+                text = e.read().decode(errors="replace")
+                if e.code in (429, 500, 502, 503, 529) and attempt < 3:
+                    time.sleep(2 * (attempt + 1)); continue
+                raise _ClaudeHTTPError(e.code, text)
+            except (urllib.error.URLError, TimeoutError) as e:
+                if attempt < 3:
+                    time.sleep(2 * (attempt + 1)); continue
+                raise RuntimeError("Cannot reach the Claude API: %s" % e)
+
+    def _create(self, kw):
+        if self.client is not None:
+            try:
+                return self.client.messages.create(**kw).model_dump()
+            except self.anthropic.BadRequestError as e:
+                raise _ClaudeHTTPError(400, str(e))
+        return self._http_create(kw)
 
     def step(self, system, messages, tools, on_usage=None):
         kw = dict(model=self.model, max_tokens=16000,
@@ -588,15 +628,15 @@ class ClaudeProvider:
             kw["extra_headers"] = {"anthropic-beta": "server-side-fallback-2026-07-01"}
             kw["extra_body"] = {"fallbacks": "default"}
         try:
-            resp = self.client.messages.create(**kw)
-        except self.anthropic.BadRequestError as e:
-            if "fallbacks" in str(e) or "anthropic-beta" in str(e):
-                kw.pop("extra_headers", None)
-                kw.pop("extra_body", None)
-                resp = self.client.messages.create(**kw)
+            d = self._create(kw)
+        except _ClaudeHTTPError as e:
+            if e.status == 400 and ("fallbacks" in e.body or "anthropic-beta" in e.body):
+                kw.pop("extra_headers", None); kw.pop("extra_body", None)
+                d = self._create(kw)
+            elif e.status == 401:
+                raise RuntimeError("Claude rejected the API key (401). Check Settings → Providers.")
             else:
-                raise
-        d = resp.model_dump()
+                raise RuntimeError("Claude API error: %s" % e)
         if on_usage and d.get("usage"):
             on_usage(d["usage"].get("input_tokens", 0) or 0, d["usage"].get("output_tokens", 0) or 0)
         content = [b for b in d["content"] if b.get("type") in ("text", "tool_use", "thinking", "redacted_thinking")]
@@ -994,7 +1034,7 @@ def make_handler(store, agent, token):
                 ready = prov == "fake" or prov == "local" or (prov in PROVIDERS and (has_secret(PROVIDERS[prov]["secret"]) or (prov == "claude" and bool(os.environ.get("ANTHROPIC_API_KEY")))))
                 return self._send(200, {"mode": store.setting("mode", "auto"), "provider": prov, "provider_ready": ready, "ai_enabled": agent.ai_enabled(),
                                         "providers": {k: {"label": v["label"], "has_key": has_secret(v["secret"])} for k, v in PROVIDERS.items()},
-                                        "mail_ready": bool(store.setting("mail.user") and has_secret("mail_password")), "tasks": counts,
+                                        "mail_ready": bool((store.setting("mail.transport") or "smtp").lower() == "brevo" and store.setting("mail.from") and has_secret("mail_api_key")) or bool(store.setting("mail.user") and has_secret("mail_password")), "tasks": counts,
                                         "pending_approvals": store.one("SELECT COUNT(*) n FROM approvals WHERE status='pending'")["n"],
                                         "active_watches": store.one("SELECT COUNT(*) n FROM watches WHERE status='active'")["n"],
                                         "latest": store.all("SELECT id,title,status,updated FROM tasks ORDER BY updated DESC LIMIT 3")})
