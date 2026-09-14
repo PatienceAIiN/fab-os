@@ -19,6 +19,13 @@ resembles Canonical, KDE, Apple, Microsoft or any other party's artwork.
   2026 Patience AI**, released under **Apache-2.0 OR CC0-1.0** at your option.
   You may use them without attribution, but see `TRADEMARKS.md` about using
   them to identify a product.
+- The window decoration (`/usr/share/aurorae/themes/FabOS`, `FabOSLight`: frame and
+  minimize / maximize / restore / close glyphs drawn by `brand/gen/aurorae_theme.py`)
+  is original Fab OS artwork under the same terms. The monochrome status/tray icons
+  in `/usr/share/icons/FabOS/scalable/{status,devices,actions,places}` are, like the
+  app tiles, Google Material Symbols (Apache-2.0, see ATTRIBUTIONS.md) rendered by
+  `make_assets.py`; they carry KDE's `current-color-scheme` stylesheet so the desktop
+  recolours them for the light and dark schemes.
 - **Wallpaper package licence declaration:** the Plasma wallpaper package
   `/usr/share/wallpapers/FabOS/metadata.json` declares `Name: Fab OS`,
   `Author: Patience AI`, **`License: Apache-2.0`** (one SPDX identifier, as the

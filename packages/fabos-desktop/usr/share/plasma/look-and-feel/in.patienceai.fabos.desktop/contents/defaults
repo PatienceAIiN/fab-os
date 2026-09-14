@@ -4,6 +4,14 @@ widgetStyle=Breeze
 [kdeglobals][General]
 ColorScheme=FabDark
 AccentColor=59,110,245
+font=@UI_FONT@,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+menuFont=@UI_FONT@,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+toolBarFont=@UI_FONT@,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+smallestReadableFont=@UI_FONT@,9,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+fixed=@MONO_FONT@,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+
+[kdeglobals][WM]
+activeFont=@UI_FONT@,11,-1,5,600,0,0,0,0,0,0,0,0,0,0,1
 
 [kdeglobals][Icons]
 Theme=FabOS
@@ -14,9 +22,10 @@ name=FabOS
 [kcminputrc][Mouse]
 cursorTheme=breeze_cursors
 
+# Fab OS Aurorae frame with the light caption (dark scheme); the light look-and-feel picks FabOSLight.
 [kwinrc][org.kde.kdecoration2]
-library=org.kde.breeze
-theme=Breeze
+library=org.kde.kwin.aurorae
+theme=__aurorae__svg__FabOS
 
 [kwinrc][WindowSwitcher]
 LayoutName=thumbnail_grid

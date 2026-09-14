@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=@DISTRO_NAME@
+Comment=@DISTRO_NAME@ window frame: rounded title bar, bold buttons, follows the system colour scheme (light caption for dark schemes)
+X-KDE-PluginInfo-Author=@VENDOR_NAME@
+X-KDE-PluginInfo-Email=support@patienceai.in
+X-KDE-PluginInfo-Name=FabOS
+X-KDE-PluginInfo-Version=@DISTRO_VERSION@
+X-KDE-PluginInfo-Website=@HOME_URL@
+X-KDE-PluginInfo-License=Apache-2.0
+X-KDE-PluginInfo-EnabledByDefault=true

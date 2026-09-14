@@ -1,9 +1,14 @@
+# Window frame: the Fab OS Aurorae (SVG) decoration — radius-20 title bar, bold 3 px buttons, colours from the
+# system scheme through KSvg. `FabOS` carries a light caption for dark schemes; the light look-and-feel selects
+# `__aurorae__svg__FabOSLight`. BorderSizeAuto=false makes KWin honour BorderSize=None instead of the plugin's default.
+# Buttons: window icon on the left; minimize / maximize / close on the right (A = app menu, shown only when an app has one).
 [org.kde.kdecoration2]
 BorderSize=None
+BorderSizeAuto=false
 ButtonsOnLeft=M
 ButtonsOnRight=IAX
-library=org.kde.breeze
-theme=Breeze
+library=org.kde.kwin.aurorae
+theme=__aurorae__svg__FabOS
 
 [Plugins]
 overviewEnabled=true
@@ -22,6 +27,11 @@ slidingpopupsEnabled=true
 [Effect-overview]
 BorderActivate=7
 TouchBorderActivate=7
+
+# Peek at the desktop: bottom-right hot corner (KWin 6.6 kwin.kcfg [ElectricBorders], String values None | ShowDesktop |
+# LockScreen | KRunner | ActivityManager | ApplicationLauncher). The dock's last item does the same with a click.
+[ElectricBorders]
+BottomRight=ShowDesktop
 
 # Windows-style arrangement: drag a window to the top to maximise, to a side to tile half, to a corner to tile a quarter;
 # Meta+T opens the tile layout editor, Meta+Arrows quick-tile.

@@ -44,8 +44,59 @@ gradients do not band on 8-bit panels. Sizes measured on a generator run of 2026
 | App tiles (icon theme) | `icon-theme/scalable/apps/*.svg` + `<s>x<s>/apps/*.png` | scalable + 16…512 | `/usr/share/icons/FabOS/` | SVG first, PNG for exact sizes |
 | 3D mark | `3d/fabos-mark.glb`, `.obj` | mesh | `/usr/share/fabos/3d/` | — |
 
-Icon theme `index.theme`: `[Icon Theme]` keeps `FollowsColorScheme=true`; `Directories=` lists `scalable/apps`
-(MinSize 16, MaxSize 1024) first, then `16x16 … 512x512`.
+| Window frame (Aurorae theme) | `brand/gen/aurorae_theme.py` → `packages/fabos-desktop/usr/share/aurorae/themes/FabOS/{decoration,minimize,maximize,restore,close}.svg` (committed) | vector; buttons 28 px, title bar 36 px, shadow padding 28 px | `/usr/share/aurorae/themes/FabOS/` + `FabOSLight/` (rc + metadata; SVGs are symlinks to FabOS) | KSvg FrameSvg, scales with the decoration button-size factor and the output scale |
+| Status / tray icons (monochrome) | `icon-theme/scalable/{status,devices,actions,places}/*.svg` (60 glyph files + 336 alias symlinks = 396 names) | 22-unit viewBox, no PNGs | `/usr/share/icons/FabOS/scalable/<context>/` | SVG only, so KIconLoader can recolour it at any size |
+
+Icon theme `index.theme`: `[Icon Theme]` keeps `FollowsColorScheme=true`; `Directories=` lists the monochrome
+`scalable/status, scalable/devices, scalable/actions, scalable/places` (Size 22, MinSize 8, MaxSize 512), then
+`scalable/apps` (MinSize 16, MaxSize 1024), then `16x16 … 512x512/apps`.
+
+## Desktop chrome (window frame, status icons, sizes)
+
+**Roundness.** One radius scale, applied by three different mechanisms:
+
+| Surface | Radius | Where it comes from |
+|---------|--------|---------------------|
+| Window title bar, top corners | **20** | Aurorae decoration `decoration.svg` (`brand/gen/aurorae_theme.py`, `R = 20`); the bottom corners are square because side/bottom borders are 0 (`BorderSize=None`) |
+| Popups, dialogs, notifications, tray popup | **24** | FabOS Plasma theme `dialogs/background.svg` (`brand/gen/plasma_theme.py`, `RADIUS["popup"]`) |
+| Panels, cards, widget backgrounds | **20** | Plasma theme `widgets/panel-background.svg`, `widgets/background.svg` (`RADIUS["panel"]`) |
+| Tooltips | **14** | Plasma theme `widgets/tooltip.svg` (`RADIUS["tooltip"]`) |
+| Controls (buttons, fields) in Fab OS apps | **12** (fields 14) | design tokens used by the Command Center / Welcome / ask-bar QML; the Breeze widget style keeps its own radius for Qt Widgets |
+
+**Window frame.** KWin uses the Aurorae SVG decoration engine (`kwinrc [org.kde.kdecoration2] library=org.kde.kwin.aurorae`,
+`theme=__aurorae__svg__FabOS`, `BorderSize=None`, `BorderSizeAuto=false`, buttons `M | IAX`: window icon left; minimize,
+maximize/restore, close right). The buttons are our own glyphs, 3 px rounded strokes in a 28 px box inside a 36 px bar:
+minimize = thick bar, maximize = rounded square, restore = two offset rounded squares, close = rounded X. Hover puts a
+disc behind the glyph — accent (`ColorScheme-Highlight`) for minimize/maximize/restore, red (`ColorScheme-NegativeText`)
+with a white X for close; pressed is a stronger disc; inactive windows dim the glyphs. The title-bar fill is
+`ColorScheme-HeaderBackground`, the shadow is gradient-only (QtSvg has no filters) in a 28 px padding. Every fill is a
+KSvg `current-color-scheme` class, so the frame follows the **system** colour scheme (Fab Dark or Fab Light) live. The one
+value Aurorae cannot take from the scheme is the caption colour (`<theme>rc [General] ActiveTextColor` is a fixed colour),
+so there are two theme directories that differ only in their rc: `FabOS` (light caption, chosen by the dark
+look-and-feel) and `FabOSLight` (dark caption, chosen by the light look-and-feel); the SVGs are shared through symlinks.
+Switching the look-and-feel switches the caption colour; switching only the colour scheme keeps the previous caption colour.
+
+**Status and tray icons.** The top bar shows only FabOS monochrome glyphs: `brand/gen/make_assets.py` `MONO_MAP` renders
+Material Symbols (Rounded) without a tile into `scalable/status|devices|actions|places/`, each path carrying
+`class="ColorScheme-Text"`, `fill:currentColor` and the `<style id="current-color-scheme">` block, which KIconLoader rewrites
+to the panel text colour of the active scheme (the mechanism Breeze uses). Names covered: Wi-Fi by strength in both the
+`network-wireless-signal-*` and plasma-nm `network-wireless-connected-NN` / `network-wireless-NN(-locked)` families,
+`network-wireless-{disconnected,off,acquiring,hotspot}`, `network-wired(-activated/-unavailable/-disconnected)`,
+`network-vpn`, `audio-volume-{high,medium,low,muted}`, `audio-input-microphone(-muted)`, `battery-000…100`
+(+ `-charging`, + `-profile-*`), `battery-{missing,full-charged,caution,low,empty,good,full}`, `bluetooth` /
+`preferences-system-bluetooth(-activated/-inactive)`, `notifications(-disabled)`, display and keyboard brightness,
+`input-keyboard`, `user-desktop`, `view-grid`, the tray expander `arrow-{up,down,left,right}`, `plasma-vault`,
+`kdeconnect(-tray)`, `printer`, `media-playback-{start,pause,stop}`, `media-skip-{forward,backward}`, plus a `-symbolic`
+alias for each. `weather-*` and mobile-broadband names stay with Breeze. A name may live in `ICON_MAP` (tile) **or**
+`MONO_MAP` (mono), never both — the generator refuses to build otherwise, because a tile in the tray or a mono glyph
+among the Settings tiles would be a bug.
+
+**Sizes.** UI font Inter 11 pt (`font`, `menuFont`, `toolBarFont`; `smallestReadableFont` 9; `fixed` JetBrains Mono 11;
+title bars `[WM] activeFont` Inter 600 11). Icon groups: toolbars 24, small 18, dialogs 32, desktop 48, panel 32. The clock
+is one bold Inter line at 13 (`ddd d MMM` beside the time). Both look-and-feel packages carry the same font defaults.
+
+**Peek at the desktop.** The show-desktop widget is the last item of the bottom dock (not in the top bar), and the
+bottom-right hot corner does the same (`kwinrc [ElectricBorders] BottomRight=ShowDesktop`; the top-left corner opens the Overview).
 
 **Names for bundled applications** (launcher, dock, search): Fab Files, Fab Terminal, Fab Editor, Fab Software,
 Fab Photos, Fab Documents, Fab Calculator, Fab Archives, Fab Screenshot, Fab System Info, Fab Monitor, Fab Search,

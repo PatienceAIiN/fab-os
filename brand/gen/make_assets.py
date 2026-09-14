@@ -10,7 +10,8 @@ Deterministic (seeded noise only), dependency-light (Pillow; rsvg-convert for th
   wallpapers/      procedural weave wallpapers, light + dark, at 7 sizes from 1280x800 to 3840x2160, anti-aliased
                    (shapes drawn at 2x, LANCZOS) and dithered (+-1/255 seeded noise) so long gradients do not band
   3d/              fabos-mark.glb + fabos-mark.obj (torus + 3 bars)
-  icon-theme/      the FabOS icon theme (Material Symbols on colour tiles for apps; the bare mark for "fabos")
+  icon-theme/      the FabOS icon theme (Material Symbols on colour tiles for apps; monochrome scheme-following
+                   Material glyphs for status/tray names; the bare mark for "fabos")
   plasma-theme/    KSvg frames for panels/popups (plasma_theme.py)
   meta/            assets.json: conf, font, and a WxH inventory of every raster written
 """
@@ -284,17 +285,16 @@ ICON_MAP = {
     ("preferences-desktop-display-randr", "lighttable", "xorg"): ("desktop_windows", "#3B6EF5"),
     ("preferences-desktop-sound", "emblem-music-symbolic"): ("volume_up", "#E0642B"),
     ("preferences-desktop-notification-bell",): ("notifications", "#B7791F"),
-    ("preferences-desktop-keyboard", "input-keyboard-virtual"): ("keyboard", "#5B6472"),
+    ("preferences-desktop-keyboard",): ("keyboard", "#5B6472"),
     ("preferences-desktop-keyboard-shortcut",): ("keyboard_command_key", "#5B6472"),
     ("preferences-desktop-touchpad", "preferences-desktop-touchscreen"): ("touchpad_mouse", "#5B6472"),
     ("preferences-desktop-tablet",): ("stylus_note", "#5B6472"),
     ("preferences-desktop-gaming",): ("sports_esports", "#1F9D57"),
-    ("preferences-system-power-management", "battery"): ("battery_charging_full", "#1F9D57"),
-    ("preferences-system-network", "network-wired-symbolic"): ("lan", "#3B6EF5"),
-    ("network-wireless-symbolic", "network-wireless-hotspot"): ("wifi", "#3B6EF5"),
-    ("network-vpn", "knetattach"): ("vpn_key", "#3B6EF5"),
-    ("preferences-system-bluetooth",): ("bluetooth", "#3B6EF5"),
-    ("preferences-devices-printer", "printer"): ("print", "#5B6472"),
+    ("preferences-system-power-management",): ("battery_charging_full", "#1F9D57"),
+    # (network-*, bluetooth, printer, battery status names live in MONO_MAP: the tray must never show a tile)
+    ("preferences-system-network",): ("lan", "#3B6EF5"),
+    ("knetattach",): ("vpn_key", "#3B6EF5"),
+    ("preferences-devices-printer",): ("print", "#5B6472"),
     ("preferences-desktop-thunderbolt",): ("cable", "#5B6472"),
     ("smartphone",): ("smartphone", "#5B6472"),
     ("camera-photo",): ("photo_camera", "#5B6472"),
@@ -368,11 +368,109 @@ def app_icon_svg(paths, color, mark_svg=None):
             '<stop offset="0" stop-color="%s"/><stop offset="1" stop-color="%s"/></linearGradient></defs>'
             '<rect width="64" height="64" rx="16" fill="url(#g)"/><rect x="1" y="1" width="62" height="62" rx="15" fill="none" stroke="#FFFFFF" stroke-opacity="0.18"/>%s</svg>') % (top, bot, body)
 
+# ---------- status / tray icons: MONOCHROME Material Symbols, no tile, recoloured by KIconLoader ----------
+# The names the Plasma panel, the system tray and its applets ask for (plasma-nm, battery, volume, bluetooth,
+# notifications, brightness, keyboard layout, show-desktop, media controller, vaults, printers, KDE Connect), as
+# found in the Plasma 6.6 binaries and Breeze's status/ devices/ actions/ places/ directories. Each SVG carries the
+# KDE `current-color-scheme` stylesheet and class="ColorScheme-Text" with fill:currentColor, so KIconLoader
+# recolours it to the panel's text colour for the light and the dark scheme alike (the mechanism Breeze uses).
+# name(s) -> (material symbol, icon-theme context dir). Every name also gets a "-symbolic" alias. SVG only:
+# a PNG could not be recoloured. weather-* is deliberately left to Breeze.
+MONO_MAP = {
+    # Wi-Fi by strength: GNOME/NM names (signal-*) and the plasma-nm names (connected-NN, NN, NN-locked)
+    ("network-wireless-signal-excellent", "network-wireless-connected-100", "network-wireless-100", "network-wireless-connected",
+     "network-wireless-on", "network-wireless"): ("wifi", "status"),
+    ("network-wireless-signal-good", "network-wireless-connected-80", "network-wireless-80", "network-wireless-connected-75"): ("network_wifi_3_bar", "status"),
+    ("network-wireless-signal-ok", "network-wireless-connected-60", "network-wireless-60", "network-wireless-connected-50",
+     "network-wireless-connected-40", "network-wireless-40"): ("network_wifi_2_bar", "status"),
+    ("network-wireless-signal-weak", "network-wireless-connected-20", "network-wireless-20", "network-wireless-connected-25"): ("network_wifi_1_bar", "status"),
+    ("network-wireless-signal-none", "network-wireless-connected-00", "network-wireless-0"): ("signal_wifi_0_bar", "status"),
+    ("network-wireless-signal-excellent-locked", "network-wireless-100-locked"): ("wifi_lock", "status"),
+    ("network-wireless-signal-good-locked", "network-wireless-80-locked"): ("network_wifi_3_bar_locked", "status"),
+    ("network-wireless-signal-ok-locked", "network-wireless-60-locked", "network-wireless-40-locked"): ("network_wifi_2_bar_locked", "status"),
+    ("network-wireless-signal-weak-locked", "network-wireless-20-locked"): ("network_wifi_1_bar_locked", "status"),
+    ("network-wireless-signal-none-locked", "network-wireless-0-locked"): ("signal_wifi_0_bar", "status"),
+    ("network-wireless-disconnected", "network-wireless-off", "network-wireless-unavailable"): ("wifi_off", "status"),
+    ("network-wireless-acquiring", "network-wireless-available"): ("wifi_find", "status"),
+    ("network-wireless-hotspot",): ("wifi_tethering", "devices"),
+    ("network-wired", "network-wired-activated", "network-wired-available"): ("lan", "devices"),
+    ("network-wired-unavailable", "network-wired-disconnected"): ("cable", "status"),
+    ("network-vpn",): ("vpn_key", "devices"),
+    ("audio-volume-high",): ("volume_up", "status"),
+    ("audio-volume-medium",): ("volume_down", "status"),
+    ("audio-volume-low",): ("volume_mute", "status"),
+    ("audio-volume-muted",): ("volume_off", "status"),
+    ("audio-input-microphone", "microphone-sensitivity-high", "microphone-sensitivity-medium", "microphone-sensitivity-low"): ("mic", "devices"),
+    ("audio-input-microphone-muted", "microphone-sensitivity-muted"): ("mic_off", "devices"),
+    ("bluetooth", "bluetooth-active", "preferences-system-bluetooth", "network-bluetooth", "network-wireless-bluetooth"): ("bluetooth", "status"),
+    ("preferences-system-bluetooth-activated", "network-bluetooth-activated", "preferences-system-bluetooth-battery"): ("bluetooth_connected", "status"),
+    ("bluetooth-inactive", "bluetooth-disabled", "preferences-system-bluetooth-inactive", "network-bluetooth-inactive"): ("bluetooth_disabled", "status"),
+    ("notifications",): ("notifications", "actions"),
+    ("notifications-disabled",): ("notifications_off", "actions"),
+    ("preferences-desktop-display-brightness", "video-display-brightness", "brightness-high"): ("brightness_6", "devices"),
+    ("keyboard-brightness", "input-keyboard-brightness", "input-keyboard", "input-keyboard-virtual"): ("keyboard", "devices"),
+    ("user-desktop", "desktop"): ("desktop_windows", "places"),
+    ("view-grid",): ("grid_view", "actions"),
+    ("arrow-down",): ("expand_more", "actions"),      # system tray expander (bottom panel: arrow-up)
+    ("arrow-up",): ("expand_less", "actions"),
+    ("arrow-left",): ("chevron_left", "actions"),
+    ("arrow-right",): ("chevron_right", "actions"),
+    ("plasma-vault",): ("lock", "status"),
+    ("kdeconnect", "kdeconnect-tray"): ("smartphone", "status"),
+    ("printer", "printer-printing"): ("print", "devices"),
+    ("media-playback-start", "media-playback-playing"): ("play_arrow", "actions"),
+    ("media-playback-pause", "media-playback-paused"): ("pause", "actions"),
+    ("media-playback-stop", "media-playback-stopped"): ("stop", "actions"),
+    ("media-skip-forward",): ("skip_next", "actions"),
+    ("media-skip-backward",): ("skip_previous", "actions"),
+}
+# Battery, Breeze naming: battery-000 … battery-100 in steps of 10, -charging, and the -profile-* badge variants
+# Plasma 6 requests when a power profile is active (same glyph here). level -> (discharging glyph, charging glyph)
+_BATTERY = {0: ("battery_0_bar", "battery_charging_20"), 10: ("battery_1_bar", "battery_charging_20"), 20: ("battery_1_bar", "battery_charging_20"),
+            30: ("battery_2_bar", "battery_charging_30"), 40: ("battery_3_bar", "battery_charging_50"), 50: ("battery_3_bar", "battery_charging_50"),
+            60: ("battery_4_bar", "battery_charging_60"), 70: ("battery_5_bar", "battery_charging_80"), 80: ("battery_5_bar", "battery_charging_80"),
+            90: ("battery_6_bar", "battery_charging_90"), 100: ("battery_full", "battery_charging_full")}
+_PROFILES = ("", "-profile-balanced", "-profile-performance", "-profile-powersave")
+
+def _battery_entries():
+    """MONO_MAP entries for every battery name, grouped by glyph so each glyph is written once and the rest are aliases."""
+    by_glyph = {}
+    for lvl, (bar, chg) in _BATTERY.items():
+        for glyph, suffix in ((bar, ""), (chg, "-charging")):
+            by_glyph.setdefault(glyph, []).extend("battery-%03d%s%s" % (lvl, suffix, p) for p in _PROFILES)
+    by_glyph["battery_charging_full"] += ["battery-full-charged", "battery-full-charging"]
+    by_glyph["battery_charging_80"] += ["battery-good-charging"]
+    by_glyph["battery_charging_20"] += ["battery-low-charging", "battery-empty-charging"]
+    by_glyph["battery_full"] += ["battery", "battery-full"]
+    by_glyph["battery_5_bar"] += ["battery-good"]
+    by_glyph["battery_1_bar"] += ["battery-low"]
+    by_glyph["battery_0_bar"] += ["battery-empty"]
+    by_glyph["battery_alert"] = ["battery-caution", "battery-caution-charging"]
+    by_glyph["battery_unknown"] = ["battery-missing"]
+    return {tuple(names): (glyph, "status") for glyph, names in by_glyph.items()}
+MONO_MAP.update(_battery_entries())
+MONO_CONTEXTS = ("status", "devices", "actions", "places")
+
+def mono_icon_svg(paths):
+    """22-unit monochrome icon: the Material glyph (960 grid) scaled to 20 units inside a 1-unit margin, no tile.
+    class="ColorScheme-Text" + fill:currentColor + the current-color-scheme stylesheet on every path, exactly like a
+    Breeze status icon, so KIconLoader (and KSvg) can rewrite the colour for the active scheme."""
+    body = "".join('<path d="%s" class="ColorScheme-Text" style="fill:currentColor;fill-opacity:1;stroke:none"/>' % d for d in paths)
+    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">'
+            '<defs id="defs"><style type="text/css" id="current-color-scheme">.ColorScheme-Text{color:#232629;}</style></defs>'
+            '<g transform="translate(1 1) scale(%.6f) translate(0 960)">%s</g></svg>\n' % (20 / 960.0, body))
+
 def build_icon_theme(out, conf, marks):
-    """Writes icon-theme/<size>/apps/<name>.png + scalable/apps/<name>.svg; needs rsvg-convert for the tile PNGs.
-    `marks` = {size: RGBA image} of the bare accent mark, installed as the "fabos" identity icon (no tile)."""
+    """Writes the FabOS icon theme:
+       apps/                             coloured tiles (ICON_MAP): scalable/apps/<name>.svg + <s>x<s>/apps/<name>.png (rsvg-convert)
+       scalable/{status,devices,actions,places}/  monochrome Material glyphs (MONO_MAP), SVG only, recoloured by KIconLoader
+       fabos, fabos-symbolic             the bare accent mark; `marks` = {size: RGBA image}, installed without a tile.
+    A name may appear in exactly one map: a tile in the tray or a mono glyph in Settings would be a bug, so we refuse."""
     import shutil, subprocess
     theme = os.path.join(out, "icon-theme"); cache = os.path.join(out, "material-cache"); sizes = THEME_SIZES
+    tile_names = [n for names in ICON_MAP for n in names]; mono_names = [n for names in MONO_MAP for n in names]
+    dup = sorted({n for n in tile_names if tile_names.count(n) > 1} | {n for n in mono_names if mono_names.count(n) > 1} | (set(tile_names) & set(mono_names)))
+    if dup: raise SystemExit("icon name mapped twice (tile vs mono, or repeated): " + ", ".join(dup))
     mark = ('<g transform="rotate(-24 32 32)"><circle cx="32" cy="32" r="20" fill="none" stroke-width="4"/>'
             '<rect x="23" y="25" width="4" height="14" rx="2"/><rect x="30" y="22" width="4" height="20" rx="2"/><rect x="37" y="25" width="4" height="14" rx="2"/></g>')
     have_rsvg = shutil.which("rsvg-convert") is not None; made = 0; fetched = 0
@@ -400,15 +498,31 @@ def build_icon_theme(out, conf, marks):
     open(os.path.join(sdir, "fabos.svg"), "w").write(mark_svg(conf["ACCENT"], title=conf["DISTRO_NAME"]))
     open(os.path.join(sdir, "fabos-symbolic.svg"), "w").write(mark_svg(symbolic=True, title=conf["DISTRO_NAME"]))
     for s in sizes: marks[s].save(os.path.join(theme, "%dx%d" % (s, s), "apps", "fabos.png"))
+    # --- monochrome status / device / action / place icons: SVG only (a PNG could not be recoloured) ---
+    mono = 0; mono_missing = []
+    for names, (symbol, ctx) in MONO_MAP.items():
+        paths = fetch_material(symbol, cache)
+        if not paths: mono_missing.append(symbol); continue
+        d = os.path.join(theme, "scalable", ctx); os.makedirs(d, exist_ok=True)
+        first = names[0]; open(os.path.join(d, first + ".svg"), "w").write(mono_icon_svg(paths))
+        aliases = list(names[1:]) + [n + "-symbolic" for n in names if not n.endswith("-symbolic") and n + "-symbolic" not in mono_names]
+        for alias in aliases:
+            lp = os.path.join(d, alias + ".svg")
+            if not os.path.lexists(lp): os.symlink(first + ".svg", lp)
+        mono += 1
     # places/preferences names live in apps/ too; KIconLoader searches all listed dirs regardless of Context.
-    # scalable/ is listed FIRST so KIconLoader picks the SVG whenever the requested size is within MinSize..MaxSize.
-    dirs = ",".join(["scalable/apps"] + ["%dx%d/apps" % (s, s) for s in sizes])
-    idx = ["[Icon Theme]", "Name=FabOS", "Comment=%s icons: Google Material Symbols on Fab OS tiles; everything else from Breeze" % conf["DISTRO_NAME"],
-           "Inherits=breeze-dark,breeze,hicolor", "FollowsColorScheme=true", "Directories=" + dirs, "",
-           "[scalable/apps]", "Size=64", "MinSize=16", "MaxSize=1024", "Type=Scalable", "Context=Applications", ""]
+    # scalable/ dirs are listed FIRST so KIconLoader picks the SVG whenever the requested size is within MinSize..MaxSize.
+    mono_dirs = ["scalable/" + c for c in MONO_CONTEXTS if os.path.isdir(os.path.join(theme, "scalable", c))]
+    dirs = ",".join(mono_dirs + ["scalable/apps"] + ["%dx%d/apps" % (s, s) for s in sizes])
+    idx = ["[Icon Theme]", "Name=FabOS",
+           "Comment=%s icons: Google Material Symbols on Fab OS tiles for apps, monochrome for status; everything else from Breeze" % conf["DISTRO_NAME"],
+           "Inherits=breeze-dark,breeze,hicolor", "FollowsColorScheme=true", "Directories=" + dirs, ""]
+    for c in mono_dirs: idx += ["[%s]" % c, "Size=22", "MinSize=8", "MaxSize=512", "Type=Scalable", "Context=%s" % c.split("/")[1].capitalize(), ""]
+    idx += ["[scalable/apps]", "Size=64", "MinSize=16", "MaxSize=1024", "Type=Scalable", "Context=Applications", ""]
     for s in sizes: idx += ["[%dx%d/apps]" % (s, s), "Size=%d" % s, "Type=Fixed", "Context=Applications", ""]
     open(os.path.join(theme, "index.theme"), "w").write("\n".join(idx))
-    print("icon theme: %d icon families (%d glyphs fetched) + fabos/fabos-symbolic, rsvg=%s" % (made, fetched, have_rsvg))
+    print("icon theme: %d tile families (%d glyphs fetched), %d monochrome status glyphs%s + fabos/fabos-symbolic, rsvg=%s"
+          % (made, fetched, mono, (" MISSING: " + ", ".join(mono_missing)) if mono_missing else "", have_rsvg))
 
 def inventory(out):
     """{relative path: 'WxH'} for every PNG under out/ except the icon theme and the glyph cache (spinner frames collapsed)."""

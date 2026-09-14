@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=@DISTRO_NAME@ Light
+Comment=@DISTRO_NAME@ window frame with a dark caption for light colour schemes
+X-KDE-PluginInfo-Author=@VENDOR_NAME@
+X-KDE-PluginInfo-Email=support@patienceai.in
+X-KDE-PluginInfo-Name=FabOSLight
+X-KDE-PluginInfo-Version=@DISTRO_VERSION@
+X-KDE-PluginInfo-Website=@HOME_URL@
+X-KDE-PluginInfo-License=Apache-2.0
+X-KDE-PluginInfo-EnabledByDefault=true
