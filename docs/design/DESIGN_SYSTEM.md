@@ -16,6 +16,22 @@ Rules: no hard-coded colours in Fab OS code (palette or Kirigami.Theme only); on
 animations from the motion tokens and disabled under Reduce Motion; every state (loading/empty/error/disabled)
 must be visible and truthful.
 
+## Voice states (fabos-voice)
+
+Every surface that offers voice (ask-bar microphone, Fab AI Controls composer, notifications from `fabos-voiced`)
+shows the same states. Text always accompanies the glyph; nothing is colour-only; copy comes from
+`packages/fabos-voice/usr/lib/fabos/voice/phrases.py` (Indian English, one sentence each) — UIs reuse it.
+
+| State | Source of truth (`fabos-voice status`) | Visual | Sound / speech |
+|-------|----------------------------------------|--------|----------------|
+| Unavailable | binary missing or `stt` = `none` | mic button disabled, tooltip "Voice is not available on this machine" | none |
+| Idle, wake on | `wake` true | mic glyph in muted `palette(text)`; optional hint "Say 'Hey Fab'" | none — PocketSphinx listens on-device |
+| Listening | `listening` true (after the wake phrase or a mic press) | mic glyph in accent (`#3B6EF5` / `#6E9BFF` dark) with a soft 1.5 s pulse from the motion tokens (static ring under Reduce Motion); notification "Listening…" | 180 ms two-tone chime (880 → 1320 Hz) before recording |
+| Transcribing | recording ended, text pending | indeterminate progress in the composer; the text lands in the field | none |
+| Speaking | `speaking` true | small speaker glyph on the step row whose narration is being read | the narration sentence (cloud Indian-English voice, else eSpeak NG); wake detection is paused |
+| Needs you | task `waiting_approval` / `waiting_user` | the existing approval card / question row, focused | "This needs your permission: … Shall I go ahead?" then a 6 s listen; unclear → "Okay, I will wait for you to decide on screen." |
+| Off | `wake` false and setting `voice.enabled` false | mic button normal (push-to-talk still works); Voice toggle off in Fab AI Controls | none |
+
 Components in use: Plasma/Kirigami controls for the shell, Qt Widgets
 (Breeze) for Fab OS apps. A Fab-authored widget kit is a later phase; until then consistency comes from the
 shared scheme, fonts, radii and icon language.

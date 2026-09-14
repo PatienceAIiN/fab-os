@@ -1,0 +1,14 @@
+Fab OS voice models
+===================
+
+ggml-tiny.en.bin  — whisper.cpp "tiny.en" speech-recognition model (English), 77 704 715 bytes.
+  Placed here when the Fab OS image is built (image/Containerfile, "Voice" layer), fetched from
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin and verified against
+  sha256 921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f (the build fails on a mismatch).
+  Licence: MIT. The copyright notice and the full licence text are in /usr/share/doc/fabos-voice/copyright
+  (and THIRD_PARTY_LICENSES/MIT.txt in the Fab OS source).
+
+The wake-word acoustic model and dictionary come from the Ubuntu package pocketsphinx-en-us
+(/usr/share/pocketsphinx/model/en-us, BSD-2-Clause, Carnegie Mellon University).
+
+Nothing in this directory is downloaded on the user's machine: every model ships inside the ISO.

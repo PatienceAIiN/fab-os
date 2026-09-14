@@ -44,10 +44,26 @@ A single **System-Wide AI** switch turns the whole thing off. Nothing leaves you
 
 Everything the agent does is recorded and shown as a chat in **Fab AI Controls**: your requests on the right, the agent's answers on the left, and every tool step folded into a small "Worked: N actions" chip you can expand. Follow up in the same chat and the agent keeps the context; hover a message to edit, retry, or copy it; stop a running task with one click; and every risky step, delete, or mode change asks you first in a rounded confirmation dialog (approval requests show exactly what would run behind "Show details" — opened for you when the risk is high).
 
+## Talk to Fab
+
+Say **"Hey Fab"**, then what you want — *"open my downloads folder"*, *"write a note that says call Amma at six"* — and Fab OS does it, telling you what it is doing as it goes: *"Sure, doing it now."*, *"Opening Fab Files for you now."*, *"This needs your permission: run the command apt update as administrator. Shall I go ahead?"* Answer **yes / haan** or **no / nahi**. Or press the microphone in the ask bar or Fab AI Controls to talk without the wake word.
+
+| Piece | Offline — no key, nothing to download | With an OpenAI or Gemini key in Fab AI Controls |
+|---|---|---|
+| Wake word "Hey Fab" | PocketSphinx keyphrase spotting on the live microphone, always on-device | same — the wake word never uses the cloud |
+| Speech-to-text | whisper.cpp with the `tiny.en` model shipped in the ISO (`/usr/share/fabos/voice`; about a second for a short sentence on a 4-thread laptop CPU, skipped when less than 600 MB of RAM is free) | the provider's speech model through the agent (better with Indian accents and names) |
+| Spoken replies | eSpeak NG — a plain, synthetic British-English voice | a natural Indian-English voice through the agent |
+| Narration of every step, approvals and questions by voice, the final reply | yes | yes |
+
+Honest limits: the Ubuntu archive has no offline Indian-English voice, so the human-like voice needs a cloud key; offline you get eSpeak NG. The `tiny.en` model is small — it hears clear English well and mangles some names; a cloud key helps there. The wake-word spotter is tuned to be eager (it must never miss you), so it occasionally fires on look-alikes such as *"a fabulous day"*; whisper.cpp then double-checks the last three seconds offline and quietly drops a false wake. Every model ships inside the ISO — nothing is downloaded on your machine.
+
+Turn it off in **Fab AI Controls › Voice** or with `fabos-voice wake off` (setting `voice.enabled`). `fabos settings voice.offline_only true` keeps every recording on the machine even when a cloud key exists. Command line: `fabos-voice listen-once` (prints what you said), `fabos-voice say "text"`, `fabos-voice status`. Settings (`fabos settings KEY VALUE`, all read live by the listener): `voice.enabled`, `voice.wake_word` (words must be in the shipped dictionary), `voice.speak_replies`, `voice.speak_full`, `voice.offline_only`, `voice.verify_wake`, `voice.kws_threshold` (PocketSphinx sensitivity, default `1e-50`). Privacy details: [legal/PRIVACY.md](legal/PRIVACY.md).
+
 ## What's in the box
 
 - **Apps you already know:** Firefox (Mozilla's own build), LibreOffice, VLC, plus the Fab suite — Fab Files, Fab Terminal, Fab Editor, Fab Software, Fab Photos, Fab Documents, Fab Calculator, Fab Screenshot, Fab Monitor, Fab System Info, Weather.
 - **Fab AI Controls** — chat with the agent: searchable history grouped by day, follow-ups with context, approvals, the System-Wide AI switch, and settings. Launch it with Meta+Space (`fabos-command-center`).
+- **Talk to Fab** — the "Hey Fab" wake word, offline speech-to-text and spoken narration (`fabos-voice`).
 - **Fab Updates** — one place for updates, with Standard and Beta channels.
 - **Fab Feedback** — send a bug or idea straight to the team.
 - **Welcome to Fab OS** — a first-run wizard for appearance, privacy, and connecting an AI provider.
@@ -127,6 +143,7 @@ tests/iso-boot-test.sh           # headless live-boot smoke test
 tests/branding-check.sh vm       # 60+ static checks: identity, no Canonical/KDE names, legal files present
 tests/ui-tour.sh                 # boots headless, drives the UI, captures screenshots to build/screenshots/
 python3 tests/agent-test.py      # agent unit tests (offline, FakeProvider)
+python3 tests/voice-test.py      # voice: VAD, phrases, CLI contract, daemon follow-loop; wake word + whisper when the engines are present
 ```
 
 The build is designed to be **cache-friendly and honest**: `build-rootfs.sh` refuses to export a stale image if a build step fails, and never re-downloads the desktop layer unless you change it.
@@ -163,7 +180,7 @@ No telemetry, no analytics, no accounts. See [legal/PRIVACY.md](legal/PRIVACY.md
 ```
 brand/       identity: brand.conf + generators for icons, wallpapers, splash, themes
 image/       the OS recipe (Containerfile) and per-profile overlays (vm, iso)
-packages/    the Fab OS .deb sources (agent, desktop, branding, updates, feedback, welcome, ai)
+packages/    the Fab OS .deb sources (agent, voice, desktop, branding, updates, feedback, welcome, ai)
 scripts/     build, disk, QEMU, ISO, apt-publish, and release tooling
 tests/       branding, UI-tour, agent, and boot tests
 docs/        design docs and architecture decision records (ADRs)

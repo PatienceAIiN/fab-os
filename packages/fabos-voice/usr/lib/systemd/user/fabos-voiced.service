@@ -1,0 +1,22 @@
+[Unit]
+Description=@DISTRO_NAME@ voice — "Hey Fab" wake word and spoken narration
+Documentation=@DOCS_URL@
+# The agent's user unit is fabos-agent.service; fabos-agentd.service is listed too in case it is ever renamed.
+After=pipewire.service fabos-agent.service fabos-agentd.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/lib/fabos/voice/fabos_voiced.py
+Restart=on-failure
+RestartSec=3
+Nice=10
+MemoryHigh=200M
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+EnvironmentFile=-/etc/fabos/voice.env
+EnvironmentFile=-%h/.config/fabos/voice.env
+# Talks only to 127.0.0.1 (fabos-agentd) and the user's PipeWire socket; the wake word never leaves the machine.
+
+[Install]
+WantedBy=default.target

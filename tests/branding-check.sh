@@ -111,4 +111,10 @@ chk "mono status icons are SVG only (recolourable)" "! R 'ls /usr/share/icons/Fa
 chk "kdeglobals UI font is 11 pt, icons medium" "R 'grep -q \"^font=Inter,11,\" /etc/xdg/kdeglobals && grep -q \"^menuFont=Inter,11,\" /etc/xdg/kdeglobals && grep -q \"^toolBarFont=Inter,11,\" /etc/xdg/kdeglobals && grep -A1 \"^\\[ToolbarIcons\\]\" /etc/xdg/kdeglobals | grep -q ^Size=24'"
 chk "clock is bold Inter 13 on one line"      "R 'grep -q \"\\\"fontSize\\\", 13\" $LAYOUT && grep -q \"\\\"dateDisplayFormat\\\", \\\"BesideTime\\\"\" $LAYOUT'"
 chk "tray-defaults is executable"             "R 'test -x /usr/lib/fabos/tray-defaults'"
+# Voice (2026-09-14): "Hey Fab" wake word (pocketsphinx, offline), whisper.cpp tiny.en model shipped in the image, espeak-ng fallback
+chk "voice: CLI, daemon and engines installed"     "R 'test -x /usr/bin/fabos-voice && test -x /usr/lib/fabos/voice/fabos_voiced.py && test -x /usr/bin/pocketsphinx && test -x /usr/bin/whisper-cli && test -x /usr/bin/espeak-ng && test -x /usr/bin/pw-record'"
+chk "voice: fabos-voiced user unit enabled"        "R 'systemctl --global is-enabled fabos-voiced.service' | grep -q enabled"
+chk "voice: whisper tiny.en model shipped (sha256)" "R 'sha256sum /usr/share/fabos/voice/ggml-tiny.en.bin' | grep -q ^921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
+chk "voice: dictionary knows the wake phrase"      "R 'grep -q \"^hey HH EY\" /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict && grep -q \"^fab F AE B\" /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict'"
+chk "voice: status reports offline whisper.cpp"    "R 'fabos-voice status' | grep -q '\"stt\": \"whisper.cpp\"'"
 exit $fail

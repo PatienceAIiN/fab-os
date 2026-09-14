@@ -68,6 +68,20 @@ RUN printf 'Types: deb\nURIs: https://packages.mozilla.org/apt\nSuites: mozilla\
 RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3-dbus python3-gi libnotify-bin wtype unattended-upgrades ubuntu-drivers-common && rm -rf /var/lib/apt/lists/*
 # Bundled applications (own layer): LibreOffice with KDE integration, VLC, KWeather, extra Plasma widgets (weather, etc.)
 RUN apt-get update && apt-get install -y libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-kf6 libreoffice-style-breeze hunspell-en-us vlc kweather plasma-widgets-addons && rm -rf /var/lib/apt/lists/*
+# Voice: offline wake word + speech-to-text + TTS
+# pocketsphinx keyphrase spotting ("hey fab", en-us model from pocketsphinx-en-us) + whisper.cpp with the tiny.en model fetched HERE
+# at build time and sha256-pinned (nothing is ever downloaded on the user's machine) + espeak-ng offline voice. Own layer, no
+# dependency on the pkgs stage, so a package edit never re-downloads the 77 MB model.
+RUN apt-get update && apt-get install -y whisper.cpp pocketsphinx pocketsphinx-en-us espeak-ng espeak-ng-data pipewire-bin pulseaudio-utils sox python3-numpy libnotify-bin \
+ && install -d -m 0755 /usr/share/fabos/voice \
+ && curl -fsSL --retry 3 --retry-delay 5 -o /usr/share/fabos/voice/ggml-tiny.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin \
+ && echo '921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f  /usr/share/fabos/voice/ggml-tiny.en.bin' | sha256sum -c - \
+ && chmod 0644 /usr/share/fabos/voice/ggml-tiny.en.bin \
+ && grep -q '^hey HH EY' /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict && grep -q '^fab F AE B' /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict \
+ && rm -rf /var/lib/apt/lists/*
+# fabos-voice itself (CLI, "Hey Fab" listener, phrases): depends only on the archive packages above; its per-user unit is enabled for every user.
+COPY --from=pkgs /out/fabos-voice_*.deb /tmp/voice-debs/
+RUN apt-get install -y --no-install-recommends /tmp/voice-debs/fabos-voice_*.deb && systemctl --global enable fabos-voiced.service && rm -rf /tmp/voice-debs
 # Low-RAM support (own layer, docs/LOW-RAM.md): compressed swap in RAM (systemd-zram-generator; fabos-desktop ships
 # /etc/systemd/zram-generator.conf) and systemd-oomd, the Ubuntu Desktop default that the minimal container base lacks.
 RUN apt-get update && apt-get install -y --no-install-recommends systemd-zram-generator systemd-oomd && rm -rf /var/lib/apt/lists/* && \

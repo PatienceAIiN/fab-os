@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+case "$1" in configure)
+  # Start the "Hey Fab" listener in every user's session; it idles until a microphone exists and voice.enabled is true.
+  systemctl --global enable fabos-voiced.service 2>/dev/null || true
+  chmod 0755 /usr/bin/fabos-voice /usr/lib/fabos/voice/fabos_voiced.py 2>/dev/null || true
+;; esac
+exit 0
