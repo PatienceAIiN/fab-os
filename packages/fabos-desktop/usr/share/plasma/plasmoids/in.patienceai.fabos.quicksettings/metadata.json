@@ -1,0 +1,17 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Authors": [{"Email": "support@patienceai.in", "Name": "@VENDOR_NAME@"}],
+    "Category": "System Information",
+    "Description": "Wi-Fi, Bluetooth, volume, brightness, battery, network speed and notifications in one slide-down pane",
+    "Icon": "configure",
+    "Id": "in.patienceai.fabos.quicksettings",
+    "License": "Apache-2.0",
+    "Name": "@DISTRO_NAME@ Quick Settings",
+    "Version": "@DISTRO_VERSION@",
+    "Website": "@HOME_URL@"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "X-Plasma-NotificationArea": false,
+  "X-Plasma-Provides": ["org.kde.plasma.systemstatus"]
+}

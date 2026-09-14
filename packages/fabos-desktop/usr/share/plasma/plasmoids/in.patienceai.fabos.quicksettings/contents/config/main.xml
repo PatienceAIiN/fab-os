@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+  <group name="General">
+    <entry name="barSize" type="String">
+      <label>Bar size: small, medium or large. Scales the indicator glyphs (16/18/22 px), their text (11/12/13 px), the battery percentage (12/13/15 px) and, through the shell scripting API, the stock clock (Inter 12/13/15).</label>
+      <default>medium</default>
+    </entry>
+    <entry name="magnify" type="Bool">
+      <label>Magnify the indicators (and the dock, kept in sync) when the pointer hovers them.</label>
+      <default>true</default>
+    </entry>
+    <entry name="magnification" type="String">
+      <label>Dock magnification pushed to the dock applet: subtle, normal or strong.</label>
+      <default>normal</default>
+    </entry>
+    <entry name="showSpeed" type="Bool">
+      <label>Show the live download/upload rate beside the network glyph while data flows.</label>
+      <default>true</default>
+    </entry>
+    <entry name="pollSeconds" type="Int">
+      <label>Seconds between status probes (network speed is always sampled every 2 s).</label>
+      <default>10</default>
+      <min>5</min>
+      <max>120</max>
+    </entry>
+  </group>
+</kcfg>

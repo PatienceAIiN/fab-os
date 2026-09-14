@@ -1,0 +1,16 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Authors": [{"Email": "support@patienceai.in", "Name": "@VENDOR_NAME@"}],
+    "Category": "Windows and Tasks",
+    "Description": "Pinned and running apps as icons that magnify under the pointer",
+    "Icon": "view-list-icons",
+    "Id": "in.patienceai.fabos.dock",
+    "License": "Apache-2.0",
+    "Name": "@DISTRO_NAME@ Dock",
+    "Version": "@DISTRO_VERSION@",
+    "Website": "@HOME_URL@"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "X-Plasma-Provides": ["org.kde.plasma.multitasking"]
+}

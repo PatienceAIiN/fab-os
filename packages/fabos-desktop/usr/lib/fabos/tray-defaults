@@ -1,6 +1,8 @@
 #!/bin/sh
 # Applies /usr/lib/fabos/tray-defaults.js once per user via plasmashell's D-Bus scripting interface.
-MARK="${XDG_CONFIG_HOME:-$HOME/.config}/fabos/tray-defaults-done"
+# The mark carries a version: v2 (2026-09-15) hides the five stock icons the quick-settings applet replaces, so users of
+# the first ISO get the new tray defaults once at their next login.
+MARK="${XDG_CONFIG_HOME:-$HOME/.config}/fabos/tray-defaults-done-v2"
 [ -f "$MARK" ] && exit 0
 for i in $(seq 1 60); do
   if qdbus6 org.kde.plasmashell /PlasmaShell >/dev/null 2>&1 || busctl --user status org.kde.plasmashell >/dev/null 2>&1; then break; fi
