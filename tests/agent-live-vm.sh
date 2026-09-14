@@ -106,7 +106,7 @@ run_task heavy-1 1500 auto "$HEAVY_MODEL" "Build a static site generator in Pyth
 check "site served" "curl -s http://127.0.0.1:8123/ | grep -ci '<a ' | awk '\$1>=3'" && verdict PASS "heavy-1 static site built and served" || verdict FAIL "heavy-1 ($TASK_STATUS)"
 # ---------- CONTROLS: cancel / retry / delete / ai off / bypass
 run_task ctl-cancel 20 auto "$MODEL" "Run the shell command: sleep 240 && echo finished. Wait for it to complete, then report its output."
-sleep 4; st=$(api GET "/tasks/$TASK_ID" | jget '["status"]'); child=$(vm "pgrep -f 'sleep 240' | wc -l")
+sleep 4; st=$(api GET "/tasks/$TASK_ID" | jget '["status"]'); child=$(vm "pgrep -f '^sleep 240\$' | wc -l")   # anchored so the remote shell's own command line does not count as a survivor
 [ "$st" = cancelled ] && [ "${child:-1}" = 0 ] && verdict PASS "ctl cancel: task cancelled and its shell child killed" || verdict FAIL "ctl cancel status=$st children_left=$child"
 newid=$(api POST "/tasks/$TASK_ID/retry" | jget '["id"]'); sleep 6; st=$(api GET "/tasks/${newid:-$TASK_ID}" | jget '["status"]'); api POST "/tasks/${newid:-$TASK_ID}/cancel" >/dev/null; sleep 3
 { [ "$st" = running ] || [ "$st" = queued ]; } && verdict PASS "ctl retry restarts (new task #$newid)" || verdict FAIL "ctl retry status=$st"

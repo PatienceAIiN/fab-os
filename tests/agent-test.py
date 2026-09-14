@@ -504,6 +504,17 @@ class Daemon(unittest.TestCase):
             time.sleep(0.2)
         self.assertNotEqual(subprocess.run(["pgrep", "-f", "^sleep 45$"], capture_output=True).returncode, 0, "shell child survived the cancel")
 
+    def test_11b_background_process_survives_step_completion(self):
+        """A step that leaves a background process running must finish as soon as bash exits (not hang on the inherited
+        stdout until timeout and then kill the process tree). Cancelling the task still kills the survivor."""
+        t0 = time.time(); r = self.cli("do", "--mode", "bypass", "background server please"); tid = r["id"]
+        t = self.wait(tid, states=("done", "failed"), timeout=30)
+        self.assertEqual(t["status"], "done", t); self.assertLess(time.time() - t0, 25, "step hung on the background child's stdout")
+        steps = [s for s in t["steps"] if s["kind"] == "tool_call"]
+        self.assertTrue(steps and "started-bg" in (steps[0].get("output") or ""), steps)
+        self.assertEqual(subprocess.run(["pgrep", "-f", "^sleep 37$"], capture_output=True).returncode, 0, "background process was killed with the step")
+        subprocess.run(["pkill", "-f", "^sleep 37$"])
+
     def test_12_followup_threads_into_the_chat_with_parent_context(self):
         # Fab AI Controls' follow-up bar: POST /tasks with parent_id threads the new task under the chat's root and the
         # request handed to the model starts with a short context of the earlier turns (request + outcome)

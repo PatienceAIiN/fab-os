@@ -475,12 +475,19 @@ class Tools:
         to = min(int(inp.get("timeout_s") or 120), 1800)
         if inp.get("as_root"):
             return self.run_as_root(task_id, inp["command"], cwd, to)
-        # own session/process group, registered on the task: cancelling the task kills the whole tree (see Agent.cancel_task)
-        p = subprocess.Popen(["bash", "-lc", inp["command"]], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        # own session/process group, registered on the task: cancelling the task kills the whole tree (see Agent.cancel_task).
+        # Output goes to temp files, not pipes: a server the agent deliberately leaves running in the background
+        # ("python3 -m http.server &") inherits stdout, and with pipes the step would block until its timeout and then
+        # kill_tree() would take the server down with it. With files the step ends when bash exits; the background
+        # process lives on (it is still in the task's process group, so cancelling the task still stops it).
+        import tempfile
+        fo = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace"); fe = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
+        p = subprocess.Popen(["bash", "-lc", inp["command"]], cwd=cwd, stdout=fo, stderr=fe, text=True,
                              env=self.agent.session_env(), start_new_session=True)
         self.agent.procs.setdefault(task_id, set()).add(p)
         try:
-            out, err = p.communicate(timeout=to)
+            p.wait(timeout=to)
+            fo.seek(0); fe.seek(0); out, err = fo.read(), fe.read()
             if task_id in self.agent.cancel:
                 return {"error": "cancelled by user"}
             return {"exit_code": p.returncode, "stdout": out[-30000:], "stderr": err[-10000:]}
@@ -489,6 +496,7 @@ class Tools:
             return {"error": "timeout after %ss (process killed)" % to}
         finally:
             self.agent.procs.get(task_id, set()).discard(p)
+            fo.close(); fe.close()
 
     def t_read_file(self, task_id, inp):
         p = os.path.expanduser(inp["path"])
@@ -1102,6 +1110,9 @@ class FakeProvider:
             plan = [tu("run_shell", {"command": "exit 3"})]
         elif "long sleep" in low:
             plan = [tu("run_shell", {"command": "sleep 45 && echo finished", "timeout_s": 120})]
+        elif "background server" in low:
+            # a deliberately backgrounded process that keeps stdout open: the step must return at once and the process must survive
+            plan = [tu("run_shell", {"command": "sleep 37 & echo started-bg", "timeout_s": 8})]
         elif "huge output" in low:
             # emulate a small-context model: a tool result longer than 2000 chars makes the "request" overflow
             plan = [tu("run_shell", {"command": "seq 1 20000"}), tu("run_shell", {"command": "echo compacted-ok"})]
