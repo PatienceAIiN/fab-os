@@ -42,7 +42,7 @@ The desktop's centrepiece is the **"Ask me to do anything…"** bar. Behind it r
 
 A single **System-Wide AI** switch turns the whole thing off. Nothing leaves your machine except the requests you give the agent, sent only to the provider you configure yourself: **Claude, OpenAI, Google Gemini, or a fully local model** (llama.cpp — offline). No telemetry, no accounts, no crash uploads.
 
-Everything the agent does is recorded and shown as a chat in **Fab AI Controls**: your requests on the right, the agent's answers on the left, and every tool step folded into a small "Worked: N actions" chip you can expand. Follow up in the same chat and the agent keeps the context; hover a message to edit, retry, or copy it; stop a running task with one click; and every risky step, delete, or mode change asks you first in a rounded confirmation dialog.
+Everything the agent does is recorded and shown as a chat in **Fab AI Controls**: your requests on the right, the agent's answers on the left, and every tool step folded into a small "Worked: N actions" chip you can expand. Follow up in the same chat and the agent keeps the context; hover a message to edit, retry, or copy it; stop a running task with one click; and every risky step, delete, or mode change asks you first in a rounded confirmation dialog (approval requests show exactly what would run behind "Show details" — opened for you when the risk is high).
 
 ## What's in the box
 

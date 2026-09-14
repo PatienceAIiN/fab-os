@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Offscreen render check for Fab AI Controls (packages/fabos-agent/.../command_center.py).
+"""Offscreen render + behaviour check for Fab AI Controls (packages/fabos-agent/.../command_center.py).
 
 Starts fabos-agentd with the scripted provider in a temp dir, seeds one chat with a follow-up and a running task plus an
 older chat, then constructs the window under a Fab Dark and a Fab Light QPalette, renders each to a QPixmap and saves
-  <out>/ai-controls-dark.png  <out>/ai-controls-light.png  (+ ai-controls-dialog-{dark,light}.png for the confirm dialog)
+  <out>/ai-controls-dark.png  <out>/ai-controls-light.png  (+ ai-controls-{dialog,settings,approval}-{dark,light}.png)
+and, on the live window, checks: a runtime colour-scheme switch restyles every surface; sidebar rows are reconciled in
+place (widgets keep their identity when another chat appears, moves or disappears); the approval dialog hides the raw
+command behind "Show details" (ui.show_raw off, low risk) and Deny reaches the daemon; an approval resolved elsewhere
+closes the dialog WITHOUT posting a decision; editing the chat's root message threads the new version into the same
+chat; Save in Settings with the daemon offline keeps the dialog open.
 Exit code 0 only if every step ran without an exception. Needs PyQt6 — run it inside the image:
   podman run --rm -v $PWD:/work:Z -e QT_QPA_PLATFORM=offscreen localhost/fabos:vm python3 /work/tests/ai-controls-render.py /work/build
 """
@@ -51,8 +56,9 @@ def main():
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         sys.path.insert(0, AGENT_DIR)
         import command_center as cc
-        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtWidgets import QApplication, QDialog
         from PyQt6.QtGui import QPalette, QColor, QFont
+        from PyQt6.QtCore import QPoint, QTimer
 
         def wait(tid, states=("done", "failed", "cancelled", "waiting_approval", "waiting_user"), timeout=40):
             for _ in range(timeout * 5):
@@ -61,6 +67,10 @@ def main():
                     return t
                 time.sleep(0.2)
             raise RuntimeError("task %d stuck" % tid)
+
+        def spin(app, n=10):
+            for _ in range(n):
+                app.processEvents()
 
         # --- seed: a chat with a follow-up and a running task; a second, older chat
         T0 = time.time()
@@ -88,6 +98,7 @@ def main():
         app.setFont(QFont("Inter", 10))
         print("QApplication ready at +%.1fs" % (time.time() - T0))
         results = {}
+        real_api = cc.api
         for name, scheme in SCHEMES.items():
             app.setPalette(make_palette(QPalette, QColor, scheme))
             fits = {"n": 0}
@@ -109,8 +120,7 @@ def main():
                 w = cc.AIControls()
             w.resize(1280, 800)
             w.show()
-            for _ in range(10):
-                app.processEvents()
+            spin(app)
             print("[%s] window constructed in %.1fs" % (name, time.time() - t1))
             t1 = time.time()
             w.refresh_list()
@@ -132,8 +142,11 @@ def main():
             assert "Ran a command" in "".join(l.text() for l in w.view.turns[root].chip.panel.findChildren(cc.QLabel)), "friendly label missing"
             assert not any("uname" in l.text() for l in w.view.turns[root].chip.panel.findChildren(cc.QLabel)), "raw command leaked with ui.show_raw off"
             assert w.sidebar.list.count() >= 4, "sidebar should have 2 groups + 2 chats (got %d rows)" % w.sidebar.list.count()
-            headers = [w.sidebar.list.itemWidget(w.sidebar.list.item(i)).text() for i in range(w.sidebar.list.count()) if isinstance(w.sidebar.list.itemWidget(w.sidebar.list.item(i)), cc.QLabel)]
-            assert headers == ["TODAY", "EARLIER"], headers
+
+            def headers():
+                return [w.sidebar.list.itemWidget(w.sidebar.list.item(i)).text() for i in range(w.sidebar.list.count())
+                        if isinstance(w.sidebar.list.itemWidget(w.sidebar.list.item(i)), cc.QLabel)]
+            assert headers() == ["TODAY", "EARLIER"], headers()
             # show the hover action icons on one user bubble and one agent bubble so they appear in the render
             w.view.turns[run].user._hover(True)
             last_assistant = [b for b in w.view.turns[fu].step_widgets.values() if b.role == "assistant"][-1]
@@ -144,11 +157,29 @@ def main():
             path = os.path.join(OUT, "ai-controls-%s.png" % name)
             assert not px.isNull() and px.save(path), "grab/save failed for " + name
             results[name] = (px.width(), px.height())
+
+            # --- live colour-scheme switch: the application palette changes while the window is open -> every
+            # stylesheet surface follows (sample the sidebar card's empty area, which is the palette's Base colour)
+            other_name = "light" if name == "dark" else "dark"
+            probe = w.sidebar.list.mapTo(w, QPoint(w.sidebar.list.width() // 2, w.sidebar.list.height() - 12))
+            key0 = w._style_key
+            l0 = QColor(px.toImage().pixel(probe)).lightness()
+            app.setPalette(make_palette(QPalette, QColor, SCHEMES[other_name]))
+            spin(app, 30)
+            assert w._style_key != key0, "stylesheet was not rebuilt after a live palette switch"
+            l1 = QColor(w.grab().toImage().pixel(probe)).lightness()
+            assert (l0 < 128) == (name == "dark") and (l1 < 128) == (other_name == "dark"), "surface did not follow the live switch: lightness %d -> %d" % (l0, l1)
+            app.setPalette(make_palette(QPalette, QColor, scheme))
+            spin(app, 30)
+            assert w._style_key == key0, "stylesheet did not return to the original scheme"
+            l2 = QColor(w.grab().toImage().pixel(probe)).lightness()
+            assert (l2 < 128) == (name == "dark"), "surface did not follow the switch back (lightness %d)" % l2
+            print("[%s] live scheme switch: lightness %d -> %d -> %d" % (name, l0, l1, l2))
+
             # the rounded confirmation dialog, same palette
             d = cc.RoundedDialog(w, "Delete this chat?", "“show me the system” and its 3 turns — including every recorded step — are removed from the history. Running tasks are stopped.", "Delete")
             d.show()
-            for _ in range(10):
-                app.processEvents()
+            spin(app)
             dp = d.grab()
             assert dp.save(os.path.join(OUT, "ai-controls-dialog-%s.png" % name))
             results[name + "-dialog"] = (dp.width(), dp.height())
@@ -166,30 +197,143 @@ def main():
             # the Settings dialog constructs and renders, with the raw-responses checkbox following the daemon setting
             sd = cc.SettingsDialog(w, cc.api("GET", "/settings"))
             sd.show()
-            for _ in range(10):
-                app.processEvents()
+            spin(app)
             assert not sd.show_raw.isChecked()
             sp = sd.grab()
             assert sp.save(os.path.join(OUT, "ai-controls-settings-%s.png" % name))
             results[name + "-settings"] = (sp.width(), sp.height())
             sd.reject()
-            # an approval request surfaces as a rounded Allow / Deny dialog; Deny reaches the daemon
+
+            # --- Save with the daemon unreachable: the dialog stays open and says so (nothing was saved)
+            sd = cc.SettingsDialog(w, cc.api("GET", "/settings"))
+            sd.show()
+            spin(app)
+            seen_info = []
+            poll = QTimer()
+            poll.setInterval(30)
+            ticks = {"n": 0}
+
+            def close_info():
+                ticks["n"] += 1
+                for dlg_ in app.topLevelWidgets():
+                    if isinstance(dlg_, cc.RoundedDialog) and dlg_ is not sd and dlg_.isVisible() and not isinstance(dlg_, cc.SettingsDialog):
+                        seen_info.append(dlg_.title.text())
+                        dlg_.confirm_btn.click()
+                if seen_info or ticks["n"] > 200:
+                    poll.stop()
+            poll.timeout.connect(close_info)
+            poll.start()
+
+            def offline_api(method, path, body=None):
+                raise cc.AgentOffline("connection refused (test)")
+            cc.api = offline_api
+            try:
+                sd.save()
+            finally:
+                cc.api = real_api
+                poll.stop()
+            assert seen_info == ["Agent service offline"], seen_info
+            assert sd.isVisible() and sd.result() != QDialog.DialogCode.Accepted, "Settings closed although nothing was saved"
+            sd.reject()
+            spin(app)
+
+            # --- an approval request surfaces as a rounded Allow / Deny dialog; the raw command is behind "Show details"
+            # (ui.show_raw off, low risk); Deny reaches the daemon. Sidebar rows keep their identity while the new chat
+            # appears and disappears (in-place reconcile, no clear-and-rebuild).
+            row_root, row_other = w.sidebar.rows[root], w.sidebar.rows[other]
             ask = cc.api("POST", "/tasks", {"request": "show me the system", "mode": "ask"})["id"]
             wait(ask, ("waiting_approval",))
             w.refresh_list()
-            for _ in range(10):
-                app.processEvents()
+            spin(app)
+            assert w.sidebar.rows[root] is row_root and w.sidebar.rows[other] is row_other, "sidebar rows were rebuilt when a chat was added"
+            assert w.sidebar.list.item(1).data(cc.Qt.ItemDataRole.UserRole) == ask, "new chat should be the first row under TODAY"
             assert w.approval_dialogs, "approval dialog did not open"
             dlg = list(w.approval_dialogs.values())[0]
+            high = (dlg.approval.get("risk") or "MEDIUM") in ("HIGH", "CRITICAL")
+            if high:
+                assert dlg.raw.isVisible() and dlg.details_btn.isChecked(), "HIGH/CRITICAL approval must show what runs"
+            else:
+                assert not dlg.raw.isVisible(), "raw command shown in the approval dialog with ui.show_raw off (risk %s)" % dlg.approval.get("risk")
+                assert dlg.details_btn.text() == "Show details"
+                dlg.details_btn.setChecked(True)
+                spin(app)
+                assert dlg.raw.isVisible() and "uname" in dlg.raw.text() and dlg.details_btn.text() == "Hide details"
             ap = dlg.grab()
             assert ap.save(os.path.join(OUT, "ai-controls-approval-%s.png" % name))
             results[name + "-approval"] = (ap.width(), ap.height())
-            dlg.reject()
-            for _ in range(10):
-                app.processEvents()
+            dlg.cancel_btn.click()            # Deny
+            spin(app)
             assert cc.api("GET", "/approvals/pending") == [], "deny did not reach the daemon"
+            assert not w.approval_dialogs
             wait(ask, ("done", "failed"))
             cc.api("DELETE", "/tasks/%d" % ask)
+            w.refresh_list()
+            spin(app)
+            assert w.sidebar.rows[root] is row_root and w.sidebar.rows[other] is row_other, "sidebar rows were rebuilt when a chat was removed"
+            assert headers() == ["TODAY", "EARLIER"] and w.sidebar.list.count() == 4, (headers(), w.sidebar.list.count())
+
+            # --- an approval resolved elsewhere (notification / CLI) closes the dialog WITHOUT posting a decision
+            ask2 = cc.api("POST", "/tasks", {"request": "show me the system", "mode": "ask"})["id"]
+            wait(ask2, ("waiting_approval",))
+            w.refresh_list()
+            spin(app)
+            assert w.approval_dialogs, "second approval dialog did not open"
+            aid = list(w.approval_dialogs)[0]
+            assert cc.api("POST", "/approvals/%d" % aid, {"decision": "approved"}).get("ok"), "external approve failed"
+            posts = []
+
+            def spy_api(method, path, body=None):
+                if method == "POST":
+                    posts.append((path, body))
+                return real_api(method, path, body)
+            cc.api = spy_api
+            try:
+                w.refresh_list()
+                spin(app)
+            finally:
+                cc.api = real_api
+            assert not w.approval_dialogs, "stale approval dialog still open"
+            assert not any(p.startswith("/approvals/") for p, _ in posts), "closing a stale approval dialog posted a decision: %r" % posts
+            wait(ask2, ("done", "failed"))
+            cc.api("DELETE", "/tasks/%d" % ask2)
+            w.refresh_list()
+            spin(app)
+
+            # --- a chat that gets activity moves to the top: the moved row is re-created, the others keep their identity
+            fu2 = cc.api("POST", "/tasks", {"request": "and the kernel version", "parent_id": other, "mode": "bypass"})["id"]
+            w.refresh_list()
+            spin(app)
+            assert headers() == ["TODAY"], headers()
+            assert w.sidebar.list.item(1).data(cc.Qt.ItemDataRole.UserRole) == other and w.sidebar.list.item(2).data(cc.Qt.ItemDataRole.UserRole) == root
+            assert w.sidebar.rows[root] is row_root, "the unmoved row lost its widget"
+            assert w.sidebar.list.currentRow() == 2, "selection did not follow the current chat (row %d)" % w.sidebar.list.currentRow()
+            wait(fu2)
+            cc.api("DELETE", "/tasks/%d" % fu2)
+            w.refresh_list()
+            spin(app)
+            assert headers() == ["TODAY", "EARLIER"] and w.sidebar.list.item(1).data(cc.Qt.ItemDataRole.UserRole) == root
+
+            # --- editing the ROOT message threads the new version into the same chat (no look-alike duplicate chat)
+            n_convs = len(w.convs)
+            w.start_edit(root, "show me the system please")
+            assert w.send_btn.glyph == "check" and w.ask.text() == "show me the system please"
+            w.submit()
+            spin(app)
+            assert w.current_root == root and len(w.convs) == n_convs, "editing the root spawned a new chat (convs=%r)" % sorted(w.convs)
+            new_ids = [t["id"] for t in w.convs[root]["tasks"] if t["id"] not in (root, fu, run)]
+            assert len(new_ids) == 1 and w.by_id[new_ids[0]]["parent_id"] == root, [(t["id"], t.get("parent_id")) for t in w.convs[root]["tasks"]]
+            assert w.by_id[root]["title"].startswith(cc.SUPERSEDED), w.by_id[root]["title"]
+            assert w.editing is None and w.ask.text() == ""
+            row = w.sidebar.rows[root]
+            assert row._full_title == "show me the system" and "edited" in row.sub.text(), (row._full_title, row.sub.text())
+            assert w.view.turns[root].user.frame.graphicsEffect() is not None, "superseded turn not dimmed"
+            assert user_text_ok(cc, w.details.get(new_ids[0]) or cc.api("GET", "/tasks/%d" % new_ids[0]))
+            # put the fixture back for the next scheme
+            cc.api("DELETE", "/tasks/%d" % new_ids[0])
+            cc.api("PATCH", "/tasks/%d" % root, {"title": "show me the system"})
+            w.refresh_list()
+            spin(app)
+
             # enlarge toggle hides the sidebar and back
             w.enlarge_btn.setChecked(True)
             app.processEvents()
@@ -221,6 +365,17 @@ def main():
                 proc.kill()
         shutil.rmtree(tmp, ignore_errors=True)
     sys.exit(rc)
+
+
+def user_text_ok(cc, task):
+    """The edited request carries the chat context (minus the superseded turn) and ends with the user's words."""
+    req = task.get("request") or ""
+    assert cc.user_text(req) == "show me the system please", req
+    assert cc.FOLLOWUP_MARK in req, req
+    ctx = req.split(cc.FOLLOWUP_MARK)[0]
+    assert "asked: and now open the editor" in ctx, ctx                    # the live follow-up is in the context
+    assert "asked: show me the system" not in ctx, ctx                     # the superseded root is not
+    return True
 
 
 if __name__ == "__main__":

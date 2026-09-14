@@ -27,6 +27,8 @@ ACTIVE = ("queued", "running", "waiting_approval", "waiting_user")
 R_CONTROL, R_FIELD, R_CARD, R_PANEL, R_POPUP = 12, 14, 20, 20, 24
 SP, SP2 = 12, 16
 POLL_LIST_MS, POLL_THREAD_MS = 4000, 1500
+API_TIMEOUT = 5                  # s — the daemon is local; calls run on the GUI thread, so a hung daemon must not freeze the UI for long
+KEY_ROLE = int(Qt.ItemDataRole.UserRole) + 1     # sidebar list items: their reconcile key ("h:Today" / "c:<root id>")
 PROVIDER_LABELS = {"claude": "Claude", "openai": "OpenAI", "gemini": "Gemini", "local": "Local model", "fake": "Test provider"}
 # semantic status colours (used for tiny risk/status dots only; all surfaces and text come from the palette)
 RISK_COLORS = {"LOW": "#3FCB7E", "MEDIUM": "#6E9BFF", "HIGH": "#E0A64B", "CRITICAL": "#F0655D"}
@@ -49,7 +51,7 @@ def api(method, path, body=None):
     req = urllib.request.Request("http://127.0.0.1:%s%s" % (port, path), method=method, data=json.dumps(body).encode() if body is not None else None,
                                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         try:
@@ -465,10 +467,14 @@ class RoundedDialog(QDialog):
 
 
 class ApprovalDialog(RoundedDialog):
-    """The agent wants to do something risky: friendly description + risk level, Allow (accent) / Deny. Non-modal."""
+    """The agent wants to do something risky: friendly description + risk level, Allow (accent) / Deny. Non-modal.
+    The exact tool input sits behind a "Show details" toggle like every other raw tool input (ui.show_raw opens it), but
+    it is open by default for HIGH / CRITICAL risk: nobody should approve a dangerous command without reading it.
+    A decision is only ever sent from the two buttons (Escape counts as Deny); a programmatic close() — the approval was
+    resolved from the notification or the CLI — posts nothing."""
     decided = pyqtSignal(int, str)
 
-    def __init__(self, parent, approval):
+    def __init__(self, parent, approval, show_raw=False):
         super().__init__(parent, "The agent asks for your approval", "", "Allow", "Deny")
         self.approval = approval
         self.setModal(False)
@@ -489,13 +495,48 @@ class ApprovalDialog(RoundedDialog):
                       + ("\nWhy it needs approval: " + (a.get("reason") or "") if a.get("reason") else ""))
         desc.setWordWrap(True)
         self.body.addWidget(desc)
-        raw = QLabel(step_input_summary(a.get("tool"), a.get("input"))[:600])
-        raw.setObjectName("raw")
-        raw.setWordWrap(True)
-        raw.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.body.addWidget(raw)
-        self.accepted.connect(lambda: self.decided.emit(a["id"], "approved"))
-        self.rejected.connect(lambda: self.decided.emit(a["id"], "denied"))
+        self.details_btn = QToolButton()
+        self.details_btn.setObjectName("chip")
+        self.details_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.details_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.details_btn.setCheckable(True)
+        self.details_btn.setIconSize(QSize(15, 15))
+        self.details_btn.toggled.connect(self._toggle_details)
+        drow = QHBoxLayout()
+        drow.setContentsMargins(0, 0, 0, 0)
+        drow.addWidget(self.details_btn, 0)
+        drow.addStretch(1)
+        self.body.addLayout(drow)
+        self.raw = QLabel(step_input_summary(a.get("tool"), a.get("input"))[:600])
+        self.raw.setObjectName("raw")
+        self.raw.setWordWrap(True)
+        self.raw.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.body.addWidget(self.raw)
+        self.details_btn.setChecked(bool(show_raw) or risk in ("HIGH", "CRITICAL"))
+        self._toggle_details(self.details_btn.isChecked())
+        self._decision = None
+        self.confirm_btn.clicked.connect(lambda: self._choose("approved"))
+        self.cancel_btn.clicked.connect(lambda: self._choose("denied"))
+
+    def _toggle_details(self, on):
+        self.raw.setVisible(on)
+        self.details_btn.setText("Hide details" if on else "Show details")
+        self.details_btn.setToolTip("Hide what exactly will run" if on else "Show what exactly will run")
+        col = QColor(self.palette().color(QPalette.ColorRole.Text))
+        col.setAlphaF(0.7)
+        self.details_btn.setIcon(glyph_icon("chevron-up" if on else "chevron-down", col, 15))
+        self.adjustSize()
+
+    def _choose(self, decision):
+        if self._decision is None:
+            self._decision = decision
+            self.decided.emit(self.approval["id"], decision)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:          # Escape = Deny, explicitly (QDialog would reject() silently)
+            self.cancel_btn.click()
+            return
+        super().keyPressEvent(e)
 
 
 # ----------------------------------------------------------------------------- step helpers (friendly, never the raw command unless asked)
@@ -1173,9 +1214,13 @@ class ConvRow(QWidget):
         self._full_title = title
         self._elide()
         last = tasks[-1]
-        n = len(tasks)
+        live = [t for t in tasks if not (t.get("title") or "").startswith(SUPERSEDED)]
+        n = len(live) or len(tasks)
         st = STATUS_TEXT.get(last["status"], last["status"])
-        self.sub.setText("%s · %s · %s" % ("%d turn%s" % (n, "" if n == 1 else "s"), ts_clock(conv["updated"]), st))
+        parts = ["%d turn%s" % (n, "" if n == 1 else "s"), ts_clock(conv["updated"]), st]
+        if len(live) != len(tasks):
+            parts.append("edited")              # a turn was edited and resent; the old version stays in the chat, dimmed
+        self.sub.setText(" · ".join(parts))
         self.setToolTip(title)
 
     def _elide(self):
@@ -1258,48 +1303,72 @@ class Sidebar(QFrame):
         return out
 
     def rebuild(self):
+        """Reconcile the list with the current chats IN PLACE — never clear-and-rebuild: rows already at their position
+        are kept (hover, scroll and selection survive), a row that moved is re-inserted at its new position, vanished
+        rows are removed, new ones are created."""
         convs = self._filtered()
-        keys, plan = [], []
+        plan = []                       # (key, kind, value) in display order; key "h:Today" / "c:<root id>"
         group = None
         for c in convs:
             g = day_group(c["updated"])
             if g != group:
                 group = g
-                keys.append("h:" + g)
-                plan.append(("h", g))
-            keys.append("c:%d" % c["root"]["id"])
-            plan.append(("c", c))
+                plan.append(("h:" + g, "h", g))
+            plan.append(("c:%d" % c["root"]["id"], "c", c))
+        wanted = {k for k, _, _ in plan}
         self.list.blockSignals(True)
         self.list.setUpdatesEnabled(False)
         try:
-            if keys != self.keys:
-                self.list.clear()
-                self.rows = {}
-                for kind, val in plan:
-                    it = QListWidgetItem()
-                    if kind == "h":
-                        it.setFlags(Qt.ItemFlag.NoItemFlags)
-                        lab = QLabel(val.upper())
-                        lab.setObjectName("groupHeader")
-                        it.setSizeHint(QSize(0, 30))
-                        self.list.addItem(it)
-                        self.list.setItemWidget(it, lab)
+            for i, (key, kind, val) in enumerate(plan):
+                it = self.list.item(i)
+                while it is not None and it.data(KEY_ROLE) not in wanted:      # gone (deleted / filtered out): drop it here
+                    self._drop(i)
+                    it = self.list.item(i)
+                if it is None or it.data(KEY_ROLE) != key:
+                    j = self._find(key, i + 1)
+                    if j is not None:                                          # moved up (that chat got activity): re-insert
+                        it = self.list.takeItem(j)                             # the view destroys its row widget: rebuilt below
                     else:
-                        row = ConvRow(val["root"]["id"])
-                        row.delete_requested.connect(self.delete_requested.emit)
-                        it.setData(Qt.ItemDataRole.UserRole, val["root"]["id"])
-                        it.setSizeHint(QSize(0, 56))
-                        self.list.addItem(it)
-                        self.list.setItemWidget(it, row)
-                        self.rows[val["root"]["id"]] = row
-                self.keys = keys
-            for kind, val in plan:
+                        it = QListWidgetItem()
+                        it.setData(KEY_ROLE, key)
+                    self.list.insertItem(i, it)
+                    self._make_widget(it, kind, val)
                 if kind == "c":
                     self.rows[val["root"]["id"]].update_conv(val)
+            while self.list.count() > len(plan):
+                self._drop(self.list.count() - 1)
+            self.keys = [k for k, _, _ in plan]
             self._select_row(self.current_root)
         finally:
             self.list.setUpdatesEnabled(True)
             self.list.blockSignals(False)
+
+    def _find(self, key, start):
+        for j in range(start, self.list.count()):
+            if self.list.item(j).data(KEY_ROLE) == key:
+                return j
+        return None
+
+    def _drop(self, i):
+        it = self.list.takeItem(i)
+        rid = it.data(Qt.ItemDataRole.UserRole)
+        if rid is not None:
+            self.rows.pop(rid, None)
+
+    def _make_widget(self, it, kind, val):
+        if kind == "h":
+            it.setFlags(Qt.ItemFlag.NoItemFlags)
+            lab = QLabel(val.upper())
+            lab.setObjectName("groupHeader")
+            it.setSizeHint(QSize(0, 30))
+            self.list.setItemWidget(it, lab)
+        else:
+            row = ConvRow(val["root"]["id"])
+            row.delete_requested.connect(self.delete_requested.emit)
+            it.setData(Qt.ItemDataRole.UserRole, val["root"]["id"])
+            it.setSizeHint(QSize(0, 56))
+            self.list.setItemWidget(it, row)
+            self.rows[val["root"]["id"]] = row
 
     def _select_row(self, root_id):
         for i in range(self.list.count()):
@@ -1463,7 +1532,10 @@ class SettingsDialog(RoundedDialog):
         for k, e in self.m.items():
             body[k] = e.text()
         try:
-            api("PUT", "/settings", body)
+            r = api("PUT", "/settings", body)
+            if not isinstance(r, dict) or r.get("error"):
+                RoundedDialog.info(self, "Couldn't save the settings", str(r.get("error", "unknown error") if isinstance(r, dict) else r))
+                return
             for pid in self.remove_keys:
                 api("POST", "/secrets", {"name": pid + "_api_key", "value": ""})
             for pid, (m, u, k) in self.pfields.items():
@@ -1473,8 +1545,9 @@ class SettingsDialog(RoundedDialog):
                 api("POST", "/secrets", {"name": "mail_password", "value": self.mail_pw.text()})
             if self.mail_api.text():
                 api("POST", "/secrets", {"name": "mail_api_key", "value": self.mail_api.text()})
-        except AgentOffline:
-            pass
+        except AgentOffline as e:          # keep the dialog open: nothing was saved and the edits are still in the fields
+            RoundedDialog.info(self, "Agent service offline", "Your changes were not saved. Start the service with:  systemctl --user start fabos-agent   and press Save again. (%s)" % str(e)[:120])
+            return
         self.accept()
 
 
@@ -1482,6 +1555,10 @@ class SettingsDialog(RoundedDialog):
 class AIControls(QMainWindow):
     def __init__(self, focus_ask=False, prefill=""):
         super().__init__()
+        self._restyle = QTimer(self)          # coalesces palette events into one deferred apply_style (see event())
+        self._restyle.setSingleShot(True)
+        self._restyle.setInterval(0)
+        self._restyle.timeout.connect(self.apply_style)
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(QIcon.fromTheme(DESKTOP_ID))
         self.resize(1180, 760)
@@ -1655,9 +1732,16 @@ class AIControls(QMainWindow):
             b.refresh_icon()
         self.sidebar.refresh_icons()
 
+    def event(self, e):
+        # The system colour scheme changed (dark <-> light): Qt delivers ApplicationPaletteChange to event() of each
+        # top-level widget — it never reaches changeEvent() — so the palette-derived stylesheet is rebuilt from here.
+        if e.type() == QEvent.Type.ApplicationPaletteChange:
+            self._restyle.start()
+        return super().event(e)
+
     def changeEvent(self, e):
-        if e.type() == QEvent.Type.ApplicationPaletteChange:      # the system colour scheme changed (dark <-> light)
-            QTimer.singleShot(0, self.apply_style)
+        if e.type() == QEvent.Type.PaletteChange:      # also follows an app palette change; apply_style's signature guard keeps it idempotent
+            self._restyle.start()
         super().changeEvent(e)
 
     def eventFilter(self, obj, e):
@@ -1818,10 +1902,11 @@ class AIControls(QMainWindow):
                 title = old.get("title") or ""
                 if not title.startswith(SUPERSEDED):
                     api("PATCH", "/tasks/%d" % self.editing, {"title": (SUPERSEDED + title)[:80]})
-                parent = self.current_root if old.get("parent_id") else None
-                body = {"request": text}
-                if parent:
-                    body["parent_id"] = parent
+                # the edited version threads into the SAME chat — also when the edited turn is the chat's root — so the chat
+                # keeps its follow-ups and no look-alike duplicate appears; the old turn stays, dimmed as superseded, and
+                # the daemon leaves superseded turns out of the follow-up context
+                parent = self.current_root or old.get("parent_id") or self.editing
+                body = {"request": text, "parent_id": parent}
                 r = api("POST", "/tasks", body)
                 self.editing = None
                 self.ask.clear()
@@ -1986,7 +2071,7 @@ class AIControls(QMainWindow):
         for a in pending:
             if a["id"] in self.approval_dialogs:
                 continue
-            dlg = ApprovalDialog(self, a)
+            dlg = ApprovalDialog(self, a, self.show_raw)
             dlg.decided.connect(self.decide)
             dlg.finished.connect(lambda _r, aid=a["id"]: self.approval_dialogs.pop(aid, None))
             self.approval_dialogs[a["id"]] = dlg
