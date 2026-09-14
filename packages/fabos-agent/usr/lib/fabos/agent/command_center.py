@@ -98,36 +98,72 @@ def api(method, path, body=None, timeout=API_TIMEOUT):
         conn.close()
 
 
+def _shutdown_inflight(ident):
+    """Shuts down the socket of the api() call the thread `ident` is waiting on (if any), from another thread: that call
+    returns at once with AgentOffline instead of running out its timeout. Used by ApiQueue.stop() and the one-off workers'
+    abort() so a closing window or dialog never waits on a daemon that accepted the connection and is not answering."""
+    conn = _INFLIGHT.get(ident) if ident is not None else None
+    sock = getattr(conn, "sock", None)
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
 class ApiWorker(QThread):
-    """One daemon call off the GUI thread (the provider check may take up to 15 s). done(result) or done({"offline": msg})."""
+    """One daemon call off the GUI thread (the provider check may take up to 15 s, the mail check 45 s). done(result) or
+    done({"offline": msg}); nothing is emitted after abort(), which also makes run() return within one socket round trip."""
     done = pyqtSignal(object)
 
     def __init__(self, method, path, body=None, timeout=20, parent=None):
         super().__init__(parent)
         self.args = (method, path, body, timeout)
+        self._ident = None
+        self._aborted = False
+
+    def abort(self):
+        """From the GUI thread (the dialog is closing): the call in flight returns at once and its result is dropped."""
+        self._aborted = True
+        _shutdown_inflight(self._ident)
 
     def run(self):
+        self._ident = threading.get_ident()
+        if self._aborted:
+            return
         try:
-            self.done.emit(api(*self.args))
+            r = api(*self.args)
         except AgentOffline as e:
-            self.done.emit({"offline": str(e), "error": "agent service offline"})
+            r = {"offline": str(e), "error": "agent service offline"}
+        if not self._aborted:
+            self.done.emit(r)
 
 
 class ApiJobWorker(QThread):
     """Several daemon calls in order, off the GUI thread: done(results) with one entry per call made ({"offline": msg} for
     the call that could not reach the daemon, after which the job stops). With gate_first the later calls run only when the
     first one came back without an error (Settings > Save: PUT /settings, then one POST /secrets per changed key — the
-    same sequence that used to run on the GUI thread and froze the dialog for up to API_TIMEOUT per call)."""
+    same sequence that used to run on the GUI thread and froze the dialog for up to API_TIMEOUT per call). abort() as in
+    ApiWorker: no further call starts, the one in flight returns at once, nothing is emitted."""
     done = pyqtSignal(object)
 
     def __init__(self, calls, gate_first=True, parent=None):
         super().__init__(parent)
         self.calls = list(calls)
         self.gate_first = gate_first
+        self._ident = None
+        self._aborted = False
+
+    def abort(self):
+        self._aborted = True
+        _shutdown_inflight(self._ident)
 
     def run(self):
+        self._ident = threading.get_ident()
         results = []
         for i, (method, path, body) in enumerate(self.calls):
+            if self._aborted:
+                return
             try:
                 r = api(method, path, body)
             except AgentOffline as e:
@@ -136,7 +172,8 @@ class ApiJobWorker(QThread):
             results.append(r)
             if i == 0 and self.gate_first and (not isinstance(r, dict) or r.get("error")):
                 break
-        self.done.emit(results)
+        if not self._aborted:
+            self.done.emit(results)
 
 
 class ApiQueue(QThread):
@@ -178,13 +215,7 @@ class ApiQueue(QThread):
         a running QThread is destroyed."""
         self._stopping = True
         self._q.put(None)
-        conn = _INFLIGHT.get(self._ident) if self._ident is not None else None
-        sock = getattr(conn, "sock", None)
-        if sock is not None:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+        _shutdown_inflight(self._ident)
 
     def run(self):
         self._ident = threading.get_ident()
@@ -3036,9 +3067,14 @@ class SettingsDialog(RoundedDialog):
         self.oauth_timer.stop()
         p, self.doctor_proc = self.doctor_proc, None
         _stop_process(p)
+        # A connection / mail check still running (up to 20 s / 45 s against a slow provider) is aborted, not waited for:
+        # abort() shuts its socket so run() returns within one round trip and emits nothing; the wait below is only Qt's
+        # rule that a running QThread must not be destroyed, and it now ends in milliseconds instead of blocking the GUI
+        # thread for up to 5 s while the dialog is closing.
         for w in list(self._workers):
             try:
                 if w.isRunning():
+                    w.abort()
                     w.wait(5000)
             except RuntimeError:          # already deleted
                 pass

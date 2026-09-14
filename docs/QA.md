@@ -558,3 +558,24 @@ runs above; none of the numbers above moved because no image has been built from
   copy of `packages/fabos-desktop` leaves `lowram-tune.sh` 0755, and the hook run in the image against a mounted
   `/proc/meminfo` writes `blurEnabled=false` at 1 980 000 kB and nothing at 8 000 000 kB (marker `blur=kept`), keeping a
   later user choice. **Not run:** `tests/perf-vm.sh` itself (needs the booted VM) — its numbers are still to be pasted here.
+- **`perf-smooth` review round 2 (2026-09-15, sources only; branch `fix-perf-smooth`):** every review item re-verified with
+  commands, one more GUI-thread wait removed. The 9 checks this track appended to `tests/branding-check.sh` were replayed in
+  `localhost/fabos:vm` with the working-tree files mounted at their installed paths: **9/9 PASS** (against the round-3 image
+  itself the suite stays at 164 PASS / 9 FAIL of 173, those same 9). The `build-debs.sh` permission pass simulated on a copy
+  of `packages/fabos-desktop` leaves `usr/lib/fabos/lowram-tune.sh` **0755**; the env hook run in the image with the script
+  deliberately at 0644 and `/proc/meminfo` bound to a fake still works (`sh` invocation): 1 980 000 kB → user `kwinrc`
+  `[Plugins] blurEnabled=false` + marker, a later `blurEnabled=true` survives the next login, 8 000 000 kB → nothing written.
+  `ApiQueue.stop()` against a daemon that accepts TCP and never answers: a 3-call job blocked in its first read ended in
+  **0.001 s** with one connection made (no further call started); normal path: results delivered on the GUI thread, a
+  same-key queued job replaced (`done(job, None)`). New in this round: `SettingsDialog.done()` used to `wait(5000)` on a
+  running connection / mail check (`ApiWorker` timeouts 20 s / 45 s) — Cancel or Escape during a check froze the dialog for
+  up to 5 s and left the thread running. `ApiWorker` / `ApiJobWorker` now have `abort()` (shuts the in-flight socket through
+  the shared `_shutdown_inflight()`, emits nothing) and `done()` aborts before it waits: measured **0.001 s** on the GUI
+  thread with a provider check blocked in its read, `ApiWorker(timeout=45).abort()` 0.000 s, a 3-call
+  `ApiJobWorker.abort()` 0.000 s with no second call started, `abort()` before `start()` never connects. All of it is now a
+  repo test, `tests/ai-controls-workers-test.py` (offscreen in the image, needs no daemon — it is the daemon): **16 checks
+  PASS**. Suites re-run on this tree: `tests/agent-test.py` 45 OK, `tests/voice-test.py` 72 OK (5 skipped),
+  `node tests/askbar-js-test.js` 22 groups, `node tests/quicksettings-js-test.js` 16 groups, `tests/askbar-qml-test.sh` PASS
+  (117 checks), `tests/desktop-applets-qml-test.sh` PASS (all steps incl. the kwin harnesses), `tests/ai-controls-render.py`
+  default pass exit 0 and `--settings --welcome` exit 0 (both after the abort change), `bash -n tests/perf-vm.sh`, `sh -n` on
+  the tune + hook, `py_compile` on `command_center.py`. **Not run:** `tests/perf-vm.sh` (needs the booted VM).
