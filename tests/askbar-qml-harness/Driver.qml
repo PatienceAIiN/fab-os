@@ -9,10 +9,13 @@ import "../ui" as Ask
 // Loader line to that COPY of main.qml which loads this file and hands over the root item and its ids, then runs the
 // package through plasmawindowed with QT_QPA_PLATFORM=offscreen. The driver feeds main.qml the JSON the daemon would
 // return for one task and checks the conversation rows it builds, the in-applet response panel (geometry under the
-// card, growth / fold animation, no PlasmaCore.Dialog on the desktop, no pointer handler on the transparent strip),
-// the microphone feedback path (a real `fabos-voice listen-once` inside the image) and the remembered conversation.
-// Every ConvoDelegate kind and every AiMark state are instantiated too. Prints PASS/FAIL lines and
-// "HARNESS DONE failures=N", renders /out/askbar-{bar,panel,feed}.png, then stops plasmawindowed.
+// card, growth / fold animation, no PlasmaCore.Dialog on the desktop, no pointer handler on the transparent strip,
+// the containment hit mask = root.contains() is true only over the card + panel stack, which is what plasmashell
+// asks to route a right-click), the microphone feedback path (a real `fabos-voice listen-once` inside the image), the
+// remembered conversation (incl. the service-not-up-yet retry) and finally the compact form for real: the window is
+// shrunk to a panel thickness so `compact` flips, the PlasmaCore.Dialog appears and the mic hint moves into the
+// placeholder / tooltip, then grown back. Every ConvoDelegate kind and every AiMark state are instantiated too.
+// Prints PASS/FAIL lines and "HARNESS DONE failures=N", renders /out/askbar-{bar,panel,feed}.png, then stops plasmawindowed.
 Item {
     id: h
     property var bar: null
@@ -126,6 +129,12 @@ Item {
         check(panel.height === 0 && !panel.visible, "panel is folded (0 px, hidden) with no conversation")
         check(bar.childAt(2, 2) === null && bar.childAt(2, bar.height - 2) === null, "empty strip corners have no item under the pointer")
         check(rootHandlers().length === 0, "no pointer handler on the strip itself")
+        check(bar.containmentMask !== null && bar.containmentMask !== undefined, "root carries a containmentMask (plasmashell routes clicks by root.contains())")
+        check(bar.contains(Qt.point(2, 2)) === false && bar.contains(Qt.point(2, bar.height - 2)) === false && bar.contains(Qt.point(bar.width - 2, 2)) === false,
+              "hit mask: the transparent strip corners are NOT part of the applet (a right-click there is the desktop's)")
+        check(bar.contains(Qt.point(card.x + 5, 5)) === true && bar.contains(Qt.point(card.x + card.width - 5, card.height - 5)) === true, "hit mask: the card IS part of the applet")
+        check(bar.contains(Qt.point(card.x - 3, 5)) === false && bar.contains(Qt.point(card.x + card.width + 3, 5)) === false, "hit mask: beside the card is the desktop's")
+        check(bar.contains(Qt.point(card.x + 5, card.height + 40)) === false, "hit mask: with the panel folded the space under the card is the desktop's")
         check(bar.markState === "idle" || bar.markState === "error", "mark idle/error at start with no daemon (" + bar.markState + ")")
         var rows = [
             makeRow({ kind: "user", text: "Open the editor and type hello", status: "request" }),
@@ -269,6 +278,11 @@ Item {
         var stray = strayMouseAreas()
         check(stray.length === 0, "every MouseArea lies inside the card or the panel (stray: " + stray.length + ")")
         check(bar.childAt(2, 2) === null, "top-left of the strip is still empty with the panel open")
+        check(bar.contains(Qt.point(card.x + 5, panel.y + panel.height - 5)) === true && bar.contains(Qt.point(card.x + card.width - 5, panel.y + 5)) === true, "hit mask: the open panel IS part of the applet")
+        check(bar.contains(Qt.point(card.x + 5, card.height + 4)) === true, "hit mask: the 8 px gap between card and panel belongs to the stack")
+        check(bar.contains(Qt.point(card.x + 5, Math.min(bar.height - 2, panel.y + panel.height + 4))) === false, "hit mask: under the open panel is the desktop's")
+        check(bar.contains(Qt.point(card.x - 3, panel.y + 20)) === false && bar.contains(Qt.point(card.x + card.width + 3, panel.y + 20)) === false && bar.contains(Qt.point(2, 2)) === false,
+              "hit mask: beside the open panel and the strip corners stay the desktop's")
         h.grabsPending = 2
         bar.grabToImage(function (r) { r.saveToFile("/out/askbar-bar.png"); console.log("PASS grabbed bar (the whole strip: card + panel stack)"); if (--h.grabsPending === 0) feedTimer.start() })
         panel.grabToImage(function (r) { r.saveToFile("/out/askbar-panel.png"); console.log("PASS grabbed panel (scrolled to the end)"); if (--h.grabsPending === 0) feedTimer.start() })
@@ -300,19 +314,58 @@ Item {
         check(bar.taskStatus === "" && bar.markState === "idle", "dismissing the panel forgets the failed task: the mark returns to idle (" + bar.markState + ")")
         var saved = bar.savedTask()
         check(saved.root === 0 && saved.task === 0, "a dismissed conversation is forgotten in Plasmoid.configuration (" + JSON.stringify(saved) + ")")
-        // remembered conversation across a re-layout: GET /tasks/{saved} on load
+        // remembered conversation across a re-layout: GET /tasks/{saved} on load. At login the service is usually not up
+        // yet: curl fails (exit 7, nothing parsed) -> the ids stay remembered and the first /status answer asks again
+        bar.restoreTaskId = 21
+        bar.handle("restore", 21, 7, "", "")
+        check(bar.restoreTaskId === 21 && bar.panelMode === "closed", "restore with the service down keeps the remembered task for a retry (not forgotten)")
+        var sr = bar.serial
+        bar.onStatus({ mode: "auto", provider_ready: true, ai_enabled: true, tasks: {}, pending_approvals: 0 })
+        check(bar.serial === sr + 1 && bar.restoreTaskId === 0, "the first /status answer re-asks GET /tasks/21 once")
+        bar.onStatus({ mode: "auto", provider_ready: true, ai_enabled: true, tasks: {}, pending_approvals: 0 })
+        check(bar.serial === sr + 1, "a second /status answer does not ask again while the retry is in flight")
+        bar.handle("restore", 21, 0, JSON.stringify({ error: "no such task" }))
+        check(bar.panelMode === "closed" && bar.restoreTaskId === 0 && bar.savedTask().task === 0, "the service answering 404 {error} forgets the task (no endless retry)")
         bar.handle("restore", 21, 0, JSON.stringify({ id: 21, status: "done", request: "old one", result: "x", steps: [], approvals: [], questions: [] }))
         check(bar.panelMode === "closed" && bar.savedTask().task === 0, "a remembered task that already finished is forgotten, the panel stays closed")
         var live = taskJson(1); live.id = 21; live.parent_id = null
         bar.handle("restore", 21, 0, JSON.stringify(live))
         check(bar.panelMode === "open" && bar.rootTaskId === 21 && bar.taskId === 21 && kinds() === "user,tools,step", "a remembered task that is still active reopens the panel with its request + live rows (" + kinds() + ")")
         check(bar.savedTask().task === 21 && bar.savedTask().root === 21, "and is remembered again")
-        // compact (panel) form: only then does a PlasmaCore.Dialog exist, and the same conversation moves into it
-        popup.active = true
-        check(popup.item !== null && popup.item.mainItem !== null && panelMain.parent === popup.item.mainItem, "compact form: PlasmaCore.Dialog created and the conversation moved into it")
+        check(bar.restoreTaskId === 0, "an open panel has no pending restore")
+        // the desktop-form mic hint lives in the status line, not the placeholder
+        bar.handle("listen", 0, 4, "", "No microphone found on this computer.")
+        check(statusText.visible && statusText.text === bar.voiceHint && field.placeholderText === "Ask me to do anything…", "desktop form: the voice hint is in the status line, the placeholder stays")
+        bar.voiceHint = ""
+        // compact (panel) form, for real: shrink the window to a panel thickness so `compact` flips
+        bar.Layout.minimumHeight = 36; bar.Layout.preferredHeight = 36
+        var w = h.Window.window; if (w) { w.minimumHeight = 36; w.height = 36 }
+        compactTimer.start()
+    } }
+    Timer { id: compactTimer; interval: 700; onTriggered: {
+        console.log("compact: applet " + Math.round(bar.width) + "x" + Math.round(bar.height))
+        check(bar.compact === true && bar.onDesktop === false, "a 36 px tall applet is the compact (panel) form")
+        check(card.x === 0 && card.width === bar.width && card.height === bar.height, "compact: the card fills the applet")
+        check(bar.containmentMask === null, "compact: no hit mask (the whole applet is the card)")
+        check(popup.active === true && popup.item !== null && popup.item.mainItem !== null && panelMain.parent === popup.item.mainItem, "compact form: PlasmaCore.Dialog created and the conversation moved into it")
         check(popup.item.visible === true, "compact popup is visible while the conversation is open")
-        popup.active = Qt.binding(function () { return bar.compact })
-        check(popup.item === null && panelMain.parent === panel, "back on the desktop: popup gone, conversation back inside the applet")
+        check(panel.height === 0 && !panel.visible, "compact: the in-applet panel is folded away")
+        // a failed mic tap must not be silent here either: the status line is hidden, so the placeholder + tooltip carry the reason
+        bar.handle("listen", 0, 4, "", "No microphone found on this computer.")
+        check(!statusText.visible, "compact: the status line under the field is hidden")
+        check(field.placeholderText === "No microphone found on this computer.", "compact: the placeholder carries the voice reason (" + field.placeholderText + ")")
+        check(bar.hoverTip === "No microphone found on this computer.", "compact: the card's tooltip carries the voice reason")
+        bar.voiceHint = ""
+        check(field.placeholderText === "Ask me to do anything…", "compact: placeholder back to the prompt once the hint expires")
+        // grow back to the home-screen strip
+        bar.Layout.minimumHeight = 640; bar.Layout.preferredHeight = 640
+        var w = h.Window.window; if (w) { w.minimumHeight = 640; w.height = 640 }
+        uncompactTimer.start()
+    } }
+    Timer { id: uncompactTimer; interval: 700; onTriggered: {
+        check(bar.compact === false && bar.onDesktop === true, "back on the desktop: tall strip again (" + Math.round(bar.height) + " px)")
+        check(popup.active === false && popup.item === null && panelMain.parent === panel, "back on the desktop: popup gone, conversation back inside the applet")
+        check(bar.containmentMask !== null && bar.contains(Qt.point(2, 2)) === false && bar.contains(Qt.point(card.x + 5, 5)) === true, "back on the desktop: hit mask active again")
         console.log("HARNESS DONE failures=" + h.failures)
         killer.connectSource("kill -TERM $PPID 2>/dev/null || pkill -x plasmawindowed")
     } }

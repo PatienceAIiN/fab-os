@@ -14,8 +14,9 @@ import "agent.js" as Agent
 // the real screen width; the response panel is an Item INSIDE the applet that unfolds directly under the card (8 px gap,
 // both radius 24, the card's width, scrollable, never taller than the strip). Because it belongs to the desktop
 // containment it is always BEHIND application windows and is back the moment they are minimised or closed — it never
-// floats over another app. Only in a panel (compact form) is a PlasmaCore.Dialog created for the panel, because a
-// popup is the only option there.
+// floats over another app. A containment hit mask limits root.contains() to the card + panel stack, so plasmashell gives
+// a right-click on the transparent rest of the strip to the desktop, not to this applet. Only in a panel (compact form)
+// is a PlasmaCore.Dialog created for the panel, because a popup is the only option there.
 // Answers arrive INLINE: "Do it" creates the task and the panel shows the request, a live feed of what the agent does,
 // approvals, questions and the result. Nothing else opens; "Open in Fab AI Controls" is an explicit click.
 PlasmoidItem {
@@ -31,6 +32,20 @@ PlasmoidItem {
     readonly property bool compact: height < Kirigami.Units.gridUnit * 3.4
     readonly property bool onDesktop: !compact
     Plasmoid.backgroundHints: onDesktop ? PlasmaCore.Types.NoBackground : PlasmaCore.Types.DefaultBackground
+    // Hit mask: plasmashell decides whose context menu a click gets (and which applet is "under" the pointer) by asking
+    // this item contains(point), which by default is the whole bounding box — the entire strip. With the mask, only the
+    // card + panel stack counts as the applet; a right-click on the transparent rest of the strip is the desktop's.
+    // `containmentMask` is a revisioned QQuickItem property that org.kde.plasma.plasmoid does not expose declaratively
+    // ("not available in org.kde.plasma.plasmoid"), so it is assigned from JavaScript (member access is not revision-gated).
+    Item {
+        id: hitMask
+        visible: false            // never drawn, never hit-tested itself: it only shapes root.contains()
+        x: card.x; y: 0
+        width: card.width
+        height: panel.visible ? panel.y + panel.height : card.height
+    }
+    function applyHitMask() { root.containmentMask = root.onDesktop ? hitMask : null }
+    onOnDesktopChanged: applyHitMask()
 
     // ---- bar / daemon state
     property string status: ""
@@ -51,6 +66,7 @@ PlasmoidItem {
     property string taskTitle: ""
     property string resultText: ""
     property string panelMode: "closed"       // closed | open | min
+    property int restoreTaskId: 0             // remembered task whose GET /tasks/{id} the daemon has not answered yet (retried from onStatus)
     property bool closing: false              // closePanel() called; panelMode stays "open"/"min" for the 300 ms shrink
     readonly property bool followUp: panelMode !== "closed" && !closing && rootTaskId > 0   // the next submit threads under rootTaskId
     property bool showRaw: false              // daemon setting ui.show_raw
@@ -74,6 +90,7 @@ PlasmoidItem {
     property real voiceStatusAt: 0            // Date.now() of the last `fabos-voice status`
     property bool listening: false
     property string voiceHint: ""             // status-line message after a failed listen (6 s)
+    readonly property string hoverTip: voiceHint.length ? voiceHint : (showStatus && status.length ? status : "")   // compact form: the card's tooltip
     property string typeBuffer: ""
     property real typeReveal: 0
 
@@ -144,7 +161,7 @@ PlasmoidItem {
         case "settings": if (j) root.showRaw = String(j["ui.show_raw"] || "") === "true"; break
         case "create": case "follow": root.onCreated(kind === "follow", code, j); break
         case "poll": if (ref === root.taskId && j && j.id === root.taskId) root.ingest(j); break
-        case "restore": root.onRestore(ref, j); break
+        case "restore": root.onRestore(ref, code, j); break
         case "cancel": if (ref === root.taskId && j && j.status === "cancelled") root.taskStatus = "cancelled"; break
         case "retry": if (j && j.id) { if (!j.parent_id) root.rootTaskId = j.id; root.switchTask(j.id, "Trying again…") } break
         case "approve": if (j && j.ok === false) root.note("That request had already been decided."); root.pollSoon(); break
@@ -165,6 +182,10 @@ PlasmoidItem {
             return
         }
         root.daemonMisses = 0; root.daemonUp = true
+        if (root.restoreTaskId > 0 && root.panelMode === "closed") {   // the service is up now: ask again for the remembered conversation
+            var rid = root.restoreTaskId; root.restoreTaskId = 0
+            root.api("restore", rid, "GET", "/tasks/" + rid)
+        }
         root.configured = !!j.provider_ready
         root.aiEnabled = j.ai_enabled === undefined ? true : !!j.ai_enabled
         if (j.ui_show_raw !== undefined) root.showRaw = j.ui_show_raw === true || String(j.ui_show_raw) === "true"
@@ -252,7 +273,7 @@ PlasmoidItem {
     property real openProgress: 0
     Behavior on openProgress { id: openBehavior; NumberAnimation { duration: 280; easing.type: Easing.OutCubic } }
     function openPanel() {
-        closeTimer.stop(); root.closing = false
+        closeTimer.stop(); root.closing = false; root.restoreTaskId = 0
         openBehavior.enabled = false; root.openProgress = 0; openBehavior.enabled = true
         root.panelMode = "open"
         root.api("settings", 0, "GET", "/settings")
@@ -273,9 +294,13 @@ PlasmoidItem {
         Plasmoid.configuration.rootTaskId = open ? root.rootTaskId : 0
         Plasmoid.configuration.taskId = open ? root.taskId : 0
     }
-    // GET /tasks/{saved} on load: still active -> rebuild the request row and reopen the panel; finished or gone -> forget it
-    function onRestore(id, j) {
-        if (root.panelMode !== "closed") return
+    // GET /tasks/{saved} on load: still active -> rebuild the request row and reopen the panel; finished or gone -> forget it.
+    // At login plasmashell is usually up before the agent service answers: a failed curl (code != 0, nothing parsed) is
+    // NOT "gone" — the ids stay remembered and onStatus() asks again as soon as /status answers.
+    function onRestore(id, code, j) {
+        if (root.panelMode !== "closed") { root.restoreTaskId = 0; return }
+        if (code !== 0 && !j) { root.restoreTaskId = id; return }
+        root.restoreTaskId = 0
         if (!j || j.id !== id || !Agent.isActive(String(j.status || ""))) { root.saveTask(); return }
         var saved = root.savedTask()
         root.resetConversation()
@@ -408,9 +433,10 @@ PlasmoidItem {
 
     // ---------------------------------------------------------------- voice input (fabos-voice; never records without the click)
     Component.onCompleted: {
+        root.applyHitMask()
         root.refreshVoice(true); sleepTimer.start()
         var saved = root.savedTask()
-        if (saved.task > 0) root.api("restore", saved.task, "GET", "/tasks/" + saved.task)
+        if (saved.task > 0) { root.restoreTaskId = saved.task; root.api("restore", saved.task, "GET", "/tasks/" + saved.task) }
     }
     // `fabos-voice status` is asked again when the last answer is older than 30 s (or when forced after a failure)
     function refreshVoice(force) {
@@ -484,7 +510,9 @@ PlasmoidItem {
                     id: field
                     Layout.fillWidth: true
                     Layout.preferredHeight: root.compact ? Math.max(Kirigami.Units.gridUnit * 1.6, root.height - Kirigami.Units.smallSpacing * 2) : Kirigami.Units.gridUnit * 2.4
-                    placeholderText: root.listening ? "Listening… speak now" : "Ask me to do anything…"
+                    // the status line under the field carries the voice hint on the desktop; when it is hidden (compact form) the
+                    // placeholder carries it instead, so a failed mic tap is never a silent no-op
+                    placeholderText: root.listening ? "Listening… speak now" : (root.voiceHint.length && !statusRow.visible ? root.voiceHint : "Ask me to do anything…")
                     font.family: "Inter"; font.pixelSize: 16; color: Kirigami.Theme.textColor; placeholderTextColor: Kirigami.Theme.disabledTextColor
                     leftPadding: 16; rightPadding: 16; verticalAlignment: TextInput.AlignVCenter
                     background: Rectangle {
@@ -564,8 +592,8 @@ PlasmoidItem {
                 }
             }
         }
-        QQC2.ToolTip.visible: root.compact && root.showStatus && root.status.length > 0 && hoverHandler.hovered
-        QQC2.ToolTip.text: root.status
+        QQC2.ToolTip.visible: root.compact && root.hoverTip.length > 0 && hoverHandler.hovered
+        QQC2.ToolTip.text: root.hoverTip
         HoverHandler { id: hoverHandler }
         MouseArea { anchors.fill: parent; acceptedButtons: Qt.RightButton | Qt.MiddleButton; z: -1
                     onClicked: root.openControls("") }

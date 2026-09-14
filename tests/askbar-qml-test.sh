@@ -4,9 +4,11 @@
 #   2. builds a temp copy of the plasmoid whose main.qml gets ONE appended Loader line that hands the root item and its
 #      ids to tests/askbar-qml-harness/Driver.qml; the driver feeds main.qml daemon-shaped JSON, checks the rows it
 #      builds and the in-applet response panel (geometry flush under the card, growth / fold animation, no
-#      PlasmaCore.Dialog on the desktop, no pointer handler on the transparent strip), runs a real
+#      PlasmaCore.Dialog on the desktop, no pointer handler on the transparent strip, the containment hit mask so a
+#      right-click on the empty strip is the desktop's), the remembered conversation incl. the service-not-up retry, runs a real
 #      `fabos-voice listen-once` for the mic feedback, instantiates every ConvoDelegate kind / AiMark state and renders
-#      build/askbar-{bar,panel,feed}.png (bar = the whole strip: card + panel stack).
+#      build/askbar-{bar,panel,feed}.png (bar = the whole strip: card + panel stack), then shrinks the window to a panel
+#      thickness to exercise the compact form for real (PlasmaCore.Dialog appears, the mic hint moves into the placeholder).
 #   tests/askbar-qml-test.sh [image]        (default localhost/fabos:vm)
 set -u
 IMG=${1:-localhost/fabos:vm}
