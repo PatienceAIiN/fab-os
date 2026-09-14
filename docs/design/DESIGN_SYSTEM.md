@@ -136,8 +136,9 @@ status glyphs (`brand/gen/make_assets.py` MONO_MAP, recoloured by the icon loade
   `network-wired`, `network-wireless-off`) with the live rate beside it (`↓ 1.2 MB/s  ↑ 80 kB/s`, hidden after 10 s at
   zero), Bluetooth glyph while the adapter is on, volume glyph while muted or for 3 s after a change (wheel over it
   changes the volume), battery glyph **with the percentage in the clock's Inter size**, and the bell with an unread
-  badge (crossed while Do Not Disturb). Hovering an indicator scales it to 1.25 (160 ms OutCubic) when "Magnify on
-  hover" is on. Tooltip: network · battery · volume lines.
+  badge (crossed while Do Not Disturb). Hovering an indicator scales its **glyph** to 1.25 (160 ms OutCubic) when
+  "Magnify on hover" is on — the text and the indicator's layout width stay put, so the speed / percentage text never
+  grows into a neighbour and the bar never re-flows. Tooltip: network · battery · volume lines.
 - **Slide-down pane**: one `PlasmaCore.Dialog` (type AppletPopup, FabOS dialog background — the top edge sits on the
   bar, the bottom corners keep radius 24), `Kirigami.Units.gridUnit × 21` wide. Its height animates 0 → content in
   240 ms OutCubic while the content fades in; switching between the two panes animates the height the same way; closing
@@ -152,7 +153,9 @@ status glyphs (`brand/gen/make_assets.py` MONO_MAP, recoloured by the icon loade
   - *Notifications pane* (the bell): header with count, Do Not Disturb, Clear history, Notification settings
     (`kcmshell6 kcm_notifications`); the history as rows (app icon, summary, two body lines, app · time ago, dismiss on
     hover; click runs the default action; jobs show their percentage); a banner while Do Not Disturb holds popups;
-    "No notifications" when empty. Opening the pane marks everything read.
+    "No notifications" when empty. Opening the pane marks everything read. The dismiss cross stays reachable: the
+    row's hover area spans the whole row and the cross is shown while *either* the row or the cross itself is hovered
+    (`SmallButton.hovered`), because a hovered `MouseArea` takes the hover from the row area beneath it.
 - **Data**: `contents/code/status.sh` (nmcli, bluetoothctl, wpctl, sysfs battery + backlight, upower time estimate,
   powerprofilesctl; each call under `timeout 4`) through the Plasma5Support executable engine every 10 s (setting) and
   400 ms after each action; `/proc/net/route` + `/proc/net/dev` every 2 s for the rate of the default-route interface.
@@ -173,8 +176,12 @@ status glyphs (`brand/gen/make_assets.py` MONO_MAP, recoloured by the icon loade
   its `fontSize` from the same table at first login, and because one applet cannot write another's
   `Plasmoid.configuration` from QML, a later change runs plasmashell's scripting API over D-Bus
   (`qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript …`, `status.js: syncScript`) to set the
-  clock's `fontSize` and the dock's `magnify` / `magnification`. The clock itself is not magnified on hover (it is not
-  ours to wrap); only the indicators are.
+  clock's `fontSize` and the dock's `magnify`. The clock itself is not magnified on hover (it is not ours to wrap);
+  only the indicators' glyphs are.
+- **One owner per shared setting**: the quick settings own the bar size and the "Magnify on hover" switch (pushed to
+  the dock as above); the dock owns its magnification strength (Subtle / Normal / Strong, on the dock's own page) and,
+  when the switch is flipped on the dock's page, writes it back to the quick settings through the same scripting call
+  (`dock main.qml: syncScript`). A write of an unchanged value emits no change on either side, so there is no ping-pong.
 
 ### Dock (`in.patienceai.fabos.dock`, bottom floating panel)
 
@@ -186,15 +193,22 @@ status glyphs (`brand/gen/make_assets.py` MONO_MAP, recoloured by the icon loade
   Strong 1.9 / 1.45 / 1.15), 160 ms OutCubic. Each item's width follows its own scale, so the row re-flows and icons
   never overlap. Because a panel clips its applets, the **resting** size is `floor(available height / peak)`, capped at
   48 px: in the 4-gridUnit dock (72 px) icons rest at about 40 px and the hovered one fills the panel at 64 px; with magnify off the icons fill the height.
-  Scale only — no per-icon effects.
+  Scale only — no per-icon effects. The **applet's width is constant while the pointer moves**: resting row + the
+  growth of one magnified group (`reserve` = (peak − 1) + 2 (near − 1) + 2 (far − 1) resting sizes, 56 px at Normal
+  with 40 px icons), so the floating "fit" panel never resizes per frame; the centred row grows into that reserve and,
+  the growth being symmetric about the hovered icon, an interior hovered icon keeps its centre where it rested — the
+  pointer stays over the same icon and neighbours only ever move away from it (no jitter at icon boundaries).
+  `hoveredIndex` is set and cleared by each `TaskItem`'s own `HoverHandler` only; a root-level "unhovered → −1" is
+  wrong here because a `TaskItem` is a `ToolTipArea` (an Item that accepts hover) and takes the hover away from the
+  root beneath it, which reset the magnification the instant the pointer went from a gap onto an icon.
 - **Behaviour**: left click launches (with a 300 ms bounce 1.0 → 1.15 → 1.0), activates, minimises the active window or
   cycles a group's windows; middle click opens a new instance; right click opens an own `PlasmaExtras.Menu` (New Window,
   Minimise / Restore, Pin to Dock / Unpin, Close, Configure Dock…) — the stock menu (jump lists, recent documents,
   activities) lives inside the compiled stock applet and is not importable. Tooltips: window title, app name / window
   count. Running indicator: a 3 px pill under the icon (accent while active, wider for a group, attention colour when
   demanding attention); minimised windows at 60 %; a pulse while an app is starting.
-- **Settings**: Magnify on hover, Magnification (Subtle / Normal / Strong), largest resting icon, grouping, desktop /
-  activity filters. The quick-settings page sets magnify and magnification here too (see above).
+- **Settings**: Magnify on hover (the switch shared with the top bar, see above), Magnification (Subtle / Normal /
+  Strong — the dock's own), largest resting icon, grouping, desktop / activity filters.
 
 ### Checks
 
@@ -203,9 +217,18 @@ status glyphs (`brand/gen/make_assets.py` MONO_MAP, recoloured by the icon loade
 `tests/desktop-applets-qml-test.sh` (loads both applets headless with `plasmawindowed` inside the image for a 25 s
 soak, then drives them: fed status text and two `/proc/net` samples, the pane sliding open, a real
 `org.freedesktop.Notifications.Notify` on the session bus into the history, Do Not Disturb, the size change queuing the
-sync script; the dock's hover scales 1.6 / 1.3 / 1.1 and re-flow, bounce, menu, magnify off / strong; renders
-`build/quicksettings-{bar,pane,notifications}.png` and `build/dock-{idle,hover}.png`). Offscreen, libtaskmanager has
-no windowing backend (its WindowTasksModel has zero columns and the filter proxy then drops every row), so the dock
-harness runs twice: offscreen against a stand-in model with the same role names, and as the session of a virtual,
-software-rendered `kwin_wayland` (`tests/dock-qml-harness/kwin-session.sh`) where the real `TasksModel` yields the
-8 configured launchers plus the session's own window.
+sync script; the dock's hover scales 1.6 / 1.3 / 1.1 and re-flow, constant applet width and fixed hovered centre,
+bounce, menu, magnify off / strong, the write-back command; renders `build/{light,dark}/quicksettings-{bar,pane,notifications}.png`
+and `build/{light,dark}/dock-{idle,hover}.png` — every run uses `QT_QPA_PLATFORMTHEME=kde` as a Plasma session does and
+each harness runs once per Fab OS colour scheme, FabLight and FabDark copied into `~/.config/kdeglobals` inside the
+container). Offscreen, libtaskmanager has no windowing backend (its WindowTasksModel has zero columns and the filter
+proxy then drops every row), so the dock harness runs twice: offscreen against a stand-in model with the same role
+names, and as the session of a virtual, software-rendered `kwin_wayland` (`tests/dock-qml-harness/kwin-session.sh`)
+where the real `TasksModel` yields the 8 configured launchers plus the session's own window. The `kwin_wayland` runs
+also drive a **real pointer**: `tests/quicksettings-qml-harness/fakeinput.py` is a raw Wayland client of KWin's
+`org_kde_kwin_fake_input` (KWin trusts it through a `.desktop` file naming the interface, written by `kwin-session.sh`
+for a private copy of the interpreter); it hovers the bar's network indicator (glyph-only magnify, rendered to
+`build/{light,dark}-kwin/quicksettings-bar-hover.png`), clicks the bell, hovers a history row, moves onto its dismiss
+cross and clicks it (the notification goes), and on the dock hovers icons 3 and 4, leaves, and clicks the Overview
+launcher. One long-lived injector device is kept for the whole phase: with no other pointer device, a one-shot client
+would otherwise add and remove the seat's only pointer and the applet would see a leave/enter per move.

@@ -4,8 +4,8 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.kcmutils as KCM
 
-// Settings page of the Fab OS dock. The quick-settings applet in the top bar pushes "Magnify on hover" and the
-// magnification here too (through plasmashell's scripting API), so the bar and the dock share one setting.
+// Settings page of the Fab OS dock. "Magnify on hover" is one switch shared with the top bar's quick settings (each
+// side pushes a change to the other through plasmashell's scripting API); the magnification strength is the dock's own.
 KCM.SimpleKCM {
     id: page
     property bool cfg_magnify
@@ -41,7 +41,7 @@ KCM.SimpleKCM {
             onActivated: page.cfg_magnification = page.strengths[currentIndex]
         }
         QQC2.Label {
-            text: "Resting icons shrink so the magnified one still fits the dock; the top bar's quick settings change these two values as well."
+            text: "The switch is shared with the top bar's quick settings (changing it here changes the bar too). Resting icons shrink so the magnified one still fits the dock."
             font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             opacity: 0.7
             wrapMode: Text.WordWrap

@@ -9,6 +9,11 @@ import org.kde.notificationmanager as NotificationManager
 // status.sh-shaped text and two /proc/net samples, opens the slide-down pane (settings, then notifications after a
 // real org.freedesktop.Notifications.Notify call on the session bus), toggles Do Not Disturb and the bar size, renders
 // /out/quicksettings-{bar,pane,notifications}.png and prints PASS/FAIL lines + "HARNESS DONE failures=N".
+// Under a virtual kwin_wayland (tests/dock-qml-harness/kwin-session.sh, QT_QPA_PLATFORM=wayland) it goes on to drive a
+// REAL pointer through fakeinput.py (KWin's org_kde_kwin_fake_input): the main window is made fullscreen with the bar
+// pinned to its top edge so scene coordinates are screen coordinates; the pointer hovers the network indicator
+// (glyph-only magnify, rendered to /out/quicksettings-bar-hover.png), then hovers a history row, moves onto its
+// dismiss cross and clicks it.
 Item {
     id: h
     property var root: null
@@ -29,11 +34,28 @@ Item {
     property var backdrops: ({})
     function check(cond, msg) { if (cond) console.log("PASS " + msg); else { h.failures++; console.log("FAIL " + msg) } }
     function near(a, b, eps) { return Math.abs(a - b) <= (eps || 0.02) }
+
+    // ---- real pointer (wayland session only): one fakeinput.py process per move / click, then 350 ms to settle
+    readonly property bool wayland: Qt.platform.pluginName === "wayland"
+    readonly property string injector: Qt.resolvedUrl("fakeinput.py").toString().replace(/^file:\/\//, "")
+    property var afterPointer: null
+    property int pointerMoves: 0
+    property bool reported: false
+    property real netWidth: 0
+    P5Support.DataSource { id: pointer; engine: "executable"; onNewData: (source, data) => { disconnectSource(source); console.log("POINTER exit=" + data["exit code"] + " " + String(data["stdout"] || "").trim() + " " + String(data["stderr"] || "").trim().slice(0, 300)); settle.start() } }
+    Timer { id: settle; interval: 600; onTriggered: { var f = h.afterPointer; h.afterPointer = null; if (f) f() } }
+    readonly property string python: "PYTHONHOME=/usr /tmp/fabos-pointer"   // the trusted private interpreter copy made by kwin-session.sh
+    function movePointer(x, y, then) { h.pointerMoves++; h.afterPointer = then; pointer.connectSource(h.python + " " + h.injector + " move " + Math.round(x) + " " + Math.round(y)) }
+    function clickPointer(x, y, then) { h.pointerMoves++; h.afterPointer = then; pointer.connectSource(h.python + " " + h.injector + " click " + Math.round(x) + " " + Math.round(y)) }
+    Component { id: stripComp; Item { } }   // plain wrapper for the bar under wayland (a grab backdrop must not be a Row child)
+    property Item strip: null
+    function screenPos(item, fx, fy) { return item.mapToItem(null, item.width * fx, item.height * fy) }   // main window is fullscreen at 0,0
+    function panePos(item, fx, fy) { var p = item.mapToItem(null, item.width * fx, item.height * fy); return Qt.point(pane.x + p.x, pane.y + p.y) }   // the dialog window sits at pane.x/y
     Component { id: backdrop; Rectangle { z: -1; anchors.fill: parent; radius: 24; color: Kirigami.Theme.backgroundColor } }
     function grab(item, file) {
         h.grabs++
         if (!h.backdrops[file]) h.backdrops[file] = backdrop.createObject(item)
-        item.grabToImage(function(r) { r.saveToFile(file); console.log("RENDER " + file + " " + r.image.width + "x" + r.image.height); h.grabs-- })
+        item.grabToImage(function(r) { r.saveToFile(file); console.log("RENDER " + file + " " + Math.round(item.width) + "x" + Math.round(item.height)); h.grabs-- })
     }
     onNotifListChanged: if (root && pane && bar && history && notifList) startTimer.start()
     Timer { id: startTimer; interval: 700; onTriggered: h.stage1() }
@@ -54,7 +76,12 @@ Item {
         if (poll) poll.disconnectSource(root.statusCmd)   // the fed state must not be replaced by the container's real probe
         if (netPoll) netPoll.disconnectSource(root.netCmd)
         var win = root.Window.window
-        if (win) { win.width = 520; win.height = 40 }
+        if (h.wayland && win) {   // screen coordinates for the pointer: fullscreen window, the bar in a 40 px strip along its top edge
+            h.strip = stripComp.createObject(root, { width: Qt.binding(function() { return bar.implicitWidth + 32 }), height: 40 })
+            h.strip.anchors.top = root.top; h.strip.anchors.horizontalCenter = root.horizontalCenter
+            bar.parent = h.strip   // its own centerIn/height bindings now follow the strip
+            win.visibility = Window.FullScreen
+        } else if (win) { win.width = 520; win.height = 40 }
         root.applyStatus(h.status)
         root.applyNet(h.net(1000, 500), 1000)
         root.applyNet(h.net(1000 + 2400000, 500 + 160000), 3000)
@@ -65,10 +92,12 @@ Item {
         check(root.glyph === 18 && root.textPx === 12 && root.clockPx === 13 && batInd.textPx === 13, "medium: glyph 18, text 12, battery text = clock 13")
         check(volInd.visible === false, "volume glyph hidden while unchanged and unmuted")
         check(root.dnd === false, "do not disturb off at start")
+        check(netInd.scale === 1 && batInd.scale === 1 && netInd.glyphScale === 1 && typeof netInd.hovered === "boolean" && netInd.hovered === false, "indicators rest unscaled; magnify is on the glyph only (item scale stays 1)")
+        check(pane.visible === false && root.paneMode === "closed", "pane hidden at start (imperative visibility, no dead binding)")
         stage1b.start()
     }
     Timer { id: stage1b; interval: 300; onTriggered: {
-        grab(root, "/out/quicksettings-bar.png")
+        grab(h.wayland ? h.strip : root, "/out/quicksettings-bar.png")
         root.openPane("settings")
         check(root.paneMode === "settings" && pane.visible === true, "settings pane opens (dialog visible)")
         stage2.start()
@@ -108,6 +137,13 @@ Item {
         check(notifList.count === 1, "history list has the row")
         var row = notifList.itemAtIndex(0)
         check(row && row.summaryText === "Update ready" && row.bodyText.indexOf("revision 3") >= 0, "row reads summary/body roles: " + (row ? row.summaryText : "no row"))
+        if (row) {   // the dismiss cross must be reachable with the mouse: its hover area spans the whole row and the button lies inside it
+            var btn = row.dismissButton, area = row.hoverArea, b = btn.mapToItem(row, 0, 0)
+            check(area.x === 0 && area.y === 0 && area.width === row.width && area.height === row.height, "row hover area spans the whole row (" + area.width + "x" + area.height + " of " + row.width + "x" + row.height + ")")
+            check(b.x >= 0 && b.x + btn.width <= row.width && b.y >= 0 && b.y + btn.height <= row.height && btn.width >= 24, "dismiss button lies inside the hover area (x " + Math.round(b.x) + " w " + btn.width + " of " + row.width + ")")
+            check(typeof btn.hovered === "boolean" && btn.hovered === false && row.rowHovered === false && btn.visible === false, "dismiss button hidden until the row or the button itself is hovered")
+            check(row.history === history && row.history !== null, "row.history is the Notifications model (not the delegate's own property)")
+        }
         check(root.unread === 0, "opening the pane marks it read")
         check(pane.mainItem.height >= notifPane.implicitHeight - 1, "pane re-sized to the history (" + pane.mainItem.height + " px)")
         root.toggleDnd()
@@ -130,6 +166,7 @@ Item {
     Timer { id: stage7; interval: 500; onTriggered: {
         check(root.glyph === 22 && root.textPx === 13 && root.clockPx === 15 && batInd.textPx === 15, "large: glyph 22, text 13, battery text 15")
         check(root.lastSync.indexOf("writeConfig(\"fontSize\", 15)") > 0 && root.lastSync.indexOf("in.patienceai.fabos.dock") > 0, "size change queued the clock/dock sync script")
+        check(root.lastSync.indexOf("magnification") < 0 && root.lastSync.indexOf("writeConfig(\"magnify\", true)") > 0, "sync writes the shared magnify switch only, never the dock's magnification strength")
         root.cfg.barSize = "medium"
         root.closePane()
         stage8.start()
@@ -137,10 +174,73 @@ Item {
     Timer { id: stage8; interval: 500; onTriggered: {
         check(root.paneMode === "closed" && pane.visible === false, "pane closed after the shrink")
         check(root.glyph === 18, "back to medium")
+        if (h.wayland) stageP0.start(); else done.start()
+    } }
+
+    // ---- real pointer stages (wayland session only)
+    Timer { id: stageP0; interval: 300; onTriggered: {
+        shell.connectSource("PYTHONHOME=/usr nohup /tmp/fabos-pointer " + h.injector + " hold 120 >/tmp/xdg/hold.log 2>&1 &")   // one device for the whole phase
+        stageP1.start()
+    } }
+    Timer { id: stageP1; interval: 900; onTriggered: {
+        var p = screenPos(netInd, 0.5, 0.5); h.netWidth = netInd.width
+        console.log("INFO pointer test: root " + root.width + "x" + root.height + " visibility " + root.Window.window.visibility + "; network indicator centre " + Math.round(p.x) + "," + Math.round(p.y))
+        movePointer(root.width / 2, root.height - 30, function() {   // warm-up: the seat's pointer enters the window somewhere neutral first
+        movePointer(p.x, p.y, function() {
+            check(netInd.hovered === true, "real pointer over the network indicator: hovered")
+            check(near(netInd.glyphScale, 1.25) && netInd.scale === 1 && netInd.width === h.netWidth, "hover magnifies the glyph only (glyph " + netInd.glyphScale.toFixed(2) + ", item scale " + netInd.scale + ", width " + netInd.width + " unchanged)")
+            check(batInd.hovered === false && bellInd.hovered === false, "neighbours not hovered")
+            grab(h.strip, "/out/quicksettings-bar-hover.png")
+            stageP2.start()
+        }) })
+    } }
+    Timer { id: stageP2; interval: 300; onTriggered: {
+        movePointer(root.width / 2, root.height - 30, function() {
+            check(netInd.hovered === false && near(netInd.glyphScale, 1.0, 0.05), "pointer away: glyph back to 1.0 (hovered " + netInd.hovered + ", glyph " + netInd.glyphScale.toFixed(2) + ")")
+            var bell = screenPos(bellInd, 0.5, 0.5)
+            clickPointer(bell.x, bell.y, function() {   // a real click on the bell opens the notifications pane (Indicator TapHandler)
+                check(root.paneMode === "notifications" && pane.visible, "real click on the bell indicator opened the notifications pane (paneMode " + root.paneMode + ")")
+                if (root.paneMode !== "notifications") root.openPane("notifications")
+                stageP3.start()
+            })
+        })
+    } }
+    Timer { id: stageP3; interval: 700; onTriggered: {
+        var row = notifList.itemAtIndex(0)
+        check(row && notifList.count === 1 && pane.visible, "history row present for the pointer test (" + notifList.count + ")")
+        if (!row) { done.start(); return }
+        var body = panePos(row, 0.3, 0.5)
+        console.log("INFO pane window at " + pane.x + "," + pane.y + " " + pane.width + "x" + pane.height + " flags " + pane.flags + "; row body target " + Math.round(body.x) + "," + Math.round(body.y))
+        row.dismissButton.clicked.connect(function() { console.log("INFO dismiss button clicked (row.history " + (row.history === history ? "ok" : row.history) + ", history " + history.count + " before close)") })
+        movePointer(body.x, body.y, function() {
+            check(row.rowHovered === true && row.hoverArea.containsMouse === true && row.dismissButton.visible === true, "pointer on the row body: row hovered, dismiss cross shown")
+            var cross = panePos(row.dismissButton, 0.5, 0.5)
+            movePointer(cross.x, cross.y, function() {
+                check(row.dismissButton.hovered === true && row.dismissButton.visible === true && row.rowHovered === true, "pointer on the dismiss cross itself: still visible + hovered (button " + row.dismissButton.hovered + ", row area " + row.hoverArea.containsMouse + ")")
+                clickPointer(cross.x, cross.y, function() { stageP4.start() })
+            })
+        })
+    } }
+    Timer { id: stageP4; interval: 600; onTriggered: {
+        check(history.count === 0 && notifList.count === 0, "clicking the cross dismissed the notification (history " + history.count + ")")
+        if (history.count > 0) {   // diagnose: is it the click path or the model call?
+            var idx = history.index(0, 0)
+            console.log("INFO direct history.close: idx valid " + (idx && idx.valid) + " id " + history.data(idx, 257) + " expired " + history.data(idx, 267) + " server valid " + NotificationManager.Server.valid)
+            history.close(idx)
+            stageP5.start(); return
+        }
+        root.closePane()
         done.start()
     } }
+    Timer { id: stageP5; interval: 500; onTriggered: {
+        console.log("INFO after direct close: history.count=" + history.count + " list " + notifList.count)
+        root.closePane()
+        done.start()
+    } }
+    Timer { id: holderReport; interval: 1; onTriggered: shell.connectSource("cat /tmp/xdg/hold.log; pgrep -fc 'fabos-pointer .* hold' || true") }
     Timer { id: done; interval: 800; repeat: true; onTriggered: {
         if (h.grabs > 0) return
+        if (h.wayland && !h.reported) { h.reported = true; holderReport.start(); return }   // one more tick: log the holder's state
         console.log("HARNESS DONE failures=" + h.failures)
         stop(); killer.connectSource("pkill -x plasmawindowed")
     } }

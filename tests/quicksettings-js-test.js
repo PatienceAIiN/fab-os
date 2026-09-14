@@ -95,15 +95,30 @@ t("fmtRate units", () => {
 });
 t("bar size -> clock px and the shell-scripting sync command", () => {
   assert.strictEqual(S.clockSizeFor("small"), 12); assert.strictEqual(S.clockSizeFor("medium"), 13); assert.strictEqual(S.clockSizeFor("large"), 15);
-  const cmd = S.syncCommand("large", false, "strong");
+  const cmd = S.syncCommand("large", false);
   assert.ok(cmd.startsWith("qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript '"));
-  assert.ok(cmd.includes('writeConfig("fontSize", 15)')); assert.ok(cmd.includes('writeConfig("magnify", false)')); assert.ok(cmd.includes('writeConfig("magnification", "strong")'));
+  assert.ok(cmd.includes('writeConfig("fontSize", 15)')); assert.ok(cmd.includes('writeConfig("magnify", false)'));
+  assert.ok(!cmd.includes("magnification"), "the dock's magnification strength is the dock's own setting: never written from the bar");
   assert.ok(cmd.includes('widgets("org.kde.plasma.digitalclock")') && cmd.includes('widgets("in.patienceai.fabos.dock")'));
   assert.strictEqual((cmd.match(/'/g) || []).length, 2, "the script itself contains no single quotes");
   // the script is valid JS against a fake shell API
   const api = { panels: () => [{ widgets: (type) => [{ writeConfig(k, v) { api.written.push(type + ":" + k + "=" + v) }, currentConfigGroup: [] }] }], written: [] };
-  vm.runInNewContext(S.syncScript("small", true, "subtle"), api);
-  assert.deepStrictEqual(api.written, ["org.kde.plasma.digitalclock:fontSize=12", "in.patienceai.fabos.dock:magnify=true", "in.patienceai.fabos.dock:magnification=subtle"]);
+  vm.runInNewContext(S.syncScript("small", true), api);
+  assert.deepStrictEqual(api.written, ["org.kde.plasma.digitalclock:fontSize=12", "in.patienceai.fabos.dock:magnify=true"]);
+});
+t("the dock's write-back script (main.qml syncScript) mirrors the bar's: quicksettings.magnify only", () => {
+  // the function lives in the dock's main.qml; lift its body out the same way and run it against the stub shell API
+  const dockSrc = fs.readFileSync(path.join(__dirname, "..", "packages/fabos-desktop/usr/share/plasma/plasmoids/in.patienceai.fabos.dock/contents/ui/main.qml"), "utf8");
+  const m = dockSrc.match(/function syncScript\(on\) \{([\s\S]*?)\n    \}/); assert.ok(m, "dock main.qml has function syncScript(on)");
+  const syncScript = new Function("on", m[1]);
+  for (const on of [true, false]) {
+    const api = { panels: () => [{ widgets: (type) => [{ writeConfig(k, v) { api.written.push(type + ":" + k + "=" + v) }, currentConfigGroup: [] }] }], written: [] };
+    const script = syncScript(on);
+    assert.ok(!script.includes("'"), "no single quotes (the command single-quotes it for sh)");
+    vm.runInNewContext(script, api);
+    assert.deepStrictEqual(api.written, ["in.patienceai.fabos.quicksettings:magnify=" + on]);
+  }
+  assert.ok(dockSrc.includes("qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript '"), "same D-Bus call as the bar");
 });
 t("detach wraps a launcher so the executable engine returns at once", () => {
   assert.strictEqual(S.detach("systemsettings"), "nohup systemsettings >/dev/null 2>&1 &");

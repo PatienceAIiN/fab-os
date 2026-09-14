@@ -7,6 +7,9 @@ import org.kde.kirigami as Kirigami
 // Sizes the window like the floating dock panel, checks the launcher rows, drives hover through dock.hoveredIndex
 // (the scales 1.6 / 1.3 / 1.1 and the re-flow), the launch bounce, the context menu and the magnify switch, renders
 // /out/dock-{idle,hover}.png and prints PASS/FAIL lines + "HARNESS DONE failures=N".
+// Under the virtual kwin_wayland it finishes with a REAL pointer (fakeinput.py, see the quick-settings driver): the
+// window goes fullscreen, the pointer moves over icon 3 then 4 (hoveredIndex and the scales follow), leaves, and
+// left-clicks the Overview launcher (TapHandler -> activate -> "launch" + bounce).
 Item {
     id: h
     property var dock: null
@@ -21,7 +24,23 @@ Item {
     function near(a, b, eps) { return Math.abs(a - b) <= (eps || 0.02) }
     function rows() { return repeater.count }
     Component { id: backdrop; Rectangle { z: -1; anchors.fill: parent; radius: 20; color: Kirigami.Theme.backgroundColor } }
-    function grab(item, file) { h.grabs++; if (!h.backdrops[file]) h.backdrops[file] = backdrop.createObject(item); item.grabToImage(function(r) { r.saveToFile(file); console.log("RENDER " + file + " " + r.image.width + "x" + r.image.height); h.grabs-- }) }
+    function grab(item, file) { h.grabs++; if (!h.backdrops[file]) h.backdrops[file] = backdrop.createObject(item); item.grabToImage(function(r) { r.saveToFile(file); console.log("RENDER " + file + " " + Math.round(item.width) + "x" + Math.round(item.height)); h.grabs-- }) }
+    property int idleWidth: 0
+    property real idleCentre3: 0
+
+    // ---- real pointer (wayland session only); same protocol as tests/quicksettings-qml-harness/Driver.qml
+    readonly property bool wayland: Qt.platform.pluginName === "wayland"
+    readonly property string injector: Qt.resolvedUrl("fakeinput.py").toString().replace(/^file:\/\//, "")
+    readonly property string python: "PYTHONHOME=/usr /tmp/fabos-pointer"
+    property var afterPointer: null
+    P5Support.DataSource { id: pointer; engine: "executable"; onNewData: (source, data) => { disconnectSource(source); console.log("POINTER exit=" + data["exit code"] + " " + String(data["stdout"] || "").trim() + " " + String(data["stderr"] || "").trim().slice(0, 300) + " t=" + Date.now() % 100000); settle.start() } }
+    Connections { target: dock; function onHoveredIndexChanged() { console.log("INFO hoveredIndex -> " + dock.hoveredIndex + " t=" + Date.now() % 100000) } }
+    P5Support.DataSource { id: shell; engine: "executable"; onNewData: (source, data) => { disconnectSource(source); console.log("SHELL exit=" + data["exit code"] + " " + String(data["stdout"] || "").trim().slice(0, 200)) } }
+    Timer { id: settle; interval: 600; onTriggered: { var f = h.afterPointer; h.afterPointer = null; if (f) f() } }
+    function movePointer(x, y, then) { h.afterPointer = then; pointer.connectSource(h.python + " " + h.injector + " move " + Math.round(x) + " " + Math.round(y)) }
+    function clickPointer(x, y, then) { h.afterPointer = then; pointer.connectSource(h.python + " " + h.injector + " click " + Math.round(x) + " " + Math.round(y)) }
+    function screenPos(item, fx, fy) { return item.mapToItem(null, item.width * fx, item.height * fy) }   // fullscreen window at 0,0
+    function centreOf(i) { var it = dock.itemAt(i); return it.mapToItem(dock, it.width / 2, 0).x }
     onTasksModelChanged: if (dock && row && tasksModel) startTimer.start()
     Timer { id: startTimer; interval: 900; onTriggered: h.stage1() }
     // Offscreen there is no windowing backend: libtaskmanager's WindowTasksModel has zero columns, so the task filter
@@ -40,6 +59,7 @@ Item {
     }
 
     function stage1() {
+        dock.autoSync = false   // no plasmashell here: keep the write-back command, do not run it
         var win = dock.Window.window
         if (win) { win.width = 760; win.height = 70 }   // the 4-gridUnit floating dock minus its panel margins
         stage1b.start()
@@ -62,6 +82,16 @@ Item {
         check(it0 && it0.mainText.length > 0 && it0.running === false && it0.pinned === true, "row 0 is a pinned launcher named '" + (it0 ? it0.mainText : "") + "'")
         if (!h.realBackend) { var it2 = dock.itemAt(2), it3 = dock.itemAt(3), it6 = dock.itemAt(6); check(it2.running && it3.running && it6.running && it3.childCount === 3, "running dot for a window, a 3-window group and a minimised window") }
         check(it0 && it0.model.IsLauncher === true && it0.model.IsWindow !== true, "IsLauncher role read through the delegate")
+        row.forceLayout()   // a swapped-in model is positioned on the next polish; measure the resting geometry a moment later
+        stage1c.start()
+    } }
+    Timer { id: stage1c; interval: 250; onTriggered: {
+        var b = dock.baseSize, expReserve = (Math.round(b * 1.6) - b) + 2 * (Math.round(b * 1.3) - b) + 2 * (Math.round(b * 1.1) - b)
+        check(dock.restingWidth === rows() * b + (rows() - 1) * dock.gap && row.implicitWidth === dock.restingWidth, "resting row width = count x resting size + gaps (" + dock.restingWidth + " = row " + row.implicitWidth + ")")
+        check(dock.reserve === expReserve && dock.appletWidth === dock.restingWidth + dock.reserve && dock.appletWidth > row.implicitWidth, "applet width (Layout hints) = resting row + one magnified group's growth (" + dock.reserve + " px reserve)")
+        h.idleWidth = dock.appletWidth
+        h.idleCentre3 = centreOf(3)
+        check(Math.abs(h.idleCentre3 - (dock.width / 2 - dock.restingWidth / 2 + 3 * (b + dock.gap) + b / 2)) <= 1, "resting centre of icon 3 measured after layout (" + h.idleCentre3.toFixed(1) + ")")
         grab(dock, "/out/dock-idle.png")
         dock.hoveredIndex = 3
         stage2.start()
@@ -81,6 +111,9 @@ Item {
         }
         check(widthsOk, "item width = resting size x scale (row re-flows)")
         check(!overlap, "no overlap between neighbours while magnified")
+        check(dock.appletWidth === h.idleWidth, "applet width unchanged while magnified (" + dock.appletWidth + "): the fit panel never resizes on hover")
+        check(row.implicitWidth <= dock.appletWidth && row.implicitWidth === dock.restingWidth + dock.reserve, "magnified row fills exactly the reserved width (" + row.implicitWidth + " of " + dock.appletWidth + ")")
+        check(Math.abs(centreOf(3) - h.idleCentre3) <= 1, "hovered icon keeps its centre (" + h.idleCentre3.toFixed(1) + " -> " + centreOf(3).toFixed(1) + "): the pointer stays over the same icon")
         var g = dock.itemAt(3).children[0]   // the Kirigami.Icon
         check(dock.itemAt(3).height - dock.dotSpace >= Math.round(dock.baseSize * 1.6) - 1, "magnified icon fits the panel height (" + Math.round(dock.baseSize * 1.6) + " <= " + (dock.itemAt(3).height - dock.dotSpace) + ")")
         grab(dock, "/out/dock-hover.png")
@@ -108,15 +141,49 @@ Item {
     } }
     Timer { id: stage6; interval: 400; onTriggered: {
         check(near(dock.itemAt(2).s, 1.0) && dock.baseSize === Math.min(48, dock.avail), "magnify off: no scaling, icons fill the height (" + dock.baseSize + ")")
+        check(dock.reserve === 0 && dock.appletWidth === dock.restingWidth, "magnify off: no reserve, applet width = resting row")
+        check(dock.lastSync.indexOf("qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript '") === 0 && dock.lastSync.indexOf("in.patienceai.fabos.quicksettings") > 0 && dock.lastSync.indexOf("writeConfig(\"magnify\", false)") > 0 && dock.lastSync.indexOf("magnification") < 0, "switch changed on the dock -> write-back of magnify=false to the quick settings queued")
         dock.cfg.magnify = true
         dock.cfg.magnification = "strong"
         stage7.start()
     } }
     Timer { id: stage7; interval: 400; onTriggered: {
         check(near(dock.itemAt(2).s, 1.9) && dock.baseSize === Math.min(48, Math.floor(dock.avail / 1.9)), "strong: hovered 1.9, resting " + dock.baseSize)
+        check(dock.lastSync.indexOf("writeConfig(\"magnify\", true)") > 0, "switch back on -> write-back of magnify=true queued (magnification stays local: " + (dock.lastSync.indexOf("magnification") < 0) + ")")
         dock.cfg.magnification = "normal"
         dock.hoveredIndex = -1
-        done.start()
+        if (h.wayland && h.realBackend) stageD0.start(); else done.start()
+    } }
+
+    // ---- real pointer stages (kwin session with the real TasksModel)
+    Timer { id: stageD0; interval: 300; onTriggered: {
+        shell.connectSource("PYTHONHOME=/usr nohup /tmp/fabos-pointer " + h.injector + " hold 120 >/tmp/xdg/hold.log 2>&1 &")   // one device for the whole phase
+        dock.Window.window.visibility = Window.FullScreen   // scene coordinates = screen coordinates
+        // Keep the dock's real proportions inside the fullscreen window: the row in a 70 px strip along the top edge, items
+        // 70 px tall (a 400 px tall item would put its tooltip window under the pointer and steal the pointer focus).
+        row.anchors.centerIn = undefined; row.anchors.top = dock.top; row.anchors.horizontalCenter = dock.horizontalCenter; row.height = 70
+        for (var i = 0; i < rows(); i++) dock.itemAt(i).height = 70
+        stageD1.start()
+    } }
+    Timer { id: stageD1; interval: 1200; onTriggered: {
+        console.log("INFO pointer test: dock " + dock.width + "x" + dock.height + " baseSize " + dock.baseSize + " rows " + rows() + " visibility " + dock.Window.window.visibility)
+        movePointer(dock.width / 2, dock.height - 40, function() {   // warm-up: enter the window somewhere neutral (below the strip)
+        var p3 = screenPos(dock.itemAt(3), 0.5, 0.7)
+        movePointer(p3.x, p3.y, function() {
+            check(dock.hoveredIndex === 3 && near(dock.itemAt(3).s, 1.6) && near(dock.itemAt(2).s, 1.3) && near(dock.itemAt(4).s, 1.3), "real pointer from the empty dock area onto icon 3: hoveredIndex 3, scales 1.6 / 1.3 (" + dock.hoveredIndex + ", " + dock.itemAt(3).s.toFixed(2) + ")")
+            var p4 = screenPos(dock.itemAt(4), 0.5, 0.7)
+            movePointer(p4.x, p4.y, function() {
+                check(dock.hoveredIndex === 4 && near(dock.itemAt(4).s, 1.6) && near(dock.itemAt(3).s, 1.3), "pointer moved to icon 4 (re-flowed row): hoveredIndex 4 (" + dock.hoveredIndex + ")")
+                movePointer(dock.width / 2, dock.height - 40, function() {
+                    check(dock.hoveredIndex === -1 && near(dock.itemAt(4).s, 1.0), "pointer left the dock: scales back to 1.0")
+                    var p0 = screenPos(dock.itemAt(0), 0.5, 0.7)
+                    clickPointer(p0.x, p0.y, function() {
+                        check(dock.itemAt(0).lastAction === "launch", "real left click on the Overview launcher: TapHandler -> activate -> \"" + dock.itemAt(0).lastAction + "\"")
+                        done.start()
+                    })
+                })
+            })
+        }) })
     } }
     Timer { id: done; interval: 600; repeat: true; onTriggered: {
         if (h.grabs > 0) return

@@ -9,6 +9,7 @@ Item {
     property string tip: ""
     property int iconSize: 16
     property bool active: true
+    readonly property bool hovered: ma.containsMouse   // parents OR this into their own hover state (NotificationRow)
     signal clicked()
     implicitWidth: 28; implicitHeight: 28
     opacity: active ? 1 : 0.4

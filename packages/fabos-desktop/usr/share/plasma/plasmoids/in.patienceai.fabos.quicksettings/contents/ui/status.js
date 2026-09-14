@@ -167,18 +167,19 @@ function bluetoothLine(s) {
     return s.btConnected > 0 ? s.btConnected + (s.btConnected === 1 ? " device connected" : " devices connected") : "On"
 }
 
-// The plasmashell scripting call that re-applies one bar size to the stock clock and pushes magnify settings to the
-// dock (Plasmoid.configuration of another applet is not writable from QML; the shell's D-Bus scripting API is).
+// The plasmashell scripting call that re-applies one bar size to the stock clock and pushes the shared "magnify on
+// hover" switch to the dock (Plasmoid.configuration of another applet is not writable from QML; the shell's D-Bus
+// scripting API is). The dock's magnification strength is the dock's own setting and is not touched here.
 function clockSizeFor(barSize) { return barSize === "small" ? 12 : (barSize === "large" ? 15 : 13) }
-function syncScript(barSize, magnify, magnification) {
+function syncScript(barSize, magnify) {
     var px = clockSizeFor(barSize)
     return "var ps = panels(); for (var i = 0; i < ps.length; i++) {"
          + " var cs = ps[i].widgets(\"org.kde.plasma.digitalclock\"); for (var j = 0; j < cs.length; j++) { cs[j].currentConfigGroup = [\"Appearance\"]; cs[j].writeConfig(\"fontSize\", " + px + ") }"
-         + " var ds = ps[i].widgets(\"in.patienceai.fabos.dock\"); for (var k = 0; k < ds.length; k++) { ds[k].currentConfigGroup = [\"General\"]; ds[k].writeConfig(\"magnify\", " + (magnify ? "true" : "false") + "); ds[k].writeConfig(\"magnification\", \"" + magnification + "\") } }"
+         + " var ds = ps[i].widgets(\"in.patienceai.fabos.dock\"); for (var k = 0; k < ds.length; k++) { ds[k].currentConfigGroup = [\"General\"]; ds[k].writeConfig(\"magnify\", " + (magnify ? "true" : "false") + ") } }"
 }
-function syncCommand(barSize, magnify, magnification) {
+function syncCommand(barSize, magnify) {
     // single-quoted for sh; the script contains no single quotes
-    return "qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript '" + syncScript(barSize, magnify, magnification) + "'"
+    return "qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript '" + syncScript(barSize, magnify) + "'"
 }
 
 // Shell-safe launcher: detach so the executable engine returns at once.

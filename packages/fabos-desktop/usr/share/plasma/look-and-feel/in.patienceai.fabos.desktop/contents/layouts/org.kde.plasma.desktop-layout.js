@@ -11,7 +11,8 @@
 
 var BAR_SIZE = "medium"                                       // small | medium | large  (quick settings + clock)
 var CLOCK_PX = { small: 12, medium: 13, large: 15 }            // Inter size of the stock clock for each bar size
-var MAGNIFY = true, MAGNIFICATION = "normal"                  // hover magnify for the bar's indicators and the dock (subtle | normal | strong)
+var MAGNIFY = true                                            // hover magnify: one switch for the bar's glyphs and the dock (quick settings + dock, kept in sync)
+var MAGNIFICATION = "normal"                                  // how much the dock magnifies (subtle | normal | strong) — the dock's own setting
 
 var top = new Panel
 top.location = "top"; top.height = Math.round(gridUnit * 2.0); top.floating = false; top.hiding = "none"
@@ -30,7 +31,6 @@ var quick = top.addWidget("in.patienceai.fabos.quicksettings")
 quick.currentConfigGroup = ["General"]
 quick.writeConfig("barSize", BAR_SIZE)
 quick.writeConfig("magnify", MAGNIFY)
-quick.writeConfig("magnification", MAGNIFICATION)
 
 var dock = new Panel
 dock.location = "bottom"; dock.height = Math.round(gridUnit * 4.0); dock.floating = true; dock.hiding = "dodgewindows"

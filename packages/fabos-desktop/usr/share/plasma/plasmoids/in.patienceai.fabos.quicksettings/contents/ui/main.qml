@@ -33,17 +33,17 @@ PlasmoidItem {
     readonly property var cfg: Plasmoid.configuration      // reachable from other files (the harness)
     readonly property string barSize: Plasmoid.configuration.barSize
     readonly property bool magnify: Plasmoid.configuration.magnify
-    readonly property string magnification: Plasmoid.configuration.magnification
     readonly property int glyph: barSize === "small" ? 16 : (barSize === "large" ? 22 : 18)
     readonly property int textPx: barSize === "small" ? 11 : (barSize === "large" ? 13 : 12)
     readonly property int clockPx: Status.clockSizeFor(barSize)
     onBarSizeChanged: syncTimer.restart()
     onMagnifyChanged: syncTimer.restart()
-    onMagnificationChanged: syncTimer.restart()
     // The clock is a separate applet and Plasmoid.configuration of another applet is not writable from QML, so the new
-    // size (and the magnify settings for the dock) go through plasmashell's own scripting API on D-Bus — the mechanism
-    // /usr/lib/fabos/tray-defaults already uses at login.
-    Timer { id: syncTimer; interval: 300; onTriggered: root.run(Status.syncCommand(root.barSize, root.magnify, root.magnification)) }
+    // size (and the shared "magnify on hover" switch for the dock) go through plasmashell's own scripting API on D-Bus —
+    // the mechanism /usr/lib/fabos/tray-defaults already uses at login. Ownership: this applet owns the bar size and
+    // the magnify switch; the dock owns its magnification strength and writes the switch back the same way when it is
+    // changed on the dock's page (a write of an unchanged value does not re-trigger either side).
+    Timer { id: syncTimer; interval: 300; onTriggered: root.run(Status.syncCommand(root.barSize, root.magnify)) }
     property string lastSync: ""
 
     // ---------------------------------------------------------------- state
@@ -157,7 +157,8 @@ PlasmoidItem {
     Connections { target: notificationSettings; function onSettingsChanged() { root.refreshDnd() } }
     Component.onCompleted: root.refreshDnd()
 
-    // ---------------------------------------------------------------- pane open / close
+    // ---------------------------------------------------------------- pane open / close (imperative: the dialog's
+    // visibility is set here and in closeTimer only, so the slide-up can finish before the window hides)
     function openPane(mode) {
         closeTimer.stop(); root.closing = false
         if (root.paneMode === "closed") { openBehavior.enabled = false; pane.openProgress = 0; openBehavior.enabled = true }
@@ -240,7 +241,7 @@ PlasmoidItem {
         type: PlasmaCore.Dialog.AppletPopup
         hideOnWindowDeactivate: root.paneAutoHide
         backgroundHints: PlasmaCore.Dialog.StandardBackground
-        visible: root.paneMode !== "closed"
+        visible: false
         onVisibleChanged: if (!visible && root.paneMode !== "closed" && !root.closing) { history.lastRead = new Date(); root.paneMode = "closed" }
 
         property real openProgress: 0
@@ -425,7 +426,7 @@ PlasmoidItem {
                     model: history
                     spacing: 2
                     boundsBehavior: Flickable.StopAtBounds
-                    delegate: NotificationRow { history: history }
+                    delegate: NotificationRow { history: notifList.model }   // NOT `history: history`: inside the delegate that name is its own property
                     add: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 200 } }
                 }
                 Text {

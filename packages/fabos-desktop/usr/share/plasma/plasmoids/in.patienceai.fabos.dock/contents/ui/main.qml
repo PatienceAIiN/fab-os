@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
+import org.kde.plasma.plasma5support as P5Support
 import org.kde.kirigami as Kirigami
 import org.kde.taskmanager as TaskManager
 
@@ -10,12 +11,17 @@ import org.kde.taskmanager as TaskManager
 // magnification: the hovered icon scales to `peak`, its neighbours to `near` / `far` (160 ms OutCubic), and because
 // each item's width follows its scale the row re-flows and icons never overlap. Resting icons are sized so the
 // magnified one still fits the panel height (a panel clips its applets). Scale only — no shaders, no per-icon effects.
+//
+// The applet's own width does NOT follow the hover: it is the resting row plus the room one fully magnified group
+// needs (`reserve`), so the floating "fit" panel keeps its length while the pointer moves (no per-frame panel resize)
+// and the centred row grows into that reserve. With the row centred and the growth symmetric about the hovered icon,
+// a hovered interior icon keeps its centre where it rested — the pointer stays over the same icon.
 PlasmoidItem {
     id: dock
     preferredRepresentation: fullRepresentation
     Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
-    Layout.minimumWidth: row.implicitWidth
-    Layout.preferredWidth: row.implicitWidth
+    Layout.minimumWidth: dock.appletWidth
+    Layout.preferredWidth: dock.appletWidth
     Layout.fillHeight: true
 
     // ---------------------------------------------------------------- settings
@@ -29,8 +35,30 @@ PlasmoidItem {
     readonly property int avail: Math.max(24, Math.round(dock.height) - dotSpace)
     readonly property int baseSize: Math.min(Plasmoid.configuration.maxIconSize, magnify ? Math.max(20, Math.floor(avail / peak)) : avail)
     readonly property int gap: 2
+    readonly property int restingWidth: count * baseSize + Math.max(0, count - 1) * gap
+    // extra width of one magnified group (hovered + 2 near + 2 far), in the same rounding TaskItem uses for its width
+    readonly property int reserve: magnify ? (Math.round(baseSize * peak) - baseSize) + 2 * (Math.round(baseSize * near) - baseSize) + 2 * (Math.round(baseSize * far) - baseSize) : 0
+    readonly property int appletWidth: restingWidth + reserve   // constant while the pointer moves: the panel's length never follows a hover
+
+    // ---------------------------------------------------------------- shared "magnify on hover" switch
+    // The quick-settings applet in the top bar carries the same switch and pushes it here through plasmashell's
+    // scripting API; when it is changed on THIS applet's page the dock writes it back the same way, so the two pages
+    // never disagree. A write of an unchanged value does not emit a change on either side, so there is no ping-pong.
+    property bool autoSync: true            // harness sets false (no plasmashell in the container)
+    property string lastSync: ""
+    onMagnifyChanged: syncTimer.restart()
+    Timer { id: syncTimer; interval: 300; onTriggered: { dock.lastSync = dock.syncCommand(dock.magnify); if (dock.autoSync) shell.connectSource(dock.lastSync) } }
+    P5Support.DataSource { id: shell; engine: "executable"; onNewData: (source, data) => disconnectSource(source) }
+    function syncScript(on) {
+        return "var ps = panels(); for (var i = 0; i < ps.length; i++) { var qs = ps[i].widgets(\"in.patienceai.fabos.quicksettings\");"
+             + " for (var j = 0; j < qs.length; j++) { qs[j].currentConfigGroup = [\"General\"]; qs[j].writeConfig(\"magnify\", " + (on ? "true" : "false") + ") } }"
+    }
+    function syncCommand(on) { return "qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript '" + syncScript(on) + "'" }
 
     // ---------------------------------------------------------------- hover state (the harness sets hoveredIndex directly)
+    // Set and cleared by each TaskItem's own HoverHandler only. There is deliberately NO HoverHandler on this root item
+    // resetting it: a TaskItem is a ToolTipArea (an Item that accepts hover), which takes the hover away from the root
+    // beneath it, so a root-level "unhovered -> -1" fired the instant the pointer went from a gap onto an icon.
     property int hoveredIndex: -1
     function scaleFor(i) {
         if (!dock.magnify || dock.hoveredIndex < 0) return 1.0
@@ -59,7 +87,7 @@ PlasmoidItem {
         onLauncherListChanged: Plasmoid.configuration.launchers = launcherList
         Component.onCompleted: launcherList = Plasmoid.configuration.launchers
     }
-    readonly property int count: tasksModel.count
+    readonly property int count: repeater.count          // rows actually rendered (= tasksModel.count; the harness may swap the model)
     function itemAt(i) { return repeater.itemAt(i) }
 
     // Activate like the icons-only task manager: launchers launch, the active window minimises, a minimised or
@@ -90,7 +118,6 @@ PlasmoidItem {
             delegate: TaskItem { }
         }
     }
-    HoverHandler { id: rowHover; onHoveredChanged: if (!hovered) dock.hoveredIndex = -1 }
     Accessible.role: Accessible.ToolBar
     Accessible.name: "Dock"
 }

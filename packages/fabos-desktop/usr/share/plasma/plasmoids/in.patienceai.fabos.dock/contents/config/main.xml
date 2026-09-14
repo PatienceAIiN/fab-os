@@ -9,7 +9,7 @@
       <default>applications:fabos-overview.desktop,applications:fabos-command-center.desktop,applications:org.kde.dolphin.desktop,applications:org.kde.konsole.desktop,applications:org.kde.kate.desktop,applications:brave-browser.desktop,applications:systemsettings.desktop,applications:org.kde.discover.desktop</default>
     </entry>
     <entry name="magnify" type="Bool">
-      <label>Magnify icons under the pointer (hovered 1.6x, neighbours 1.3x / 1.1x at Normal).</label>
+      <label>Magnify icons under the pointer (hovered 1.6x, neighbours 1.3x / 1.1x at Normal). One switch shared with the top bar's quick settings, kept in sync both ways.</label>
       <default>true</default>
     </entry>
     <entry name="magnification" type="String">

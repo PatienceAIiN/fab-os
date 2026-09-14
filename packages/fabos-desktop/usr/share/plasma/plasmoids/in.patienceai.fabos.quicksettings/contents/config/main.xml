@@ -9,12 +9,8 @@
       <default>medium</default>
     </entry>
     <entry name="magnify" type="Bool">
-      <label>Magnify the indicators (and the dock, kept in sync) when the pointer hovers them.</label>
+      <label>Magnify the indicators' glyphs (and the dock's icons, kept in sync both ways) when the pointer hovers them. The dock's magnification strength is the dock's own setting.</label>
       <default>true</default>
-    </entry>
-    <entry name="magnification" type="String">
-      <label>Dock magnification pushed to the dock applet: subtle, normal or strong.</label>
-      <default>normal</default>
     </entry>
     <entry name="showSpeed" type="Bool">
       <label>Show the live download/upload rate beside the network glyph while data flows.</label>
