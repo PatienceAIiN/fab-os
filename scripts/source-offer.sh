@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Record the GPL source offer for an image: package manifest, source-package URIs, copyright inventory.
-# Usage: scripts/source-offer.sh [vm|iso] [--download]     -> legal/source-offer/<BUILD_ID>/
+# Usage: [BUILD_ID=<id>] scripts/source-offer.sh [vm|iso] [--download]     -> legal/source-offer/<BUILD_ID>/
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"; PROFILE=${1:-vm}; DL=${2:-}
-TAG=fabos:$PROFILE; ID=$(cat build/BUILD_ID 2>/dev/null || echo "unreleased-$PROFILE"); OUT=legal/source-offer/$ID; mkdir -p "$OUT"
+TAG=fabos:$PROFILE; ID=${BUILD_ID:-$(cat build/BUILD_ID 2>/dev/null || echo "unreleased-$PROFILE")}; OUT=legal/source-offer/$ID; mkdir -p "$OUT"   # BUILD_ID=<id> overrides build/BUILD_ID
 podman run --rm "$TAG" bash -c 'dpkg-query -W -f="${binary:Package}\t${Version}\t${source:Package}\t${source:Version}\n"' | sort > "$OUT/manifest.txt"
 podman run --rm "$TAG" bash -c 'find /usr/share/doc -name copyright | sort' > "$OUT/copyrights.txt"
 echo "== resolving source URIs for $(wc -l < "$OUT/manifest.txt") binary packages (apt-get source --print-uris)"

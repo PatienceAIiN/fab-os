@@ -1,12 +1,17 @@
-# Trademark search — "Fab OS" (2026-09-11)
+# Trademark search — "Fabric OS" (2026-09-11) and "Fab OS" (2026-09-12)
 
-## Finding: DIRECT CONFLICT — do not ship publicly under this name without legal advice
+> **Historical note.** The first section below records the search for the project's ORIGINAL working name,
+> **"Fabric OS"**, which is Brocade's registered mark. That finding is what caused the rename to **"Fab OS"**.
+> The second section ("Fab OS" / "FabOS") is the search for the current name. Do not read the Brocade finding as
+> applying to the name "Fab OS" — it concerns "Fabric OS" only.
 
-"Fab OS" (and "Secure Fab OS") is a **registered trademark of Brocade
+## Finding for "Fabric OS": DIRECT CONFLICT — do not ship publicly under that name without legal advice
+
+"Fabric OS" (and "Secure Fabric OS") is a **registered trademark of Brocade
 Communications Systems, Inc., now part of Broadcom**, in the United States and
 other countries. It is the name of the operating system / firmware for Brocade
 Fibre Channel SAN switches and directors. The product is actively maintained
-(Fab OS 10.0.1 was released 25 June 2026) and documented at
+(Fabric OS 10.0.1 was released 25 June 2026) and documented at
 techdocs.broadcom.com under "fabric-os".
 
 Both products are *operating system software* (Nice class 9), so this is the
