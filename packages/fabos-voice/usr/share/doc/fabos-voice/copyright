@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: fabos-voice
-Upstream-Contact: Patience AI <fabos@patienceai.in>
+Upstream-Contact: Patience AI <support@patienceai.in>
 Source: https://github.com/PatienceAIiN/fab-os
 
 Files: *

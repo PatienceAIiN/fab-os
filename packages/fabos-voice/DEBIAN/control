@@ -1,9 +1,9 @@
 Package: fabos-voice
-Version: @DISTRO_VERSION@-1
+Version: @DISTRO_VERSION@-@PKG_REVISION@
 Section: sound
 Priority: optional
 Architecture: all
-Maintainer: @VENDOR_NAME@ <fabos@patienceai.in>
+Maintainer: @VENDOR_NAME@ <support@patienceai.in>
 Homepage: https://fabos.patienceai.in
 Depends: python3, python3-numpy, pipewire-bin | pulseaudio-utils, pocketsphinx, pocketsphinx-en-us, whisper.cpp, espeak-ng, libnotify-bin
 Recommends: fabos-agent, sox
