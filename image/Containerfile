@@ -18,9 +18,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends dpkg-dev python3 python3-pil xz-utils gpg ca-certificates wget && rm -rf /var/lib/apt/lists/*
 COPY brand /src/brand
 COPY packages /src/packages
-# Mozilla's official apt signing key, shipped in fabos-branding so Firefox keeps updating from Mozilla (no snap). Fingerprint pinned.
-RUN wget -qO /tmp/moz.asc https://packages.mozilla.org/apt/repo-signing-key.gpg && gpg --show-keys --with-fingerprint --with-colons /tmp/moz.asc | grep -q '^fpr:::::::::35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3:' \
- && install -d /src/packages/fabos-branding/usr/share/keyrings && gpg --dearmor -o /src/packages/fabos-branding/usr/share/keyrings/packages.mozilla.org.gpg /tmp/moz.asc
+# Brave's official apt signing keyring (the binary OpenPGP file Brave documents), fetched here where gpg exists and staged OUTSIDE
+# the package tree: the `brave-keyring` package (a dependency of brave-browser) owns /usr/share/keyrings/brave-browser-archive-keyring.gpg,
+# so no Fab OS package may ship that path. The build FAILS unless gpg parses the file as a keyring whose uid is "Brave Linux Release"
+# and which still carries one of the three release keys seen on 2026-09-15 (a key rotation therefore fails loudly and gets reviewed).
+RUN wget -qO /tmp/brave-keyring.gpg https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg \
+ && gpg --show-keys --with-colons /tmp/brave-keyring.gpg | grep -q '^uid:.*Brave Linux Release' \
+ && gpg --show-keys --with-fingerprint --with-colons /tmp/brave-keyring.gpg | grep -qE '^fpr:::::::::(DBF1A116C220B8C7164F98230686B78420038257|47D32A74E9A9E013A4B4926C68D513D36A73CD96|B2A3DCA350E67256740DF904DE4EC67BE4B0DCA0):' \
+ && install -D -m 0644 /tmp/brave-keyring.gpg /src/keyrings/brave-browser-archive-keyring.gpg
 COPY build/bin /src/bin
 COPY --from=assets /assets /src/assets
 RUN bash /src/packages/build-debs.sh /src /out
@@ -32,7 +37,7 @@ ENV DEBIAN_FRONTEND=noninteractive LANG=en_US.UTF-8
 # The container base is "minimized": undo the doc/man exclusion so new packages install complete.
 # (Copyright files were never excluded; legal/UBUNTU-DERIVATIVE-COMPLIANCE.md #5.)
 RUN rm -f /etc/dpkg/dpkg.cfg.d/excludes /etc/apt/apt.conf.d/docker-* && \
-    printf 'Package: snapd ubuntu-pro-client ubuntu-advantage-tools ubuntu-report popularity-contest motd-news-config apport whoopsie\nPin: release *\nPin-Priority: -1\n' > /etc/apt/preferences.d/00-fabos-blocklist && \
+    printf 'Package: snapd ubuntu-pro-client ubuntu-advantage-tools ubuntu-report popularity-contest motd-news-config apport whoopsie kwalletmanager firefox\nPin: release *\nPin-Priority: -1\n' > /etc/apt/preferences.d/00-fabos-blocklist && \
     printf 'APT::Install-Recommends "true";\nAPT::Install-Suggests "false";\n' > /etc/apt/apt.conf.d/50fabos && \
     sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -54,16 +59,27 @@ RUN apt-get update && apt-get install -y \
       plasma-desktop plasma-workspace kwin-wayland kwin-style-aurorae sddm plasma-nm plasma-pa pipewire wireplumber pipewire-pulse \
       konsole dolphin kate ark kde-spectacle plasma-systemmonitor kinfocenter plasma-discover plasma-discover-backend-flatpak flatpak \
       xdg-desktop-portal-kde kscreen powerdevil bluedevil breeze breeze-icon-theme breeze-gtk-theme kde-config-gtk-style \
-      fonts-inter fonts-jetbrains-mono fonts-noto-core kwalletmanager okular gwenview kcalc \
+      fonts-inter fonts-jetbrains-mono fonts-noto-core okular gwenview kcalc \
       llama.cpp \
     && rm -rf /var/lib/apt/lists/*
 # security.ubuntu.com is a separate line in ubuntu.sources; mirror it too (separate layer so the desktop layer above stays cached)
 RUN sed -i "s|http://security.ubuntu.com/ubuntu|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources
-# Firefox from Mozilla's apt repository (Ubuntu's own firefox package is a snap shim). Pinned above the Ubuntu archive.
-COPY --from=pkgs /src/packages/fabos-branding/usr/share/keyrings/packages.mozilla.org.gpg /usr/share/keyrings/packages.mozilla.org.gpg
-RUN printf 'Types: deb\nURIs: https://packages.mozilla.org/apt\nSuites: mozilla\nComponents: main\nSigned-By: /usr/share/keyrings/packages.mozilla.org.gpg\n' > /etc/apt/sources.list.d/mozilla.sources \
- && printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla \
- && apt-get update && apt-get install -y firefox && rm -rf /var/lib/apt/lists/*
+# Brave Browser from Brave's own apt repository: the unmodified official build, never patched or renamed by Fab OS (ADR-0016).
+# Ubuntu's firefox package is a snap shim and is pinned out above. The source file is Brave's documented deb822 file under its
+# documented name: brave-keyring's postinst (2026-09-15, 1.20) looks for exactly /etc/apt/sources.list.d/brave-browser-release.sources
+# with this Signed-By line and then keeps the key scoped to this source instead of symlinking it into /etc/apt/trusted.gpg.d.
+# /etc/default/brave-browser: Brave's daily cron script (/opt/brave.com/brave/cron/brave-browser, Chromium's installer template with
+# Google's repository constants left in; the postinst itself exits before that code, brave/brave-browser#54299) re-adds a Chrome
+# source only when repo_add_once/repo_reenable_on_distupgrade are "true" — both are pinned to "false" here. The build fails if
+# anything but the Ubuntu and Brave sources exists afterwards or the desktop file is missing. Brave updates keep flowing from this
+# repository through the normal apt update path (README "How updates work").
+COPY --from=pkgs /src/keyrings/brave-browser-archive-keyring.gpg /usr/share/keyrings/brave-browser-archive-keyring.gpg
+RUN printf 'Types: deb\nURIs: https://brave-browser-apt-release.s3.brave.com\nSuites: stable\nComponents: main\nArchitectures: amd64 arm64\nSigned-By: /usr/share/keyrings/brave-browser-archive-keyring.gpg\n' > /etc/apt/sources.list.d/brave-browser-release.sources \
+ && printf 'repo_add_once="false"\nrepo_reenable_on_distupgrade="false"\n' > /etc/default/brave-browser \
+ && apt-get update && apt-get install -y brave-browser && rm -rf /var/lib/apt/lists/* \
+ && test -f /usr/share/applications/brave-browser.desktop && test -s /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+ && test "$(ls /etc/apt/sources.list.d | grep -v -E '^(ubuntu|brave-browser-release)\.sources$' | wc -l)" = 0 \
+ && ! grep -rq dl.google.com /etc/apt/sources.list.d/ && ! dpkg -s firefox >/dev/null 2>&1
 # Agent runtime deps (separate layer so the big desktop layer above stays cached)
 RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3-dbus python3-gi libnotify-bin wtype unattended-upgrades ubuntu-drivers-common && rm -rf /var/lib/apt/lists/*
 # Bundled applications (own layer): LibreOffice with KDE integration, VLC, KWeather, extra Plasma widgets (weather, etc.)
@@ -102,13 +118,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends systemd-zram-ge
 COPY --from=pkgs /out/*.deb /tmp/debs/
 RUN apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-welcome_*.deb /tmp/debs/fabos-voice_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
     && apt-get install -y sddm-theme-breeze && (apt-get purge -y budgie-sddm-theme 2>/dev/null || true) && apt-get -y autoremove --purge && rm -rf /var/lib/apt/lists/* /tmp/debs
-# System configuration. Firewall on by default (ufw: deny incoming, allow outgoing, no rules — the ISO ships no SSH server).
+# System configuration. No wallet (ADR-0015): pam_kwallet5 is dropped from the SDDM PAM stack (both lines are `optional`, so
+# login is unchanged) so no kwalletd6 is spawned at login; the build asserts /etc/xdg/kwalletrc says Enabled=false and that
+# kwalletmanager is absent (ksshaskpass and libqt6keychain1 Recommend it, hence the -1 pin in 00-fabos-blocklist above).
+# Firewall on by default (ufw: deny incoming, allow outgoing, no rules — the ISO ships no SSH server).
 # `ufw enable` cannot run here (no netfilter in the build container), so persist exactly what it would write: the policies
 # in /etc/default/ufw, ENABLED=yes in /etc/ufw/ufw.conf (ufw-init loads the rules at boot only when this is yes) and ufw.service.
 RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/; s/^# *en_IN UTF-8/en_IN UTF-8/' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     ln -sf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime && echo Asia/Kolkata > /etc/timezone && \
     printf 'LABEL=fabos-root  /         ext4  defaults,discard  0 1\nLABEL=FABOS-ESP   /boot/efi vfat  umask=0077        0 1\n' > /etc/fstab && mkdir -p /boot/efi && \
     systemctl enable NetworkManager systemd-resolved systemd-timesyncd sddm fabos-feedback.socket systemd-oomd.service && \
+    sed -i '/pam_kwallet5\.so/d' /etc/pam.d/sddm && ! grep -q pam_kwallet /etc/pam.d/sddm && \
+    grep -q '^Enabled=false$' /etc/xdg/kwalletrc && ! dpkg -s kwalletmanager >/dev/null 2>&1 && \
     ufw default deny incoming && ufw default allow outgoing && \
     sed -i 's/^ENABLED=no$/ENABLED=yes/' /etc/ufw/ufw.conf && grep -q '^ENABLED=yes$' /etc/ufw/ufw.conf && systemctl enable ufw && \
     truncate -s0 /etc/machine-id && rm -f /var/lib/dbus/machine-id && \

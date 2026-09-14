@@ -131,7 +131,7 @@ has no Author key, so `Description`/`Comment` carry it), in the FabOS icon theme
 in Welcome, Fab Updates, Fab Feedback and the Command Center settings. `tests/branding-check.sh` checks the shipped copies.
 
 **What is never rebranded:** copyright and licence notices, in-app About dialogs of upstream programs, package and
-binary names, D-Bus names, configuration keys, and Canonical/KDE/Mozilla trademarks used for identification.
+binary names, D-Bus names, configuration keys, and Canonical/KDE/Brave trademarks used for identification.
 
 **Old names:** "Fabric OS" and "ai-native-os" are retired; the only remaining references are historical
 (legal/TRADEMARK-SEARCH.md, ADRs) and the server hostname fabricos.patienceai.in.

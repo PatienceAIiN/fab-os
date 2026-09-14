@@ -22,7 +22,7 @@ In scope:
 - The Fab OS apt repository (signing, channel switching in Fab OS Updates).
 - The website and community server in `website/` and `community/`.
 
-Out of scope: vulnerabilities in unmodified Ubuntu, KDE, Mozilla or other upstream packages (report them
+Out of scope: vulnerabilities in unmodified Ubuntu, KDE, Brave or other upstream packages (report them
 upstream; tell us as well if Fab OS's default configuration makes them worse), and the VM test profile,
 which has a known password and autologin by design and is never distributed.
 
@@ -59,3 +59,16 @@ user adds a key; model output is treated as untrusted data. Fab OS updates are a
 Fab OS Archive key; Ubuntu updates come from Ubuntu unchanged. Known gap: the Fab OS repository is served
 over HTTP until a certificate is issued for the host (integrity is protected by signatures; package names
 are not private).
+
+Secrets and the browser (2026-09-15, ADR-0015 / ADR-0016): KWallet is disabled system-wide (`/etc/xdg/kwalletrc`
+`Enabled=false`), KWallet Manager is not installed and pinned out, and `pam_kwallet5` is removed from the SDDM PAM
+stack, so no wallet daemon runs and no wallet prompt appears. Wi-Fi/VPN secrets are therefore held by NetworkManager
+in root-only files under `/etc/NetworkManager/system-connections/`; the agent's keys stay in `systemd-creds`. Brave
+Browser is Brave's unmodified official build from Brave's own signed apt repository (keyring fingerprint-checked at
+build time, key scoped to that source only, never in `/etc/apt/trusted.gpg.d/`); its sandbox runs under Ubuntu's
+AppArmor `brave` profile. Brave's packaging still contains Chromium's "re-add the vendor repository" cron script with
+Google's constants in it; Fab OS ships `/etc/default/brave-browser` with `repo_add_once="false"` and installs no
+`cron`, so it never runs, and the build fails if any source other than Ubuntu's and Brave's appears. Every daemon Fab
+OS adds binds 127.0.0.1 or a unix socket, runs as the user and carries a `MemoryHigh` limit; the image's SUID/SGID set
+and file capabilities are Ubuntu's stock set (no Fab OS binary is setuid), and `tests/branding-check.sh` asserts that
+nothing under `/usr/lib/fabos` or `/usr/share/fabos` is world-writable.

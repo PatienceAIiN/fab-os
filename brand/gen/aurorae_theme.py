@@ -30,6 +30,18 @@ leftWidth is the width of the `-left` element and topHeight the height of the `-
 corner (which needs R px INSIDE the window edge) only fits if `-left` is padding + radius wide. The part of each
 element that lies under the client is never shown (KWin renders only the border quads + the shadow).
 
+Why the corner NOTCHES are transparent (2026-09-15; ISO 1.0 rev 2 showed square top corners):
+  Aurorae v2 (aurorae/v2/decoration.cpp, Plasma 6.6) resizes this frame to window + Padding* and paints it into the
+  decoration rect offset by (-PaddingLeft, -PaddingTop) (`paint()`); the shadow is the same frame with the window
+  rectangle cut out (`updateShadow()`: DestinationOut of innerRect) and KWin draws it only OUTSIDE the window box.
+  So every pixel of `-topleft` / `-topright` that lies inside the window's bounding box but outside the arc (the notch)
+  is shown exactly as drawn here. The first version filled the notch with the corner shadow gradient (19-38 % black,
+  measured through KSvg by tests/decoration-render-test.sh), which reads as a dark square corner on any wallpaper.
+  The corner shadow is therefore an L-shaped path that stops at the window box and the notch is left fully transparent,
+  as Breeze does. `mask-*` elements are deliberately absent: in Aurorae they only define KWin's blur region
+  (`updateBlur()` -> `setBlurRegion`; v1 aurorae.qml `decorationMask` -> `updateBlur`), never the window shape, and a
+  blur region behind an opaque title bar would only cost GPU time.
+
 Usage: aurorae_theme.py --out <dir>   (writes <dir>/FabOS and <dir>/FabOSLight)
 """
 import argparse, os
@@ -79,13 +91,15 @@ def frame_block(prefix, s, dx):
     hb = cls("HeaderBackground")
     keep = 'style="fill:#000;fill-opacity:0"'      # invisible bounds keeper so element sizes are exact
     e = {}
-    e["topleft"] = ('<rect x="0" y="0" width="%d" height="%d" fill="url(#shTL%s)"/>' % (LW, LW, s) +
+    # Corner shadow as an L-shaped path that stops at the window's bounding box: the notch between the arc and the box
+    # corner stays fully transparent (Aurorae shows it as drawn; a shadow there reads as a square corner, see docstring).
+    e["topleft"] = ('<path d="M0 0H%dV%dH%dV%dH0Z" fill="url(#shTL%s)"/>' % (LW, P, P, LW, s) +
                     '<rect x="0" y="%d" width="%d" height="%d" fill="url(#shL%s)"/>' % (LW, P, TOPH - LW, s) +
                     '<path d="M%d %d V%d A%d %d 0 0 1 %d %d V%d Z" %s/>' % (P, TOPH, LW, R, R, LW, P, TOPH, hb))
     e["top"] = ('<rect x="%d" y="0" width="8" height="%d" fill="url(#shT%s)"/>' % (LW, P, s) +
                 '<rect x="%d" y="%d" width="8" height="%d" %s/>' % (LW, P, TH, hb))
     x0 = BW - LW                                    # left edge of the right column
-    e["topright"] = ('<rect x="%d" y="0" width="%d" height="%d" fill="url(#shTR%s)"/>' % (x0, LW, LW, s) +
+    e["topright"] = ('<path d="M%d 0H%dV%dH%dV%dH%dZ" fill="url(#shTR%s)"/>' % (x0, BW, LW, BW - P, P, x0, s) +
                      '<rect x="%d" y="%d" width="%d" height="%d" fill="url(#shR%s)"/>' % (BW - P, LW, P, TOPH - LW, s) +
                      '<path d="M%d %d A%d %d 0 0 1 %d %d V%d H%d Z" %s/>' % (x0, P, R, R, x0 + R, LW, TOPH, x0, hb))
     e["left"] = ('<rect x="0" y="%d" width="%d" height="8" %s/>' % (TOPH, LW, keep) +
@@ -111,8 +125,13 @@ def decoration_svg():
     blocks += '<g id="decoration-maximized-center"><rect x="%d" y="0" width="8" height="8" %s/></g>' % (mx, cls("HeaderBackground"))
     blocks += '<g id="decoration-maximized-inactive-center"><rect x="%d" y="0" width="8" height="8" %s/></g>' % (mx + 16, cls("HeaderBackground"))
     w = mx + 32
-    return ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d"><defs>%s</defs>%s</svg>\n'
-            % (w, BHT, w, BHT, defs, blocks))
+    # <desc> is ignored by QtSvg/KSvg; it records the two facts a reader of the SVG needs (tests/branding-check.sh greps "notch").
+    desc = ('<desc>Fab OS window frame for the Aurorae v2 engine. The corner notches inside the window box are transparent on '
+            'purpose: Aurorae paints this frame offset by the padding into the decoration rect, so anything drawn there shows '
+            'as a square corner. No mask-* elements: in Aurorae they only set the blur region, never the window shape '
+            '(brand/gen/aurorae_theme.py).</desc>')
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">%s<defs>%s</defs>%s</svg>\n'
+            % (w, BHT, w, BHT, desc, defs, blocks))
 
 
 # ---------- buttons ----------

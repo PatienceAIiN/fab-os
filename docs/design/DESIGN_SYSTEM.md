@@ -16,6 +16,29 @@ Rules: no hard-coded colours in Fab OS code (palette or Kirigami.Theme only); on
 animations from the motion tokens and disabled under Reduce Motion; every state (loading/empty/error/disabled)
 must be visible and truthful.
 
+## Windows (frame)
+
+Source: `brand/gen/aurorae_theme.py` → `/usr/share/aurorae/themes/FabOS` (+ `FabOSLight`), rendered by KWin's Aurorae v2
+engine (ADR-0012). Geometry at 1x: title bar 36, **radius 20 on the two top corners**, square bottom corners, no side or
+bottom borders (`BorderSize=None`), 28 px shadow padding (gradients only), 28 px buttons with 3 px rounded-cap strokes.
+Colours: `ColorScheme-HeaderBackground` for the bar, `ColorScheme-Text` for glyphs, `ColorScheme-Highlight` on hover,
+`ColorScheme-NegativeText` for the close hover — all rewritten from the active scheme by KSvg, so the same SVGs serve Fab
+Dark and Fab Light; only the caption colour is per variant.
+
+How the rounded corner actually appears (verified 2026-09-15 against `aurorae/v2/decoration.cpp` and by rendering the
+frame through KSvg in the image, `tests/decoration-render-test.sh`): Aurorae paints the whole frame, offset by the
+padding, into the decoration texture and cuts the shadow at the window's bounding box. The pixels between the arc and
+the box corner (the *notch*) are therefore shown exactly as the SVG draws them. They must be **fully transparent**; the
+first release put the corner shadow gradient there (19-38 % black) and every window looked square-cornered. Rules:
+
+- Corner shadows are L-shaped paths that stop at the window box; nothing is drawn in the notch.
+- No `mask-*` elements: in Aurorae they only feed KWin's blur region (`setBlurRegion`), never the window shape, and blur
+  behind an opaque title bar is wasted GPU work.
+- No opaque overlays over the client area to fake a radius; the client's own top edge sits under the title bar.
+- Buttons stay 3 px / rounded caps; hover discs radius 13 in a 28 px box; close hover uses the negative colour.
+- After editing the generator: `python3 brand/gen/aurorae_theme.py --out packages/fabos-desktop/usr/share/aurorae/themes`,
+  then `tests/decoration-render-test.sh` (notch alpha must be 0, header alpha 1) and commit the SVGs.
+
 ## Voice states (fabos-voice)
 
 Every surface that offers voice (ask-bar microphone, Fab AI Controls composer, notifications from `fabos-voiced`)

@@ -48,9 +48,10 @@ are still recommended before a wide public launch.
 
 ## Third parties
 
-KDE and Plasma are trademarks of KDE e.V.; Firefox is a trademark of the
-Mozilla Foundation (Fab OS ships Mozilla's own unmodified Firefox package and
-does not use the Firefox logo in its own artwork); Flatpak, Inter, JetBrains
-Mono and other names are trademarks of their respective owners. All are used
-only to identify the software. Fab OS is not endorsed by or affiliated with
-KDE e.V. or the Mozilla Foundation.
+KDE and Plasma are trademarks of KDE e.V.; Brave and the Brave lion logo are
+trademarks of Brave Software, Inc. (Fab OS ships the unmodified official build
+from Brave's repository, is not endorsed by Brave Software, and does not use
+the lion logo in its own artwork); Flatpak, Inter, JetBrains Mono and other
+names are trademarks of their respective owners. All are used only to identify
+the software. Fab OS is not endorsed by or affiliated with KDE e.V. or Brave
+Software, Inc.

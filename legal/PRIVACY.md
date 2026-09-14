@@ -33,8 +33,19 @@
   is accepted only as a short, answer-shaped reply, never from a longer
   sentence, and a command run as administrator needs a clear "yes".
 - Ubuntu package updates fetch metadata from Ubuntu mirrors; Fab OS updates
-  from the Patience AI repository. Both are standard apt transactions with no
-  identifying payload.
+  from the Patience AI repository; Brave Browser updates from Brave's own
+  repository. All are standard apt transactions with no identifying payload.
+- No wallet (ADR-0015): KWallet is disabled and no wallet application is
+  installed, so nothing asks for a wallet password. Wi-Fi and VPN secrets are
+  kept by NetworkManager in root-only files under
+  `/etc/NetworkManager/system-connections/` (readable by administrators of
+  the machine, not by other ordinary users); the agent's keys stay in
+  `systemd-creds` as described above; browser passwords are protected by the
+  browser's own store.
+- Brave Browser is a third-party application shipped exactly as Brave
+  publishes it. Its own settings govern what it sends (for example Brave
+  Rewards, Brave News and its product analytics); Fab OS does not change or
+  pre-answer them.
 - Applicable law: Digital Personal Data Protection Act 2023 (India) and GDPR
   where users are in the EU. Because nothing is collected, no consent flow is
   required for the OS itself.
