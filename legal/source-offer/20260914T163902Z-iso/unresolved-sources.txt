@@ -1,0 +1,14 @@
+coreutils=9.7-3ubuntu2.1
+fabos-agent=1.0-2
+fabos-ai=1.0-2
+fabos-branding=1.0-2
+fabos-desktop=1.0-2
+fabos-desktop-meta=1.0-2
+fabos-feedback=1.0-2
+fabos-firstboot=1.0-2
+fabos-updates=1.0-2
+fabos-voice=1.0-2
+fabos-welcome=1.0-2
+firefox=155.0.1~build1
+libftdi1=1.6~rc1-1build1
+libinput=1.31.1-1ubuntu1.1
