@@ -8,7 +8,7 @@
   fabos-voice wake on|off                       turn the always-on "Hey Fab" listener on or off (voice.enabled)
   fabos-voice chime                             play the listening chime (diagnostic)
 
-Speech-to-text: the agent's cloud endpoint when you configured OpenAI or Gemini and voice.offline_only is off,
+Speech-to-text: the agent's cloud endpoint when a cloud speech provider is configured and voice.offline_only is off,
 otherwise whisper.cpp with the tiny.en model shipped in /usr/share/fabos/voice. Text-to-speech: the agent's cloud
 voice (Indian English) when available, otherwise espeak-ng (a plain British-English voice, offline).
 """

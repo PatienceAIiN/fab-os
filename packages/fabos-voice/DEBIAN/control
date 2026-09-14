@@ -17,4 +17,4 @@ Description: @DISTRO_NAME@ voice — "Hey Fab" wake word, speech-to-text, spoken
  by voice and speaks the reply. Ships the fabos-voice CLI (listen-once, say,
  status, wake on|off) used by every @DISTRO_NAME@ UI, and the per-user
  fabos-voiced service. Offline text-to-speech is espeak-ng; the human-like
- Indian-English voice needs an OpenAI or Gemini key in Fab AI Controls.
+ Indian-English voice needs a cloud speech provider key, set in Fab AI Controls.
