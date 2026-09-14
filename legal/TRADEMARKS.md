@@ -54,3 +54,12 @@ does not use the Firefox logo in its own artwork); Flatpak, Inter, JetBrains
 Mono and other names are trademarks of their respective owners. All are used
 only to identify the software. Fab OS is not endorsed by or affiliated with
 KDE e.V. or the Mozilla Foundation.
+
+
+## The Fab OS mark (2026-09-14)
+
+"Fab OS" and the ring-and-three-bars mark are used as trademarks of Patience AI and are shown with the ™ symbol
+(claimed, unregistered). The ® symbol must NOT be used until a registration is granted. Recommended filing: India
+Class 9 (operating system software) via IP India, then EUIPO/USPTO as distribution grows — see TRADEMARK-SEARCH.md
+for the clearance searches still to be completed. Machine identifiers (package names, `ID=fabos`, paths) never carry
+the symbol; it appears only in human-facing brand mentions (website, README, About).
