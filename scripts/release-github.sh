@@ -9,8 +9,9 @@ while [ $# -gt 0 ]; do case $1 in --repo) REPO=$2; shift;; --iso) ISO=$2; shift;
 OUT=build/release/$TAG; rm -rf "$OUT"; mkdir -p "$OUT"; base=$(basename "$ISO")
 echo "== checksums"; (cd "$(dirname "$ISO")" && sha256sum "$base") > "$OUT/$base.sha256"
 size=$(stat -c %s "$ISO"); limit=$((1900*1024*1024))
-if [ "$size" -gt "$limit" ]; then echo "== splitting $((size/1048576)) MB ISO into parts"; split -b 1900M -d -a 2 "$ISO" "$OUT/$base.part-"; (cd "$OUT" && sha256sum "$base".part-* > "$base.parts.sha256")
-else cp "$ISO" "$OUT/"; fi
+# GitHub caps one asset at 2 GiB; the ISO is bigger and splitting is user-hostile. The full one-click download is
+# hosted on fabos.patienceai.in (scripts/publish-iso.sh). GitHub carries only the checksum, manifest and notes.
+if [ "$size" -le "$limit" ]; then cp "$ISO" "$OUT/"; else echo "== ISO is $((size/1048576)) MB (> GitHub 2 GiB limit) — publishing checksum only; full download is on fabos.patienceai.in/download/"; fi
 cp /dev/null "$OUT/MANIFEST.txt"; podman run --rm localhost/fabos:iso cat /usr/share/fabos/manifest.txt > "$OUT/MANIFEST.txt" 2>/dev/null || echo "(manifest unavailable)" > "$OUT/MANIFEST.txt"
 cat > "$OUT/NOTES.md" <<MD
 # Fab OS $TAG (pre-release)
@@ -19,13 +20,9 @@ Ubuntu 26.04 LTS based desktop by Patience AI with KDE Plasma 6, the Fab OS look
 (Claude / OpenAI / Gemini / local models; ask / auto / bypass permission modes; System-Wide AI switch).
 
 ## Download
-GitHub limits each asset to 2 GiB, so the ISO is split. Download all parts and reassemble:
-
-    cat $base.part-* > $base
-    sha256sum -c $base.sha256
-
-Write it to a USB stick (e.g. \`dd if=$base of=/dev/sdX bs=4M status=progress oflag=sync\`) or boot it in a VM with UEFI.
-Live user: \`fabos\` (no password). The installer is on the live desktop.
+One file, one click: **https://fabos.patienceai.in/download/$base**  (about 2.3 GB).
+Write it to an 8 GB+ USB stick with [Balena Etcher](https://etcher.balena.io/), restart, pick the USB stick.
+Try it live, then double-click **Install Fab OS** on the desktop. Verify with \`sha256sum -c $base.sha256\`.
 
 ## What is inside
 See MANIFEST.txt (every package and version). Bundled: Firefox (Mozilla build), LibreOffice, VLC, KWeather, Fab Terminal,
