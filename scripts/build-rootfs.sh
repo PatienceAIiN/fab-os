@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build the FabOS OS rootfs image with rootless podman and turn it into an ext4 filesystem (no host root).
-# Usage: scripts/build-rootfs.sh [vm|iso]   Env: ROOT_SIZE (default 8G), NO_CACHE=1
+# Usage: scripts/build-rootfs.sh [vm|iso]   Env: ROOT_SIZE (default 14G — the vm test disk must hold the built-in model, Brave and voice with room to run), NO_CACHE=1
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"; PROFILE=${1:-vm}; TAG=fabos:$PROFILE
-ROOT_SIZE=${ROOT_SIZE:-8G}; mkdir -p build
+ROOT_SIZE=${ROOT_SIZE:-14G}; mkdir -p build
 [ -x build/bin/aios ] || scripts/stage-ai-binaries.sh
 # Feedback channel credentials: if the operator staged build/secrets/feedback.env (never committed), bake it in root-only.
 mkdir -p image/overlay/$PROFILE/etc/fabos
