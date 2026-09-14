@@ -37,7 +37,7 @@ The desktop's centrepiece is the **"Ask me to do anything…"** bar. Type (or ta
 **You stay in control.** Every action is scored by a deterministic risk classifier (LOW → CRITICAL) and gated by a permission mode:
 
 - **Ask** — approve each risky step.
-- **Auto** — the agent proceeds, pausing only for high-risk actions.
+- **Auto** — the agent proceeds on its own; it pauses for CRITICAL actions (root, disks, wiping a home or system directory, credentials, piping downloads to a shell), while other HIGH actions such as package installs or sending mail run without a prompt but are logged. Choose Ask if you want to approve those too.
 - **Bypass** — full autonomy, for when you trust the task.
 
 A single **System-Wide AI** switch turns the whole thing off. Nothing leaves your machine except the requests you give the agent, sent only to the provider you configure yourself: **the built-in local model** (inside the ISO, fully offline, served by llama.cpp, no account) or **Anthropic (Claude), Google Gemini, OpenAI, DeepSeek** with your own key. No telemetry, no accounts, no crash uploads.
