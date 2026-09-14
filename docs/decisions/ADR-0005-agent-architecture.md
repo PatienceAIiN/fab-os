@@ -13,7 +13,7 @@ end to end, safely, with history — as an OS capability, not an app.
   mode (ask/auto/bypass) decides whether an approval is required. Denials are returned to the model as errors.
 - Providers behind one interface: Claude (Anthropic SDK, default model claude-opus-5, server-side refusal
   fallbacks) and any OpenAI-compatible endpoint (OpenAI, Gemini, local llama-server). Keys via systemd-creds.
-- Surfaces: desktop ask bar (plasmoid), Command Center (PyQt6), KRunner D-Bus runner, Dolphin action, CLI.
+- Surfaces: desktop ask bar (plasmoid), Fab AI Controls chat app (PyQt6; formerly "Command Center"), KRunner D-Bus runner, Dolphin action, CLI.
 - Storage: SQLite (tasks, steps, approvals, questions, watches, settings, activity). Everything auditable.
 
 ## Why Python (not Rust like the rest of ai-native-os)

@@ -43,7 +43,7 @@ We treat the following as vulnerabilities and want to hear about them privately:
   user's mode requires, or to change the mode or the System-Wide AI switch without a user action;
 - policy classification bypasses that let a command reach `run_shell` with `as_root` while being
   classified below CRITICAL;
-- leakage of provider API keys or mail credentials from the daemon, the Command Center or logs;
+- leakage of provider API keys or mail credentials from the daemon, Fab AI Controls or logs;
 - privilege escalation through the feedback relay (`fabos-feedback-relay`, root, socket-activated) or the
   updates helper (`pkexec` + polkit action `in.patienceai.fabos.updates`).
 

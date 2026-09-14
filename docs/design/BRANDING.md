@@ -9,11 +9,11 @@ wallpaper, the dock, the greeter card and the About page. It is shipped as a vec
 16 to 1024 px; a monochrome `fabos-symbolic.svg` (KDE `ColorScheme-Text`, `currentColor`) exists for panels and for
 places where the icon must take the surrounding text colour (e.g. the spinning mark on the ask bar's accent pill).
 Only the default avatar (`fabos-face.png`) adds a thin white halo, because it is drawn over arbitrary wallpapers.
-The coloured tiles (Material Symbols glyph on a gradient square) are for **applications** — Fab Command Center, Fab
+The coloured tiles (Material Symbols glyph on a gradient square) are for **applications** — Fab AI Controls, Fab
 Updates, Fab Feedback and the bundled KDE apps — never for the Fab OS identity. Wordmark set in Inter Bold.
 
 **Where the brand appears (and where it does not):** boot animation, greeter, splash, About, installer, Welcome,
-Command Center, Updates, Feedback, launcher start button, ask bar. Ordinary application windows, dialogs and
+Fab AI Controls, Updates, Feedback, launcher start button, ask bar. Ordinary application windows, dialogs and
 System Settings pages carry no logo — the interface should feel like an OS, not an advertisement.
 
 **Colour:** ink `#0E1116`, surfaces `#161B22`/`#1E242D`, text `#E6EAF0`, accent `#6E9BFF` (dark) / `#3B6EF5` (light).
@@ -49,7 +49,7 @@ Icon theme `index.theme`: `[Icon Theme]` keeps `FollowsColorScheme=true`; `Direc
 
 **Names for bundled applications** (launcher, dock, search): Fab Files, Fab Terminal, Fab Editor, Fab Software,
 Fab Photos, Fab Documents, Fab Calculator, Fab Archives, Fab Screenshot, Fab System Info, Fab Monitor, Fab Search,
-Fab Settings, Fab Wallet, Fab Command Center, Fab Updates, Fab Feedback, Welcome to Fab OS. These are display names
+Fab Settings, Fab Wallet, Fab AI Controls, Fab Updates, Fab Feedback, Welcome to Fab OS. These are display names
 set through desktop-entry overrides; the programs remain the upstream projects credited in ATTRIBUTIONS.md.
 
 **What is never rebranded:** copyright and licence notices, in-app About dialogs of upstream programs, package and

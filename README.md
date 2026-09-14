@@ -42,12 +42,12 @@ The desktop's centrepiece is the **"Ask me to do anything…"** bar. Behind it r
 
 A single **System-Wide AI** switch turns the whole thing off. Nothing leaves your machine except the requests you give the agent, sent only to the provider you configure yourself: **Claude, OpenAI, Google Gemini, or a fully local model** (llama.cpp — offline). No telemetry, no accounts, no crash uploads.
 
-Everything the agent does is recorded — a full history with create/read/update/delete in the **Fab Command Center** — so you can see, retry, cancel, or delete any task.
+Everything the agent does is recorded and shown as a chat in **Fab AI Controls**: your requests on the right, the agent's answers on the left, and every tool step folded into a small "Worked: N actions" chip you can expand. Follow up in the same chat and the agent keeps the context; hover a message to edit, retry, or copy it; stop a running task with one click; and every risky step, delete, or mode change asks you first in a rounded confirmation dialog.
 
 ## What's in the box
 
 - **Apps you already know:** Firefox (Mozilla's own build), LibreOffice, VLC, plus the Fab suite — Fab Files, Fab Terminal, Fab Editor, Fab Software, Fab Photos, Fab Documents, Fab Calculator, Fab Screenshot, Fab Monitor, Fab System Info, Weather.
-- **Fab Command Center** — the agent's history, approvals, and settings.
+- **Fab AI Controls** — chat with the agent: searchable history grouped by day, follow-ups with context, approvals, the System-Wide AI switch, and settings. Launch it with Meta+Space (`fabos-command-center`).
 - **Fab Updates** — one place for updates, with Standard and Beta channels.
 - **Fab Feedback** — send a bug or idea straight to the team.
 - **Welcome to Fab OS** — a first-run wizard for appearance, privacy, and connecting an AI provider.
@@ -74,7 +74,7 @@ Design docs live in [`docs/design/`](docs/design/). Decisions are recorded as AD
 4. **Try it live** — Fab OS runs from the stick without touching your disk. When you're ready, open **Install Fab OS** on the desktop.
 5. **Verify the download** (optional): `sha256sum -c fabos-1.0-desktop-amd64.iso.sha256`.
 
-After first login, connect an AI provider in **Fab Command Center → Settings** to turn the agent on. It stays off until you do.
+After first login, connect an AI provider in **Fab AI Controls → Settings** to turn the agent on. It stays off until you do.
 
 ---
 

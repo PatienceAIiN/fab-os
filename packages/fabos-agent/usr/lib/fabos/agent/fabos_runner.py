@@ -33,7 +33,7 @@ class Runner(dbus.service.Object):
 
     @dbus.service.method(IFACE, out_signature="a(sss)")
     def Actions(self):
-        return [("open", "Open Command Center", "fabos-command-center")]
+        return [("open", "Open Fab AI Controls", "fabos-command-center")]
 
     @dbus.service.method(IFACE, in_signature="s", out_signature="a(sssida{sv})")
     def Match(self, query):
@@ -48,7 +48,7 @@ class Runner(dbus.service.Object):
             text = q
         if not text or len(text) < 3:
             return []
-        return [("task:" + text, "Ask Fab OS to: " + text, "fabos-command-center", 100, 1.0, {"subtext": "runs autonomously; watch it in Command Center"})]
+        return [("task:" + text, "Ask Fab OS to: " + text, "fabos-command-center", 100, 1.0, {"subtext": "runs autonomously; watch it in Fab AI Controls"})]
 
     @dbus.service.method(IFACE, in_signature="ss")
     def Run(self, match_id, action_id):
