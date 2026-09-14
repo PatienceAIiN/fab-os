@@ -4,6 +4,7 @@ Section: admin
 Priority: optional
 Architecture: all
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Homepage: @HOME_URL@
 Depends: network-manager, libnotify-bin, flatpak
 Recommends: ubuntu-drivers-common, fwupd
 Description: @DISTRO_NAME@ first-boot provisioning (updates, drivers, firmware, Flathub)

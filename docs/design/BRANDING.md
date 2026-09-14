@@ -52,6 +52,14 @@ Fab Photos, Fab Documents, Fab Calculator, Fab Archives, Fab Screenshot, Fab Sys
 Fab Settings, Fab Wallet, Fab Command Center, Fab Updates, Fab Feedback, Welcome to Fab OS. These are display names
 set through desktop-entry overrides; the programs remain the upstream projects credited in ATTRIBUTIONS.md.
 
+**Author metadata.** Every artefact Fab OS ships names its author: `Patience AI <support@patienceai.in>` and
+`HOME_URL` appear in the `Authors`/`Website` fields of every `metadata.json` (plasmoid, both look-and-feel packages,
+wallpaper, the generated FabOS Plasma theme), in `Maintainer:` and `Homepage:` of every `DEBIAN/control`, in the SDDM
+theme `metadata.desktop` (`Author`, `Email`, `Copyright`, `Website`), in the Plymouth theme descriptor (its format
+has no Author key, so `Description`/`Comment` carry it), in the FabOS icon theme `Comment`, in
+`/etc/os-release` (`VENDOR_NAME`, `VENDOR_URL`, `HOME_URL`, `SUPPORT_URL`, `BUG_REPORT_URL`) and as an about line
+in Welcome, Fab Updates, Fab Feedback and the Command Center settings. `tests/branding-check.sh` checks the shipped copies.
+
 **What is never rebranded:** copyright and licence notices, in-app About dialogs of upstream programs, package and
 binary names, D-Bus names, configuration keys, and Canonical/KDE/Mozilla trademarks used for identification.
 

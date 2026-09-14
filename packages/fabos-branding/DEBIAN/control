@@ -4,6 +4,7 @@ Section: misc
 Priority: optional
 Architecture: all
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Homepage: @HOME_URL@
 Depends: base-files, plymouth, plymouth-label, dpkg (>= 1.15)
 Recommends: fonts-inter
 Description: @DISTRO_NAME@ system identity, boot splash and legal notices

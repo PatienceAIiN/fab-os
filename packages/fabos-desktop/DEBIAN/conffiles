@@ -1,0 +1,4 @@
+/etc/systemd/zram-generator.conf
+/etc/sysctl.d/60-fabos-lowram.conf
+/etc/systemd/oomd.conf.d/fabos.conf
+/etc/systemd/system/user@.service.d/90-fabos-oomd.conf

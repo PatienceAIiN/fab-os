@@ -1,0 +1,10 @@
+# @DISTRO_NAME@ low-RAM defaults (docs/LOW-RAM.md): the file-content indexer (baloo_file + baloo_file_extractor)
+# is off by default. Fab Search still finds applications, settings, commands, recent documents, bookmarks and
+# the @DISTRO_NAME@ agent; only "search inside file contents" needs the index.
+# Turn it on in Fab Settings > Search > File Search ("Enable File Search"); the per-user ~/.config/baloofilerc
+# overrides this file. With it on, only file names are indexed unless "Also index file content" is ticked.
+[Basic Settings]
+Indexing-Enabled=false
+
+[General]
+only basic indexing=true

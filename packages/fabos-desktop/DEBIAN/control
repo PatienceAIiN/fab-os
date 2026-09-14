@@ -4,9 +4,12 @@ Section: kde
 Priority: optional
 Architecture: all
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Homepage: @HOME_URL@
 Depends: fabos-branding, plasma-desktop, plasma-workspace, sddm, fonts-inter, fonts-jetbrains-mono, breeze, breeze-icon-theme
-Recommends: plasma-nm, plasma-pa, kscreen, powerdevil, bluedevil, kde-config-sddm, breeze-gtk-theme, xdg-desktop-portal-kde
+Recommends: plasma-nm, plasma-pa, kscreen, powerdevil, bluedevil, kde-config-sddm, breeze-gtk-theme, xdg-desktop-portal-kde, systemd-zram-generator, systemd-oomd
 Description: @DISTRO_NAME@ desktop experience (Plasma 6 defaults, greeter, splash, wallpapers)
  Look-and-feel package, SDDM greeter theme, KSplash animation, procedural
  wallpapers, Inter/JetBrains Mono typography and Plasma defaults that make
- an Ubuntu + Plasma system look and feel like @DISTRO_NAME@.
+ an Ubuntu + Plasma system look and feel like @DISTRO_NAME@. Also carries the
+ low-RAM defaults (zram swap, sysctl, systemd-oomd, on-demand printing,
+ file indexing off) documented in docs/LOW-RAM.md.

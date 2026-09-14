@@ -4,6 +4,7 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Homepage: @HOME_URL@
 Depends: systemd, libc6
 Recommends: llama.cpp, curl
 Description: @DISTRO_NAME@ AI stack — intents, agents, governor, provenance, rollback

@@ -9,6 +9,7 @@ bug-report flows, which pointed at KDE). GUI (PyQt6) by default; --cli for termi
 import argparse, json, os, platform, socket, subprocess, sys
 
 SOCK = os.environ.get("FABOS_FEEDBACK_SOCK", "/run/fabos/feedback.sock")
+ABOUT = "Fab OS by Patience AI · fabos.patienceai.in · support@patienceai.in"
 
 
 def system_info(include_logs=False):
@@ -101,6 +102,9 @@ def gui(args):
     send_btn.clicked.connect(do_send)
     bb.rejected.connect(d.reject)
     lay.addWidget(bb)
+    about = QLabel(ABOUT, objectName="muted")
+    about.setWordWrap(True)
+    lay.addWidget(about)
     d.show()
     sys.exit(app.exec())
 

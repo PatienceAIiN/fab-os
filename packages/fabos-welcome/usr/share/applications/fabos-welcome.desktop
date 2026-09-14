@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Welcome to @DISTRO_NAME@
-Comment=First-run setup: appearance, privacy, AI provider
+Comment=First-run setup by @VENDOR_NAME@: appearance, privacy, AI provider
 Exec=fabos-welcome --again
 Icon=fabos
 Terminal=false

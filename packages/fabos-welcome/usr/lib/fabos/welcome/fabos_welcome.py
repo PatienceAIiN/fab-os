@@ -5,11 +5,18 @@ Pages: Welcome → Appearance (Fab Light / Fab Dark, applied live) → Privacy (
 → AI (optional: open Command Center settings, or keep AI off) → Finish (links to Language, Keyboard, Network).
 Every control performs the real action or opens the real settings module; nothing is simulated."""
 import os, subprocess, sys
+
+MARK = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "fabos", "welcome-done")
+# Autostarted at every login: when the wizard is already done, leave before importing Qt (the /usr/bin/fabos-welcome
+# wrapper normally catches this even earlier, without starting Python). docs/LOW-RAM.md
+if __name__ == "__main__" and os.path.exists(MARK) and "--again" not in sys.argv and "--force" not in sys.argv:
+    sys.exit(0)
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QIcon
 from PyQt6.QtWidgets import (QApplication, QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QLabel, QRadioButton, QPushButton, QCheckBox, QButtonGroup)
 
-MARK = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "fabos", "welcome-done")
+ABOUT = "Fab OS by Patience AI · fabos.patienceai.in · support@patienceai.in"
 STYLE = "QWidget{font-family:Inter,'Noto Sans';font-size:14px} QLabel#h1{font-size:26px;font-weight:700} QLabel#muted{color:palette(mid)} QPushButton{border-radius:10px;padding:8px 16px}"
 
 
@@ -139,7 +146,7 @@ def main():
         bb.clicked.connect(lambda _, k=kcm: run("systemsettings", k))
         p5.v.addWidget(bb, 0, Qt.AlignmentFlag.AlignLeft)
     p5.v.addStretch(1)
-    small = QLabel("Fab OS by Patience AI · based on Ubuntu 26.04 LTS. Ubuntu is a trademark of Canonical Ltd.; Fab OS is an independent project.", objectName="muted")
+    small = QLabel(ABOUT + " · based on Ubuntu 26.04 LTS. Ubuntu is a trademark of Canonical Ltd.; Fab OS is an independent project.", objectName="muted")
     small.setWordWrap(True)
     p5.v.addWidget(small)
     w.addPage(p5)
@@ -157,6 +164,4 @@ def main():
 
 
 if __name__ == "__main__":
-    if os.path.exists(MARK) and "--again" not in sys.argv and "--force" not in sys.argv:
-        sys.exit(0)
     main()

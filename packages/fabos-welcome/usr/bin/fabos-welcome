@@ -1,2 +1,6 @@
 #!/bin/sh
+# Runs at every login via XDG autostart. Once the wizard has been completed (marker present) exit here, before
+# Python and Qt are loaded at all (~37 MB and half a second of CPU on a 2 GB laptop). `--again` / `--force` reopen it.
+MARK="${XDG_CONFIG_HOME:-$HOME/.config}/fabos/welcome-done"
+case " $* " in *" --again "*|*" --force "*) ;; *) [ -f "$MARK" ] && exit 0 ;; esac
 exec /usr/bin/python3 /usr/lib/fabos/welcome/fabos_welcome.py "$@"

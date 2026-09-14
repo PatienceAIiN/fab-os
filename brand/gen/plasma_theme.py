@@ -81,4 +81,4 @@ def write_theme(out, conf):
 
 if __name__ == "__main__":
     import sys
-    write_theme(sys.argv[1] if len(sys.argv) > 1 else "out", {"VENDOR_NAME": "Patience AI", "DISTRO_NAME": "Fab OS", "DISTRO_VERSION": "1.0", "HOME_URL": "https://patienceai.in/fabos"})
+    write_theme(sys.argv[1] if len(sys.argv) > 1 else "out", {"VENDOR_NAME": "Patience AI", "DISTRO_NAME": "Fab OS", "DISTRO_VERSION": "1.0", "HOME_URL": "https://fabos.patienceai.in/"})

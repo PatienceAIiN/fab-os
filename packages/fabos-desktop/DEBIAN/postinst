@@ -33,6 +33,25 @@ case "$1" in configure)
   # without this the console is visible for several seconds between plymouth-quit and sddm.
   systemctl mask plymouth-quit.service plymouth-quit-wait.service 2>/dev/null || true
   chmod 600 /etc/netplan/01-fabos-network-manager.yaml 2>/dev/null || true   # netplan insists on private permissions
+  # Low-RAM defaults (docs/LOW-RAM.md), applied on first install only ($2 is empty) so a user's later choices survive upgrades.
+  if [ -z "$2" ]; then
+    # systemd-oomd (Recommends): ends the worst offender before the kernel OOM killer freezes a 2 GB machine.
+    [ -f /usr/lib/systemd/system/systemd-oomd.service ] && systemctl enable systemd-oomd.service 2>/dev/null || true
+    # Printing on demand: cupsd starts when something talks to /run/cups/cups.sock or a job is spooled (cups.socket/cups.path)
+    # and exits after 60 s idle (IdleExitTimeout in cupsd.conf); cups-browsed (network-queue poller) is redundant with the
+    # driverless discovery cupsd and the print dialog do themselves.  "systemctl disable cups" also drops its Also= units, so re-enable them.
+    if [ -f /usr/lib/systemd/system/cups.service ]; then
+      systemctl disable cups.service 2>/dev/null || true
+      systemctl enable cups.socket cups.path 2>/dev/null || true
+    fi
+    [ -f /usr/lib/systemd/system/cups-browsed.service ] && systemctl disable cups-browsed.service 2>/dev/null || true
+    # smartd only mails root; Fab Settings / Fab System Info already watch disk health through plasma-disks.
+    [ -f /usr/lib/systemd/system/smartmontools.service ] && systemctl disable smartmontools.service 2>/dev/null || true
+    # Ubuntu's MOTD news fetch (motd-news-config is not shipped and the script is not executable anyway).
+    systemctl disable motd-news.timer 2>/dev/null || true
+    # sysctl.d/60-fabos-lowram.conf takes effect at boot; apply now on a live system (no-op in a build container).
+    [ -d /run/systemd/system ] && sysctl -q -p /etc/sysctl.d/60-fabos-lowram.conf 2>/dev/null || true
+  fi
   [ -x /usr/lib/fabos/rebrand-desktop-entries ] && /usr/lib/fabos/rebrand-desktop-entries || true
 ;; esac
 exit 0
