@@ -9,8 +9,13 @@ ROOT_SIZE=${ROOT_SIZE:-8G}; mkdir -p build
 mkdir -p image/overlay/$PROFILE/etc/fabos
 if [ -f build/secrets/feedback.env ]; then cp build/secrets/feedback.env image/overlay/$PROFILE/etc/fabos/feedback.env; echo "== feedback.env staged into image (root-only)"; else rm -f image/overlay/$PROFILE/etc/fabos/feedback.env; fi
 echo "== podman build ($PROFILE)"
+PREV_ID=$(podman image inspect --format '{{.Id}}' "$TAG" 2>/dev/null || echo none)
 tools/rg --profile heavy -- podman build ${NO_CACHE:+--no-cache} --build-arg PROFILE="$PROFILE" --build-arg MIRROR="${MIRROR:-http://archive.ubuntu.com/ubuntu}" --target rootfs -f image/Containerfile -t "$TAG" . 2>&1 | tee build/podman-build-$PROFILE.log | grep -E '^(STEP|COMMIT|Successfully|Error|error|E:)' || true
-podman image exists "$TAG" || { echo "build failed; see build/podman-build-$PROFILE.log"; exit 1; }
+BUILD_RC=${PIPESTATUS[0]}
+[ "$BUILD_RC" = 0 ] || { echo "ERROR: podman build exited $BUILD_RC (killed or failed) — NOT exporting a stale image. See build/podman-build-$PROFILE.log"; exit 1; }
+grep -qE '^(Successfully tagged|COMMIT)' build/podman-build-$PROFILE.log || { echo "ERROR: podman build did not reach a final commit — NOT exporting. See build/podman-build-$PROFILE.log"; exit 1; }
+NEW_ID=$(podman image inspect --format '{{.Id}}' "$TAG")
+echo "== image $TAG: ${PREV_ID#sha256:} -> ${NEW_ID#sha256:}"
 echo "== export -> ext4 (inside podman unshare, so ownership is preserved without root)"
 CTR=$(podman create --name fabos-export-$$ "$TAG")
 BUILD_ID="$(date -u +%Y%m%dT%H%M%SZ)-$PROFILE"; echo "$BUILD_ID" > build/BUILD_ID
