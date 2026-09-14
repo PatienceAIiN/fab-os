@@ -1,0 +1,37 @@
+[Unit]
+Description=@DISTRO_NAME@ built-in AI model server (llama-server, loaded on demand)
+Documentation=@DOCS_URL@
+# Only ever started by fabos-llama-proxy.service (socket activation on 127.0.0.1:8080). When the proxy exits after its
+# idle time nothing needs this unit any more and systemd stops it: the model uses no RAM while idle.
+StopWhenUnneeded=yes
+# Measured in the Fab OS image (2026-09-14, this exact command line, ctx 8192): peak RSS 1.45 GB with --no-repack (what the
+# wrapper picks below 6 GiB of RAM), 2.06 GB with weight repacking. Never start on a 2 GB machine; the socket and the proxy carry
+# the same condition so such a machine gets a plain "connection refused" and the UIs explain via `fabos-local-model status`.
+ConditionMemory=>3G
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/fabos/ai.env
+EnvironmentFile=-%h/.config/fabos/ai.env
+# The wrapper sizes threads (physical cores, max 8) and context (8192 / 16384 tokens) from /proc and execs llama-server.
+ExecStart=/usr/lib/fabos/ai/llama-start.sh
+# Ready only when llama-server answers GET /health (model loaded and warmed up); the proxy waits for this.
+ExecStartPost=/usr/lib/fabos/ai/llama-start.sh --wait-healthy 90
+TimeoutStartSec=120
+TimeoutStopSec=15
+Restart=no
+Nice=5
+# If memory does run out, the kernel (and systemd-oomd) should take the model before anything the user is looking at.
+OOMScoreAdjust=500
+# Soft limit: past this the kernel reclaims the memory-mapped weights first (slower, never the desktop). Hard stop at 3 GB.
+MemoryHigh=2200M
+MemoryMax=3G
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+UMask=0077
+# No mount-namespace sandboxing (ProtectSystem/PrivateTmp) on purpose: user units would need unprivileged user namespaces,
+# which Ubuntu restricts (kernel.apparmor_restrict_unprivileged_userns=1) and the unit would fail with NAMESPACE.
+# SystemCallFilter/MemoryDenyWriteExecute are left for a QEMU user-session test; a wrong filter kills the server silently.

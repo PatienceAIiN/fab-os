@@ -68,6 +68,18 @@ RUN printf 'Types: deb\nURIs: https://packages.mozilla.org/apt\nSuites: mozilla\
 RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3-dbus python3-gi libnotify-bin wtype unattended-upgrades ubuntu-drivers-common && rm -rf /var/lib/apt/lists/*
 # Bundled applications (own layer): LibreOffice with KDE integration, VLC, KWeather, extra Plasma widgets (weather, etc.)
 RUN apt-get update && apt-get install -y libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-kf6 libreoffice-style-breeze hunspell-en-us vlc kweather plasma-widgets-addons && rm -rf /var/lib/apt/lists/*
+# Built-in local AI model (offline): Qwen2.5-1.5B-Instruct, GGUF Q4_K_M, 1 117 320 736 bytes, Apache-2.0 (Copyright 2024 Alibaba Cloud).
+# Shipped inside BOTH profiles (vm + iso) so the agent works with no account and nothing to download; served on demand by
+# fabos-llama.socket (package fabos-ai, ADR-0011). Pinned by byte count + sha256: the build FAILS on a short file or a mismatch.
+# The same name/size/hash/URL live in packages/fabos-ai/usr/share/fabos/ai-models.json. Own layer before the FabOS packages so
+# package rebuilds never refetch 1.1 GB. curl comes from the base layer above; Apache-2.0 text from base-files (common-licenses).
+RUN set -e; d=/usr/share/fabos/models; f=qwen2.5-1.5b-instruct-q4_k_m.gguf; \
+    u="https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/$f"; h=6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e; \
+    install -d -m 0755 "$d" && curl -fL -sS --retry 3 --retry-delay 10 --retry-connrefused -o "$d/$f" "$u" \
+ && [ "$(stat -c %s "$d/$f")" = 1117320736 ] && echo "$h  $d/$f" | sha256sum -c - && chmod 0644 "$d/$f" \
+ && { printf 'Qwen2.5-1.5B-Instruct (GGUF, Q4_K_M) - the built-in offline model of Fab OS\n\nCopyright 2024 Alibaba Cloud\nLicensed under the Apache License, Version 2.0 (full text below).\nModel card: https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF\n\n'; cat /usr/share/common-licenses/Apache-2.0; } > "$d/LICENSE-qwen2.5" \
+ && printf 'Name: Qwen2.5-1.5B-Instruct\nVersion: 2.5 (GGUF Q4_K_M, unmodified upstream file)\nFile: %s\nBytes: 1117320736\nSHA256: %s\nLicense: Apache-2.0, Copyright 2024 Alibaba Cloud (LICENSE-qwen2.5)\nSource: %s\nModel card: https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF\nServed by: fabos-llama.socket (user unit, 127.0.0.1:8080, loads on demand, unloads after 10 idle minutes)\nManifest: /usr/share/fabos/ai-models.json   Status: fabos-local-model status\n' "$d/$f" "$h" "$u" > "$d/README" \
+ && ls -la "$d"
 # Low-RAM support (own layer, docs/LOW-RAM.md): compressed swap in RAM (systemd-zram-generator; fabos-desktop ships
 # /etc/systemd/zram-generator.conf) and systemd-oomd, the Ubuntu Desktop default that the minimal container base lacks.
 RUN apt-get update && apt-get install -y --no-install-recommends systemd-zram-generator systemd-oomd && rm -rf /var/lib/apt/lists/* && \

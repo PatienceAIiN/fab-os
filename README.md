@@ -40,9 +40,17 @@ The desktop's centrepiece is the **"Ask me to do anything…"** bar. Behind it r
 - **Auto** — the agent proceeds, pausing only for high-risk actions.
 - **Bypass** — full autonomy, for when you trust the task.
 
-A single **System-Wide AI** switch turns the whole thing off. Nothing leaves your machine except the requests you give the agent, sent only to the provider you configure yourself: **Claude, OpenAI, Google Gemini, or a fully local model** (llama.cpp — offline). No telemetry, no accounts, no crash uploads.
+A single **System-Wide AI** switch turns the whole thing off. Nothing leaves your machine except the requests you give the agent, sent only to the provider you configure yourself: **the built-in local model** (inside the ISO, offline, served by llama.cpp) or **Claude, OpenAI, Google Gemini** with your own key. No telemetry, no accounts, no crash uploads.
 
 Everything the agent does is recorded and shown as a chat in **Fab AI Controls**: your requests on the right, the agent's answers on the left, and every tool step folded into a small "Worked: N actions" chip you can expand. Follow up in the same chat and the agent keeps the context; hover a message to edit, retry, or copy it; stop a running task with one click; and every risky step, delete, or mode change asks you first in a rounded confirmation dialog (approval requests show exactly what would run behind "Show details" — opened for you when the risk is high).
+
+## Works offline out of the box
+
+Fab OS ships a small language model **inside the ISO** — Qwen2.5 1.5B Instruct (Apache-2.0, GGUF Q4_K_M, 1.1 GB), served on your own machine by llama.cpp. No account, no API key, nothing to download: pick **Local model** in Fab AI Controls → Settings and the agent runs entirely offline, tool calls included (verified in the image: "Create a file named hello.txt containing hi" comes back as a `write_file` call).
+
+- **RAM: it needs a 4 GB machine.** While loaded, `llama-server` peaks at about **1.45 GB** resident with the low-memory setting Fab OS uses below 6 GB of RAM (2.06 GB with the faster default above that) — measured in the Fab OS image with the shipped settings. With 3 GB or less the local endpoint is not offered at all; use a cloud provider there (`fabos-local-model status` tells you which case you are in).
+- **Loaded on demand.** `fabos-llama.socket` listens on `127.0.0.1:8080` in every session, but nothing runs until the first request; then the model loads (1–3 s when the file is already in the disk cache; longer the first time after boot while 1.1 GB is read from disk) and answers. After **10 idle minutes** it is unloaded again, so it costs no RAM while you are not using it.
+- **Small model, honest expectations.** 1.5 billion parameters is good at short, concrete tasks and tool calls and weak at long reasoning and facts. For hard tasks connect a cloud provider — it is one dropdown away, and everything else stays the same.
 
 ## What's in the box
 
@@ -70,7 +78,7 @@ Design docs live in [`docs/design/`](docs/design/). Decisions are recorded as AD
 
 | | Minimum | Notes |
 |---|---|---|
-| Memory | **2 GB RAM** | Fab OS ships compressed swap in RAM (zram, half of RAM) and keeps background services on demand, so 2 GB runs the full desktop with every effect on. 4 GB recommended for large documents and many browser tabs. |
+| Memory | **2 GB RAM** | Fab OS ships compressed swap in RAM (zram, half of RAM) and keeps background services on demand, so 2 GB runs the full desktop with every effect on. 4 GB recommended for large documents, many browser tabs and the built-in offline AI model (see above). |
 | Disk | **20 GB** | The installed system is about 7 GB; the rest is for updates, Flatpaks and your files. |
 | Processor / firmware | **64-bit (x86-64), UEFI** | Secure Boot works (Ubuntu's signed kernel and shim). Legacy BIOS is not supported. |
 | Graphics | any GPU with a Mesa or vendor driver | Wayland-only desktop. |
@@ -81,13 +89,13 @@ What is tuned for small machines, and how to change it back, is in [`docs/LOW-RA
 
 ## Install Fab OS
 
-1. **Download the ISO** (about 2.3 GB) from [fabos.patienceai.in](https://fabos.patienceai.in).
+1. **Download the ISO** (about 3.8 GB — the offline AI model is inside) from [fabos.patienceai.in](https://fabos.patienceai.in).
 2. **Write it to a USB stick** (8 GB or larger) with [Balena Etcher](https://etcher.balena.io/) — free, and the same click-and-go steps on Windows, macOS, and Linux.
 3. **Restart** and pick the USB stick from your computer's boot menu (usually F12, F2, or Esc at power-on).
 4. **Try it live** — Fab OS runs from the stick without touching your disk. When you're ready, open **Install Fab OS** on the desktop.
 5. **Verify the download** (optional): `sha256sum -c fabos-1.0-desktop-amd64.iso.sha256`.
 
-After first login, connect an AI provider in **Fab AI Controls → Settings** to turn the agent on. It stays off until you do.
+After first login, open **Fab AI Controls → Settings** and pick **Local model** to use the built-in offline model (no account needed; 4 GB RAM), or connect a cloud provider with your own key. The agent does nothing until you choose.
 
 ---
 

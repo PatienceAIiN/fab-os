@@ -1,0 +1,20 @@
+{
+  "name": "Qwen2.5-1.5B-Instruct",
+  "version": "2.5",
+  "quantization": "Q4_K_M",
+  "format": "gguf",
+  "file": "/usr/share/fabos/models/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+  "bytes": 1117320736,
+  "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+  "license": "Apache-2.0",
+  "license_file": "/usr/share/fabos/models/LICENSE-qwen2.5",
+  "copyright": "Copyright 2024 Alibaba Cloud",
+  "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+  "model_card": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+  "tool_calling": true,
+  "context_tokens": 8192,
+  "min_ram_bytes": 3758096384,
+  "endpoint": "http://127.0.0.1:8080/v1",
+  "units": ["fabos-llama.socket", "fabos-llama-proxy.service", "fabos-llama.service"],
+  "status_command": "/usr/bin/fabos-local-model status"
+}

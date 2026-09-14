@@ -6,6 +6,10 @@
 - AI is local-first. Cloud AI providers (for example Claude) are off until the
   user adds their own API key in Settings and enables them. Keys are stored via
   systemd credentials, never in plaintext config, logs or provenance.
+- The built-in offline model (Qwen2.5 1.5B, shipped inside the image, no
+  account, no download) runs entirely on the machine: llama-server is bound
+  to 127.0.0.1 only, loads on demand and is unloaded after ten idle minutes.
+  With it selected, prompts, files and tool results never leave the computer.
 - Before any data leaves the machine the FabOS AI service checks the user's
   privacy preference (local-only / ask / allow) and shows a cloud indicator.
 - Ubuntu package updates fetch metadata from Ubuntu mirrors; Fab OS updates
