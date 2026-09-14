@@ -155,11 +155,12 @@ def narration_done(tool, inp=None):
         return GENERIC_DONE
 
 
-def approval_summary(tool, inp=None, reason=""):
-    """A spoken fragment for PERMISSION: what the agent wants to do, in plain words."""
+def approval_summary(tool, inp=None, reason="", raw=False):
+    """A spoken fragment for PERMISSION: what the agent wants to do, in plain words. The raw command text is spoken only
+    when the user has switched on ui.show_raw (owner rule: no raw commands unless asked for)."""
     i = _as_dict(inp)
     if tool == "run_shell":
-        s = "run the command %s" % _short_cmd(i.get("command"))
+        s = ("run the command %s" % _short_cmd(i.get("command"))) if raw else "run a command"
         return s + " as administrator" if i.get("as_root") else s
     if tool == "write_file":
         return "write to %s" % _name(i.get("path"))

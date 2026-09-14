@@ -265,7 +265,9 @@ class Phrases(unittest.TestCase):
         self.assertEqual(P.narration("write_file", "not json"), "Writing that file now.")
 
     def test_approval_summary(self):
-        self.assertEqual(P.approval_summary("run_shell", {"command": "rm -rf ~/tmp"}), "run the command rm -rf ~/tmp")
+        self.assertEqual(P.approval_summary("run_shell", {"command": "rm -rf ~/tmp"}), "run a command")                       # raw text hidden by default
+        self.assertEqual(P.approval_summary("run_shell", {"command": "rm -rf ~/tmp"}, raw=True), "run the command rm -rf ~/tmp")  # only with ui.show_raw
+        self.assertEqual(P.approval_summary("run_shell", {"command": "apt install x", "as_root": True}), "run a command as administrator")
         self.assertEqual(P.approval_summary("send_email", json.dumps({"to": "priya@example.com"})), "send an email to priya@example.com")
         self.assertEqual(P.approval_summary("write_file", {"path": "/etc/hosts"}), "write to hosts")
         s = P.PERMISSION.format(summary=P.approval_summary("open_app", {"app": "konsole"}))
@@ -632,11 +634,16 @@ class EndToEnd(unittest.TestCase):
         spoken, err = self.handle("open editor and write hello there", ["yes go ahead", "haan", "ok"], "ask")
         joined = "\n".join(spoken)
         self.assertEqual(spoken[0], P.STARTED, joined)
-        self.assertIn("Writing fabos-note.txt now.", joined)
-        self.assertIn("This needs your permission: write to fabos-note.txt. Shall I go ahead?", joined)
+        # In ask mode the agent replaces the pre-narration of a waiting step with ONE permission question, which the
+        # voice daemon asks exactly once (never twice), then speaks the agent's completion line.
+        self.assertEqual(spoken.count("This needs your permission: write to fabos-note.txt. Shall I go ahead?"), 1, joined)
+        self.assertEqual(sum(1 for l in spoken if l.startswith("This needs your permission") and "fabos-note" in l), 1, joined)
+        self.assertIn("Saved fabos-note.txt.", joined)
         self.assertIn(P.APPROVED, joined)
         self.assertIn("Opening Fab Editor for you now.", joined)
-        self.assertIn("Running a command for you now.", joined)
+        self.assertEqual(spoken.count("This needs your permission: run a command. Shall I go ahead?"), 1, joined)
+        self.assertNotIn("pgrep", joined)           # raw commands are never read out unless ui.show_raw is on
+        self.assertIn("That command finished.", joined)
         self.assertTrue(spoken[-1].startswith("Done: executed 3 steps"), joined)
         self.assertNotIn("Opening kate", joined)    # the user hears Fab OS product names for apps
         tasks = self.api("GET", "/tasks")

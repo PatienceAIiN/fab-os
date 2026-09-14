@@ -442,8 +442,11 @@ class Voiced:
                 has_out = bool(s.get("output"))
                 if sid not in seen:
                     seen[sid] = has_out
-                    if speak_replies:
-                        self.speak(s.get("narration") or P.narration(s.get("name"), s.get("input")))
+                    # The agent replaces a waiting step's narration with its own permission question; that question is
+                    # asked once, by ask_approval() below, so it is not read out again here as if it were a narration.
+                    line = s.get("narration") or P.narration(s.get("name"), s.get("input"))
+                    if speak_replies and line and not line.startswith("This needs your permission"):
+                        self.speak(line)
                     if has_out and speak_replies and s.get("narration_done"):
                         self.speak(s["narration_done"])
                 elif has_out and not seen[sid]:
@@ -476,7 +479,7 @@ class Voiced:
         is left to the approval card on screen."""
         inp = P._as_dict(a.get("input"))
         strict = str(a.get("risk") or "").upper() == "CRITICAL" or (a.get("tool") == "run_shell" and bool(inp.get("as_root")))
-        summary = P.approval_summary(a.get("tool"), inp, a.get("reason") or "")
+        summary = P.approval_summary(a.get("tool"), inp, a.get("reason") or "", raw=self.flag("ui.show_raw"))
         self.speak(P.PERMISSION.format(summary=summary))
         answer = self.listen(APPROVAL_LISTEN_S, chime=True)
         decision = P.intent(answer, strict=strict)
