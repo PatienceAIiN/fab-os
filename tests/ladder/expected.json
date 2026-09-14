@@ -1,0 +1,121 @@
+{
+ "access_log": {
+  "distinct_ips": 15,
+  "fourth": [
+   "198.51.100.5",
+   29
+  ],
+  "lines": 300,
+  "top3": [
+   [
+    "203.0.113.7",
+    61
+   ],
+   [
+    "198.51.100.23",
+    47
+   ],
+   [
+    "192.0.2.44",
+    33
+   ]
+  ]
+ },
+ "ctx": {
+  "a": "alpha",
+  "b": "beta"
+ },
+ "doc_text": "Ladder test document",
+ "fixture_dir_in_vm": "/tmp/ladder",
+ "generated_by": "tests/ladder/gen_fixtures.py",
+ "hello_text": "Hello from Fab OS",
+ "largest": {
+  "name": "archive.dat",
+  "relpath": "archive.dat",
+  "size": 65536
+ },
+ "notes": {
+  "count": 8,
+  "fact_files": [
+   "fact_alpha.txt",
+   "fact_beta.txt",
+   "fact_gamma.txt"
+  ],
+  "facts": {
+   "fact_alpha.txt": "Project Alpha\nThe Alpha release shipped with a build size of 4472 kilobytes.\n",
+   "fact_beta.txt": "Project Beta\nThe Beta team lead is Rosalind Farrier.\n",
+   "fact_gamma.txt": "Project Gamma\nGamma runs on port 9312 under the codename Tungsten.\n"
+  },
+  "files": [
+   "fact_alpha.txt",
+   "fact_beta.txt",
+   "fact_gamma.txt",
+   "note_01.txt",
+   "note_02.txt",
+   "note_03.txt",
+   "note_04.txt",
+   "note_05.txt"
+  ]
+ },
+ "report_tokens": [
+  "4472",
+  "Rosalind Farrier",
+  "9312",
+  "Tungsten"
+ ],
+ "sales": {
+  "files": {
+   "sales-q1.csv": {
+    "rows": 40,
+    "total": 193311
+   },
+   "sales-q2.csv": {
+    "rows": 44,
+    "total": 244401
+   },
+   "sales-q3.csv": {
+    "rows": 36,
+    "total": 165534
+   }
+  },
+  "grand_total": 603246,
+  "rows": 120
+ },
+ "seed": 20260914,
+ "sha256": {
+  "access.log": "6acd7eaaa5d254b1a0e943fc9e6a38bc12da09bcf3a751cd5d51202b8805c038",
+  "archive.dat": "055933b0e667c53991d4a34fe7343740b5c1bd859806a64fc1236f23869c2fbb",
+  "broken_script.py": "d0fa285128a8660ec2ce7d37f632945d6c6e351b04f2b8d0565561d36cf4425f",
+  "check_broken.py": "9f3e73c30dd646ad834af99b66123f09e42f5a0f5faad47d7c3d174b0fb6074d",
+  "notes/fact_alpha.txt": "43978af19f337a3a2a168d8823848930f2c6c158260f538c3fee737d6ab1bdeb",
+  "notes/fact_beta.txt": "f328401ac6abcbbc8e11458459c8088540659b483970f9762cf41e0e1872edca",
+  "notes/fact_gamma.txt": "fd91515b1d1c87eda4710ae7ac141cef7863c66db7b408288e272d86f4e772af",
+  "notes/note_01.txt": "394518529b6a0409f192efd096733857612c6a4f6c0b2c1ce95754883ccb98b8",
+  "notes/note_02.txt": "4c240269b3939df5d1cf83222e6936da178e6521306ab9886b85c722376d9f80",
+  "notes/note_03.txt": "37a1149387d25274dbf11896260fe9c7dfa13a1e7165dcd18eeef4419ce32f9f",
+  "notes/note_04.txt": "dcf6293468e39249196db48db645a942692047fff8d3aebc45ff8c5f740f1530",
+  "notes/note_05.txt": "584bdd81b68f35817f9bfd718f25a5e926045b01caedacd40ec5bc8962b08ed8",
+  "sales-q1.csv": "902238b7dc19a22b4bfc2b2ea7ac47635d798edea114a4417e90c8ae4a611ea7",
+  "sales-q2.csv": "82c0fba5c25ac2815b6b25e209cc51b8406819680e4f35ebd043ba4b8057d603",
+  "sales-q3.csv": "423b93fd946e547051af107ebe4bba0211196df1f6d35c082bb5dc9c7def3b02"
+ },
+ "sizes": {
+  "access.log": 24042,
+  "archive.dat": 65536,
+  "broken_script.py": 763,
+  "check_broken.py": 2441,
+  "notes/fact_alpha.txt": 77,
+  "notes/fact_beta.txt": 53,
+  "notes/fact_gamma.txt": 67,
+  "notes/note_01.txt": 49,
+  "notes/note_02.txt": 60,
+  "notes/note_03.txt": 51,
+  "notes/note_04.txt": 39,
+  "notes/note_05.txt": 44,
+  "sales-q1.csv": 1152,
+  "sales-q2.csv": 1267,
+  "sales-q3.csv": 1041
+ },
+ "trigger_word": "fired",
+ "typed_sentence": "Fab OS agents type twelve careful words into the editor without mistakes"
+}
