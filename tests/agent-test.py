@@ -146,6 +146,37 @@ class Daemon(unittest.TestCase):
             time.sleep(0.2)
         self.assertNotEqual(subprocess.run(["pgrep", "-f", "^sleep 45$"], capture_output=True).returncode, 0, "shell child survived the cancel")
 
+    def test_12_followup_threads_into_the_chat_with_parent_context(self):
+        # Fab AI Controls' follow-up bar: POST /tasks with parent_id threads the new task under the chat's root and the
+        # request handed to the model starts with a short context of the earlier turns (request + outcome)
+        root = self.cli("do", "--mode", "bypass", "show me the system"); rt = self.wait(root["id"]); self.assertEqual(rt["status"], "done", rt)
+        r = self.cli("do", "--mode", "bypass", "--follow-up", str(root["id"]), "and now tell me the date")
+        self.assertEqual(r["parent_id"], root["id"], r)
+        t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        self.assertEqual(t["parent_id"], root["id"])
+        self.assertTrue(t["request"].endswith(fa.FOLLOWUP_MARK + "and now tell me the date"), t["request"])
+        self.assertIn("show me the system", t["request"]); self.assertIn(rt["result"][:40], t["request"])   # parent request + result
+        self.assertEqual(fa.user_text(t["request"]), "and now tell me the date"); self.assertEqual(t["title"], "and now tell me the date")
+        self.assertTrue(any(s["name"] == "run_shell" for s in t["steps"]))       # the model still acted on the follow-up
+        # a follow-up to the follow-up is normalised to the root and its context includes the previous follow-up
+        r2 = self.cli("do", "--mode", "bypass", "--follow-up", str(r["id"]), "one more"); t2 = self.wait(r2["id"])
+        self.assertEqual(t2["parent_id"], root["id"]); self.assertIn("and now tell me the date", t2["request"])
+        # retry keeps the task inside its chat; the list endpoint exposes parent_id + the request head for the sidebar
+        r3 = self.cli("retry", str(r["id"])); self.assertEqual(r3["parent_id"], root["id"]); self.wait(r3["id"])
+        me = [x for x in self.cli("tasks") if x["id"] == r["id"]][0]
+        self.assertEqual(me["parent_id"], root["id"]); self.assertIn("Follow-up request", me["request"])
+        self.assertEqual(self.cli("do", "--follow-up", "999999", "x").get("http"), 404)          # unknown parent
+        chat = fa.chat_tasks(fa.Store(os.path.join(self.env["FABOS_AGENT_DATA"], "agent.db")), root["id"])
+        self.assertEqual([c["id"] for c in chat][:2], [root["id"], r["id"]])
+
+    def test_13_ui_show_raw_setting_roundtrip(self):
+        self.assertEqual(self.cli("settings")["ui.show_raw"], "false")                          # default: raw hidden
+        self.assertFalse(self.cli("status")["ui_show_raw"])
+        self.cli("settings", "ui.show_raw", "true")
+        self.assertEqual(self.cli("settings")["ui.show_raw"], "true"); self.assertTrue(self.cli("status")["ui_show_raw"])
+        self.cli("settings", "ui.show_raw", "false")
+        self.assertEqual(self.cli("settings")["ui.show_raw"], "false"); self.assertFalse(self.cli("status")["ui_show_raw"])
+
     def test_10_tool_result_limit_setting_prevents_overflow(self):
         self.cli("settings", "agent.tool_result_max_chars", "500")
         try:

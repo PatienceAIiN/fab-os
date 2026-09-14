@@ -48,7 +48,7 @@ kcm_kwin_scripts.desktop|WM Scripting|
 systemsettings.desktop|Fab Settings|System Settings
 org.kde.elisa.desktop|Fab Music|Music Player
 org.kde.haruna.desktop|Fab Videos|Media Player
-fabos-command-center.desktop|Fab Command Center|AI Agent Command Center
+fabos-command-center.desktop|Fab AI Controls|AI Controls
 fabos-updates.desktop|Fab Updates|Software Updates
 fabos-feedback.desktop|Fab Feedback|Feedback and bug reports
 "

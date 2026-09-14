@@ -16,5 +16,5 @@ Presentation {
     Slide { anchors.fill: parent; Rectangle { anchors.fill: parent; color: "#0E1116" }
         Column { anchors.centerIn: parent; spacing: 14; width: parent.width * 0.8
             Text { text: "After the first boot"; color: "white"; font.pixelSize: 34; font.bold: true; font.family: "Inter"; wrapMode: Text.WordWrap; width: parent.width }
-            Text { text: "Once online, Fab OS installs updates, hardware drivers and firmware in the background and tells you when it is done. Add an AI provider key in Command Center → Settings, or use a local model offline."; color: "#C9D1DC"; font.pixelSize: 18; font.family: "Inter"; wrapMode: Text.WordWrap; width: parent.width } } }
+            Text { text: "Once online, Fab OS installs updates, hardware drivers and firmware in the background and tells you when it is done. Add an AI provider key in Fab AI Controls → Settings, or use a local model offline."; color: "#C9D1DC"; font.pixelSize: 18; font.family: "Inter"; wrapMode: Text.WordWrap; width: parent.width } } }
 }

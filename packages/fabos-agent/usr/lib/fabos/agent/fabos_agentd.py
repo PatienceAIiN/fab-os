@@ -6,7 +6,9 @@ The OS executes. Everything is recorded (tasks, steps, approvals, watches, activ
 
 HTTP API on 127.0.0.1:8790 (bearer token in $XDG_RUNTIME_DIR/fabos-agent/token, 0600):
   GET  /health /status /settings /tasks /tasks/{id} /approvals/pending /watches /activity
-  POST /tasks {request,title?,mode?}   POST /tasks/{id}/cancel|retry|answer   PATCH/DELETE /tasks/{id}
+  POST /tasks {request,title?,mode?,parent_id?}   POST /tasks/{id}/cancel|retry|answer   PATCH/DELETE /tasks/{id}
+  parent_id threads a follow-up into an existing chat: the daemon prepends a short context (earlier requests + outcomes)
+  to the request, separated by FOLLOWUP_MARK, so the model has continuity and UIs can show only the user's own words.
   POST /approvals/{id} {decision}      PUT  /settings {key: value,...}         POST /secrets {name,value}
   DELETE /watches/{id}
 Providers: Claude (Anthropic SDK) or any OpenAI-compatible chat endpoint (e.g. llama-server).
@@ -149,7 +151,7 @@ TOOLS = [
      "description": "Type text into the currently focused window through the Wayland virtual keyboard. Prefer write_file + open_app when the goal is to put text in a document; use this only when typing into a live app is required.",
      "input_schema": {"type": "object", "properties": {"text": {"type": "string"}, "press_enter": {"type": "boolean", "default": False}, "delay_ms": {"type": "integer", "default": 800, "description": "wait before typing so the window can focus"}}, "required": ["text"]}},
     {"name": "send_email",
-     "description": "Send an email from the user's configured mail account (SMTP, or the Brevo API transport). Requires mail settings; if missing, tell the user to configure Mail in Command Center settings.",
+     "description": "Send an email from the user's configured mail account (SMTP, or the Brevo API transport). Requires mail settings; if missing, tell the user to configure Mail in Fab AI Controls settings.",
      "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"}, "cc": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}}}, "required": ["to", "subject", "body"]}},
     {"name": "check_email",
      "description": "Search the user's inbox (IMAP) and return recent message summaries. Filters: from_contains, subject_contains, since_hours, unseen_only, limit.",
@@ -398,10 +400,10 @@ class Tools:
         if cfg["transport"] == "brevo":
             # Brevo transactional API (same channel Fab Feedback uses): needs a verified sender address and an API key
             if not (cfg["from"] and cfg["api_key"]):
-                raise RuntimeError("Mail is not configured. Ask the user to fill Settings → Mail in Fab OS Command Center (transport brevo needs a From address and the API key).")
+                raise RuntimeError("Mail is not configured. Ask the user to fill Settings → Mail in Fab AI Controls (transport brevo needs a From address and the API key).")
             return cfg
         if not (cfg["user"] and cfg["password"] and (cfg["smtp_host"] or cfg["imap_host"])):
-            raise RuntimeError("Mail is not configured. Ask the user to fill Settings → Mail in Fab OS Command Center (IMAP/SMTP host, user, password).")
+            raise RuntimeError("Mail is not configured. Ask the user to fill Settings → Mail in Fab AI Controls (IMAP/SMTP host, user, password).")
         return cfg
 
     def _send_brevo(self, task_id, cfg, inp):
@@ -784,7 +786,7 @@ class FakeProvider:
 
     def step(self, system, messages, tools, on_usage=None):
         first = messages[0]["content"]
-        req = first if isinstance(first, str) else first[0].get("text", "")
+        req = user_text(first if isinstance(first, str) else first[0].get("text", ""))   # follow-ups carry a context prefix; the script keys off the user's words
         n_results = sum(1 for m in messages if m["role"] == "user" and not isinstance(m["content"], str))
         low = req.lower()
 
@@ -822,6 +824,54 @@ class FakeProvider:
         if n_results < len(plan):
             return {"content": [{"type": "text", "text": "Step %d/%d" % (n_results + 1, len(plan))}, plan[n_results]], "stop_reason": "tool_use"}
         return {"content": [{"type": "text", "text": "Done: executed %d steps for '%s'." % (len(plan), req[:60])}], "stop_reason": "end_turn"}
+
+
+# ----------------------------------------------------------------------------- chats (threads of tasks)
+# A chat is a root task plus its follow-ups (tasks whose parent_id chains to the root). A follow-up's request carries a
+# short context of the earlier turns so the model has continuity; FOLLOWUP_MARK separates it from what the user typed.
+FOLLOWUP_MARK = "\n\nFollow-up request:\n"
+FOLLOWUP_CONTEXT_TURNS = 3          # how many earlier turns are summarised into a follow-up
+FOLLOWUP_CLIP_REQUEST, FOLLOWUP_CLIP_RESULT = 600, 900
+
+
+def user_text(request):
+    """The part of a task request the user actually typed (drops the context prefix of a follow-up)."""
+    return (request or "").rsplit(FOLLOWUP_MARK, 1)[-1]
+
+
+def root_task_id(store, tid):
+    """Walk parent_id links up to the root of the chat (a missing parent makes the task itself the root)."""
+    seen = set()
+    while tid and tid not in seen:
+        seen.add(tid)
+        t = store.one("SELECT id, parent_id FROM tasks WHERE id=?", tid)
+        if not t:
+            return None
+        if not t["parent_id"] or not store.one("SELECT id FROM tasks WHERE id=?", t["parent_id"]):
+            return t["id"]
+        tid = t["parent_id"]
+    return tid
+
+
+def chat_tasks(store, root_id):
+    """All tasks of a chat (root first, then follow-ups in creation order)."""
+    ids, out, frontier = {root_id}, [], [root_id]
+    while frontier:
+        rows = store.all("SELECT id FROM tasks WHERE parent_id IN (%s) ORDER BY id" % ",".join("?" * len(frontier)), *frontier)
+        frontier = [r["id"] for r in rows if r["id"] not in ids]
+        ids.update(frontier)
+    return store.all("SELECT * FROM tasks WHERE id IN (%s) ORDER BY id" % ",".join("?" * len(ids)), *sorted(ids))
+
+
+def followup_request(store, root_id, text):
+    """Build the request of a follow-up: a short context of the last turns of the chat, then the user's new request."""
+    turns = [t for t in chat_tasks(store, root_id) if not (t["title"] or "").startswith("(superseded)")][-FOLLOWUP_CONTEXT_TURNS:]
+    ctx = ["Context from the earlier turns of this chat (for continuity; the new request is at the end):"]
+    for t in turns:
+        ctx.append("- You were asked: " + clip(user_text(t["request"]).strip(), FOLLOWUP_CLIP_REQUEST).replace("\n", " "))
+        outcome = t["result"] or t["error"] or ("(still %s)" % t["status"].replace("_", " ") if t["status"] not in ("done", "failed", "cancelled") else "(no result)")
+        ctx.append("  Outcome: " + clip(outcome.strip(), FOLLOWUP_CLIP_RESULT).replace("\n", " "))
+    return "\n".join(ctx) + FOLLOWUP_MARK + text
 
 
 # ----------------------------------------------------------------------------- the agent
@@ -862,20 +912,20 @@ class Agent:
 
     def provider(self):
         if not self.ai_enabled():
-            raise RuntimeError("System-Wide AI is OFF. Turn it on in Fab OS Command Center (top toolbar) or run: fabos settings ai.enabled true")
+            raise RuntimeError("System-Wide AI is OFF. Turn it on in Fab AI Controls (switch in the header) or run: fabos settings ai.enabled true")
         kind = os.environ.get("FABOS_AGENT_PROVIDER") or self.store.setting("provider", "claude")
         if kind == "fake":
             return FakeProvider()
         if kind == "claude":
             key = get_secret("claude_api_key") or os.environ.get("ANTHROPIC_API_KEY")
             if not key:
-                raise RuntimeError("No Claude API key configured. Open Fab OS Command Center → Settings → AI provider and paste your key, or choose another provider (OpenAI, Gemini, local model).")
+                raise RuntimeError("No Claude API key configured. Open Fab AI Controls → Settings → AI provider and paste your key, or choose another provider (OpenAI, Gemini, local model).")
             return ClaudeProvider(key, self.store.setting("claude.model", PROVIDERS["claude"]["model"]), self.store.setting("claude.fallbacks", "true") == "true")
         if kind in PROVIDERS:
             pre = PROVIDERS[kind]
             key = get_secret(pre["secret"])
             if not key and kind != "local":
-                raise RuntimeError("No %s API key configured. Open Fab OS Command Center → Settings → AI provider." % pre["label"])
+                raise RuntimeError("No %s API key configured. Open Fab AI Controls → Settings → AI provider." % pre["label"])
             return OpenAICompatProvider(self.store.setting(kind + ".base_url", pre["base_url"]), key, self.store.setting(kind + ".model", pre["model"]),
                                         name=kind, result_limit=RESULT_LIMIT_LOCAL if kind == "local" else RESULT_LIMIT_CLOUD)
         raise RuntimeError("unknown provider " + kind)
@@ -1157,6 +1207,7 @@ def make_handler(store, agent, token):
                 prov = os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude")
                 ready = prov == "fake" or prov == "local" or (prov in PROVIDERS and (has_secret(PROVIDERS[prov]["secret"]) or (prov == "claude" and bool(os.environ.get("ANTHROPIC_API_KEY")))))
                 return self._send(200, {"mode": store.setting("mode", "auto"), "provider": prov, "provider_ready": ready, "ai_enabled": agent.ai_enabled(),
+                                        "ui_show_raw": store.setting("ui.show_raw", "false") == "true",
                                         "providers": {k: {"label": v["label"], "has_key": has_secret(v["secret"])} for k, v in PROVIDERS.items()},
                                         "mail_ready": bool((store.setting("mail.transport") or "smtp").lower() == "brevo" and store.setting("mail.from") and has_secret("mail_api_key")) or bool(store.setting("mail.user") and has_secret("mail_password")), "tasks": counts,
                                         "pending_approvals": store.one("SELECT COUNT(*) n FROM approvals WHERE status='pending'")["n"],
@@ -1167,6 +1218,7 @@ def make_handler(store, agent, token):
                 s.setdefault("mode", "auto")
                 s.setdefault("provider", "claude")
                 s.setdefault("ai.enabled", "true")
+                s.setdefault("ui.show_raw", "false")     # Fab AI Controls: show commands / raw tool output in chats
                 for k, v in PROVIDERS.items():
                     s.setdefault(k + ".model", v["model"])
                     if "base_url" in v:
@@ -1174,7 +1226,7 @@ def make_handler(store, agent, token):
                 s["secrets"] = {n: has_secret(n) for n in SECRET_NAMES}
                 return self._send(200, s)
             if p == "/tasks":
-                return self._send(200, store.all("SELECT id,title,status,mode,created,updated,parent_id,cost_in,cost_out,substr(result,1,200) result,error FROM tasks ORDER BY id DESC LIMIT ?", int(qs.get("limit", 100))))
+                return self._send(200, store.all("SELECT id,title,status,mode,created,updated,parent_id,cost_in,cost_out,substr(result,1,200) result,error,substr(request,1,400) request FROM tasks ORDER BY id DESC LIMIT ?", int(qs.get("limit", 100))))
             m = re.match(r"^/tasks/(\d+)$", p)
             if m:
                 t = store.one("SELECT * FROM tasks WHERE id=?", m.group(1))
@@ -1202,9 +1254,18 @@ def make_handler(store, agent, token):
                 if not b.get("request", "").strip():
                     return self._send(400, {"error": "request is required"})
                 if not agent.ai_enabled():
-                    return self._send(403, {"error": "System-Wide AI is OFF. Turn it on in Command Center or: fabos settings ai.enabled true"})
-                tid = agent.create(b["request"], b.get("title"), b.get("mode"))
-                return self._send(201, {"id": tid, "status": "queued"})
+                    return self._send(403, {"error": "System-Wide AI is OFF. Turn it on in Fab AI Controls or: fabos settings ai.enabled true"})
+                request, parent = b["request"], b.get("parent_id")
+                if parent not in (None, "", 0):
+                    try:
+                        parent = root_task_id(store, int(parent))
+                    except (TypeError, ValueError):
+                        parent = None
+                    if not parent:
+                        return self._send(404, {"error": "no such parent task"})
+                    request = followup_request(store, parent, b["request"])
+                tid = agent.create(request, b.get("title") or b["request"].strip().split("\n")[0][:80], b.get("mode"), parent_id=parent)
+                return self._send(201, {"id": tid, "status": "queued", "parent_id": parent})
             m = re.match(r"^/tasks/(\d+)/(cancel|retry|answer)$", p)
             if m:
                 tid, act = int(m.group(1)), m.group(2)
@@ -1215,8 +1276,8 @@ def make_handler(store, agent, token):
                     agent.cancel_task(tid)
                     return self._send(200, {"id": tid, "status": "cancelled"})
                 if act == "retry":
-                    nid = agent.create(t["request"], t["title"], t["mode"])
-                    return self._send(201, {"id": nid, "retry_of": tid})
+                    nid = agent.create(t["request"], t["title"], t["mode"], parent_id=t["parent_id"])
+                    return self._send(201, {"id": nid, "retry_of": tid, "parent_id": t["parent_id"]})
                 return self._send(200, {"ok": agent.answer(tid, b.get("text", ""))})
             m = re.match(r"^/approvals/(\d+)$", p)
             if m:

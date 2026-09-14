@@ -29,6 +29,6 @@ texts are in `THIRD_PARTY_LICENSES/` (index: `THIRD_PARTY_LICENSES/README.md`) a
 
 Fab OS-created material (Apache-2.0; artwork additionally CC0-1.0): brand assets (identity icon, avatar, lockups),
 Plymouth/SDDM/KSplash themes, FabOS Plasma theme, FabOS icon tiles, wallpapers, 3D logo, packaging, build scripts,
-fabos-agent, Command Center, Updates, Feedback, Welcome, website, documentation. Copyright © 2026 Patience AI where
+fabos-agent, Fab AI Controls, Updates, Feedback, Welcome, website, documentation. Copyright © 2026 Patience AI where
 so marked. The Plasma wallpaper package (`/usr/share/wallpapers/FabOS`, Name "Fab OS", Author "Patience AI") declares
 **Apache-2.0** as its licence; see legal/ARTWORK.md.

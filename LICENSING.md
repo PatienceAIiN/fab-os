@@ -6,7 +6,7 @@
 |----------|---------------|---------|
 | Fab OS brand (name, mark, wordmark), artwork, themes, wallpapers, icon tiles, 3D logo | Patience AI | Apache-2.0 OR CC0-1.0 (artwork); trademark use governed by legal/TRADEMARKS.md |
 | Fab OS packaging, build recipe, scripts, tests, documentation | Patience AI | Apache-2.0 |
-| Fab OS applications: fabos-agent (daemon, CLI, Command Center, KRunner runner), fabos-updates, fabos-feedback, fabos-welcome, fabos-firstboot | Patience AI | Apache-2.0 |
+| Fab OS applications: fabos-agent (daemon, CLI, Fab AI Controls, KRunner runner), fabos-updates, fabos-feedback, fabos-welcome, fabos-firstboot | Patience AI | Apache-2.0 |
 | Derived colour schemes (Fab Dark / Fab Light, from Breeze) | KDE e.V. (original) + Patience AI (changes) | LGPL-3.0-or-later |
 | Length-preserving string patches applied to upstream binaries | upstream authors (binaries) | unchanged upstream licences; the patch tool is Apache-2.0 |
 | Everything else on the image | upstream authors | per package (`/usr/share/doc/*/copyright`) |

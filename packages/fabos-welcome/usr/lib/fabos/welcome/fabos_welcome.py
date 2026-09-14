@@ -2,7 +2,7 @@
 """Welcome to Fab OS — first-run experience (runs once per user via XDG autostart; `fabos-welcome` re-opens it).
 
 Pages: Welcome → Appearance (Fab Light / Fab Dark, applied live) → Privacy (what Fab OS does and does not send)
-→ AI (optional: open Command Center settings, or keep AI off) → Finish (links to Language, Keyboard, Network).
+→ AI (optional: open Fab AI Controls settings, or keep AI off) → Finish (links to Language, Keyboard, Network).
 Every control performs the real action or opens the real settings module; nothing is simulated."""
 import os, subprocess, sys
 
@@ -124,7 +124,7 @@ def main():
     # 4 AI
     p4 = Page("The Fab OS agent", "Ask it to do anything on this computer — open apps, write files and code, send mail, watch for replies. "
               "It needs an AI provider: Claude, OpenAI, Google Gemini, or a local model (fully offline).")
-    ai_on = QCheckBox("Keep System-Wide AI on (you can turn it off any time in Fab Command Center)")
+    ai_on = QCheckBox("Keep System-Wide AI on (you can turn it off any time in Fab AI Controls)")
     ai_on.setChecked(True)
     p4.v.addWidget(ai_on)
     row = QHBoxLayout()

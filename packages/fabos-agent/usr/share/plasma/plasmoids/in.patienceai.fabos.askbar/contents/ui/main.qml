@@ -44,7 +44,7 @@ PlasmoidItem {
             } else if (source.indexOf("fabos status") === 0) {
                 root.configured = out.indexOf("not configured") === -1
                 root.busy = /running|queued|awaiting|approval|waiting/.test(out)
-                root.status = root.configured ? (root.busy ? out : "") : "No AI provider yet — click here to open Fab Command Center → Settings"
+                root.status = root.configured ? (root.busy ? out : "") : "No AI provider yet — click here to open Fab AI Controls → Settings"
             }
         }
     }
@@ -59,7 +59,7 @@ PlasmoidItem {
         if (!t.length || root.sending) return
         if (!root.configured) {
             // check the real configuration at click time, tell the user, and take them straight to Settings
-            root.status = "No AI provider is configured yet — opening Fab Command Center → Settings so you can add one (Claude, OpenAI, Gemini or a local model). Your request is kept."
+            root.status = "No AI provider is configured yet — opening Fab AI Controls → Settings so you can add one (Claude, OpenAI, Gemini or a local model). Your request is kept."
             root.openSettings(t)
             return
         }

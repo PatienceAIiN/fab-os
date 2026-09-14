@@ -2,6 +2,7 @@
 """fabos — command-line client for the Fab OS agent (fabos-agentd).
 
   fabos do "open editor, write hi and mail it to x@y"   start a task (agent works autonomously)
+  fabos do --follow-up ID "and now ..."                 continue an existing chat (threads the new task under task ID)
   fabos tasks | show ID | cancel ID | retry ID | delete ID | edit ID --title T --request R
   fabos approvals | approve APPROVAL_ID | deny APPROVAL_ID | answer TASK_ID "text"
   fabos mode [ask|auto|bypass]      permission mode (ask: approve MEDIUM+, auto: approve CRITICAL only, bypass: never ask)
@@ -43,6 +44,7 @@ def main():
     ap.add_argument("--json", action="store_true", help="print raw JSON")
     sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("do"); p.add_argument("text", nargs="+"); p.add_argument("--mode", choices=["ask", "auto", "bypass"]); p.add_argument("--title"); p.add_argument("--wait", action="store_true")
+    p.add_argument("--follow-up", type=int, metavar="ID", help="thread this request into the chat of task ID (the agent gets the earlier context)")
     p = sub.add_parser("tasks"); p.add_argument("--limit", type=int, default=30)
     for c in ("show", "cancel", "retry", "delete", "approve", "deny", "unwatch"):
         sub.add_parser(c).add_argument("id", type=int)
@@ -63,9 +65,10 @@ def main():
         body = {"request": " ".join(a.text)}
         if a.mode: body["mode"] = a.mode
         if a.title: body["title"] = a.title
+        if a.follow_up: body["parent_id"] = a.follow_up
         out = api("POST", "/tasks", body)
         if not a.json and "id" in out:
-            print("Task #%d started. Watch it: fabos show %d  |  Command Center: fabos-command-center" % (out["id"], out["id"]))
+            print("Task #%d started. Watch it: fabos show %d  |  Fab AI Controls: fabos-command-center" % (out["id"], out["id"]))
             if a.wait:
                 while True:
                     t = api("GET", "/tasks/%d" % out["id"])
@@ -147,7 +150,7 @@ def main():
             s = " · ".join(parts) or "idle"
             if out["pending_approvals"]: s += " · %d approval%s pending" % (out["pending_approvals"], "s" if out["pending_approvals"] > 1 else "")
             if last: s += " · last #%d %s: %s" % (last["id"], last["status"], (last["title"] or "")[:50])
-            if not out["provider_ready"]: s = "AI provider not configured — open Command Center → Settings · " + s
+            if not out["provider_ready"]: s = "AI provider not configured — open Fab AI Controls → Settings · " + s
             print(s); return
     print(json.dumps(out, indent=1, default=str) if out is not None else "")
 

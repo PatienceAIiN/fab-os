@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=@DISTRO_NAME@ Command Center
-GenericName=AI Agent Command Center
-Comment=Ask @DISTRO_NAME@ to do anything; watch, approve and manage every task
+Name=Fab AI Controls
+GenericName=AI Controls
+Comment=Chat with the @DISTRO_NAME@ agent: ask it to do anything, follow up, approve and manage every task
 Exec=fabos-command-center
 Icon=fabos-command-center
 Terminal=false
