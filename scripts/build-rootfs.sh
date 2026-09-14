@@ -8,6 +8,9 @@ ROOT_SIZE=${ROOT_SIZE:-8G}; mkdir -p build
 # Feedback channel credentials: if the operator staged build/secrets/feedback.env (never committed), bake it in root-only.
 mkdir -p image/overlay/$PROFILE/etc/fabos
 if [ -f build/secrets/feedback.env ]; then cp build/secrets/feedback.env image/overlay/$PROFILE/etc/fabos/feedback.env; echo "== feedback.env staged into image (root-only)"; else rm -f image/overlay/$PROFILE/etc/fabos/feedback.env; fi
+# Google OAuth desktop client for the Gmail sign-in (build/secrets/google-oauth.env, never committed). World-readable in the
+# image on purpose: the agent daemon runs as the user, and Google treats desktop-app client secrets as non-confidential.
+if [ -f build/secrets/google-oauth.env ]; then install -m 0644 build/secrets/google-oauth.env image/overlay/$PROFILE/etc/fabos/google-oauth.env; echo "== google-oauth.env staged into image"; else rm -f image/overlay/$PROFILE/etc/fabos/google-oauth.env; fi
 echo "== podman build ($PROFILE)"
 PREV_ID=$(podman image inspect --format '{{.Id}}' "$TAG" 2>/dev/null || echo none)
 tools/rg --profile heavy -- podman build ${NO_CACHE:+--no-cache} --build-arg PROFILE="$PROFILE" --build-arg MIRROR="${MIRROR:-http://archive.ubuntu.com/ubuntu}" --target rootfs -f image/Containerfile -t "$TAG" . 2>&1 | tee build/podman-build-$PROFILE.log | grep -E '^(STEP|COMMIT|Successfully|Error|error|E:)' || true

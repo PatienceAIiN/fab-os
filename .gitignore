@@ -6,6 +6,7 @@ brand/out/
 *.iso
 *.log
 image/overlay/*/etc/fabos/feedback.env
+image/overlay/*/etc/fabos/google-oauth.env
 community/node_modules/
 community/*.sqlite
 community/*.sqlite-*
