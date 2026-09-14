@@ -89,6 +89,7 @@ How the microphone path behaves: `listen-once` records through PipeWire (`pw-rec
 | Piece | What |
 |---|---|
 | Desktop | KDE Plasma 6 on Wayland; Fab OS look-and-feel in dark and light, following the system colour scheme everywhere |
+| Top bar & dock | One **quick settings** group at the top-right corner — network glyph with the live download / upload rate, Bluetooth, volume, battery **with its percentage**, and a bell — opens a pane that slides down from the bar: Wi-Fi and Bluetooth tiles, volume and brightness sliders, battery with power profiles, network details, notification history and Do Not Disturb; each tile's chevron opens the full standard applet. The **dock** magnifies icons under the pointer like macOS (hovered 1.6x, neighbours 1.3x / 1.1x; one switch shared with the bar, three strengths on the dock's page; the dock's width never changes while you hover) with a bounce on launch. One **Bar size** setting (Small / Medium / Large) scales the indicators, their text and the clock together |
 | Type | Inter for UI, JetBrains Mono for code |
 | Icons | Google Material Symbols on Fab OS tiles for system apps; third-party apps keep their own icons |
 | Motion | Rounded, animated surfaces; Overview and edge-tiling for multitasking; multi-monitor extend/duplicate |

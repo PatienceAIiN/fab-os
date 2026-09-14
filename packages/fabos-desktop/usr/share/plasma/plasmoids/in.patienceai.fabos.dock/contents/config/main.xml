@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+  <group name="General">
+    <entry name="launchers" type="StringList">
+      <label>Pinned apps (launcher URLs), in dock order. The look-and-feel layout writes the same list at first login.</label>
+      <default>applications:fabos-overview.desktop,applications:fabos-command-center.desktop,applications:org.kde.dolphin.desktop,applications:org.kde.konsole.desktop,applications:org.kde.kate.desktop,applications:brave-browser.desktop,applications:systemsettings.desktop,applications:org.kde.discover.desktop</default>
+    </entry>
+    <entry name="magnify" type="Bool">
+      <label>Magnify icons under the pointer (hovered 1.6x, neighbours 1.3x / 1.1x at Normal). One switch shared with the top bar's quick settings, kept in sync both ways.</label>
+      <default>true</default>
+    </entry>
+    <entry name="magnification" type="String">
+      <label>subtle (1.3x), normal (1.6x) or strong (1.9x) for the hovered icon.</label>
+      <default>normal</default>
+    </entry>
+    <entry name="groupApps" type="Bool">
+      <label>One icon per application; clicking a group cycles through its windows.</label>
+      <default>true</default>
+    </entry>
+    <entry name="showOnlyCurrentDesktop" type="Bool">
+      <label>Only show windows from the current virtual desktop.</label>
+      <default>false</default>
+    </entry>
+    <entry name="showOnlyCurrentActivity" type="Bool">
+      <label>Only show windows from the current activity.</label>
+      <default>true</default>
+    </entry>
+    <entry name="maxIconSize" type="Int">
+      <label>Upper bound for the resting icon size in pixels.</label>
+      <default>48</default>
+    </entry>
+  </group>
+</kcfg>
