@@ -10,7 +10,7 @@
   privacy preference (local-only / ask / allow) and shows a cloud indicator.
 - Voice ("Hey Fab"): wake-word detection is fully offline — PocketSphinx
   listens on this computer only, and the microphone stream is never stored
-  or sent anywhere while it waits for the phrase (only the last 3 s are held
+  or sent anywhere while it waits for the phrase (only the last 6 s are held
   in memory so the wake clip can be double-checked offline). After "Hey Fab" (or a
   microphone press) the short recording of your request goes one of two ways:
   if you configured a cloud provider (OpenAI or Gemini) in Fab AI Controls and
@@ -19,8 +19,10 @@
   whisper.cpp model shipped in the ISO and never leaves the computer. Nothing is stored beyond
   the current utterance: the WAV lives in the session runtime directory for
   the duration of the transcription call and is deleted straight after. The
-  listener is off with `fabos-voice wake off` or Fab AI Controls › Voice,
-  and it stays silent when no microphone exists.
+  listener is off with `fabos-voice wake off` (or the Voice switch in Fab AI
+  Controls), and it stays silent when no microphone exists. A spoken "yes"
+  is accepted only as a short, answer-shaped reply, never from a longer
+  sentence, and a command run as administrator needs a clear "yes".
 - Ubuntu package updates fetch metadata from Ubuntu mirrors; Fab OS updates
   from the Patience AI repository. Both are standard apt transactions with no
   identifying payload.

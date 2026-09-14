@@ -53,6 +53,10 @@ PREROLL_CHUNKS = 3                                            # keep 300 ms befo
 DEFAULT_TIMEOUT_S = 10.0
 MEM_NEEDED_KB = 600 * 1024
 CHIME_MS = 180
+# whisper-cli tiny.en peaks at ~175 MB RSS (measured in the Ubuntu 26.04 container), more than the 200M MemoryHigh of the
+# fabos-voiced unit. Under systemd the daemon therefore runs each transcription in its own transient scope with this
+# soft cap (systemd-run --user --scope); without systemd-run it runs in place, merely under reclaim pressure.
+WHISPER_SCOPE_MEMORY_HIGH = os.environ.get("FABOS_VOICE_WHISPER_MEMORY_HIGH", "400M")
 
 EXIT_OK, EXIT_NOTHING_HEARD, EXIT_NO_BACKEND = 0, 3, 4
 
@@ -258,6 +262,13 @@ def capture_command():
     if which("arecord"):
         return ["arecord", "-q", "-f", "S16_LE", "-r", str(RATE), "-c", str(CHANNELS), "-t", "raw"]
     return None
+
+
+def capture_shared():
+    """True when the recorder shares the microphone with other streams (PipeWire, PulseAudio); plain ALSA capture is
+    exclusive, so the wake spotter cannot stay open while an approval answer is recorded."""
+    cmd = capture_command()
+    return bool(cmd) and cmd[0] in ("pw-record", "parec")
 
 
 def play_file(path, block=True):
@@ -546,6 +557,31 @@ def transcribe_cloud(agent, wav_path):
     raise NoBackend("cloud transcribe unavailable: %s" % (r.get("error") if isinstance(r, dict) else r))
 
 
+_scope_ok = None
+
+
+def scope_prefix():
+    """['systemd-run', '--user', '--scope', ...] when this process is a systemd service (INVOCATION_ID) and the user
+    manager accepts transient scopes; [] otherwise (CLI use, containers, tests). Probed once per process."""
+    global _scope_ok
+    if truthy(os.environ.get("FABOS_VOICE_NO_SCOPE", "0")) or "INVOCATION_ID" not in os.environ or not which("systemd-run"):
+        return []
+    if _scope_ok is None:
+        try:
+            r = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryHigh=" + WHISPER_SCOPE_MEMORY_HIGH, "--", "true"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=10)
+            _scope_ok = r.returncode == 0
+            if not _scope_ok:
+                log("systemd-run scopes unavailable (%s); whisper.cpp runs inside the service cgroup" % (r.stderr or b"").decode(errors="replace").strip()[-160:])
+        except Exception as e:
+            _scope_ok = False
+            log("systemd-run probe failed (%s); whisper.cpp runs inside the service cgroup" % e)
+    if not _scope_ok:
+        return []
+    return ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--description=Fab OS voice: speech-to-text",
+            "-p", "MemoryHigh=" + WHISPER_SCOPE_MEMORY_HIGH, "--"]
+
+
 def transcribe_whisper(wav_path):
     if not whisper_ready():
         raise NoBackend(phrases.NO_STT)
@@ -553,7 +589,7 @@ def transcribe_whisper(wav_path):
     if mem is not None and mem < MEM_NEEDED_KB:
         raise NoBackend(phrases.LOW_MEMORY)
     threads = str(max(1, min(4, os.cpu_count() or 2)))
-    cmd = ["whisper-cli", "-m", MODEL_PATH, "-l", "en", "-nt", "-np", "-t", threads, "-f", wav_path]
+    cmd = scope_prefix() + ["whisper-cli", "-m", MODEL_PATH, "-l", "en", "-nt", "-np", "-t", threads, "-f", wav_path]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
@@ -733,7 +769,8 @@ def spot_in_pcm(pcm, wake_word="hey fab", threshold="1e-50", realtime=False):
 
 # --------------------------------------------------------------------------- second-stage wake verification
 # A two-word keyphrase spotter is deliberately eager; before a false wake turns overheard talk into a task, the daemon
-# lets whisper.cpp hear the last 3 s again. Small models write "Fab" as fab/fam/fap/fav; a very short greeting passes too.
+# lets whisper.cpp hear the last few seconds (fabos_voiced.RING_SECONDS, 6 s) again. Small models write "Fab" as fab/fam/fap/fav;
+# a very short greeting passes too.
 WAKE_LIKE = re.compile(r"\bf[aeiou]{1,2}[bmpv]s?\b", re.I)
 WAKE_SHORT = re.compile(r"\b(hey|hi|okay|ok|oh|yo|hello)\b", re.I)
 
@@ -749,27 +786,47 @@ def wake_transcript_ok(text):
     return len(words) <= 3 and bool(WAKE_SHORT.search(t))
 
 
-def verify_wake_clip(pcm):
-    """True/False when whisper.cpp could check the clip; None when it cannot (no model, low memory) — callers then trust
-    the spotter alone. The clip is written for the call only and deleted straight after."""
+def hear_wake_clip(pcm):
+    """(verdict, transcript) for the last seconds before a detection. verdict is True/False when whisper.cpp could check
+    the clip and None when it cannot (no model, low memory) — callers then trust the spotter alone. The clip is written
+    for the call only and deleted straight after."""
     if not pcm or not whisper_ready():
-        return None
+        return None, ""
     mem = mem_available_kb()
     if mem is not None and mem < MEM_NEEDED_KB:
-        return None
+        return None, ""
     wav = os.path.join(ensure_run_dir(), "wake-%d.wav" % os.getpid())
     write_wav(wav, pcm)
     try:
         text = transcribe_whisper(wav)
     except NoBackend as e:
         log("wake verification skipped:", e)
-        return None
+        return None, ""
     finally:
         with contextlib.suppress(OSError):
             os.remove(wav)
     ok = wake_transcript_ok(text)
     log("wake clip heard as %r -> %s" % (text, "accepted" if ok else "rejected"))
-    return ok
+    return ok, text
+
+
+def verify_wake_clip(pcm):
+    """True/False/None as hear_wake_clip, verdict only."""
+    return hear_wake_clip(pcm)[0]
+
+
+def request_after_wake(text):
+    """pocketsphinx reports the phrase at the end of the utterance, so someone who runs on — "Hey Fab open my downloads"
+    — has already said the request when the chime plays. Returns the words after the wake phrase in the clip transcript
+    (at least two, so a stray syllable is not a request), or ""."""
+    t = " ".join((text or "").split())
+    m = WAKE_LIKE.search(t)
+    if not m:
+        return ""
+    tail = t[m.end():].lstrip(" ,.!?;:-—–")
+    if len(re.findall(r"[A-Za-z0-9']+", tail)) < 2:
+        return ""
+    return tail[0].upper() + tail[1:]
 
 
 # --------------------------------------------------------------------------- daemon state + status

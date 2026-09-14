@@ -272,18 +272,92 @@ class Phrases(unittest.TestCase):
         self.assertEqual(s, "This needs your permission: open Fab Terminal. Shall I go ahead?")
 
     def test_yes_no_intents(self):
-        for yes in ("yes", "Yes please", "ok", "okay go ahead", "go ahead", "sure", "haan", "haan ji kar do", "theek hai", "proceed", "yep do it", "Yeah, fine."):
+        for yes in ("yes", "Yes please", "ok", "okay go ahead", "go ahead", "sure", "haan", "haan ji kar do", "theek hai", "proceed", "yep do it", "Yeah, fine.",
+                    "fine", "ya", "ya ya", "allow it", "continue", "no problem", "sure why not", "go ahead please", "please yes", "haan karo", "that's fine", "okay fab"):
             self.assertEqual(P.intent(yes), "approve", yes)
-        for no in ("no", "No thanks", "nahi", "nahin", "cancel", "stop", "wait", "not now", "don't", "yes, wait", "hold on", "mat karo", "Nope."):
+        for no in ("no", "No thanks", "nahi", "nahin", "cancel", "stop", "wait", "not now", "don't", "yes, wait", "hold on", "mat karo", "Nope.",
+                   "okay, stop", "never mind", "not really", "later", "no, I do not want you to do that right now"):
             self.assertEqual(P.intent(no), "deny", no)
-        for unclear in ("", None, "banana", "what does this do", "hmm", "please explain", "is that right"):
+        for unclear in ("", None, "banana", "what does this do", "hmm", "please explain", "is that right", "I am not sure", "maybe", "let me think", "you", "Thank you."):
             self.assertIsNone(P.intent(unclear), repr(unclear))
+
+    def test_only_answer_shaped_utterances_approve(self):
+        """A yes-word inside a longer sentence (overheard talk, thinking aloud, a whisper mis-hearing) must never approve."""
+        for sentence in ("hmm that is a fine question let me think about it", "the weather is fine today",
+                         "I think you should probably continue with the plan", "accept the terms and conditions of the website",
+                         "the download should continue automatically", "sure, but only if it is safe",
+                         "yes if you think it is fine to do so", "Right, I know it's not as calm at 6.", "fine weather today",
+                         "allow me to explain what I meant by that", "ok so what does this command actually do"):
+            self.assertIsNone(P.intent(sentence), sentence)
+        self.assertEqual(P.MAX_ANSWER_TOKENS, 4)
+        # strict (as_root / CRITICAL): only a strong yes-word up front
+        for weak in ("fine", "ya", "allow it", "continue", "go", "correct"):
+            self.assertEqual(P.intent(weak), "approve", weak)
+            self.assertIsNone(P.intent(weak, strict=True), weak)
+        for strong in ("yes", "haan", "okay go ahead", "go ahead", "theek hai", "yes please"):
+            self.assertEqual(P.intent(strong, strict=True), "approve", strong)
+        for no in ("no", "yes, wait", "not now"):
+            self.assertEqual(P.intent(no, strict=True), "deny", no)
+
+    def test_stop_intent(self):
+        for stop in ("stop", "stop that", "cancel it", "please stop", "band karo", "never mind", "ruko", "Stop!"):
+            self.assertTrue(P.is_stop(stop), stop)
+        for other in ("", None, "open my downloads", "stop the music and open files", "yes", "what is the time", "do not stop"):
+            self.assertFalse(P.is_stop(other), repr(other))
+
+    def test_app_names(self):
+        self.assertEqual(P.app_name("systemsettings"), "Fab Settings")
+        self.assertEqual(P.app_name("ark"), "Fab Archives")
+        self.assertEqual(P.app_name("/usr/bin/dolphin --select x"), "Fab Files")
+        self.assertNotIn("System Settings", P.APP_NAMES.values())
+
+    def test_hindi_yes_words(self):
+        for yes in ("bilkul", "zaroor", "haan bilkul", "bilkul karo"):
+            self.assertEqual(P.intent(yes), "approve", yes)
+            self.assertEqual(P.intent(yes, strict=True), "approve", yes)
+        for no in ("bilkul nahi", "zaroor nahi", "nahi, bilkul nahi"):
+            self.assertEqual(P.intent(no), "deny", no)
+            self.assertEqual(P.intent(no, strict=True), "deny", no)
 
     def test_wake_transcript_check(self):
         for ok in ("Hey Fab.", " Okay, fam.", "hey fab", "Hey, Fap!", "Hey.", "A fab", "Hey Feb"):
             self.assertTrue(V.wake_transcript_ok(ok), ok)
         for bad in ("", "Hey Bob, that was a fabulous match yesterday.", "Please open the files application and read the notes.", "the fabric of the tent was torn", "good morning everyone, how are you today"):
             self.assertFalse(V.wake_transcript_ok(bad), bad)
+
+    def test_request_after_wake(self):
+        """pocketsphinx reports the phrase at utterance end: a run-on 'Hey Fab open my downloads' is already in the clip."""
+        self.assertEqual(V.request_after_wake("Hey Fab, open my downloads folder."), "Open my downloads folder.")
+        self.assertEqual(V.request_after_wake(" hey fam open my downloads"), "Open my downloads")
+        self.assertEqual(V.request_after_wake("Hey Fab."), "")            # nothing after the phrase
+        self.assertEqual(V.request_after_wake("Hey Fab, please"), "")     # one stray word is not a request
+        self.assertEqual(V.request_after_wake("good morning everyone"), "")
+        self.assertEqual(V.request_after_wake(""), "")
+        # verdict + transcript pair keeps the old boolean helper intact
+        self.assertEqual(V.hear_wake_clip(b""), (None, ""))
+        self.assertIsNone(V.verify_wake_clip(b""))
+
+    def test_whisper_scope_prefix_only_under_systemd(self):
+        """Outside a systemd service (no INVOCATION_ID) whisper-cli runs directly; under one, in a transient scope with its own MemoryHigh."""
+        saved = os.environ.pop("INVOCATION_ID", None)
+        try:
+            V._scope_ok = None
+            self.assertEqual(V.scope_prefix(), [])
+            os.environ["INVOCATION_ID"] = "test"
+            os.environ["FABOS_VOICE_NO_SCOPE"] = "1"
+            self.assertEqual(V.scope_prefix(), [])                        # explicit opt-out
+            os.environ.pop("FABOS_VOICE_NO_SCOPE")
+            V._scope_ok = True                                           # as after a successful probe
+            pre = V.scope_prefix()
+            self.assertEqual(pre[:3], ["systemd-run", "--user", "--scope"]) if shutil.which("systemd-run") else self.assertEqual(pre, [])
+            if pre:
+                self.assertIn("MemoryHigh=" + V.WHISPER_SCOPE_MEMORY_HIGH, pre)
+                self.assertEqual(pre[-1], "--")
+        finally:
+            V._scope_ok = None
+            os.environ.pop("INVOCATION_ID", None)
+            if saved is not None:
+                os.environ["INVOCATION_ID"] = saved
 
     def test_shorten(self):
         t = "First sentence here. Second one follows! Third should be dropped? Fourth too."
@@ -379,6 +453,43 @@ class FirstRun(unittest.TestCase):
             V.mic_present = orig
 
 
+class DaemonUnit(unittest.TestCase):
+    """Daemon internals that need neither audio nor the agent."""
+
+    def test_ring_covers_a_run_on_request(self):
+        import fabos_voiced as D
+        d = D.Voiced()
+        self.assertGreaterEqual(D.RING_SECONDS, 5)                               # "hey fab open my downloads folder" + end-of-utterance delay
+        self.assertEqual(d.ring.maxlen, D.RING_SECONDS * 1000 // V.CHUNK_MS)
+        self.assertLessEqual(d.ring.maxlen * V.CHUNK_BYTES, 200 * 1024)          # stays a small in-memory buffer
+
+    def test_follow_clears_a_stale_interrupt(self):
+        """A wake caught on the previous stretch must not fire again when the spotter cannot restart (e.g. voice turned off
+        meanwhile) — otherwise follow() would chime and listen forever."""
+        import fabos_voiced as D
+        d = D.Voiced()
+        seen = []
+        d.interrupt = b"stale"
+        d.bg_spotter_start = lambda: False
+        d._follow = lambda tid, state: (seen.append(d.interrupt), "done")[1]
+        d.follow(1)
+        self.assertEqual(seen, [None])
+
+    def test_sleep_wakes_on_interrupt_and_on_stop(self):
+        import threading
+        import fabos_voiced as D
+        d = D.Voiced()
+        threading.Timer(0.3, lambda: setattr(d, "interrupt", b"wake")).start()
+        t0 = time.time()
+        d._sleep(5, until=lambda: d.interrupt is not None)
+        self.assertLess(time.time() - t0, 2.0)
+        d = D.Voiced()
+        threading.Timer(0.3, lambda: setattr(d, "stop", True)).start()
+        t0 = time.time()
+        d._sleep(5)
+        self.assertLess(time.time() - t0, 2.0)
+
+
 # --------------------------------------------------------------------------- engines (skip when absent)
 @unittest.skipUnless(which_all("pocketsphinx", "espeak-ng", "sox") and V.spotter_ready(), "pocketsphinx/espeak-ng/sox not installed")
 class WakeWordSpotting(unittest.TestCase):
@@ -438,6 +549,22 @@ class WhisperTranscription(unittest.TestCase):
         near = espeak_16k("hey bob, that was a fabulous match yesterday")[-3 * V.RATE * 2:]
         self.assertFalse(V.verify_wake_clip(near), "near-miss clip was accepted")
         self.assertIsNone(V.verify_wake_clip(b""))
+
+    def test_run_on_request_is_read_from_the_wake_clip(self):
+        """'Hey Fab, open my downloads folder' said in one breath: pocketsphinx reports the phrase at utterance end, so the
+        request is already in the ring buffer; whisper's transcript of that clip yields the request (fabos_voiced.on_wake)."""
+        import fabos_voiced as D
+        pcm = silence(0.5) + espeak_16k("hey fab, open my downloads folder") + silence(0.8)
+        self.assertGreaterEqual(len(V.spot_in_pcm(pcm, "hey fab", V.DEFAULT_SETTINGS["voice.kws_threshold"])), 1, "phrase not spotted")
+        clip = pcm[-D.RING_SECONDS * V.RATE * 2:]
+        ok, text = V.hear_wake_clip(clip)
+        self.assertTrue(ok, text)
+        tail = V.request_after_wake(text)
+        self.assertIn("folder", tail.lower(), text)
+        self.assertFalse(tail.lower().startswith(("hey", "fab", "fam", "fev")), tail)
+        ok2, text2 = V.hear_wake_clip(silence(0.4) + espeak_16k("hey fab") + silence(0.4))
+        self.assertTrue(ok2, text2)
+        self.assertEqual(V.request_after_wake(text2), "")          # nothing after the phrase: the daemon records normally
 
 
 # --------------------------------------------------------------------------- end to end with the agent's FakeProvider
@@ -528,14 +655,16 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(t["status"], "done")
         self.assertTrue(all(a["status"] == "denied" for a in t["approvals"]), t["approvals"])
 
-    def test_3_unclear_answer_waits_on_screen(self):
-        spoken_path = os.path.join(TMP, "spoken-unclear.log")
+    def waits_on_screen(self, request, answer, tag):
+        """Run the post-wake path with `answer` as the spoken reply to the approval; assert the daemon says it will wait,
+        the approval is still pending (nothing was approved), then decide on screen and let the daemon finish."""
+        spoken_path = os.path.join(TMP, "spoken-%s.log" % tag)
         heard = spoken_path + ".listen"
         with open(heard, "w") as f:
-            f.write("what is this\n")
+            f.write(answer + "\n")
         self.api("PUT", "/settings", {"mode": "ask"})
         env = dict(self.env, FABOS_VOICE_FAKE_SPEAK=spoken_path, FABOS_VOICE_FAKE_LISTEN=heard)
-        p = subprocess.Popen([sys.executable, VOICED, "--handle", "run something privileged"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        p = subprocess.Popen([sys.executable, VOICED, "--handle", request], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         deadline = time.time() + 30
         while time.time() < deadline:
             if os.path.exists(spoken_path):
@@ -545,12 +674,32 @@ class EndToEnd(unittest.TestCase):
             time.sleep(0.3)
         else:
             p.kill()
-            self.fail("daemon never said it would wait on screen")
+            self.fail("daemon never said it would wait on screen for %r" % answer)
+        with open(spoken_path) as fh:
+            spoken = fh.read()
+        self.assertNotIn(P.APPROVED, spoken)
+        self.assertNotIn(P.DENIED, spoken)
         pending = self.api("GET", "/approvals/pending")
-        self.assertEqual(len(pending), 1)
+        self.assertEqual(len(pending), 1, pending)
         self.api("POST", "/approvals/%d" % pending[0]["id"], {"decision": "denied"})   # the user decides on screen
         out, err = p.communicate(timeout=60)
         self.assertEqual(p.returncode, 0, err)
+        return pending[0], err
+
+    def test_3_unclear_answer_waits_on_screen(self):
+        self.waits_on_screen("run something privileged", "what is this", "unclear")
+
+    def test_3b_free_form_sentence_with_a_yes_word_never_approves(self):
+        """The review's case: thinking aloud during the 6 s approval window contains 'fine' — must not approve."""
+        a, err = self.waits_on_screen("run something privileged", "hmm that is a fine question let me think about it", "sentence")
+        self.assertIn("-> None", err)
+
+    def test_3c_as_root_needs_a_clear_yes(self):
+        """A weak yes ('fine') approves an ordinary step but never an as_root / CRITICAL one (strict mode)."""
+        a, err = self.waits_on_screen("do this as root please", "fine", "strict")
+        self.assertEqual(a["tool"], "run_shell")
+        self.assertTrue(json.loads(a["input"]).get("as_root"), a)
+        self.assertIn("(strict)", err)
 
     def test_4_ai_off_is_spoken(self):
         self.api("PUT", "/settings", {"ai.enabled": "false"})
@@ -559,6 +708,77 @@ class EndToEnd(unittest.TestCase):
             self.assertEqual(spoken, [P.AI_OFF])
         finally:
             self.api("PUT", "/settings", {"ai.enabled": "true"})
+
+    def test_6_hey_fab_while_a_task_runs_can_stop_it(self):
+        """While a task is followed the spotter keeps running (background thread); 'Hey Fab' + 'stop' cancels the task.
+        Audio is faked: a silent 'microphone' and a 'pocketsphinx' that prints the wake line once the daemon has said
+        it will wait on screen (deterministic order: approval asked -> unclear -> waiting -> wake -> 'stop that')."""
+        import fabos_voiced as D
+        spoken_path = os.path.join(TMP, "spoken-interrupt.log")
+        heard = spoken_path + ".listen"
+        with open(heard, "w") as f:
+            f.write("\nstop that\n")          # 1st listen (approval): nothing heard; 2nd listen (after the wake): stop
+        self.api("PUT", "/settings", {"mode": "ask", "voice.enabled": "true"})
+        fake_mic = [sys.executable, "-c", "import sys,time\nwhile True:\n sys.stdout.buffer.write(b'\\0'*3200); sys.stdout.buffer.flush(); time.sleep(0.1)"]
+        fake_spotter = [sys.executable, "-c",
+                        "import sys,time,threading,json,os\n"
+                        "def drain():\n"
+                        " while sys.stdin.buffer.read(3200): pass\n"
+                        "threading.Thread(target=drain, daemon=True).start()\n"
+                        "while True:\n"
+                        " time.sleep(0.2)\n"
+                        " if os.path.exists(%r) and %r in open(%r).read(): break\n"
+                        "time.sleep(1.5)\n"     # past SPEECH_GRACE_S after the daemon's own sentence, as a real detection would be
+                        "print(json.dumps({'b':0,'d':1.2,'p':1,'t':'hey fab','w':[]}), flush=True)\n"
+                        "time.sleep(600)\n" % (spoken_path, P.WAIT_ON_SCREEN, spoken_path)]
+        names = ("FAKE_SPEAK", "FAKE_LISTEN", "capture_command", "capture_shared", "spotter_command", "spotter_ready", "verify_wake_clip", "play_chime")
+        saved = {n: getattr(V, n) for n in names}
+        V.FAKE_SPEAK, V.FAKE_LISTEN = spoken_path, heard
+        V.capture_command = lambda: fake_mic
+        V.capture_shared = lambda: True                 # "PipeWire present": the spotter may stay open while we record
+        V.spotter_command = lambda wake, thr: fake_spotter
+        V.spotter_ready = lambda: True
+        V.verify_wake_clip = lambda pcm: None
+        V.play_chime = lambda: True
+        d = D.Voiced()
+        d.agent = V.Agent(run_dir=os.path.join(self.rundir, "fabos-agent"))
+        d.refresh_settings(force=True)
+        d.spotting_allowed = True
+        try:
+            t0 = time.time()
+            d.handle_text("run something privileged")
+            elapsed = time.time() - t0
+        finally:
+            d.stop_spotter()
+            for n in names:
+                setattr(V, n, saved[n])
+        with open(spoken_path) as fh:
+            spoken = fh.read().splitlines()
+        joined = "\n".join(spoken)
+        self.assertIn(P.WAIT_ON_SCREEN, joined)
+        self.assertEqual(spoken[-1], P.CANCELLED, joined)
+        self.assertLess(elapsed, 40, "interrupt took %.1f s" % elapsed)
+        t = self.api("GET", "/tasks/%d" % self.api("GET", "/tasks")[0]["id"])
+        self.assertEqual(t["status"], "cancelled", t)
+        self.assertEqual(self.api("GET", "/approvals/pending"), [])
+        self.assertIsNone(d.spot)
+        self.assertIsNone(d.rec)
+
+    def test_7_spotter_backoff_grows_then_resets(self):
+        import fabos_voiced as D
+        d = D.Voiced()
+
+        class Dead:
+            returncode = 1
+
+        d.spot = d.rec = Dead()
+        d.spot_err = None
+        d.stop_spotter = lambda: None
+        d.spot_started_at = time.time()
+        self.assertEqual([d.spotter_died() for _ in range(6)], [3, 6, 12, 24, 48, 60])
+        self.assertEqual(len(d._warned), 1)                      # repeats are logged once, not per death
+        d.spot_started_at = time.time() - D.SPOTTER_HEALTHY_S - 1  # a spotter that ran for a while resets the backoff
+        self.assertEqual(d.spotter_died(), 3)
 
     def test_5_status_sees_agent_and_wake_setting(self):
         self.api("PUT", "/settings", {"voice.enabled": "false"})

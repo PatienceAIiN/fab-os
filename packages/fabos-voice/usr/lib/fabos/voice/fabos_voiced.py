@@ -6,6 +6,9 @@ Loop:  settings (GET /settings, refreshed every 30 s)  ->  is voice.enabled and 
        -> on the wake phrase: chime, "Listening…" notification, record + transcribe like `fabos-voice listen-once`,
           POST /tasks to the agent, then follow the task: speak every tool step's narration, ask for approvals
           by voice (yes/no), relay questions, speak the final reply or the error. Never listens while speaking.
+       -> while a task is followed the spotter keeps running in the background (PipeWire/Pulse only): "Hey Fab" then
+          "stop" cancels the task, any other request starts a new task (the old one carries on in Fab AI Controls),
+          silence resumes the narration.
 First start after login: one notification telling the user about "Hey Fab" (only when a microphone exists).
 
 Debug/test: `fabos_voiced.py --handle "open the files app"` runs the post-wake path once (no audio, no spotter)
@@ -37,8 +40,14 @@ WAKE_START_S = 5           # after the chime, give up when nobody has started sp
 FOLLOW_MAX_S = 30 * 60
 MIC_RECHECK_S = 30
 AGENT_RECHECK_S = 5
-SPOTTER_BACKOFF_S = 3
-RING_SECONDS = 3           # audio kept in memory for the second look at the wake clip; never written unless verifying
+SPOTTER_BACKOFF_S = 3      # first restart delay after the spotter dies; doubles up to SPOTTER_BACKOFF_MAX_S
+SPOTTER_BACKOFF_MAX_S = 60
+SPOTTER_HEALTHY_S = 30     # a spotter that lived this long resets the backoff
+SPEECH_GRACE_S = 1.0       # detections this soon after our own voice stopped are ours (pocketsphinx reports at utterance end)
+RING_SECONDS = 6           # audio kept in memory (192 KB) for the second look at the wake clip and for the words of a run-on
+                           # request: pocketsphinx reports the phrase at the END of the utterance, so the clip must hold "hey fab"
+                           # plus up to ~4.5 s of request (measured in the Ubuntu 26.04 container: a 5 s "hey fab, write a note
+                           # that says…" fell off a 5 s ring and was rejected, 6 s kept it); never written to disk unless verifying
 FIRST_RUN_MARKER = os.path.join(V.STATE_DIR, "first-run-done")
 DICT = "/usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict"
 TERMINAL = ("done", "failed", "cancelled")
@@ -62,6 +71,12 @@ class Voiced:
         self.stop = False
         self._warned = set()
         self._wake_cache = {}      # raw setting -> validated phrase (cmudict is 3 MB; look each phrase up once)
+        self.spot_failures = 0
+        self.spot_started_at = 0.0
+        self.last_spoke_end = 0.0
+        self.spotting_allowed = False   # only the real main loop (run) may open the microphone; --handle never does
+        self.interrupt = None           # wake clip caught by the background spotter while a task is followed
+        self.bg = None
 
     # ------------------------------------------------------------------ settings
     def refresh_settings(self, force=False):
@@ -132,6 +147,11 @@ class Voiced:
             log("speak failed:", e)
         finally:
             V.write_state(speaking=False)
+            self.last_spoke_end = time.time()
+
+    def own_voice(self):
+        """True while we (or another Fab UI) speak, and for a moment after: the spotter must not wake on itself."""
+        return V.lock_active("speaking") or time.time() - self.last_spoke_end < SPEECH_GRACE_S
 
     def listen(self, timeout, chime=False, start_timeout=None):
         """One utterance as text, or None (nothing heard / no backend — logged, never raised)."""
@@ -175,7 +195,7 @@ class Voiced:
             self.rec = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             self.spot = subprocess.Popen(V.spotter_command(wake, threshold), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.spot_err)
             self.ring.clear()
-            # recorder -> (ring buffer of the last 3 s) -> pocketsphinx; the ring gives whisper a second look at the wake clip
+            # recorder -> (ring buffer of the last RING_SECONDS) -> pocketsphinx; the ring gives whisper a second look at the wake clip
             self.pump = threading.Thread(target=self._pump, args=(self.rec, self.spot), daemon=True, name="audio-pump")
             self.pump.start()
         except OSError as e:
@@ -184,6 +204,7 @@ class Voiced:
             return False
         self.active_wake = wake
         self.active_threshold = threshold
+        self.spot_started_at = time.time()
         V.write_state(wake=True, listening=False, mic=True, wake_word=wake)
         log("listening for '%s' (threshold %s) via %s" % (wake, threshold, cmd[0]))
         return True
@@ -219,17 +240,31 @@ class Voiced:
             self.spot_err.close()
         V.write_state(wake=False)
 
+    def spotter_died(self):
+        """Log the death (in full once per distinct error, then quietly) and return how long to wait before the next
+        try: 3 s, doubling to 60 s while it keeps dying at once (e.g. an ALSA node without PipeWire), reset after a
+        healthy run."""
+        err = b""
+        with contextlib.suppress(Exception):
+            self.spot_err.seek(0)
+            err = self.spot_err.read()[-400:]
+        if time.time() - self.spot_started_at > SPOTTER_HEALTHY_S:
+            self.spot_failures = 0
+        self.spot_failures += 1
+        msg = "spotter stopped (pocketsphinx rc=%s, recorder rc=%s) %s" % (self.spot.returncode, self.rec.returncode, err.decode(errors="replace").strip())
+        delay = min(SPOTTER_BACKOFF_S * 2 ** (self.spot_failures - 1), SPOTTER_BACKOFF_MAX_S)
+        if self.spot_failures == 1:
+            log(msg)
+        else:
+            self.warn_once(msg + " -- keeps happening; retrying with a backoff of up to %d s, further repeats are not logged" % SPOTTER_BACKOFF_MAX_S)
+        self.stop_spotter()
+        return delay
+
     def spot_loop(self):
         """Read spotter output until the wake phrase, a process death, or a settings change that needs a restart."""
         while not self.stop:
             if self.spot.poll() is not None or self.rec.poll() is not None:
-                err = b""
-                with contextlib.suppress(Exception):
-                    self.spot_err.seek(0)
-                    err = self.spot_err.read()[-400:]
-                log("spotter stopped (pocketsphinx rc=%s, recorder rc=%s) %s" % (self.spot.returncode, self.rec.returncode, err.decode(errors="replace").strip()))
-                self.stop_spotter()
-                time.sleep(SPOTTER_BACKOFF_S)
+                self._sleep(self.spotter_died())
                 return
             ready, _, _ = select.select([self.spot.stdout], [], [], 1.0)
             if time.time() - self.settings_ts > SETTINGS_REFRESH_S:
@@ -244,11 +279,12 @@ class Voiced:
             line = self.spot.stdout.readline()
             if not line:
                 continue
-            if V.lock_active("speaking"):
+            if self.own_voice():
                 continue             # our own voice (or another Fab UI's) is playing: ignore
             if V.parse_spot_line(line.decode(errors="replace"), self.active_wake):
                 log("wake phrase heard")
                 clip = b"".join(self.ring)
+                self.spot_failures = 0
                 self.stop_spotter()  # release the microphone; nothing is spotted while we talk
                 try:
                     self.on_wake(clip)
@@ -259,21 +295,29 @@ class Voiced:
     # ------------------------------------------------------------------ after "Hey Fab"
     def on_wake(self, clip=b""):
         """Chime at once, record the request, and meanwhile let whisper.cpp hear the wake clip again: the spotter is
-        deliberately eager (1e-50 also fires on "a fabulous day"), so a rejected clip drops what followed, silently."""
+        deliberately eager (1e-50 also fires on "a fabulous day"), so a rejected clip drops what followed, silently.
+        pocketsphinx reports the phrase only at the end of the utterance, so someone who ran on ("Hey Fab open my
+        downloads") has already spoken: when nothing follows the chime, the words after the wake phrase in that same
+        clip transcript become the request."""
         V.play_chime()
         self.notify(APP, P.LISTENING, 8000)
         self.refresh_settings(force=True)
-        verdict = [None]
+        heard = [None, ""]
         checker = None
         if self.flag("voice.verify_wake") and clip:
-            checker = threading.Thread(target=lambda: verdict.__setitem__(0, V.verify_wake_clip(clip)), daemon=True, name="wake-verify")
+            checker = threading.Thread(target=lambda: heard.__setitem__(slice(0, 2), V.hear_wake_clip(clip)), daemon=True, name="wake-verify")
             checker.start()
         text = self.listen(V.DEFAULT_TIMEOUT_S, start_timeout=WAKE_START_S)
         if checker is not None:
             checker.join(30)
-        if verdict[0] is False:
+        if heard[0] is False:
             self.notify(APP, P.WAKE_UNSURE, 6000)
             return
+        if not text:
+            tail = V.request_after_wake(heard[1])
+            if tail:
+                log("no speech after the chime; using the words that followed the wake phrase: %r" % tail)
+                text = tail
         if not text:
             self.speak(P.NOT_HEARD)
             self.notify(APP, P.LISTENING_AGAIN, 8000)
@@ -301,21 +345,96 @@ class Voiced:
             self.speak(P.STARTED)
         self.follow(int(r["id"]))
 
+    # ------------------------------------------------------------------ "Hey Fab" while a task runs
+    def bg_spotter_start(self):
+        """Keep spotting the wake phrase in a background thread while a task is followed, so the user can cut in with
+        "Hey Fab" ("stop", or a new request). Only with PipeWire/Pulse recorders — ALSA capture is exclusive and the
+        approval/question recordings need the microphone too — and only from the real main loop."""
+        if not (self.spotting_allowed and self.enabled() and V.spotter_ready() and V.mic_present() and V.capture_shared()):
+            return False
+        self.interrupt = None
+        if not self.start_spotter():
+            return False
+        self.bg = threading.Thread(target=self._bg_read, args=(self.spot,), daemon=True, name="wake-while-busy")
+        self.bg.start()
+        return True
+
+    def _bg_read(self, spot):
+        try:
+            for line in iter(spot.stdout.readline, b""):
+                if self.stop or self.interrupt is not None:
+                    break
+                if self.own_voice() or V.lock_active("listening"):
+                    continue
+                if not V.parse_spot_line(line.decode(errors="replace"), self.active_wake):
+                    continue
+                clip = b"".join(self.ring)
+                if self.flag("voice.verify_wake") and V.verify_wake_clip(clip) is False:
+                    log("wake phrase while busy rejected on the second look")
+                    continue
+                log("wake phrase heard while following a task")
+                self.interrupt = clip
+                break
+        except (OSError, ValueError):
+            pass
+
+    def bg_spotter_stop(self):
+        self.stop_spotter()
+        self.bg = None
+
     def follow(self, tid):
-        seen = {}                 # step id -> already had output
-        handled_approvals = set()
-        handled_questions = set()
-        started = time.time()
+        """Follow a task to its end, narrating. "Hey Fab" meanwhile interrupts: "stop" cancels the task, anything else
+        becomes a new request (the old task carries on, visible in Fab AI Controls), silence resumes the narration."""
+        state = {"seen": {}, "approvals": set(), "questions": set(), "started": time.time()}
+        while not self.stop:
+            self.interrupt = None        # a wake handled on the previous stretch must not fire again if the spotter cannot restart
+            bg = self.bg_spotter_start()
+            try:
+                outcome = self._follow(tid, state)
+            finally:
+                if bg:
+                    self.bg_spotter_stop()
+            if outcome != "interrupted":
+                return
+            V.play_chime()
+            self.notify(APP, P.LISTENING, 8000)
+            text = self.listen(V.DEFAULT_TIMEOUT_S, start_timeout=WAKE_START_S)
+            if not text:
+                self.speak(P.RESUMING)
+                continue
+            if P.is_stop(text):
+                self.cancel(tid)
+                return
+            self.speak(P.LEFT_RUNNING)
+            self.handle_text(text)
+            return
+
+    def cancel(self, tid):
+        try:
+            r = self.agent.post("/tasks/%d/cancel" % tid, {})
+        except V.NoBackend:
+            self.speak(P.AGENT_DOWN)
+            return
+        if isinstance(r, dict) and r.get("status") == "cancelled":
+            self.speak(P.CANCELLED)
+        else:
+            self.speak(P.ERROR.format(reason=P.error_reason((r or {}).get("error", "") if isinstance(r, dict) else str(r))))
+
+    def _follow(self, tid, state):
+        """One stretch of following: returns "done" (terminal state spoken), "timeout", "error" or "interrupted"."""
+        seen, handled_approvals, handled_questions = state["seen"], state["approvals"], state["questions"]
         speak_replies = self.flag("voice.speak_replies")
         while not self.stop:
+            if self.interrupt is not None:
+                return "interrupted"
             try:
                 task = self.agent.get("/tasks/%d" % tid)
             except V.NoBackend:
                 self.speak(P.AGENT_DOWN)
-                return
+                return "error"
             if not isinstance(task, dict) or "status" not in task:
                 self.speak(P.ERROR.format(reason=P.error_reason((task or {}).get("error", "task not found"))))
-                return
+                return "error"
             for s in task.get("steps") or []:
                 if s.get("kind") != "tool_call":
                     continue
@@ -344,17 +463,25 @@ class Voiced:
                         self.ask_question(tid, q)
             elif st in TERMINAL:
                 self.finish(task)
-                return
-            if time.time() - started > FOLLOW_MAX_S:
+                return "done"
+            if time.time() - state["started"] > FOLLOW_MAX_S:
                 self.speak(P.TIMED_OUT)
-                return
-            time.sleep(POLL_S)
+                return "timeout"
+            self._sleep(POLL_S, until=lambda: self.interrupt is not None)
+        return "stopped"
 
     def ask_approval(self, a):
-        summary = P.approval_summary(a.get("tool"), a.get("input"), a.get("reason") or "")
+        """Ask by voice and listen for a short answer. Only an answer-shaped reply counts (phrases.intent); for a
+        CRITICAL step or anything run as administrator only a clear yes-word up front approves — everything else
+        is left to the approval card on screen."""
+        inp = P._as_dict(a.get("input"))
+        strict = str(a.get("risk") or "").upper() == "CRITICAL" or (a.get("tool") == "run_shell" and bool(inp.get("as_root")))
+        summary = P.approval_summary(a.get("tool"), inp, a.get("reason") or "")
         self.speak(P.PERMISSION.format(summary=summary))
         answer = self.listen(APPROVAL_LISTEN_S, chime=True)
-        decision = P.intent(answer)
+        decision = P.intent(answer, strict=strict)
+        if answer:
+            log("approval answer %r -> %s%s" % (answer, decision, " (strict)" if strict else ""))
         if decision is None:
             self.speak(P.WAIT_ON_SCREEN)
             return
@@ -399,6 +526,7 @@ class Voiced:
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, self._on_signal)
         self.first_run()
+        self.spotting_allowed = True
         log("started (state dir %s, run dir %s)" % (V.STATE_DIR, V.RUN_DIR))
         while not self.stop:
             self.refresh_settings()
@@ -436,10 +564,11 @@ class Voiced:
         V.write_state(wake=False, listening=False, speaking=False)
         log("stopped")
 
-    def _sleep(self, s):
+    def _sleep(self, s, until=None):
+        """Sleep s seconds, waking early on stop (signal) or as soon as `until()` is true (a wake while a task is followed)."""
         end = time.time() + s
-        while not self.stop and time.time() < end:
-            time.sleep(0.5)
+        while not self.stop and time.time() < end and not (until is not None and until()):
+            time.sleep(0.25)
 
     def _on_signal(self, signum, frame):
         self.stop = True

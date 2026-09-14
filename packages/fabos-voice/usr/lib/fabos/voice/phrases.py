@@ -10,7 +10,8 @@ Public helpers:
   narration_done(tool, input_dict)  -> one sentence for a finished step (UIs; the daemon speaks a step JSON's own
                                        "narration_done" field when the agent supplies one)
   approval_summary(tool, input_dict, reason) -> "run the command ls -la" style fragment for PERMISSION
-  intent(text)                      -> "approve" | "deny" | None from a spoken yes/no answer
+  intent(text, strict=False)        -> "approve" | "deny" | None from a spoken yes/no answer (answer-shaped only)
+  is_stop(text)                     -> True when a short utterance means "stop that task"
   shorten(text, full=False)         -> first two sentences or 240 characters of a reply
 """
 import json
@@ -35,11 +36,13 @@ DONE_EMPTY = "Done."
 DONE_PREFIX = "Done. "
 ERROR = "Sorry, that did not work: {reason}"
 CANCELLED = "Okay, I have stopped that task."
+RESUMING = "No problem, carrying on with the task."
+LEFT_RUNNING = "Okay, I will leave that one running; you can watch it in Fab AI Controls."
 TIMED_OUT = "This is taking a while. I will keep working on it; you can see the progress in Fab AI Controls."
 AI_OFF = "System-Wide AI is off right now. Turn it on in Fab AI Controls and try again."
 AGENT_DOWN = "Sorry, the Fab agent is not running right now."
 FIRST_RUN_TITLE = "Talk to Fab"
-FIRST_RUN_BODY = "Say 'Hey Fab' to talk to me. You can turn this off in Fab AI Controls › Voice."
+FIRST_RUN_BODY = "Say 'Hey Fab', wait for the chime, then tell me what you need. You can turn this off in Fab AI Controls › Voice."
 VOICE_UNAVAILABLE = "Voice is not available on this machine"
 NO_MIC = "No microphone found on this computer."
 NO_STT = "Speech recognition is not available: no offline model and no cloud provider key."
@@ -55,7 +58,7 @@ APP_NAMES = {
     "dolphin": "Fab Files", "konsole": "Fab Terminal", "kate": "Fab Editor", "kwrite": "Fab Editor",
     "plasma-discover": "Fab Software", "discover": "Fab Software", "gwenview": "Fab Photos", "okular": "Fab Documents",
     "kcalc": "Fab Calculator", "spectacle": "Fab Screenshot", "plasma-systemmonitor": "Fab Monitor",
-    "kinfocenter": "Fab System Info", "systemsettings": "System Settings", "kwalletmanager6": "Fab Wallet",
+    "kinfocenter": "Fab System Info", "systemsettings": "Fab Settings", "kwalletmanager6": "Fab Wallet", "ark": "Fab Archives",
     "fabos-command-center": "Fab AI Controls", "fabos-updates": "Fab Updates", "fabos-feedback": "Fab Feedback",
     "firefox": "Firefox", "libreoffice": "LibreOffice", "libreoffice --writer": "LibreOffice Writer",
     "libreoffice --calc": "LibreOffice Calc", "libreoffice --impress": "LibreOffice Impress",
@@ -186,31 +189,87 @@ def approval_summary(tool, inp=None, reason=""):
 
 
 # --------------------------------------------------------------------------- yes / no intent
-# Spoken answers from Indian users mix English and Hindi; both are understood. A refusal anywhere in the
-# answer wins ("yes, wait" -> deny), because doing nothing is always the safe choice.
+# Spoken answers from Indian users mix English and Hindi; both are understood. Only an ANSWER-SHAPED utterance
+# counts: after leading fillers it is at most MAX_ANSWER_TOKENS words, and the decision must lead ("yes please",
+# "haan ji kar do", "no, not now"). A sentence that merely contains a yes-word ("the weather is fine today",
+# "hmm, that is a fine question, let me think") is None and the daemon waits for the decision on screen. Rules are
+# asymmetric because doing nothing is always the safe choice: a refusal that LEADS counts at any length, a refusal
+# anywhere in a short answer wins ("yes, wait" -> deny), and an expression of doubt is never a yes.
+MAX_ANSWER_TOKENS = 4
+FILLERS = {"please", "hmm", "um", "uh", "oh", "well", "so", "hey", "fab", "ji", "bhai", "yaar", "just", "then", "now",
+           "it", "that", "this", "the", "abhi", "toh", "to"}
 DENY_WORDS = {"no", "nope", "nah", "not", "dont", "don't", "never", "cancel", "stop", "wait", "hold", "nahi", "nahin",
               "mat", "ruko", "rukho", "deny", "denied", "refuse", "abort", "later", "skip", "negative"}
-APPROVE_WORDS = {"yes", "yeah", "yep", "ya", "yup", "ok", "okay", "sure", "ahead", "proceed", "approve", "approved",
-                 "allow", "fine", "haan", "han", "haa", "theek", "thik", "karo", "kardo", "chalo", "confirm",
-                 "continue", "affirmative", "accept"}
-APPROVE_PHRASES = ("go ahead", "do it", "carry on", "theek hai", "thik hai", "kar do", "haan ji", "ok go", "all right", "alright")
-DENY_PHRASES = ("not now", "hold on", "wait a", "no thanks", "nahi karo", "mat karo", "ruk jao", "don't", "do not")
+# strong yes-words: enough on their own or up front ("yes", "okay go ahead", "haan karo")
+APPROVE_WORDS = {"yes", "yeah", "yep", "yup", "ok", "okay", "sure", "proceed", "approve", "approved", "haan", "han", "haa",
+                 "theek", "thik", "karo", "kardo", "chalo", "bilkul", "zaroor", "confirm", "confirmed", "affirmative"}
+# weak yes-words: only when the WHOLE answer is made of yes-words and fillers ("fine", "ya ya", "allow it"); never
+# when an as_root command is at stake (strict mode) and never inside a longer sentence
+APPROVE_WEAK = {"fine", "ya", "continue", "allow", "accept", "ahead", "go", "correct"}
+UNSURE_WORDS = {"what", "which", "how", "maybe", "shayad", "explain", "unsure"}
+# multi-word idioms folded into one token before the rules run (longest first); "no problem" is a yes, "hold on" a no
+IDIOMS = (
+    ("go ahead", "yes"), ("do it", "yes"), ("carry on", "yes"), ("theek hai", "yes"), ("thik hai", "yes"), ("kar do", "yes"),
+    ("haan ji", "yes"), ("all right", "yes"), ("alright", "yes"), ("that's fine", "yes"), ("that is fine", "yes"),
+    ("it's fine", "yes"), ("its fine", "yes"), ("sounds good", "yes"), ("go on", "yes"), ("please do", "yes"),
+    ("no problem", "yes"), ("no problems", "yes"), ("no issue", "yes"), ("no issues", "yes"), ("no worries", "yes"),
+    ("why not", "yes"), ("koi dikkat nahi", "yes"), ("koi baat nahi", "yes"),
+    ("not now", "no"), ("hold on", "no"), ("wait a", "no"), ("no thanks", "no"), ("nahi karo", "no"), ("mat karo", "no"),
+    ("ruk jao", "no"), ("do not", "no"), ("never mind", "no"), ("leave it", "no"), ("rehne do", "no"), ("band karo", "no"),
+    ("not sure", "unsure"), ("don't know", "unsure"), ("dont know", "unsure"), ("no idea", "unsure"), ("pata nahi", "unsure"),
+    ("pata nahin", "unsure"), ("let me think", "unsure"), ("let me see", "unsure"), ("one minute", "unsure"), ("ek minute", "unsure"),
+)
+# kept for callers/tests that look at the phrase lists
+APPROVE_PHRASES = tuple(k for k, v in IDIOMS if v == "yes")
+DENY_PHRASES = tuple(k for k, v in IDIOMS if v == "no")
+# "stop" said after a wake during a running task: cancel it
+STOP_WORDS = {"stop", "cancel", "abort", "ruko", "rukho", "halt", "quit"}
+STOP_IDIOMS = ("band karo", "never mind", "leave it", "rehne do", "chhod do", "forget it", "stop it", "stop that", "cancel that", "cancel it")
 
 
 def _tokens(text):
     return re.findall(r"[a-z']+", (text or "").lower().replace("’", "'"))
 
 
-def intent(text):
+def _fold(text):
+    """Lower-cased word string with the idioms folded into their one-word meaning."""
     low = " ".join(_tokens(text))
-    if not low:
+    for idiom, canon in sorted(IDIOMS, key=lambda kv: -len(kv[0])):
+        low = re.sub(r"\b%s\b" % re.escape(idiom), canon, low)
+    return low
+
+
+def intent(text, strict=False):
+    """'approve' | 'deny' | None from a spoken answer to 'Shall I go ahead?'.
+    strict=True (as_root / CRITICAL approvals): only a strong yes-word up front is an approval."""
+    toks = _fold(text).split()
+    while toks and toks[0] in FILLERS:
+        toks.pop(0)
+    if not toks:
         return None
-    words = set(low.split())
-    if any(p in low for p in DENY_PHRASES) or words & DENY_WORDS:
-        return "deny"
-    if any(p in low for p in APPROVE_PHRASES) or words & APPROVE_WORDS:
+    if toks[0] in DENY_WORDS:
+        return "deny"                                            # an explicit refusal up front counts at any length
+    if len(toks) > MAX_ANSWER_TOKENS or set(toks) & UNSURE_WORDS:
+        return None                                              # a sentence or a doubt, not an answer: decide on screen
+    if set(toks) & DENY_WORDS:
+        return "deny"                                            # "yes, wait" / "okay, stop": the refusal wins
+    if toks[0] in APPROVE_WORDS:
         return "approve"
+    if strict:
+        return None
+    rest = [t for t in toks if t not in FILLERS]
+    if rest and all(t in APPROVE_WORDS or t in APPROVE_WEAK for t in rest):
+        return "approve"                                         # "fine", "ya ya", "allow it", "go ahead please"
     return None
+
+
+def is_stop(text):
+    """True when a short utterance heard after 'Hey Fab' during a running task means 'stop that task'."""
+    low = " ".join(_tokens(text))
+    for idiom in STOP_IDIOMS:
+        low = re.sub(r"\b%s\b" % re.escape(idiom), "stop", low)
+    toks = [t for t in low.split() if t not in FILLERS]
+    return bool(toks) and len(toks) <= MAX_ANSWER_TOKENS and toks[0] in STOP_WORDS
 
 
 # --------------------------------------------------------------------------- reply shortening
