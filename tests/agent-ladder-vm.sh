@@ -297,6 +297,11 @@ if [ "${INJECT:-0}" = 1 ]; then   # test the working-tree agent code without reb
   vm "echo fabos | sudo -S install -m 755 /tmp/fabos_agentd.py /tmp/command_center.py /usr/lib/fabos/agent/ 2>/dev/null; echo fabos | sudo -S install -m 755 /tmp/fabos /usr/bin/fabos 2>/dev/null; systemctl --user restart fabos-agent; sleep 4; systemctl --user is-active fabos-agent"
 fi
 
+# The built-in model's endpoint only exists on machines with more than 3 GiB (fabos-llama.socket: ConditionMemory=>3G).
+if [ "$PROVIDER" = local ]; then
+  vm_mem_kb=$(vm "awk '/MemTotal/{print \$2}' /proc/meminfo" 2>/dev/null | tr -dc 0-9); vm_mem_kb=${vm_mem_kb:-0}
+  if [ "$vm_mem_kb" -lt 3500000 ]; then echo "SETUP ERROR: provider=local needs a VM with at least 4 GB RAM (this VM has $((vm_mem_kb/1024)) MB; the built-in model socket has ConditionMemory=>3G). Boot with VM_MEM=4096."; exit 3; fi
+fi
 echo "### 3/5 provider + mode"
 if [ "$PROVIDER" = claude ]; then
   vm "fabos settings provider claude >/dev/null; fabos settings claude.model $MODEL >/dev/null; fabos settings ai.enabled true >/dev/null; printf '%s\n' '$ANTHROPIC_API_KEY' | fabos set-key claude >/dev/null 2>&1"
