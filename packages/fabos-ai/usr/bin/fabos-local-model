@@ -1,0 +1,152 @@
+#!/usr/bin/python3
+"""fabos-local-model: state of the built-in offline AI model, as one JSON object (for UIs and scripts).
+
+  fabos-local-model status [--verify]   {installed, bytes, sha256_ok, ram_ok, server_active, ready, message, ...}
+  fabos-local-model verify              same as `status --verify` (hashes the 1.1 GB file; a few seconds)
+  fabos-local-model path                print the model file path
+  fabos-local-model warm                load the model now (one request to the on-demand endpoint)
+  fabos-local-model stop                unload the model now (stops the proxy; the server follows)
+
+sha256_ok is null unless --verify is given (hashing is deliberately lazy). ram_ok is MemTotal >= 3.5 GiB,
+the honest minimum for this model next to the desktop; the systemd units refuse to start below 3 GiB.
+Standard library only; no third-party modules.
+"""
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+
+MANIFEST = "/usr/share/fabos/ai-models.json"
+FALLBACK = {
+    "name": "Qwen2.5-1.5B-Instruct",
+    "file": "/usr/share/fabos/models/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "bytes": 1117320736,
+    "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+}
+MIN_RAM_BYTES = int(3.5 * 1024 ** 3)
+ENDPOINT = "http://127.0.0.1:8080/v1"
+UNIT_SERVER, UNIT_PROXY, UNIT_SOCKET = "fabos-llama.service", "fabos-llama-proxy.service", "fabos-llama.socket"
+
+
+def manifest():
+    try:
+        with open(MANIFEST, encoding="utf-8") as f:
+            m = json.load(f)
+        if isinstance(m, dict) and m.get("file"):
+            return m
+    except (OSError, ValueError):
+        pass
+    return dict(FALLBACK)
+
+
+def mem_total_bytes():
+    try:
+        with open("/proc/meminfo", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def sha256_of(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def unit_state(unit, what="is-active"):
+    """'active' / 'inactive' / 'enabled' / ... or None when there is no user manager (containers, TTY without a session)."""
+    try:
+        r = subprocess.run(["systemctl", "--user", what, unit], capture_output=True, text=True, timeout=5)
+        out = (r.stdout or r.stderr).strip().splitlines()
+        return out[0] if out else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def status(verify=False):
+    m = manifest()
+    path = m["file"]
+    installed = os.path.isfile(path)
+    size = os.path.getsize(path) if installed else 0
+    expected = int(m.get("bytes") or 0)
+    size_ok = installed and (expected == 0 or size == expected)
+    sha_ok = None
+    if verify and installed:
+        sha_ok = sha256_of(path) == m.get("sha256")
+    total = mem_total_bytes()
+    ram_ok = total >= MIN_RAM_BYTES
+    server = unit_state(UNIT_SERVER)
+    socket = unit_state(UNIT_SOCKET)
+    ready = installed and size_ok and ram_ok and sha_ok is not False
+    if not installed:
+        message = "Built-in model is not installed."
+    elif not size_ok or sha_ok is False:
+        message = "Built-in model file is damaged; please reinstall the fabos-ai package."
+    elif not ram_ok:
+        message = "Built-in model needs 4 GB RAM; this machine has %.1f GB. Please use a cloud provider." % (total / 1e9)
+    elif server == "active":
+        message = "Built-in model: ready (loaded)."
+    else:
+        message = "Built-in model: ready (loads on the first request: a few seconds, longer right after boot)."
+    return {
+        "installed": installed,
+        "path": path,
+        "name": m.get("name"),
+        "bytes": size,
+        "bytes_expected": expected,
+        "size_ok": size_ok,
+        "sha256_ok": sha_ok,
+        "ram_ok": ram_ok,
+        "mem_total_bytes": total,
+        "min_ram_bytes": MIN_RAM_BYTES,
+        "server_active": server == "active",
+        "socket_active": socket == "active",
+        "endpoint": ENDPOINT,
+        "ready": ready,
+        "message": message,
+    }
+
+
+def warm():
+    try:
+        with urllib.request.urlopen(ENDPOINT.rsplit("/v1", 1)[0] + "/health", timeout=180) as r:
+            return {"ok": r.status == 200, "http": r.status}
+    except Exception as e:  # connection refused (socket not listening / RAM condition), timeout, HTTP error
+        return {"ok": False, "error": str(e)}
+
+
+def stop():
+    r = subprocess.run(["systemctl", "--user", "stop", UNIT_PROXY], capture_output=True, text=True)
+    return {"ok": r.returncode == 0, "detail": (r.stderr or r.stdout).strip()}
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "status"
+    if cmd in ("status", "verify"):
+        out = status(verify=(cmd == "verify" or "--verify" in argv[2:]))
+    elif cmd == "path":
+        print(manifest()["file"])
+        return 0
+    elif cmd == "warm":
+        out = warm()
+    elif cmd == "stop":
+        out = stop()
+    elif cmd in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    else:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

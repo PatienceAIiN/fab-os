@@ -17,6 +17,15 @@ Third-party software
   disclosed in legal/PATCHED-BINARIES.md; the written offer for
   corresponding source is legal/SOURCE-OFFER.md.
 
+Built-in AI model
+  Fab OS images include the Qwen2.5-1.5B-Instruct model weights (GGUF
+  Q4_K_M, unmodified) as the built-in offline model.
+  Copyright 2024 Alibaba Cloud. Licensed under the Apache License,
+  Version 2.0; the licence text with its notice is
+  THIRD_PARTY_LICENSES/Qwen2.5-LICENSE.txt and, on an installed system,
+  /usr/share/fabos/models/LICENSE-qwen2.5. Model card:
+  https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF
+
 Trademarks
   Ubuntu is a trademark of Canonical Ltd.; KDE and Plasma are trademarks
   of KDE e.V.; Fab OS is an independent project not endorsed by them.

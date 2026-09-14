@@ -13,6 +13,7 @@ own notice is in `/usr/share/doc/<package>/copyright` (never excluded from Fab O
 | `LGPL-3.0.txt` | GNU LGPL v3 | KDE Breeze icon theme, Breeze style and colour schemes (basis of Fab Dark / Fab Light, which stay LGPL-3.0-or-later) |
 | `MPL-2.0.txt` | Mozilla Public License 2.0 | Firefox (unmodified .deb from packages.mozilla.org) |
 | `MIT.txt` | MIT / Expat | llama.cpp; anthropic Python SDK |
+| `Qwen2.5-LICENSE.txt` | Apache License 2.0 with the upstream copyright notice "Copyright 2024 Alibaba Cloud" | Qwen2.5-1.5B-Instruct GGUF model weights, the built-in offline model (`/usr/share/fabos/models/`); verbatim `LICENSE` of huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF |
 | `SIL-OFL-1.1.txt` | SIL Open Font License 1.1 | Inter, JetBrains Mono, Noto Sans |
 | `CC0-1.0.txt` | CC0 1.0 Universal | Fab OS artwork may additionally be used under CC0 (see `../legal/ARTWORK.md`) |
 

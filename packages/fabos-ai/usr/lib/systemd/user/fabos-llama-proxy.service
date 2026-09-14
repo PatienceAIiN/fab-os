@@ -1,0 +1,20 @@
+[Unit]
+Description=@DISTRO_NAME@ built-in AI model proxy (8080 -> llama-server 8081, exits after 10 min idle)
+Documentation=@DOCS_URL@ man:systemd-socket-proxyd(8)
+Requires=fabos-llama.service
+After=fabos-llama.service
+Requires=fabos-llama.socket
+After=fabos-llama.socket
+ConditionMemory=>3G
+
+[Service]
+Type=notify
+# When no connection has been open for 10 minutes the proxy exits; fabos-llama.service has StopWhenUnneeded=yes,
+# so the model is unloaded and the RAM is given back. The next request starts everything again (~10-20 s).
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=10min 127.0.0.1:8081
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+UMask=0077

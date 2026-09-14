@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+case "$1" in remove|deconfigure)
+  # Built-in offline model endpoint: drop the global enablement while the unit file still exists (postinst enabled it).
+  systemctl --global disable fabos-llama.socket 2>/dev/null || true
+;; esac
+exit 0

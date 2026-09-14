@@ -4,12 +4,17 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
-Homepage: @HOME_URL@
-Depends: systemd, libc6
-Recommends: llama.cpp, curl
-Description: @DISTRO_NAME@ AI stack — intents, agents, governor, provenance, rollback
+Depends: systemd, libc6, llama.cpp, llama.cpp-tools, curl, python3
+Description: @DISTRO_NAME@ AI stack — built-in offline model, intents, agents, governor, provenance, rollback
  The local-first AI service (aiosd) and CLI (aios) from the ai-native-os
  project. AI proposes, deterministic policy verifies, the kernel enforces,
  provenance records, transactions allow rollback. Cloud providers are off
  until the user adds a key. Enabling the user service is "System-Wide AI = ON":
    systemctl --user enable --now aiosd
+ .
+ Also serves the built-in offline model that ships inside every @DISTRO_NAME@
+ image (/usr/share/fabos/models, manifest /usr/share/fabos/ai-models.json)
+ on demand: fabos-llama.socket listens on 127.0.0.1:8080 (the chat-completions
+ API the agent already speaks), the first request starts llama-server, ten
+ idle minutes unload it again.
+ Needs 4 GB RAM. `fabos-local-model status` reports readiness as JSON.

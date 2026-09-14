@@ -111,4 +111,19 @@ chk "mono status icons are SVG only (recolourable)" "! R 'ls /usr/share/icons/Fa
 chk "kdeglobals UI font is 11 pt, icons medium" "R 'grep -q \"^font=Inter,11,\" /etc/xdg/kdeglobals && grep -q \"^menuFont=Inter,11,\" /etc/xdg/kdeglobals && grep -q \"^toolBarFont=Inter,11,\" /etc/xdg/kdeglobals && grep -A1 \"^\\[ToolbarIcons\\]\" /etc/xdg/kdeglobals | grep -q ^Size=24'"
 chk "clock is bold Inter 13 on one line"      "R 'grep -q \"\\\"fontSize\\\", 13\" $LAYOUT && grep -q \"\\\"dateDisplayFormat\\\", \\\"BesideTime\\\"\" $LAYOUT'"
 chk "tray-defaults is executable"             "R 'test -x /usr/lib/fabos/tray-defaults'"
+# Built-in offline AI model (2026-09-14, ADR-0011): the GGUF is inside the image with the right size, its licence + README sit
+# next to it, the manifest carries the same hash, the on-demand units are shipped and the socket is enabled for every user.
+MODEL=/usr/share/fabos/models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+MODEL_SHA=6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e
+chk "built-in model file present, 1117320736 bytes" "[ \$(R 'stat -c %s $MODEL 2>/dev/null') = 1117320736 ]"
+chk "model README records the pinned sha256"      "R 'grep -q $MODEL_SHA /usr/share/fabos/models/README'"
+chk "model licence: Apache-2.0 + Alibaba notice" "R 'grep -q \"Apache License\" /usr/share/fabos/models/LICENSE-qwen2.5 && grep -q \"Copyright 2024 Alibaba Cloud\" /usr/share/fabos/models/LICENSE-qwen2.5'"
+chk "ai-models.json manifest matches the pin"    "R 'grep -q $MODEL_SHA /usr/share/fabos/ai-models.json && grep -q 1117320736 /usr/share/fabos/ai-models.json && grep -q $MODEL /usr/share/fabos/ai-models.json'"
+chk "llama-server present"                       "R 'test -x /usr/bin/llama-server'"
+chk "fabos-llama units shipped"                  "R 'test -f /usr/lib/systemd/user/fabos-llama.socket && test -f /usr/lib/systemd/user/fabos-llama-proxy.service && test -f /usr/lib/systemd/user/fabos-llama.service && test -x /usr/lib/fabos/ai/llama-start.sh && test -x /usr/bin/fabos-local-model'"
+chk "fabos-llama.socket enabled for all users"   "R 'systemctl --global is-enabled fabos-llama.socket' | grep -q ^enabled"
+# (test the captured text, not a negated `| grep -q` pipeline: with pipefail, grep -q's early exit SIGPIPEs podman and `!` turns that into a PASS)
+chk "fabos-llama units pass systemd-analyze"     "[ -z \"\$(R 'mkdir -p /tmp/xdg && chmod 700 /tmp/xdg && XDG_RUNTIME_DIR=/tmp/xdg systemd-analyze verify --user /usr/lib/systemd/user/fabos-llama.socket /usr/lib/systemd/user/fabos-llama-proxy.service /usr/lib/systemd/user/fabos-llama.service 2>&1 || echo VERIFY-FAILED' | grep -iE 'error|fail|not found|unknown|ignoring')\" ]"
+chk "fabos-local-model status: installed + size ok" "R 'fabos-local-model status' | grep -q '\"installed\": true' && R 'fabos-local-model status' | grep -q '\"size_ok\": true'"
+chk "ai.env points at the built-in model"        "R 'grep -q ^AIOS_LLAMA_MODEL=$MODEL /etc/fabos/ai.env' && ! R 'grep -qi download /etc/fabos/ai.env'"
 exit $fail

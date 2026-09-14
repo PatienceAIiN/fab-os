@@ -1,0 +1,15 @@
+[Unit]
+Description=@DISTRO_NAME@ built-in AI model endpoint (127.0.0.1:8080, on demand)
+Documentation=@DOCS_URL@
+# The endpoint the agent already talks to (chat-completions API, http://127.0.0.1:8080/v1). Nothing runs until the
+# first connection; then fabos-llama-proxy.service starts, which pulls in fabos-llama.service (llama-server on 8081).
+# Not offered at all on machines with 3 GiB or less: the desktop comes first there (use a cloud provider).
+ConditionMemory=>3G
+
+[Socket]
+ListenStream=127.0.0.1:8080
+Accept=no
+Service=fabos-llama-proxy.service
+
+[Install]
+WantedBy=sockets.target

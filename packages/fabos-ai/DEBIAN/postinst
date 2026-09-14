@@ -4,5 +4,9 @@ case "$1" in configure)
   install -d -m 0755 /var/lib/fabos/models
   # Not enabled by default: System-Wide AI is opt-in per user (spec §63).
   systemctl --global daemon-reload 2>/dev/null || true
+  # Built-in offline model: the on-demand endpoint (127.0.0.1:8080) is offered in every user session. Only the
+  # socket is enabled; llama-server itself starts on the first request and stops after 10 idle minutes.
+  # (Enabled here, not in the image recipe: `systemctl --global enable` needs the unit file to exist.)
+  systemctl --global enable fabos-llama.socket 2>/dev/null || true
 ;; esac
 exit 0
