@@ -115,6 +115,18 @@ Design docs live in [`docs/design/`](docs/design/). Decisions are recorded as AD
 
 What is tuned for small machines, and how to change it back, is in [`docs/LOW-RAM.md`](docs/LOW-RAM.md).
 
+**Smooth on 2 GB.** Fab OS keeps its own components quiet while you are not using them: the ask bar makes one small
+request (a single `curl` for status and task together) every 2 s while it shows a working task, every 8 s while you are
+around, and none at all once it has been idle for 30 s; the quick settings read the kernel's counters every 5 s with a
+two-process script and ask NetworkManager, Bluetooth and the audio server only every 30 s (or while their pane is open);
+the dock animates only under the pointer; Fab AI Controls talks to the agent on a worker thread, so a slow reply can
+never freeze the window. Measured in the image, that takes the desktop's idle process creation from about 21 to about 1
+per second ([`docs/LOW-RAM.md`](docs/LOW-RAM.md), "Idle budget"). Every Plasma and KWin animation runs at half its stock
+length (`AnimationDurationFactor=0.5`), tearing is off, blur is off on machines under 3.5 GB, and the voice listener runs
+at nice 15 with idle I/O. `tests/perf-vm.sh` re-measures all of it in the booted 2 GB virtual machine: CPU of the
+components over 20 s (< 8 % of one core), task creations per second (< 1), the Alt+Tab latency through KWin's own
+handler (median < 150 ms) and a repaint check of Fab AI Controls while a task streams.
+
 ---
 
 ## Install Fab OS

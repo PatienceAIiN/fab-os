@@ -12,6 +12,9 @@ ButtonsOnRight=IAX
 library=org.kde.kwin.aurorae.v2
 theme=__aurorae__svg__FabOS
 
+# Effects. Blur stays on here; on machines that report < 3.5 GB of RAM /usr/lib/fabos/lowram-tune (run once per user from
+# /etc/xdg/plasma-workspace/env before KWin starts) writes blurEnabled=false into the user's own kwinrc — kwinrc is static,
+# so a per-machine choice has to be made at login, and a user who turns blur back on in Settings is not overridden again.
 [Plugins]
 overviewEnabled=true
 blurEnabled=true
@@ -48,3 +51,16 @@ ElectricBorderTiling=true
 ElectricBorderCornerRatio=0.25
 ElectricBorderDelay=150
 Placement=Centered
+
+# Compositing (KWin 6.6 kwin.kcfg [Compositing] carries exactly: Backend, Enabled, LastFailureTimestamp, AllowTearing). Tearing
+# off: on the integrated GPUs of small machines a torn update reads as a stutter; a steady vsynced frame reads as smooth.
+# LatencyPolicy is NOT set: it no longer exists in KWin 6.6 (not in /usr/share/config.kcfg/kwin.kcfg, and the string is absent
+# from libkwin.so.6.6.6 — the render time is estimated automatically now).
+[Compositing]
+AllowTearing=false
+
+# Task switcher: the image ships one layout, thumbnail_grid (/usr/share/kwin-wayland/tabbox/thumbnail_grid; kwin-addons with
+# compact/informative/small_icons is not installed), so LayoutName stays at that default and is not written here.
+# DelayTime is how long Alt+Tab is held before the switcher UI appears; a plain press-release switches at once.
+[TabBox]
+DelayTime=90

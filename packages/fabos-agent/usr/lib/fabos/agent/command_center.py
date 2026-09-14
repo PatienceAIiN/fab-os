@@ -12,9 +12,12 @@ A two-column chat app on top of fabos-agentd's local HTTP API (PyQt6), laid out 
   * composer: a two-row rounded card — the text row, then the permission-mode chip, the microphone (fabos-voice
     listen-once) and the filled Send / Stop button
 Everything follows the system colour scheme through QPalette; radii/spacing from the Fab OS design tokens; Inter.
+Responsiveness: every daemon call of the window runs on ONE worker thread (ApiQueue) and its result is applied in place by
+a callback on the GUI thread — a slow or hung daemon reply can never freeze the window; polls coalesce (never stack) and
+slow down to 6 s / 12 s while the window is hidden or minimised. Tickers run only while shown (docs/LOW-RAM.md).
 Launch: fabos-command-center [--ask] [--prefill TEXT] [--settings] [--task ID]   (the executable keeps its historical name)
 """
-import datetime, json, math, os, shutil, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+import datetime, json, math, os, queue, shutil, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 from PyQt6.QtCore import (Qt, QTimer, QSize, QPropertyAnimation, QVariantAnimation, QEasingCurve, QRectF, QEvent, QPointF, QPoint, QProcess, QThread,
                           QObject, pyqtSignal, pyqtProperty)
 from PyQt6.QtGui import (QFont, QIcon, QImage, QPixmap, QPainter, QColor, QPalette, QPen, QBrush, QTextDocument, QTextCursor, QTextBlockFormat,
@@ -33,8 +36,9 @@ ACTIVE = ("queued", "running", "waiting_approval", "waiting_user")
 R_CONTROL, R_FIELD, R_CARD, R_PANEL, R_POPUP, R_SMALL = 12, 14, 20, 20, 24, 8
 SP, SP2, SP3 = 12, 16, 20
 SIDEBAR_W = 282
-POLL_LIST_MS, POLL_THREAD_MS = 4000, 1500
-API_TIMEOUT = 5                  # s — the daemon is local; calls run on the GUI thread, so a hung daemon must not freeze the UI for long
+POLL_LIST_MS, POLL_THREAD_MS = 4000, 1500          # chat list / open chat, while the window is visible
+POLL_LIST_HIDDEN_MS, POLL_THREAD_HIDDEN_MS = 12000, 6000   # while the window is hidden or minimised (nobody is looking)
+API_TIMEOUT = 5                  # s — the daemon is local. Every call of the window runs on ApiQueue (one worker thread); the GUI thread never waits on a socket
 TYPEWRITER_MS = 25               # ms per character when a typed text is revealed in the action timeline
 KEY_ROLE = int(Qt.ItemDataRole.UserRole) + 1     # sidebar list items: their reconcile key ("h:Today" / "c:<root id>")
 # provider ids -> short labels (the daemon's PROVIDERS table is the source of truth for the long labels)
@@ -93,6 +97,60 @@ class ApiWorker(QThread):
             self.done.emit(api(*self.args))
         except AgentOffline as e:
             self.done.emit({"offline": str(e), "error": "agent service offline"})
+
+
+class ApiQueue(QThread):
+    """The window's single daemon-call worker. A job is a list of calls [(method, path, body), ...] run here one after the
+    other, OFF the GUI thread; the results (one per call, or {"offline": msg} for the call that could not reach the daemon,
+    after which the job stops) come back through `done`, a queued signal delivered on the GUI thread. A job with a `key`
+    replaces a queued job with the same key that has not started yet, so a slow daemon never piles up polls behind each
+    other — the newest state is what the window shows. `inflight` (GUI-thread counter) is what flush_api() waits on.
+    A call in flight is bounded by API_TIMEOUT; nothing here ever blocks the widgets."""
+    done = pyqtSignal(object, object)          # job, results (None when the job was replaced before it ran)
+
+    def __init__(self):
+        super().__init__()
+        self._q = queue.Queue()
+        self._lock = threading.Lock()
+        self._pending = {}                     # key -> queued job (not started)
+        self.inflight = 0
+        self.start()
+
+    def submit(self, calls, cb=None, key=None, err=None):
+        job = {"calls": list(calls), "cb": cb, "err": err, "key": key, "cancelled": False}
+        with self._lock:
+            if key is not None:
+                old = self._pending.pop(key, None)
+                if old is not None:
+                    old["cancelled"] = True
+                self._pending[key] = job
+        self.inflight += 1
+        self._q.put(job)
+        return job
+
+    def stop(self):
+        self._q.put(None)
+
+    def run(self):
+        while True:
+            job = self._q.get()
+            if job is None:
+                return
+            with self._lock:
+                if job["key"] is not None and self._pending.get(job["key"]) is job:
+                    del self._pending[job["key"]]
+                cancelled = job["cancelled"]
+            if cancelled:
+                self.done.emit(job, None)
+                continue
+            results = []
+            for method, path, body in job["calls"]:
+                try:
+                    results.append(api(method, path, body))
+                except AgentOffline as e:
+                    results.append({"offline": str(e), "error": "agent service offline"})
+                    break
+            self.done.emit(job, results)
 
 
 def user_text(request):
@@ -354,7 +412,7 @@ QLabel#checkResult { font-size: 13px; }
            codebg=rgba(text, 0.08), mutedline=rgba(text, 0.35), rctl=R_CONTROL, rfield=R_FIELD, rcard=R_CARD, rpopup=R_POPUP, rsmall=R_SMALL)
 
 
-def fade_in(widget, ms=260):
+def fade_in(widget, ms=200):
     """Opacity 0 → 1 on a widget (new assistant text streaming in). The effect is removed afterwards so text stays crisp."""
     eff = QGraphicsOpacityEffect(widget)
     eff.setOpacity(0.0)
@@ -374,7 +432,7 @@ def fade_in(widget, ms=260):
     anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
 
 
-def shake(widget, ms=420, amplitude=8):
+def shake(widget, ms=320, amplitude=8):
     """A horizontal shake (rejected key / failed check): QPropertyAnimation on pos, back to where the layout put it."""
     start = widget.pos()
     anim = QPropertyAnimation(widget, b"pos", widget)
@@ -579,11 +637,11 @@ class TypingIndicator(QWidget):
         self.phase = 0.0
         self.setFixedSize(48, 24)
         self.timer = QTimer(self)
-        self.timer.setInterval(40)
+        self.timer.setInterval(60)             # ~17 repaints/s of a 48x24 widget is plenty for three dots (was 25/s); runs only while shown
         self.timer.timeout.connect(self._tick)
 
     def _tick(self):
-        self.phase += 0.16
+        self.phase += 0.24                     # same angular speed as before at the longer tick
         self.update()
 
     def showEvent(self, e):
@@ -621,10 +679,10 @@ class ResultMark(QWidget):
         self._spin = 0.0
         self.color = QColor(GREEN)
         self.anim = QPropertyAnimation(self, b"progress", self)
-        self.anim.setDuration(520)
+        self.anim.setDuration(320)             # motion token "slow": the check draws itself in 320 ms
         self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.spinner = QTimer(self)
-        self.spinner.setInterval(30)
+        self.spinner.setInterval(50)           # 20 repaints/s for a 28 px arc (was 33/s); only while busy
         self.spinner.timeout.connect(self._tick)
 
     def _get_progress(self):
@@ -637,7 +695,7 @@ class ResultMark(QWidget):
     progress = pyqtProperty(float, fget=_get_progress, fset=_set_progress)
 
     def _tick(self):
-        self._spin = (self._spin + 0.09) % (2 * math.pi)
+        self._spin = (self._spin + 0.15) % (2 * math.pi)     # same angular speed at the longer tick
         self.update()
 
     def set_state(self, state, animate=True, color=None):
@@ -757,7 +815,7 @@ class Toast(QLabel):
         if self.anim:
             self.anim.stop()
         self.anim = QPropertyAnimation(self.eff, b"opacity", self)
-        self.anim.setDuration(220)
+        self.anim.setDuration(200)
         self.anim.setStartValue(self.eff.opacity())
         self.anim.setEndValue(to)
         self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -3371,6 +3429,9 @@ class AIControls(QMainWindow):
         self._was_maximized = False
         self.pending_task = task_id     # --task ID: open the app on that conversation once the list is loaded
         self.speaking_message = None
+        self._closing = False
+        self.api_q = ApiQueue()         # every daemon call of this window runs there (never on the GUI thread)
+        self.api_q.done.connect(self._on_api_done)
         self.voice = Voice(self)
         self.voice.status_changed.connect(self.update_voice_buttons)
         self.voice.transcript.connect(self.on_transcript)
@@ -3570,7 +3631,7 @@ class AIControls(QMainWindow):
         body.addWidget(self.main, 1)
         outer.addLayout(body, 1)
         self.toast = Toast(self.main)
-        # timers
+        # timers (intervals follow the window's visibility: _retune_polls)
         self.list_timer = QTimer(self)
         self.list_timer.timeout.connect(self.refresh_list)
         self.list_timer.start(POLL_LIST_MS)
@@ -3620,14 +3681,81 @@ class AIControls(QMainWindow):
     def changeEvent(self, e):
         if e.type() == QEvent.Type.PaletteChange:      # also follows an app palette change; apply_style's signature guard keeps it idempotent
             self._restyle.start()
+        elif e.type() == QEvent.Type.WindowStateChange:
+            self._retune_polls()
         super().changeEvent(e)
 
     def closeEvent(self, e):
-        """Closing the window ends the polling and any voice process; nothing keeps running behind a closed window."""
+        """Closing the window ends the polling, the worker and any voice process; nothing keeps running behind a closed window.
+        The worker is waited for (a call in flight is bounded by API_TIMEOUT) because Qt must never destroy a running QThread."""
+        self._closing = True
         for t in (self.list_timer, self.thread_timer, self._restyle):
             t.stop()
         self.voice.shutdown()
+        self.api_q.stop()
+        self.api_q.wait((API_TIMEOUT + 2) * 1000)
         super().closeEvent(e)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._retune_polls()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._retune_polls()
+
+    def _visible_to_user(self):
+        return self.isVisible() and not bool(self.windowState() & Qt.WindowState.WindowMinimized)
+
+    def _retune_polls(self):
+        """A chat nobody is looking at (window hidden or minimised) is polled at 6 s and the list at 12 s; visible again ->
+        back to 1.5 s / 4 s and one refresh at once. (Wayland gives no reliable 'fully covered' signal, so covered windows
+        count as visible.)"""
+        vis = self._visible_to_user()
+        thread_ms, list_ms = (POLL_THREAD_MS, POLL_LIST_MS) if vis else (POLL_THREAD_HIDDEN_MS, POLL_LIST_HIDDEN_MS)
+        if self.thread_timer.interval() != thread_ms:
+            self.thread_timer.setInterval(thread_ms)
+            self.list_timer.setInterval(list_ms)
+            if vis and not self._closing:
+                self.refresh_list()
+                self.refresh_thread()
+
+    # ---- daemon calls: never on the GUI thread
+    def api_async(self, method, path, body=None, cb=None, key=None, err=None):
+        """One call on the worker; cb(result) runs on the GUI thread when it is back (not when the daemon was unreachable:
+        then set_offline() is shown and err(), if given, runs instead)."""
+        return self.api_batch([(method, path, body)], (lambda rs: cb(rs[0])) if cb else None, key, err)
+
+    def api_batch(self, calls, cb=None, key=None, err=None):
+        """Several calls as ONE job (one round trip of the worker, results together); key coalesces repeated polls."""
+        if self._closing:
+            return None
+        return self.api_q.submit(calls, cb, key, err)
+
+    def _on_api_done(self, job, results):
+        self.api_q.inflight -= 1
+        if results is None or self._closing:          # replaced by a newer poll before it ran, or the window is closing
+            return
+        off = next((r for r in results if isinstance(r, dict) and "offline" in r), None)
+        if off is not None:
+            self.set_offline(True, off["offline"])
+            if job.get("err"):
+                job["err"]()
+            return
+        self.set_offline(False)
+        if job.get("cb"):
+            job["cb"](results)
+
+    def flush_api(self, timeout_ms=5000):
+        """Spin the event loop until every submitted call has come back (or the timeout). Used by the offscreen tests, and
+        harmless in the app: it only processes events."""
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        app = QApplication.instance()
+        while self.api_q.inflight > 0 and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+        app.processEvents()
+        return self.api_q.inflight == 0
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -3671,16 +3799,13 @@ class AIControls(QMainWindow):
         c = self.convs.get(self.current_root)
         return c["tasks"][-1] if c else None
 
-    # ---- polling
+    # ---- polling (one job each on the worker; the callbacks below apply the results in place)
     def refresh_list(self):
-        try:
-            st = api("GET", "/status")
-            tasks = api("GET", "/tasks?limit=300")
-            pend = api("GET", "/approvals/pending")
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
-            return
-        self.set_offline(False)
+        """status + chat list + pending approvals in ONE worker job (key "list": a poll still queued is replaced, never stacked)."""
+        self.api_batch([("GET", "/status", None), ("GET", "/tasks?limit=300", None), ("GET", "/approvals/pending", None)], self._list_ready, key="list")
+
+    def _list_ready(self, results):
+        st, tasks, pend = results
         if isinstance(st, dict) and "mode" in st:
             self.status = st
             self.update_header()
@@ -3695,28 +3820,43 @@ class AIControls(QMainWindow):
                 self.pending_task = None
                 if root is not None:
                     self.select_conversation(root)
+            elif self.current_root is not None:
+                self.refresh_thread()                      # a turn just created or a status that moved: fetched at once, nothing when nothing changed
         self.handle_approvals(pend if isinstance(pend, list) else [])
         self.update_composer()
 
     def refresh_thread(self, force=False):
+        """Fetch the open chat's tasks that are active, changed or unknown (nothing at all when nothing moved) as ONE job."""
         if self.offline or self.current_root is None or self.current_root not in self.convs:
             return
         conv = self.convs[self.current_root]
-        details = []
-        try:
-            for t in conv["tasks"]:
-                cached = self.details.get(t["id"])
-                if force or cached is None or t["status"] in ACTIVE or cached.get("updated") != t.get("updated") or cached.get("status") != t.get("status"):
-                    d = api("GET", "/tasks/%d" % t["id"])
-                    if isinstance(d, dict) and "id" in d:
-                        self.details[t["id"]] = d
-                        cached = d
-                        t["status"], t["updated"] = d["status"], d["updated"]
-                if cached:
-                    details.append(cached)
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
+        want = []
+        for t in conv["tasks"]:
+            cached = self.details.get(t["id"])
+            if force or cached is None or t["status"] in ACTIVE or cached.get("updated") != t.get("updated") or cached.get("status") != t.get("status"):
+                want.append(t["id"])
+        if not want:
+            if len(self.view.turns) != len(conv["tasks"]):          # a turn appeared or vanished without a fetch: reconcile the view
+                self._show_thread(self.current_root)
             return
+        root = self.current_root
+        self.api_batch([("GET", "/tasks/%d" % tid, None) for tid in want], lambda rs, root=root: self._thread_ready(root, rs), key="thread")
+
+    def _thread_ready(self, root, results):
+        for d in results:
+            if isinstance(d, dict) and "id" in d:
+                self.details[d["id"]] = d
+                t = self.by_id.get(d["id"])
+                if t is not None:
+                    t["status"], t["updated"] = d["status"], d["updated"]
+        if root == self.current_root:                      # the user may have switched chats while the call was out
+            self._show_thread(root)
+
+    def _show_thread(self, root):
+        conv = self.convs.get(root)
+        if conv is None:
+            return
+        details = [self.details[t["id"]] for t in conv["tasks"] if t["id"] in self.details]
         self.view.set_thread(details, self.show_raw)
         self.update_composer()
 
@@ -3761,21 +3901,20 @@ class AIControls(QMainWindow):
             act.setChecked(m == mode)
         self.mode_btn.setText(mode.capitalize())
         self.mode_btn.setToolTip({"ask": "Ask — approve every risky step", "auto": "Auto — ask only for critical steps", "bypass": "Bypass — never ask"}.get(mode, mode) + "  (click to change)")
-        raw = str(st.get("ui_show_raw", "")) if "ui_show_raw" in st else None
-        if raw is None:
-            try:
-                raw = str(api("GET", "/settings").get("ui.show_raw", "false"))
-            except AgentOffline:
-                raw = "false"
-        new_raw = raw == "true"
-        if new_raw != self.show_raw:
-            self.show_raw = new_raw
-            self.refresh_thread(force=True)
+        if "ui_show_raw" in st:
+            self._apply_show_raw(str(st.get("ui_show_raw", "")) == "true")
+        else:                                              # older daemon without the field: ask once per list poll, off the GUI thread
+            self.api_async("GET", "/settings", cb=lambda s: self._apply_show_raw(isinstance(s, dict) and str(s.get("ui.show_raw", "false")) == "true"), key="settings-raw")
         voice_on = str((st.get("voice") or {}).get("enabled", "true")) == "true"
         if voice_on != getattr(self, "_voice_on", True):
             self._voice_on = voice_on
             self.update_voice_buttons()
         self._voice_on = voice_on
+
+    def _apply_show_raw(self, new_raw):
+        if new_raw != self.show_raw:
+            self.show_raw = new_raw
+            self.refresh_thread(force=True)
 
     def update_composer(self):
         latest = self.latest_task()
@@ -3826,34 +3965,29 @@ class AIControls(QMainWindow):
             if source == "voice" and text:
                 self.toast.show_message("The agent is still working — your follow-up is kept in the box; send it when it finishes.")
             return
-        try:
-            if busy:
-                self.stop_task(latest["id"])
-                return
-            if not text:
-                return
-            if latest and latest["status"] == "waiting_user":
-                api("POST", "/tasks/%d/answer" % latest["id"], {"text": text})
-                self.ask.clear()
-                self.view.stick = True
-                self.refresh_thread(force=True)
-                return
-            body = {"request": text}
-            if self.current_root is not None:
-                body["parent_id"] = self.current_root
-            r = api("POST", "/tasks", body)
-            self.ask.clear()
-            self._after_create(r, self.current_root)
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
+        if busy:
+            self.stop_task(latest["id"])
+            return
+        if not text:
+            return
+        self.ask.clear()                                   # the box empties at once; an unreachable daemon puts the text back
+
+        def restore():
+            if not self.ask.text().strip():
+                self.ask.setText(text)
+        if latest and latest["status"] == "waiting_user":
+            self.view.stick = True
+            self.api_async("POST", "/tasks/%d/answer" % latest["id"], {"text": text}, cb=lambda _r: self.refresh_thread(force=True), err=restore)
+            return
+        body = {"request": text}
+        if self.current_root is not None:
+            body["parent_id"] = self.current_root
+        parent = self.current_root
+        self.api_async("POST", "/tasks", body, cb=lambda r, parent=parent: self._after_create(r, parent), err=restore)
 
     def stop_task(self, task_id):
         if RoundedDialog.confirm(self, "Stop this task?", "The agent stops what it is doing right now. Anything already done (files written, mail sent) stays as it is.", "Stop"):
-            try:
-                api("POST", "/tasks/%d/cancel" % task_id)
-            except AgentOffline as e:
-                self.set_offline(True, str(e))
-            self.refresh_thread(force=True)
+            self.api_async("POST", "/tasks/%d/cancel" % task_id, cb=lambda _r: self.refresh_thread(force=True))
 
     def _after_create(self, r, parent):
         if not isinstance(r, dict) or "id" not in r:
@@ -3915,30 +4049,25 @@ class AIControls(QMainWindow):
         text = (text or "").strip()
         if not text:
             return
-        try:
-            old = self.details.get(task_id) or self.by_id.get(task_id) or {}
-            title = old.get("title") or ""
-            if not title.startswith(SUPERSEDED):
-                api("PATCH", "/tasks/%d" % task_id, {"title": (SUPERSEDED + title)[:80]})
-            parent = self.current_root or old.get("parent_id") or task_id
-            r = api("POST", "/tasks", {"request": text, "parent_id": parent})
+        old = self.details.get(task_id) or self.by_id.get(task_id) or {}
+        title = old.get("title") or ""
+        parent = self.current_root or old.get("parent_id") or task_id
+        calls = []
+        if not title.startswith(SUPERSEDED):
+            calls.append(("PATCH", "/tasks/%d" % task_id, {"title": (SUPERSEDED + title)[:80]}))
+        calls.append(("POST", "/tasks", {"request": text, "parent_id": parent}))
+
+        def created(rs, parent=parent):
             self.cancel_edit()
-            self._after_create(r, parent)
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
+            self._after_create(rs[-1], parent)
+        self.api_batch(calls, created)
 
     def retry_task(self, task_id):
-        try:
-            r = api("POST", "/tasks/%d/retry" % task_id)
-            self._after_create(r, self.current_root)
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
+        parent = self.current_root
+        self.api_async("POST", "/tasks/%d/retry" % task_id, cb=lambda r, parent=parent: self._after_create(r, parent))
 
     def send_feedback(self, task_id, rating):
-        try:
-            api("POST", "/tasks/%d/feedback" % task_id, {"rating": rating})
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
+        self.api_async("POST", "/tasks/%d/feedback" % task_id, {"rating": rating})
 
     def delete_conversation(self, root_id):
         conv = self.convs.get(root_id)
@@ -3948,10 +4077,9 @@ class AIControls(QMainWindow):
         title = (user_text(conv["root"].get("request")) or conv["root"].get("title") or "")[:60]
         if not RoundedDialog.confirm(self, "Delete this chat?", "“%s” and its %d turn%s — including every recorded step — are removed from the history. Running tasks are stopped." % (title, n, "" if n == 1 else "s"), "Delete"):
             return
-        self._delete_tasks(conv["tasks"])
         if self.current_root == root_id:
             self.new_chat()
-        self.refresh_list()
+        self._delete_tasks(conv["tasks"])
 
     def clear_conversations(self):
         n = len(self.convs)
@@ -3959,43 +4087,29 @@ class AIControls(QMainWindow):
             return
         if not RoundedDialog.confirm(self, "Clear all conversations?", "All %d chat%s and every recorded step are removed from the history. Running tasks are stopped. Settings and keys are kept." % (n, "" if n == 1 else "s"), "Clear all"):
             return
-        for conv in list(self.convs.values()):
-            if not self._delete_tasks(conv["tasks"]):
-                break
         self.new_chat()
-        self.refresh_list()
+        self._delete_tasks([t for conv in self.convs.values() for t in conv["tasks"]])
 
     def _delete_tasks(self, tasks):
-        try:
-            for t in reversed(tasks):
-                api("DELETE", "/tasks/%d" % t["id"])
-                self.details.pop(t["id"], None)
-            return True
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
-            return False
+        """All deletions as one worker job (newest first, as before); the list refreshes when they are done."""
+        ids = [t["id"] for t in reversed(tasks)]
+        for tid in ids:
+            self.details.pop(tid, None)
+        self.api_batch([("DELETE", "/tasks/%d" % tid, None) for tid in ids], lambda _rs: self.refresh_list())
 
     def set_mode(self, mode):
         if mode == "bypass" and (self.status.get("mode") != "bypass"):
             if not RoundedDialog.confirm(self, "Switch to Bypass mode?", "In Bypass the agent never asks before acting — including administrator commands, deleting files and sending mail. Use it only for tasks you fully trust.", "Use Bypass"):
                 self.update_header()
                 return
-        try:
-            api("PUT", "/settings", {"mode": mode})
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
-        self.refresh_list()
+        self.api_async("PUT", "/settings", {"mode": mode}, cb=lambda _r: self.refresh_list(), err=self.refresh_list)
 
     def toggle_ai(self, checked):
         if not checked:
             if not RoundedDialog.confirm(self, "Turn System-Wide AI off?", "The agent stops accepting tasks and pauses background watches until you turn it back on. Normal desktop use is unaffected.", "Turn off"):
                 self.ai_switch.setChecked(True)
                 return
-        try:
-            api("PUT", "/settings", {"ai.enabled": "true" if checked else "false"})
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
-        self.refresh_list()
+        self.api_async("PUT", "/settings", {"ai.enabled": "true" if checked else "false"}, cb=lambda _r: self.refresh_list(), err=self.refresh_list)
 
     def toggle_enlarge(self, on):
         self.enlarged = on
@@ -4009,14 +4123,12 @@ class AIControls(QMainWindow):
             self.showNormal()
 
     def open_settings(self, tab=None):
-        try:
-            s = api("GET", "/settings")
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
-            return
+        self.api_async("GET", "/settings", cb=lambda s: self._open_settings_with(s, tab if isinstance(tab, str) else None), key="open-settings")
+
+    def _open_settings_with(self, s, tab):
         if not isinstance(s, dict) or "error" in s:
             return
-        dlg = SettingsDialog(self, s, self.voice, tab=tab if isinstance(tab, str) else None)
+        dlg = SettingsDialog(self, s, self.voice, tab=tab)
         if dlg.exec():
             self.refresh_list()
             self.refresh_thread(force=True)
@@ -4126,11 +4238,7 @@ class AIControls(QMainWindow):
             break        # one at a time; the next appears on the following poll
 
     def decide(self, approval_id, decision):
-        try:
-            api("POST", "/approvals/%d" % approval_id, {"decision": decision})
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
-        self.refresh_thread(force=True)
+        self.api_async("POST", "/approvals/%d" % approval_id, {"decision": decision}, cb=lambda _r: self.refresh_thread(force=True))
 
 
 def _arg(name):

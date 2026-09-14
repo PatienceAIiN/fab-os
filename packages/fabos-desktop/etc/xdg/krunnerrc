@@ -7,3 +7,9 @@ krunner_plasma-desktopEnabled=false
 katesessionsEnabled=false
 konsoleprofilesEnabled=false
 helprunnerEnabled=false
+# File Search (X-KDE-PluginInfo-Name=baloosearch, /usr/share/krunner/dbusplugins/plasma-runner-baloosearch.desktop) is a
+# D-Bus runner: every query D-Bus-activates its own process (org.kde.runners.baloo -> baloorunner). With the file index off
+# by default (/etc/xdg/baloofilerc) it can only ever answer "nothing", so it is off too; turning File Search on in Fab
+# Settings > Search re-enables it in the user's krunnerrc. "Recent documents" stays on: it keeps no index of its own (it
+# reads kactivitymanagerd's resource statistics) and is what Fab Search uses for recently opened files.
+baloosearchEnabled=false

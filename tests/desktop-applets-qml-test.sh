@@ -88,7 +88,7 @@ harness_kwin() {   # $1 applet id — once per colour scheme
 }
 
 make_harness in.patienceai.fabos.quicksettings quicksettings-qml-harness \
-  'Loader { source: Qt.resolvedUrl("../harness/Driver.qml"); onLoaded: { item.root = root; item.pane = pane; item.bar = bar; item.history = history; item.settingsPane = settingsPane; item.notifPane = notifPane; item.batInd = batInd; item.netInd = netInd; item.volInd = volInd; item.bellInd = bellInd; item.notifList = notifList; item.poll = poll; item.netPoll = netPoll } }'
+  'Loader { source: Qt.resolvedUrl("../harness/Driver.qml"); onLoaded: { item.root = root; item.pane = pane; item.bar = bar; item.history = history; item.settingsPane = settingsPane; item.notifPane = notifPane; item.batInd = batInd; item.netInd = netInd; item.volInd = volInd; item.bellInd = bellInd; item.notifList = notifList; item.poll = poll; item.probe = probe } }'
 make_harness in.patienceai.fabos.dock dock-qml-harness \
   'Loader { source: Qt.resolvedUrl("../harness/Driver.qml"); onLoaded: { item.dock = dock; item.row = row; item.tasksModel = tasksModel; item.repeater = repeater } }'
 

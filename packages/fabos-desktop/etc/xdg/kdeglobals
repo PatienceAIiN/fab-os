@@ -39,4 +39,7 @@ LookAndFeelPackage=in.patienceai.fabos.desktop
 DefaultDarkLookAndFeel=in.patienceai.fabos.desktop
 DefaultLightLookAndFeel=in.patienceai.fabos.light.desktop
 SingleClick=false
-AnimationDurationFactor=1
+# Every Plasma / KWin / Kirigami animation runs at half its stock duration (key verified in kwin.kcfg [KDE] and
+# landingpage_kdeglobalssettings.kcfg; Settings > Animations moves the same slider). Fab OS motion tokens follow:
+# docs/design/MOTION_GUIDELINES.md — 120–220 ms for our own QML/PyQt transitions.
+AnimationDurationFactor=0.5

@@ -27,6 +27,22 @@ t("apiCommand builds a curl call with the port file, a JSON body, and the token 
   assert.ok(c.endsWith('"http://127.0.0.1:$P/tasks" 2>/dev/null'));
   assert.ok(!A.apiCommand("GET", "/status").includes("--data-binary"));
 });
+t("snapshotCommand: one curl for /status (+ /tasks/{id}), port/token via the read builtin, token never on argv, one JSON per line", () => {
+  const s = A.snapshotCommand(0);
+  assert.ok(s.includes('read -r P < "$R/port" 2>/dev/null; [ -n "$P" ] || P=8790; read -r T < "$R/token" 2>/dev/null;'), s);
+  assert.ok(s.includes(`printf 'header = "Authorization: Bearer %s"\\n' "$T" | curl -s -m 12 -K - -w '\\n' "http://127.0.0.1:$P/status"`), s);
+  assert.ok(!s.includes("cat "), "no cat: the shell's read builtin costs no process");
+  assert.ok(!/-H\s+["']?Authorization/.test(s), "the Authorization header must not be a curl argument");
+  assert.ok(!s.includes("/tasks/"), "without a task only /status is fetched");
+  const w = A.snapshotCommand(42);
+  assert.ok(w.endsWith('"http://127.0.0.1:$P/status" "http://127.0.0.1:$P/tasks/42" 2>/dev/null'), w);
+  eq(A.parseSnapshot('{"mode":"auto","tasks":{}}\n{"id":42,"status":"running"}\n'), { status: { mode: "auto", tasks: {} }, task: { id: 42, status: "running" } });
+  eq(A.parseSnapshot('{"mode":"auto"}\n'), { status: { mode: "auto" }, task: null });
+  eq(A.parseSnapshot("\n\n"), { status: null, task: null });                       // daemon down: curl printed nothing but the newlines
+  eq(A.parseSnapshot(""), { status: null, task: null });
+  eq(A.parseSnapshot('{"mode":"auto"}\n{"error":"no such task"}\n'), { status: { mode: "auto" }, task: { error: "no such task" } });
+  eq(A.parseTag(A.tagged("snap", 42, 3, w)), { kind: "snap", ref: 42 });
+});
 t("tagged/parseTag round-trip", () => {
   const s = A.tagged("poll", 12, 99, A.apiCommand("GET", "/tasks/12"));
   assert.ok(s.startsWith(": poll.12.99; R="));
@@ -182,6 +198,7 @@ async function transport() {
   const control = await run('R="$XDG_RUNTIME_DIR/fabos-agent"; P=$(cat "$R/port"); curl -sS -m 12 -X GET -H "Authorization: Bearer $(cat "$R/token")" "http://127.0.0.1:$P/control"');
   const r1 = await run(A.tagged("create", 0, 1, A.apiCommand("POST", "/tasks", { request: "it's a test" })));
   const r2 = await run(A.tagged("status", 0, 2, A.apiCommand("GET", "/status")));
+  const r3 = await run(A.tagged("snap", 42, 3, A.snapshotCommand(42)));
   server.close(); fs.rmSync(dir, { recursive: true, force: true });
   t("transport control: a token on curl's argv IS visible in /proc/*/cmdline (proves the scan works)", () => {
     assert.strictEqual(control.code, 0); assert.strictEqual(seen[0].auth, "Bearer " + token); assert.ok(seen[0].hits.length >= 1, "control run should be caught");
@@ -194,6 +211,15 @@ async function transport() {
   });
   t("transport: the shipped command puts the token on no process command line while the request is in flight", () => {
     eq(seen[1].hits, []); eq(seen[2].hits, []);
+  });
+  t("transport: the snapshot fetches /status and /tasks/42 in ONE sh + curl run, authenticated, one JSON object per line, token on no argv", () => {
+    assert.strictEqual(r3.code, 0);
+    assert.strictEqual(seen.length, 5, "exactly two requests for one snapshot (got " + (seen.length - 3) + ")");
+    assert.strictEqual(seen[3].url, "/status"); assert.strictEqual(seen[4].url, "/tasks/42");
+    assert.strictEqual(seen[3].auth, "Bearer " + token); assert.strictEqual(seen[4].auth, "Bearer " + token);
+    eq(seen[3].hits, []); eq(seen[4].hits, []);
+    const sn = A.parseSnapshot(r3.out);
+    eq(sn, { status: { id: 42, ok: true }, task: { id: 42, ok: true } });
   });
 }
 transport().then(() => console.log("askbar-js-test: " + n + " test groups passed"), (e) => { console.error(e); process.exit(1); });

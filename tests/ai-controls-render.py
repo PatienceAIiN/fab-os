@@ -11,7 +11,8 @@ the running step and shows checks + narration for finished ones; the provider ta
 the connection check (through a patched api) enables Save on success and blocks it after a rejected key; the approval
 dialog hides the raw command behind "Show details" (ui.show_raw off, low risk) and Deny reaches the daemon; an approval
 resolved elsewhere closes the dialog WITHOUT posting a decision; editing the chat's root message in place threads the
-new version into the same chat; --task ID opens on that chat; Save in Settings with the daemon offline keeps the dialog open.
+new version into the same chat; --task ID opens on that chat; Save in Settings with the daemon offline keeps the dialog open;
+the GUI thread stays responsive while a daemon reply takes 2 s (every call runs on the window's worker thread).
 Exit code 0 only if every step ran without an exception. Needs PyQt6 — run it inside the image:
   podman run --rm -v $PWD:/work:Z -e QT_QPA_PLATFORM=offscreen localhost/fabos:vm python3 /work/tests/ai-controls-render.py /work/build
 
@@ -419,6 +420,11 @@ def main():
             for _ in range(n):
                 app.processEvents()
 
+        def sync(win, timeout_ms=8000):
+            """Every daemon call of the window runs on its worker thread: wait until all of them are back (they chain:
+            a created task refreshes the list, which refreshes the chat)."""
+            assert win.flush_api(timeout_ms), "daemon calls still in flight after %d ms" % timeout_ms
+
         def close_window(app, win):
             """Tear a window down the way the event loop would (deferred delete), so no zombie widgets survive into the
             next scheme; a leftover window with running timers is exactly what used to abort the light pass."""
@@ -479,7 +485,9 @@ def main():
             print("[%s] window constructed in %.1fs" % (name, time.time() - t1))
             t1 = time.time()
             w.refresh_list()
+            sync(w)
             w.select_conversation(root)
+            sync(w)
             print("[%s] conversation selected in %.1fs (fits=%d)" % (name, time.time() - t1, fits["n"]))
             t1 = time.time()
             deadline = time.time() + 1.2
@@ -489,6 +497,44 @@ def main():
             print("[%s] settle loop %.1fs (fits=%d)" % (name, time.time() - t1, fits["n"]))
             cc.MarkdownView.heightForWidth = orig_fit
             print("[%s] tasks:" % name, [(t["id"], t["status"], t.get("parent_id")) for t in w.tasks], "chat root:", w.current_root, "composer glyph:", w.send_btn.glyph)
+            # --- the GUI thread never waits on the daemon: with a /status reply that takes 2 s (slept on the worker thread), a
+            # 100 ms QTimer on the GUI thread must keep ticking (>= 15 times in 2.3 s), refresh_list() must return at once and
+            # the window must still repaint (grab) meanwhile. With the calls on the GUI thread this loop saw ~3 ticks.
+            slow = {"n": 0}
+
+            def slow_api(method, path, body=None, *a, _o=real_api, **k):
+                if path == "/status":
+                    slow["n"] += 1
+                    time.sleep(2.0)
+                return _o(method, path, body, *a, **k)
+            ticks = {"n": 0}
+            tick = QTimer()
+            tick.setInterval(100)
+            tick.timeout.connect(lambda: ticks.__setitem__("n", ticks["n"] + 1))
+            cc.api = slow_api
+            grabs = 0
+            try:
+                tick.start()
+                t_call = time.time()
+                w.refresh_list()
+                call_ms = (time.time() - t_call) * 1000
+                deadline = time.time() + 2.3
+                while time.time() < deadline:
+                    app.processEvents()
+                    time.sleep(0.01)
+                    if grabs < 2 and ticks["n"] >= 5 * (grabs + 1):
+                        assert not w.grab().isNull(), "window did not repaint while the daemon reply was pending"
+                        grabs += 1
+                tick.stop()
+                sync(w)
+            finally:
+                tick.stop()
+                cc.api = real_api
+            assert slow["n"] >= 1, "the slow /status was never requested"
+            assert call_ms < 200, "refresh_list() blocked the GUI thread for %.0f ms" % call_ms
+            assert ticks["n"] >= 15, "GUI thread starved during a 2 s daemon reply: only %d timer ticks in 2.3 s" % ticks["n"]
+            assert grabs == 2, "window repaint checks did not run (%d)" % grabs
+            print("[%s] GUI thread responsive during a 2 s daemon reply: %d ticks of a 100 ms timer in 2.3 s, refresh_list() returned in %.1f ms, %d repaints" % (name, ticks["n"], call_ms, grabs))
             assert w.stack.currentWidget() is w.view, "conversation view not shown"
             assert len(w.view.turns) == 3, "expected 3 turns, got %d" % len(w.view.turns)
             assert w.send_btn.glyph == "stop", "send button should be STOP while the last task runs (glyph=%s)" % w.send_btn.glyph
@@ -532,6 +578,7 @@ def main():
             try:
                 w.on_transcript("open fab files please")
                 spin(app)
+                sync(w)
             finally:
                 cc.RoundedDialog.confirm = orig_confirm
                 cc.api = real_api
@@ -724,7 +771,7 @@ def main():
             ask = cc.api("POST", "/tasks", {"request": "show me the system", "mode": "ask"})["id"]
             wait(ask, ("waiting_approval",))
             w.refresh_list()
-            spin(app)
+            sync(w)
             assert w.sidebar.rows[root] is row_root and w.sidebar.rows[other] is row_other, "sidebar rows were rebuilt when a chat was added"
             assert w.sidebar.list.item(1).data(cc.Qt.ItemDataRole.UserRole) == ask, "new chat should be the first row under TODAY"
             assert w.approval_dialogs, "approval dialog did not open"
@@ -743,12 +790,13 @@ def main():
             results[name + "-approval"] = (ap.width(), ap.height())
             dlg.cancel_btn.click()            # Deny
             spin(app)
+            sync(w)
             assert cc.api("GET", "/approvals/pending") == [], "deny did not reach the daemon"
             assert not w.approval_dialogs
             wait(ask, ("done", "failed"))
             cc.api("DELETE", "/tasks/%d" % ask)
             w.refresh_list()
-            spin(app)
+            sync(w)
             assert w.sidebar.rows[root] is row_root and w.sidebar.rows[other] is row_other, "sidebar rows were rebuilt when a chat was removed"
             assert headers() == ["Today", "Earlier"] and w.sidebar.list.count() == 4, (headers(), w.sidebar.list.count())
 
@@ -756,7 +804,7 @@ def main():
             ask2 = cc.api("POST", "/tasks", {"request": "show me the system", "mode": "ask"})["id"]
             wait(ask2, ("waiting_approval",))
             w.refresh_list()
-            spin(app)
+            sync(w)
             assert w.approval_dialogs, "second approval dialog did not open"
             aid = list(w.approval_dialogs)[0]
             assert cc.api("POST", "/approvals/%d" % aid, {"decision": "approved"}).get("ok"), "external approve failed"
@@ -769,7 +817,7 @@ def main():
             cc.api = spy_api
             try:
                 w.refresh_list()
-                spin(app)
+                sync(w)
             finally:
                 cc.api = real_api
             assert not w.approval_dialogs, "stale approval dialog still open"
@@ -777,12 +825,12 @@ def main():
             wait(ask2, ("done", "failed"))
             cc.api("DELETE", "/tasks/%d" % ask2)
             w.refresh_list()
-            spin(app)
+            sync(w)
 
             # --- a chat that gets activity moves to the top: the moved row is re-created, the others keep their identity
             fu2 = cc.api("POST", "/tasks", {"request": "and the kernel version", "parent_id": other, "mode": "bypass"})["id"]
             w.refresh_list()
-            spin(app)
+            sync(w)
             assert headers() == ["Today"], headers()
             assert w.sidebar.list.item(1).data(cc.Qt.ItemDataRole.UserRole) == other and w.sidebar.list.item(2).data(cc.Qt.ItemDataRole.UserRole) == root
             assert w.sidebar.rows[root] is row_root, "the unmoved row lost its widget"
@@ -790,7 +838,7 @@ def main():
             wait(fu2)
             cc.api("DELETE", "/tasks/%d" % fu2)
             w.refresh_list()
-            spin(app)
+            sync(w)
             assert headers() == ["Today", "Earlier"] and w.sidebar.list.item(1).data(cc.Qt.ItemDataRole.UserRole) == root
 
             # --- editing the ROOT message threads the new version into the same chat (no look-alike duplicate chat)
@@ -810,6 +858,7 @@ def main():
             assert ep.save(os.path.join(OUT, "ai-controls-edit-%s.png" % name))
             turn.edit_card.send_btn.click()
             spin(app)
+            sync(w)
             assert w.current_root == root and len(w.convs) == n_convs, "editing the root spawned a new chat (convs=%r)" % sorted(w.convs)
             new_ids = [t["id"] for t in w.convs[root]["tasks"] if t["id"] not in (root, fu, run)]
             assert len(new_ids) == 1 and w.by_id[new_ids[0]]["parent_id"] == root, [(t["id"], t.get("parent_id")) for t in w.convs[root]["tasks"]]
@@ -823,7 +872,7 @@ def main():
             cc.api("DELETE", "/tasks/%d" % new_ids[0])
             cc.api("PATCH", "/tasks/%d" % root, {"title": "show me the system"})
             w.refresh_list()
-            spin(app)
+            sync(w)
 
             # enlarge toggle hides the sidebar and back
             w.enlarge_btn.setChecked(True)
@@ -850,6 +899,7 @@ def main():
             w2 = cc.AIControls(task_id=fu)
             w2.show()
             spin(app, 20)
+            sync(w2)
             assert w2.current_root == root and w2.stack.currentWidget() is w2.view, ("--task did not open the chat", w2.current_root)
             close_window(app, w2)
             del w2

@@ -18,7 +18,7 @@ KCM.SimpleKCM {
     property string cfg_barSizeDefault: "medium"
     property bool cfg_magnifyDefault: true
     property bool cfg_showSpeedDefault: true
-    property int cfg_pollSecondsDefault: 10
+    property int cfg_pollSecondsDefault: 5
 
     readonly property var sizes: ["small", "medium", "large"]
 
