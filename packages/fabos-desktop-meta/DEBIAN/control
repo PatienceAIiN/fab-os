@@ -1,5 +1,5 @@
 Package: fabos-desktop-meta
-Version: @DISTRO_VERSION@-1
+Version: @DISTRO_VERSION@-@PKG_REVISION@
 Section: metapackages
 Priority: optional
 Architecture: all

@@ -1,5 +1,5 @@
 Package: fabos-welcome
-Version: @DISTRO_VERSION@-1
+Version: @DISTRO_VERSION@-@PKG_REVISION@
 Section: misc
 Priority: optional
 Architecture: all

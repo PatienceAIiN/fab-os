@@ -9,7 +9,7 @@ bug-report flows, which pointed at KDE). GUI (PyQt6) by default; --cli for termi
 import argparse, json, os, platform, socket, subprocess, sys
 
 SOCK = os.environ.get("FABOS_FEEDBACK_SOCK", "/run/fabos/feedback.sock")
-ABOUT = "Fab OS by Patience AI · fabos.patienceai.in · support@patienceai.in"
+ABOUT = "Fab OS™ by Patience AI · fabos.patienceai.in · support@patienceai.in"  # ™: legal/TRADEMARKS.md (claimed, unregistered); never in machine ids
 
 
 def system_info(include_logs=False):

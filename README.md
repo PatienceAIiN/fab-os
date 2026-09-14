@@ -1,6 +1,6 @@
 <div align="center">
 
-# Fab OS
+# Fab OS™
 
 **An agentic desktop operating system by [Patience AI](https://patienceai.in).**
 Ubuntu underneath, so everything Linux already works. A built-in agent on top, so the computer does the work.
@@ -15,7 +15,7 @@ Ubuntu 26.04 LTS base · KDE Plasma 6 (Wayland) · Inter type · Material-expres
 
 ## What Fab OS is
 
-Fab OS is a complete desktop OS built on Ubuntu 26.04 LTS. It looks and feels like its own product — its own boot splash, greeter, theme, icons, and app names — but every Ubuntu command, package, `.deb`, Flatpak, and Docker workflow keeps working exactly as it does on Ubuntu. Ubuntu security updates still flow from Ubuntu; Fab OS features and branding updates flow from Patience AI's own signed repository.
+Fab OS™ is a complete desktop OS built on Ubuntu 26.04 LTS. It looks and feels like its own product — its own boot splash, greeter, theme, icons, and app names — but every Ubuntu command, package, `.deb`, Flatpak, and Docker workflow keeps working exactly as it does on Ubuntu. Ubuntu security updates still flow from Ubuntu; Fab OS features and branding updates flow from Patience AI's own signed repository.
 
 The difference is the **home screen**. Instead of hunting through menus, you type what you want into one bar — *"open the editor, write the release notes, and email them to the team"* — and the built-in agent does it, at the level of the real operating system, with your permission.
 
@@ -60,6 +60,7 @@ Everything the agent does is recorded and shown as a chat in **Fab AI Controls**
 | Type | Inter for UI, JetBrains Mono for code |
 | Icons | Google Material Symbols on Fab OS tiles for system apps; third-party apps keep their own icons |
 | Motion | Rounded, animated surfaces; Overview and edge-tiling for multitasking; multi-monitor extend/duplicate |
+| Windows | Drag a window to a side edge for a half, to a corner for a quarter, to the top to maximise. Hold **Shift** while dragging to drop it into a tile layout (**Meta+T** edits the layouts, **Meta+Arrows** quick-tile from the keyboard). After a window snaps to one half, **Snap Assist** shows the other open windows so you can pick one for the remaining half ([ADR-0011](docs/decisions/ADR-0011-window-snapping.md)) |
 | Identity | Original Fab OS mark, wallpapers, and boot splash, rendered from source at every resolution up to 4K |
 
 Design docs live in [`docs/design/`](docs/design/). Decisions are recorded as ADRs in [`docs/decisions/`](docs/decisions/).
@@ -141,6 +142,18 @@ Fab OS keeps two update streams, both automatic and both signed:
 - **Fab OS** feature, AI, and branding updates come from Patience AI's signed repository at `https://fabos.patienceai.in/apt` (suites `loom` for Standard, `loom-beta` for Beta).
 
 `apt`, `flatpak`, and everything else you know work normally.
+
+---
+
+## Security defaults
+
+- **AppArmor** on, with Ubuntu's profiles unchanged.
+- **Secure Boot** works: Ubuntu's signed kernel and shim, unmodified.
+- **Firewall on** from the first boot: ufw denies incoming and allows outgoing connections, with no extra rules; the shipped image has no SSH server. `sudo ufw status` shows it, `sudo ufw allow <port>` opens a port.
+- **Full-disk encryption** (LUKS2) is pre-selected in the installer.
+- **Signed updates only**: Ubuntu's archive keys and the Fab OS Archive key. Nothing is downloaded on first use — every model, voice, font and icon ships in the ISO.
+- **No telemetry**, no analytics, no accounts ([legal/PRIVACY.md](legal/PRIVACY.md)).
+- **The agent is gated by permissions**: it runs as you, stays off until you add a provider key, asks before risky steps, and reaches root only through a single-use, policy-checked path ([SECURITY.md](SECURITY.md)).
 
 ---
 

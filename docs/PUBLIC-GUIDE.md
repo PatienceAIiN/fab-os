@@ -11,6 +11,9 @@ harder to understand.
 - Clear user choice before important work.
 - Visible network and privacy expectations.
 - Open-source notices and third-party license records with each release.
+- Window snapping: drag a window to a side edge for a half, to a corner for a quarter, to the top to maximise;
+  hold Shift while dragging to drop it into a tile layout (Meta+T edits layouts, Meta+Arrows quick-tile). After one
+  window snaps to a half, Snap Assist shows the other windows so one can be picked for the remaining half.
 
 This guide describes the public product experience. It does not document
 private implementation, internal services, unpublished business rules, or
@@ -43,6 +46,11 @@ The public principles are minimal collection, user control, limited access,
 clear network indicators, and recovery where supported. The final release
 notice must identify the actual services, data practices, retention periods,
 support contact, and applicable legal basis.
+
+Shipped defaults: the firewall is on (ufw — incoming connections denied, outgoing allowed, no SSH server in the
+image), AppArmor is on, full-disk encryption is pre-selected in the installer, updates are signed (Ubuntu's keys and
+the Fab OS Archive key), nothing is downloaded on first use, there is no telemetry, and the built-in agent stays off
+until a provider key is added and asks before risky steps.
 
 ## Licensing
 
