@@ -192,6 +192,16 @@ def c_l2d():
     ok("typed.txt contains the 12-word sentence (whitespace-normalised match, %d chars in file)" % len(text))
 
 
+def c_l2f():
+    """'write a hi note and send it to X': the note the agent typed in Fab Editor reached disk (the step order and the mail
+    delivery are checked by the harness from the task record)."""
+    text = read(os.path.join(LADDER, "hi-note.txt"))
+    want = EXP.get("hi_note_text", "hi")
+    if want.lower() not in ws(text).lower():
+        bad("hi-note.txt does not contain %r. got=%r" % (want, ws(text)[:120]))
+    ok("hi-note.txt holds the note %r (%d chars)" % (want, len(text)))
+
+
 def c_l2e():
     text = read(os.path.join(LADDER, "health.json"))
     how = "strict"

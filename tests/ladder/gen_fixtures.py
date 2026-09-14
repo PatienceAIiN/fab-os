@@ -50,6 +50,7 @@ REPORT_TOKENS = ["4472", "Rosalind Farrier", "9312", "Tungsten"]     # must all 
 HELLO_TEXT = "Hello from Fab OS"
 TYPED_SENTENCE = "Fab OS agents type twelve careful words into the editor without mistakes"   # exactly 12 words
 DOC_TEXT = "Ladder test document"
+HI_NOTE_TEXT = "hi"            # L2-f: the note typed in Fab Editor, saved as ~/Ladder/hi-note.txt, then mailed
 REGIONS = ["north", "south", "east", "west"]
 PRODUCTS = ["fabric", "loom", "thread", "needle", "shuttle"]
 QUARTERS = [("sales-q1.csv", datetime.date(2026, 1, 5), 40), ("sales-q2.csv", datetime.date(2026, 4, 6), 44),
@@ -167,6 +168,7 @@ def main():
         "hello_text": HELLO_TEXT,
         "typed_sentence": TYPED_SENTENCE,
         "doc_text": DOC_TEXT,
+        "hi_note_text": HI_NOTE_TEXT,
         "ctx": {"a": "alpha", "b": "beta"},
         "trigger_word": "fired",
         "notes": {"count": len(notes), "files": notes, "fact_files": sorted(FACTS), "facts": FACTS},

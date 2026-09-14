@@ -2,8 +2,10 @@
 """Welcome to Fab OS — first-run experience (runs once per user via XDG autostart; `fabos-welcome` re-opens it).
 
 Pages: Welcome → Appearance (Fab Light / Fab Dark, applied live) → Privacy (what Fab OS does and does not send)
-→ AI (optional: open Fab AI Controls settings, or keep AI off) → Finish (links to Language, Keyboard, Network).
-Every control performs the real action or opens the real settings module; nothing is simulated."""
+→ AI (optional: open Fab AI Controls settings, or keep AI off) → Mail (use your own Gmail / Outlook / Yahoo / Zoho /
+iCloud account: opens Fab AI Controls → Settings → Mail) → Finish (links to Language, Keyboard, Network).
+Every control performs the real action or opens the real settings module; nothing is simulated.
+build_wizard(app) returns the QWizard without running it (tests/ai-controls-render.py renders the Mail page offscreen)."""
 import os, subprocess, sys
 
 MARK = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "fabos", "welcome-done")
@@ -32,7 +34,8 @@ def mem_total_gib():
     except (OSError, ValueError, IndexError):
         pass
     return 0.0
-STYLE = "QWidget{font-family:Inter,'Noto Sans';font-size:14px} QLabel#h1{font-size:26px;font-weight:700} QLabel#muted{color:palette(mid)} QPushButton{border-radius:10px;padding:8px 16px}"
+STYLE = ("QWidget{font-family:Inter,'Noto Sans';font-size:14px} QLabel#h1{font-size:26px;font-weight:700} QLabel#muted{color:palette(mid)} QPushButton{border-radius:10px;padding:8px 16px}"
+         " QPushButton#mailSetup{background:palette(highlight);color:palette(highlighted-text);font-weight:600;border-radius:12px;padding:10px 18px}")
 
 
 def fabos_setting(key, value):
@@ -74,8 +77,8 @@ class Page(QWizardPage):
         self.v.addWidget(s)
 
 
-def main():
-    app = QApplication(sys.argv)
+def build_wizard(app):
+    """Build the wizard (all pages, all actions wired) without running the event loop."""
     app.setApplicationName("Welcome to Fab OS")
     app.setDesktopFileName("fabos-welcome")
     app.setWindowIcon(QIcon.fromTheme("fabos"))
@@ -189,7 +192,26 @@ def main():
         if pid:
             fabos_setting("provider", pid)
 
-    # 5 Finish
+    # 5 Mail — the agent sends and reads mail through the user's OWN account (never through Patience AI)
+    pm = Page("Your mail, your account", "When you ask the agent to send or check mail, it uses your own account — Gmail, Outlook, Yahoo, Zoho or iCloud "
+              "(or any IMAP/SMTP mailbox). Nothing passes through Patience AI.")
+    for t in ("Sign in with Google for Gmail when this build offers it; otherwise paste an app password from your provider — a 3-step hint shows you where.",
+              "The sign-in is checked live against your provider's servers before it is saved, and stored encrypted on this computer.",
+              "You can skip this now and set it up later in Fab AI Controls › Settings › Mail."):
+        l = QLabel("•  " + t)
+        l.setWordWrap(True)
+        pm.v.addWidget(l)
+    mrow = QHBoxLayout()
+    mb = QPushButton("Use your own mail (Gmail, Outlook, Yahoo, Zoho, iCloud)…")
+    mb.setObjectName("mailSetup")
+    mb.clicked.connect(lambda: run("fabos-command-center", "--settings", "mail"))
+    mrow.addWidget(mb)
+    mrow.addStretch(1)
+    pm.v.addLayout(mrow)
+    pm.v.addStretch(1)
+    w.addPage(pm)
+
+    # 6 Finish
     p5 = Page("You're ready", "Fab OS is set up. A few things you may want to adjust:")
     extras = QCheckBox("Install proprietary drivers and media codecs (NVIDIA, some Wi-Fi chips, MP4/H.264 playback) — optional, needs your password")
     extras.setChecked(False)
@@ -213,6 +235,12 @@ def main():
         open(MARK, "w").write("done\n")
     w.accepted.connect(finish)
     w.rejected.connect(lambda: (os.makedirs(os.path.dirname(MARK), exist_ok=True), open(MARK, "w").write("skipped\n")))
+    return w
+
+
+def main():
+    app = QApplication(sys.argv)
+    w = build_wizard(app)
     w.show()
     sys.exit(app.exec())
 

@@ -6,30 +6,33 @@
 # Four levels, easy -> super hard. Every PASS is decided by an objective check run INSIDE the VM
 # (tests/ladder/checks.py against tests/ladder/expected.json) — never by what the agent claims it did.
 #
-#   ANTHROPIC_API_KEY=... [BREVO_API_KEY=... MAIL_TO=you@example.com] tests/agent-ladder-vm.sh \
+#   ANTHROPIC_API_KEY=... [MAIL_ADDRESS=you@gmail.com MAIL_APP_PASSWORD=... MAIL_TO=friend@example.com] tests/agent-ladder-vm.sh \
 #       [--provider claude|local] [--model claude-opus-5] [--levels 1-4] [--only l3-b] [--keep]
 #
-# Env:  ANTHROPIC_API_KEY (required unless --provider local)   BREVO_API_KEY + MAIL_TO (L4e, else SKIP)
+# Env:  ANTHROPIC_API_KEY (required unless --provider local)
+#       MAIL_ADDRESS + MAIL_APP_PASSWORD + MAIL_TO [MAIL_PROVIDER=gmail|outlook|yahoo|zoho|icloud|other] — the user's OWN mail
+#       account (ADR-0014) for L2-f and L4-e; without them those two are recorded as optional SKIPs that do not fail the run
 #       MODEL (default claude-opus-5)  VM_MEM (default 2048)  INJECT=1 (push working-tree agent files first)
 #       LOCAL_BASE_URL (default http://127.0.0.1:8080/v1 for --provider local)
 # Out:  build/agent-ladder-vm.out        full log
 #       build/agent-ladder-report.json   machine-readable result per task
 #       build/agent-ladder-report.md     human table
-# Exit: 0 every selected L1-L3 task passed · 1 an L1-L3 task failed or was skipped · 2 L1-L3 green but an L4 task
-#       failed (partial) · 3 setup problem (no VM, no daemon, fixture drift, bad arguments).
+# Exit: 0 every selected L1-L3 task passed · 1 an L1-L3 task failed or was skipped (an "optional:" SKIP — no mail
+#       credentials — does not count) · 2 L1-L3 green but an L4 task failed (partial) · 3 setup problem (no VM, no daemon,
+#       fixture drift, bad arguments).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"
 
 # ----------------------------------------------------------------- arguments and environment
 PROVIDER=${PROVIDER:-claude}; MODEL=${MODEL:-}; LEVELS=1-4; ONLY=""; KEEP=0
-MAIL_TO=${MAIL_TO:-}; MAIL_FROM=${MAIL_FROM:-support@patienceai.in}
+MAIL_TO=${MAIL_TO:-}; MAIL_ADDRESS=${MAIL_ADDRESS:-}; MAIL_PROVIDER=${MAIL_PROVIDER:-gmail}
 while [ $# -gt 0 ]; do case "$1" in
   --provider) PROVIDER=$2; shift;;
   --model) MODEL=$2; shift;;
   --levels) LEVELS=$2; shift;;
   --only) ONLY=$2; shift;;
   --keep) KEEP=1;;
-  -h|--help) sed -n '6,19p' "$0"; exit 0;;
+  -h|--help) sed -n '6,22p' "$0"; exit 0;;
   *) echo "unknown argument: $1 (try --help)"; exit 3;;
 esac; shift; done
 case "$PROVIDER" in claude) MODEL=${MODEL:-claude-opus-5};; local) MODEL=${MODEL:-local};; *) echo "--provider must be claude or local"; exit 3;; esac
@@ -219,6 +222,56 @@ run_task() { # run_task NAME TIMEOUT_S MODE TEXT
   poll_task "$2"
   collect_task; }
 
+mail_evidence() { # objective check of the task's send_email step(s): success reported AND the single authorised recipient, no cc
+  python3 - "$MAIL_TO" "$TASKJSON" <<'PY'
+import json, sys
+want, path = sys.argv[1], sys.argv[2]
+d = json.load(open(path))
+steps = [s for s in (d.get("steps") or []) if s.get("kind") == "tool_call" and s.get("name") == "send_email"]
+if not steps:
+    print("no send_email step in the task at all"); sys.exit(1)
+bad = []
+sent = None
+for s in steps:
+    try:
+        inp = json.loads(s.get("input") or "{}")
+    except json.JSONDecodeError:
+        inp = {}
+    try:
+        out = json.loads(s.get("output") or "{}")
+    except json.JSONDecodeError:
+        out = {"raw": s.get("output")}
+    to = (inp.get("to") or "").strip()
+    if to != want or inp.get("cc"):
+        bad.append("recipient %r cc=%r" % (to, inp.get("cc")))
+    blob = json.dumps(out).lower()
+    if out.get("sent") or out.get("message_id") or "sent" in blob:
+        sent = "message_id=%s subject=%r to=%s via=%s" % (out.get("message_id"), inp.get("subject"), to, out.get("via"))
+if bad:
+    print("wrong recipients: " + "; ".join(bad)); sys.exit(1)
+if not sent:
+    print("send_email ran but never reported success"); sys.exit(1)
+print("send_email succeeded, single recipient %s, %s" % (want, sent))
+PY
+}
+
+ORDER_EV=""
+step_order() { # step_order TOOL... — the task's tool steps contain these tools in this order (first occurrences); sets ORDER_EV
+  ORDER_EV=$(python3 - "$TASKJSON" "$@" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); want = sys.argv[2:]
+names = [s.get("name") for s in (d.get("steps") or []) if s.get("kind") == "tool_call" and (s.get("decision") or "") not in ("denied", "expired")]
+pos = []
+for t in want:
+    if t not in names:
+        print("tool %s never ran (sequence: %s)" % (t, " > ".join(names) or "none")); sys.exit(1)
+    pos.append(names.index(t))
+if pos != sorted(pos):
+    print("wrong order: wanted %s, sequence: %s" % (" then ".join(want), " > ".join(names))); sys.exit(1)
+print("order ok: %s (sequence: %s)" % (" then ".join(want), " > ".join(names)))
+PY
+  ); local rc=$?; echo "    check: step order -> $ORDER_EV"; return $rc; }
+
 # ----------------------------------------------------------------- reports (written even if the run dies early)
 write_reports() {
   python3 -c '
@@ -234,7 +287,7 @@ for line in open(rows_path):
         except json.JSONDecodeError:
             pass
 summary = {s: sum(1 for r in rows if r["status"] == s) for s in ("PASS", "FAIL", "SKIP")}
-core = [r for r in rows if r["level"] <= 3]
+core = [r for r in rows if r["level"] <= 3 and not (r["status"] == "SKIP" and r.get("note", "").startswith("optional"))]
 l4 = [r for r in rows if r["level"] == 4]
 code = 0 if rows and all(r["status"] == "PASS" for r in core) else (1 if rows else 3)
 if code == 0 and any(r["status"] == "FAIL" for r in l4):
@@ -311,9 +364,10 @@ else
 fi
 vm "fabos mode auto >/dev/null"
 MAIL_READY=0
-if [ -n "${BREVO_API_KEY:-}" ] && [ -n "$MAIL_TO" ] && [ "$PROVIDER" = claude ]; then
-  vm "fabos settings mail.transport brevo >/dev/null; fabos settings mail.from $MAIL_FROM >/dev/null; fabos settings mail.from_name 'Fab OS agent' >/dev/null; printf '%s\n' '$BREVO_API_KEY' | fabos set-key mail-api >/dev/null 2>&1"
-  MAIL_READY=1
+if [ -n "${MAIL_APP_PASSWORD:-}" ] && [ -n "$MAIL_ADDRESS" ] && [ -n "$MAIL_TO" ]; then
+  # the user's own account (ADR-0014): provider preset + address + app password, then a REAL sign-in check decides MAIL_READY
+  vm "fabos settings mail.provider $MAIL_PROVIDER >/dev/null; fabos settings mail.address $MAIL_ADDRESS >/dev/null; fabos settings mail.from_name 'Fab OS agent' >/dev/null; printf '%s\n' '$MAIL_APP_PASSWORD' | fabos set-key mail >/dev/null 2>&1"
+  if vm "fabos mail-check" | tee -a "$OUT" | grep -q '^Mail OK'; then MAIL_READY=1; else echo "mail account check FAILED — the mail tasks will be skipped (see fabos mail-check above)"; fi
 fi
 vm "fabos status --brief"
 
@@ -371,6 +425,14 @@ if want l1-e; then
   if check "notes-copy complete" "$CK l1e"; then verdict PASS l1-e "$EV"; else verdict FAIL l1-e "$EV | task=$TASK_STATUS"; fi
 fi
 
+if want l1-f; then   # SHOW YOUR WORK: the editor must be opened FIRST and the text typed into it (open_app then type_text), window left open
+  task_defaults
+  run_task l1-f $T1 auto "Type the word hello into a new Fab Editor window so I can watch it appear: open Fab Editor with open_app, then type it with type_text. Leave the window open and do not save anything."
+  if step_order open_app type_text; then
+    if check "a Fab Editor window is running" "pgrep -a kate | head -1"; then verdict PASS l1-f "$ORDER_EV | $EV"; else verdict FAIL l1-f "$ORDER_EV | no kate process | $EV"; fi
+  else verdict FAIL l1-f "$ORDER_EV | task=$TASK_STATUS"; fi
+fi
+
 ################################################################################################################
 # LEVEL 2 — MEDIUM (auto mode): multi-file data work, a rename sweep, the GUI editor and a local HTTP fetch.
 ################################################################################################################
@@ -408,6 +470,20 @@ if want l2-e; then   # web_fetch against the daemon's own health endpoint: works
   task_defaults
   run_task l2-e $T2 auto "Use your web fetch tool on http://127.0.0.1:8790/health and save the JSON body you get back, unchanged, to ~/Ladder/health.json"
   if check "health.json parses with ok" "$CK l2e"; then verdict PASS l2-e "$EV"; else verdict FAIL l2-e "$EV | task=$TASK_STATUS"; fi
+fi
+
+if want l2-f; then   # SHOW YOUR WORK + MAIL: "write a hi note and send it to X" = open_app THEN type_text THEN send_email, mail really delivered to X only
+  task_defaults
+  if [ "$MAIL_READY" != 1 ]; then
+    NOTE="optional: needs MAIL_ADDRESS + MAIL_APP_PASSWORD + MAIL_TO (the user's own mail account)"
+    verdict SKIP l2-f "$NOTE"
+  else
+    run_task l2-f $T2 auto "Write a hi note and send it to $MAIL_TO. I want to watch you do it: open Fab Editor first, type the note there (the word hi), save it as ~/Ladder/hi-note.txt, then send that note by mail to $MAIL_TO with the subject hi — that one recipient only, no cc."
+    if step_order open_app type_text send_email; then
+      mailev=$(mail_evidence); rc=$?; echo "    check: mail step -> $mailev"
+      if [ $rc -eq 0 ] && check "hi-note.txt holds the note" "$CK l2f"; then verdict PASS l2-f "$ORDER_EV | $mailev | $EV"; else verdict FAIL l2-f "$ORDER_EV | $mailev | $EV | task=$TASK_STATUS"; fi
+    else verdict FAIL l2-f "$ORDER_EV | task=$TASK_STATUS"; fi
+  fi
 fi
 
 ################################################################################################################
@@ -568,40 +644,11 @@ fi
 if want l4-e; then   # MULTI-APP + MAIL: only ever to the address the operator authorised
   task_defaults
   if [ "$MAIL_READY" != 1 ]; then
-    verdict SKIP l4-e "needs BREVO_API_KEY + MAIL_TO with --provider claude (mail is a cloud transport)"
+    NOTE="optional: needs MAIL_ADDRESS + MAIL_APP_PASSWORD + MAIL_TO (the user's own mail account)"
+    verdict SKIP l4-e "$NOTE"
   else
     run_task l4-e $T4 auto "Summarise the three fact notes /tmp/ladder/notes/fact_alpha.txt, fact_beta.txt and fact_gamma.txt into exactly three bullet points and email them to $MAIL_TO with the subject: Fab OS ladder. Send it to that one address only, no other recipients, no cc."
-    mailev=$(python3 - "$MAIL_TO" "$TASKJSON" <<'PY'
-import json, sys
-want, path = sys.argv[1], sys.argv[2]
-d = json.load(open(path))
-steps = [s for s in (d.get("steps") or []) if s.get("kind") == "tool_call" and s.get("name") == "send_email"]
-if not steps:
-    print("no send_email step in the task at all"); sys.exit(1)
-bad = []
-sent = None
-for s in steps:
-    try:
-        inp = json.loads(s.get("input") or "{}")
-    except json.JSONDecodeError:
-        inp = {}
-    try:
-        out = json.loads(s.get("output") or "{}")
-    except json.JSONDecodeError:
-        out = {"raw": s.get("output")}
-    to = (inp.get("to") or "").strip()
-    if to != want or inp.get("cc"):
-        bad.append("recipient %r cc=%r" % (to, inp.get("cc")))
-    blob = json.dumps(out).lower()
-    if out.get("sent") or out.get("message_id") or "sent" in blob:
-        sent = "message_id=%s subject=%r to=%s" % (out.get("message_id"), inp.get("subject"), to)
-if bad:
-    print("wrong recipients: " + "; ".join(bad)); sys.exit(1)
-if not sent:
-    print("send_email ran but never reported success"); sys.exit(1)
-print("send_email succeeded, single recipient %s, %s" % (want, sent))
-PY
-    ); rc=$?
+    mailev=$(mail_evidence); rc=$?
     echo "    check: mail step -> $mailev"
     if [ $rc -eq 0 ]; then verdict PASS l4-e "$mailev"; else verdict FAIL l4-e "$mailev | task=$TASK_STATUS"; fi
   fi
