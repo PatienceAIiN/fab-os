@@ -49,7 +49,7 @@ tasks.writeConfig("magnification", MAGNIFICATION)
 tasks.writeConfig("groupApps", true)
 dock.addWidget("org.kde.plasma.showdesktop")   // peek at the desktop: last dock item (icon user-desktop -> FabOS mono desktop_windows glyph)
 
-// Desktop containments: wallpaper + the ask bar centred on the home screen (about 36% down, 760 px wide).
+// Desktop containments: wallpaper + the ask bar centred on the home screen: a tall transparent strip from 24% down to the dock; the card sits at its top and the response panel unfolds inside it (desktop layer, behind every window).
 var desktops = desktopsForActivity(currentActivity())
 for (var j = 0; j < desktops.length; j++) {
   var d = desktops[j]

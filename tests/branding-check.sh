@@ -146,7 +146,7 @@ chk "iso profile: no SSH server, no ufw rules"           "[ \"$PROFILE\" != iso 
 chk "vm profile: exactly one ufw rule (22/tcp), v4 + v6" "[ \"$PROFILE\" != vm ] || R 'test \$(grep -c \"^-A ufw-user-input\" /etc/ufw/user.rules) -eq 1 && grep -q \"^-A ufw-user-input -p tcp --dport 22 -j ACCEPT\" /etc/ufw/user.rules && test \$(grep -c \"^-A ufw6-user-input\" /etc/ufw/user6.rules) -eq 1'"
 chk "snap assist KWin script shipped + enabled"          "R 'test -f /usr/share/kwin/scripts/fabos-snap-assist/contents/code/main.js && grep -q \"\\\"Id\\\": \\\"fabos-snap-assist\\\"\" /usr/share/kwin/scripts/fabos-snap-assist/metadata.json && grep -q \"\\\"Name\\\": \\\"Patience AI\\\"\" /usr/share/kwin/scripts/fabos-snap-assist/metadata.json && grep -q ^fabos-snap-assistEnabled=true /etc/xdg/kwinrc'"
 chk "edge tiling: halves, quarter corners, maximise"     "R 'grep -q ^ElectricBorderTiling=true /etc/xdg/kwinrc && grep -q ^ElectricBorderCornerRatio=0.25 /etc/xdg/kwinrc && grep -q ^ElectricBorderMaximize=true /etc/xdg/kwinrc && grep -q ^ElectricBorderDelay=150 /etc/xdg/kwinrc'"
-chk "all 10 fabos packages at 1.0-2 in the manifest"     "[ \$(R 'grep -c -P \"^fabos-[a-z-]+\\t1\\.0-2\$\" /usr/share/fabos/manifest.txt') -eq 10 ]"
+chk "all 10 fabos packages at 1.0-3 in the manifest"     "[ \$(R 'grep -c -P \"^fabos-[a-z-]+\\t1\\.0-3\$\" /usr/share/fabos/manifest.txt') -eq 10 ]"
 
 # Forbidden third-party product names (owner rule): never in UI strings, QML, Python UI, desktop files, website or docs.
 # "OpenAI" is allowed only as a provider label: the daemon's PROVIDERS table, Fab AI Controls' provider dropdown/help

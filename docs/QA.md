@@ -407,8 +407,8 @@ that the absence of a result is visible rather than implied.
 | Test | Command | Status |
 |---|---|---|
 | Feedback relay | `python3 tests/feedback-test.py` | offline, against a fake mail endpoint; not re-run for `1.0-2` |
-| Ask-bar helpers and transport | `node tests/askbar-js-test.js` | 18 test groups; includes the check that the agent's bearer token never appears in a process command line. **Not captured — run it, it takes seconds** |
-| Ask-bar QML | `tests/askbar-qml-test.sh` | 53 assertions against the real applet in an offscreen Qt session inside the image; not captured |
+| Ask-bar helpers and transport | `node tests/askbar-js-test.js` | 20 test groups; includes the check that the agent's bearer token never appears in a process command line. **Not captured — run it, it takes seconds** |
+| Ask-bar QML | `tests/askbar-qml-test.sh` | 117 checks against the real applet in an offscreen Qt session inside the image; not captured |
 | Window snapping | `node tests/snap-assist-unit.js` · `tests/snap-assist-test.sh` | geometry unit tests, and a real compositor session; not captured |
 | Agent application render | `python3 tests/ai-controls-render.py` | offscreen render assertions in both colour schemes; not captured |
 | Local graded sandbox | `python3 tests/agent-live-test.py` | six graded tasks including a **policy** task and an **honesty** task (does the agent claim it sent mail when mail is not configured?). **Never run.** Needs no virtual machine |
