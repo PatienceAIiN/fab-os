@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Unit tests for the ask bar's pure-JS helpers (packages/.../in.patienceai.fabos.askbar/contents/ui/agent.js).
-// The QML engine is not available headless, so the JSON -> conversation logic is exercised here under node.
+// The QML engine is not available headless, so the JSON -> conversation logic is exercised here under node. The last
+// group runs the built curl command through /bin/sh against a local HTTP server standing in for fabos-agentd and
+// checks that the bearer token is on no process command line while the request is in flight.
 //   node tests/askbar-js-test.js
 "use strict";
 const fs = require("fs"), path = require("path"), vm = require("vm"), assert = require("assert");
@@ -16,10 +18,11 @@ function eq(a, b) { assert.strictEqual(JSON.stringify(a), JSON.stringify(b)); }
 t("shellQuote escapes single quotes", () => {
   assert.strictEqual(A.shellQuote("it's"), "'it'\\''s'");
 });
-t("apiCommand builds a curl call with token/port files and a JSON body", () => {
+t("apiCommand builds a curl call with the port file, a JSON body, and the token as curl config on stdin (never argv)", () => {
   const c = A.apiCommand("POST", "/tasks", { request: "open kate", parent_id: 7 });
-  assert.ok(c.includes('curl -sS -m 12 -X POST'));
-  assert.ok(c.includes('Authorization: Bearer $(cat "$R/token"'));
+  assert.ok(c.includes('P=$(cat "$R/port" 2>/dev/null || echo 8790)'));
+  assert.ok(c.includes(`printf 'header = "Authorization: Bearer %s"\\n' "$(cat "$R/token" 2>/dev/null)" | curl -sS -m 12 -K - -X POST`), c);
+  assert.ok(!/-H\s+["']?Authorization/.test(c), "the Authorization header must not be a curl argument");
   assert.ok(c.includes(`--data-binary '{"request":"open kate","parent_id":7}'`));
   assert.ok(c.endsWith('"http://127.0.0.1:$P/tasks" 2>/dev/null'));
   assert.ok(!A.apiCommand("GET", "/status").includes("--data-binary"));
@@ -128,4 +131,48 @@ t("banned words never appear in UI strings produced by the helpers", () => {
   for (const k of Object.keys(A.APPS)) assert.ok(!banned.test(A.APPS[k][0]), k);
   assert.ok(!banned.test(src.replace(/\/\/.*$/gm, "")), "agent.js code has no banned product names");
 });
-console.log("askbar-js-test: " + n + " test groups passed");
+
+// End-to-end transport check: the built command runs through /bin/sh (as the executable DataSource runs it) against a
+// local HTTP server standing in for fabos-agentd, with token/port files in a private XDG_RUNTIME_DIR. While each
+// request is held open, every /proc/<pid>/cmdline is scanned for the token: the OLD form (-H "Authorization: Bearer
+// $(cat token)") is run first as a control and must be caught; the shipped form must not be. Skipped without curl or /proc.
+async function transport() {
+  const { spawnSync, spawn } = require("child_process"), http = require("http"), os = require("os");
+  if (spawnSync("sh", ["-c", "command -v curl"]).status !== 0 || !fs.existsSync("/proc/self/cmdline")) { console.log("askbar-js-test: transport check skipped (needs curl and /proc)"); return; }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "askbar-xdg-")), rt = path.join(dir, "fabos-agent");
+  fs.mkdirSync(rt, { mode: 0o700 });
+  const token = "a3f9" + "0c".repeat(30);   // 64 hex chars, shaped like the daemon's token
+  fs.writeFileSync(path.join(rt, "token"), token, { mode: 0o600 });
+  const seen = [];
+  const scan = () => fs.readdirSync("/proc").filter((p) => /^\d+$/.test(p)).filter((p) => { try { return fs.readFileSync("/proc/" + p + "/cmdline", "latin1").includes(token); } catch (e) { return false; } });
+  const server = http.createServer((req, res) => {
+    let body = ""; req.on("data", (d) => body += d);
+    req.on("end", () => {   // curl is alive and waiting here: scan now
+      seen.push({ method: req.method, url: req.url, auth: req.headers.authorization, ct: req.headers["content-type"], body, hits: scan() });
+      res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ id: 42, ok: true }));
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  fs.writeFileSync(path.join(rt, "port"), String(server.address().port));
+  const run = (cmd) => new Promise((resolve) => {
+    const p = spawn("sh", ["-c", cmd], { env: { ...process.env, XDG_RUNTIME_DIR: dir } });
+    let out = ""; p.stdout.on("data", (d) => out += d); p.on("close", (code) => resolve({ code, out }));
+  });
+  const control = await run('R="$XDG_RUNTIME_DIR/fabos-agent"; P=$(cat "$R/port"); curl -sS -m 12 -X GET -H "Authorization: Bearer $(cat "$R/token")" "http://127.0.0.1:$P/control"');
+  const r1 = await run(A.tagged("create", 0, 1, A.apiCommand("POST", "/tasks", { request: "it's a test" })));
+  const r2 = await run(A.tagged("status", 0, 2, A.apiCommand("GET", "/status")));
+  server.close(); fs.rmSync(dir, { recursive: true, force: true });
+  t("transport control: a token on curl's argv IS visible in /proc/*/cmdline (proves the scan works)", () => {
+    assert.strictEqual(control.code, 0); assert.strictEqual(seen[0].auth, "Bearer " + token); assert.ok(seen[0].hits.length >= 1, "control run should be caught");
+  });
+  t("transport: header, body and JSON reply round-trip through sh + curl -K -", () => {
+    assert.strictEqual(r1.code, 0); eq(JSON.parse(r1.out), { id: 42, ok: true });
+    assert.strictEqual(seen[1].method, "POST"); assert.strictEqual(seen[1].url, "/tasks"); assert.strictEqual(seen[1].auth, "Bearer " + token);
+    assert.strictEqual(seen[1].ct, "application/json"); eq(JSON.parse(seen[1].body), { request: "it's a test" });
+    assert.strictEqual(r2.code, 0); assert.strictEqual(seen[2].method, "GET"); assert.strictEqual(seen[2].url, "/status"); assert.strictEqual(seen[2].auth, "Bearer " + token);
+  });
+  t("transport: the shipped command puts the token on no process command line while the request is in flight", () => {
+    eq(seen[1].hits, []); eq(seen[2].hits, []);
+  });
+}
+transport().then(() => console.log("askbar-js-test: " + n + " test groups passed"), (e) => { console.error(e); process.exit(1); });

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fab AI Controls — chat with the Fab OS agent: ask it to do things, follow up, watch it work, approve risky steps.
 
-A ChatGPT-style desktop app on top of fabos-agentd's local HTTP API (PyQt6):
+A chat-style desktop app on top of fabos-agentd's local HTTP API (PyQt6):
   * left sidebar: New chat, search, chats grouped Today / Yesterday / Earlier (a chat = a root task + its follow-ups)
   * main pane: the chat as bubbles (your requests right/accent, the agent's answers left/surface), tool steps folded into
     one "Worked: N actions" chip per turn, typing indicator + fade-in while a task runs

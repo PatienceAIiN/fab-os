@@ -61,7 +61,7 @@ Item {
         }
         if (phase >= 2.5) steps.push({ id: 104, task_id: 7, kind: "question", name: "ask_user", input: "Which folder should I use instead?", output: "", risk: "", decision: "" })
         if (phase >= 3) {
-            steps.push({ id: 105, task_id: 7, kind: "answer", name: "user", input: "", output: "Use ~/Notes", risk: "", decision: "" })
+            steps.push({ id: 105, task_id: 7, kind: "answer", name: "user", input: "Use ~/Notes", output: "", risk: "", decision: "" })   // Store.step(task, "answer", "user", text) => the text is `input`
             steps.push({ id: 106, task_id: 7, kind: "assistant", name: "fake", input: "", output: "Done. I opened **Fab Editor** and typed your note.\n\n- opened `note.txt`\n- typed 17 characters\n\n```bash\nls ~/Notes\n```", risk: "", decision: "" })
             steps.push({ id: 107, task_id: 7, kind: "final", name: "", input: "", output: "Done. I opened **Fab Editor** and typed your note.\n\n- opened `note.txt`\n- typed 17 characters\n\n```bash\nls ~/Notes\n```", risk: "", decision: "" })
         }
@@ -131,8 +131,9 @@ Item {
         bar.answer("Use ~/Notes")
         check(rowAt(6).status === "answered" && rowAt(7).kind === "user" && rowAt(7).status === "answer", "answer marks the question and appends the user's answer")
         bar.ingest(taskJson(3))
-        check(kinds() === "user,tools,step,step,step,approval,question,user,user,assistant", "phase 3 rows: " + kinds())
-        check(rowAt(9).status === "final" && rowAt(9).text.indexOf("**Fab Editor**") > 0, "assistant row promoted to final (no duplicate final row)")
+        check(kinds() === "user,tools,step,step,step,approval,question,user,assistant", "phase 3 rows (the daemon's answer step binds to the locally appended answer; no blank duplicate pill): " + kinds())
+        check(rowAt(7).key === "t7s105" && rowAt(7).text === "Use ~/Notes", "answer row is now keyed by the daemon's step id")
+        check(rowAt(8).status === "final" && rowAt(8).text.indexOf("**Fab Editor**") > 0, "assistant row promoted to final (no duplicate final row)")
         check(rowAt(4).status === "denied" && rowAt(4).subtitle === "Not allowed — skipped", "denied run_shell shows the friendly reason")
         check(rowAt(1).expanded === false && rowAt(2).shown === false, "groups fold when the task finishes")
         check(bar.taskStatus === "done" && !bar.taskActive && bar.resultText.length > 0, "task done, result captured")
@@ -141,6 +142,10 @@ Item {
         check(rowAt(1).expanded === true && rowAt(2).shown === true, "chip click expands the group")
         bar.ingest(taskJson(3))
         check(rowAt(1).expanded === true, "a trailing poll does not re-fold an expanded group")
+        var ext = taskJson(3)   // an answer given elsewhere (Fab AI Controls / CLI) has no local row: it is appended once, from `input`
+        ext.steps.push({ id: 108, task_id: 7, kind: "answer", name: "user", input: "Answered from Fab AI Controls", output: "", risk: "", decision: "" })
+        bar.ingest(ext)
+        check(convo.count === 10 && rowAt(9).kind === "user" && rowAt(9).status === "answer" && rowAt(9).text === "Answered from Fab AI Controls", "external answer appended once from input (" + kinds() + ")")
         // follow-up threads under the root
         bar.pendingRequest = "and now save it"
         bar.onCreated(true, 0, { id: 8, status: "queued", parent_id: 7 })
@@ -178,9 +183,26 @@ Item {
         check(list.atYBeginning, "list scrolled to the top for the feed render")
         dialog.mainItem.grabToImage(function (r) { r.saveToFile("/out/askbar-feed.png"); console.log("PASS grabbed feed (top: request, chip, live step cards)"); closeTimer.start() })
     } }
-    Timer { id: closeTimer; interval: 200; onTriggered: { bar.closePanel(); finish.start() } }
+    Timer { id: closeTimer; interval: 200; onTriggered: {
+        // Edit prompt while the panel shrinks: the next submit must be a fresh task, and a task created inside the
+        // 300 ms shrink window must cancel the pending close and re-open the panel for the new conversation
+        bar.configured = true; bar.aiEnabled = true; bar.taskStatus = "failed"
+        check(bar.markState === "error", "failed task tints the mark amber while the panel is open (" + bar.markState + ")")
+        bar.editPrompt()
+        check(field.text === bar.taskRequest && field.text.length > 0 && bar.closing && bar.panelMode === "open" && !bar.followUp, "edit prompt: request back in the bar, panel shrinking, next submit is not a follow-up")
+        bar.pendingRequest = "Open the editor and type hi"
+        bar.onCreated(false, 0, { id: 12, status: "queued", parent_id: null })
+        check(!bar.closing && bar.panelMode === "open" && bar.rootTaskId === 12 && bar.taskId === 12 && kinds() === "user", "task created during the shrink: close cancelled, conversation re-rooted (" + kinds() + ")")
+        raceTimer.start()
+    } }
+    Timer { id: raceTimer; interval: 500; onTriggered: {
+        check(bar.panelMode === "open" && dialog.visible && bar.openProgress > 0.99, "panel still open 500 ms later (pending close was cancelled; progress " + bar.openProgress.toFixed(2) + ")")
+        bar.taskStatus = "failed"
+        bar.closePanel(); finish.start()
+    } }
     Timer { id: finish; interval: 700; onTriggered: {
         check(bar.panelMode === "closed" && !dialog.visible, "closePanel hides the dialog after the shrink animation (" + bar.panelMode + ")")
+        check(bar.taskStatus === "" && bar.markState === "idle", "dismissing the panel forgets the failed task: the mark returns to idle (" + bar.markState + ")")
         console.log("HARNESS DONE failures=" + h.failures)
         killer.connectSource("kill -TERM $PPID 2>/dev/null || pkill -x plasmawindowed")
     } }

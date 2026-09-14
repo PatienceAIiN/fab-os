@@ -66,7 +66,10 @@ text with an action row) with Fab OS tokens.
   from 0 to its content (280 ms OutCubic) while the content fades in; content growth animates at 260 ms, capped at
   62 % of the screen height. Header: status line left, icon controls right with tooltips (Stop · Retry · Edit prompt ·
   Copy result · Minimize · Open in Fab AI Controls = `fabos-command-center --task ID`). Minimize collapses it to a
-  one-line status pill that reopens on click; Edit prompt puts the request back into the bar and closes the panel.
+  one-line status pill that reopens on click; Edit prompt puts the request back into the bar and closes the panel — the
+  next Do it starts a fresh task even inside the 300 ms shrink (it cancels the close and re-opens the panel). Dismissing
+  the panel forgets the task in the bar (the mark returns to idle; the task itself carries on in the daemon and the
+  status line counts it).
 - **Conversation** (`ConvoDelegate.qml`): user request as a right-aligned pill (radius 20, tinted, ≤ 72 % wide);
   assistant text plain (Inter 15/1.25) rendered from Markdown-lite (bold, italics, inline code, links, lists,
   headings) with fenced code as monospace cards (JetBrains Mono 13 on a text-colour @ 8 % tint, radius 12) and an
@@ -75,14 +78,18 @@ text with an action row) with Fab OS tokens.
 - **Live action feed**: one card per tool step (radius 14) appended the moment the daemon inserts the step row, with
   the app's own icon for `open_app` (scale-in), a keyboard glyph and a typewriter reveal (~25 ms/char) for `type_text`,
   terminal / file / globe / mail / bell / question / eye glyphs for the other tools; friendly labels only (raw commands
-  and paths appear only when the daemon setting `ui.show_raw` is true); each step's `narration` in italics under the
-  title; spinner while running, green check when done, amber cross on error / denied; the current step carries an
+  and paths appear only when the daemon setting `ui.show_raw` is true); each step's `narration` (when the daemon
+  provides one) in italics under the title; spinner while running, green check when done, amber cross on error / denied; the current step carries an
   accent border. When the task ends its steps fold once into a "Worked: N actions" chip that expands on click (a later
   poll or a later task finishing never re-folds a group the user opened). Approvals render inline with the risk level and Allow / Deny icon buttons
-  (`POST /approvals/{id}`); questions render an inline answer field (`POST /tasks/{id}/answer`).
-- **Polling**: `GET /tasks/{id}` every 1.5 s through the executable DataSource (curl, bearer token and port from
-  `$XDG_RUNTIME_DIR/fabos-agent`), only while the panel is open and the task is active, plus two trailing polls after
-  it stops; rows are appended and updated in place, never rebuilt. `GET /status` every 4 s drives the mark and the
+  (`POST /approvals/{id}`); questions render an inline answer field (`POST /tasks/{id}/answer`; the answer is shown at
+  once as a user pill and bound to the daemon's `answer` step — whose text is in `input` — when the next poll returns it,
+  so it is never duplicated; answers given elsewhere appear from that step).
+- **Polling**: `GET /tasks/{id}` every 1.5 s through the executable DataSource (curl; port from
+  `$XDG_RUNTIME_DIR/fabos-agent/port`; the bearer token is handed to curl as one config line on stdin — `printf … | curl
+  -K -`, the shell's builtin printf — so it is never on a command line / in `/proc/*/cmdline`), only while the panel is
+  open and the task is active, plus two trailing polls after it stops; rows are appended and updated in place, never
+  rebuilt. `curl` is a declared dependency of `fabos-agent`. `GET /status` every 4 s drives the mark and the
   status line; `GET /settings` is read when the panel opens (`ui.show_raw`).
 - **Follow-ups**: with the panel open, typing and pressing Send posts a new task with `parent_id` = the root task and
   appends it to the same conversation. Retry of a follow-up keeps the root; retry of the root re-roots the chat (the
@@ -92,4 +99,4 @@ text with an action row) with Fab OS tokens.
   response panel opens from the panel edge.
 - **Checks**: `node tests/askbar-js-test.js` (pure helpers) and `tests/askbar-qml-test.sh` (loads the applet headless
   with `plasmawindowed` inside the image, drives the state machine with daemon-shaped JSON, renders
-  `build/askbar-{bar,panel}.png`).
+  `build/askbar-{bar,panel,feed}.png`).

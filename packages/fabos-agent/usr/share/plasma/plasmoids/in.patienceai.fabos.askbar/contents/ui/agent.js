@@ -12,11 +12,15 @@ function parseJson(text) {
     try { return JSON.parse(t) } catch (e) { return null }
 }
 
-// curl against fabos-agentd on 127.0.0.1 using the same token/port files the fabos CLI reads (POSIX sh syntax:
-// the executable DataSource runs commands through /bin/sh -c). The caller prefixes the routing tag.
+// curl against fabos-agentd on 127.0.0.1 using the same token/port files the fabos CLI reads (POSIX sh syntax: the
+// executable DataSource runs commands through /bin/sh -c). The bearer token never reaches any argv: the shell's builtin
+// printf writes one curl config line ("header = ...") down a pipe and curl reads it with -K - (config from stdin), so
+// /proc/<pid>/cmdline of curl shows only the method, content type, body and URL (the token file is 0600 for a reason).
+// The caller prefixes the routing tag.
 function apiCommand(method, path, body) {
     var c = "R=\"${XDG_RUNTIME_DIR:-/tmp}/fabos-agent\"; P=$(cat \"$R/port\" 2>/dev/null || echo 8790); "
-          + "curl -sS -m 12 -X " + method + " -H \"Authorization: Bearer $(cat \"$R/token\" 2>/dev/null)\" -H 'Content-Type: application/json'"
+          + "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat \"$R/token\" 2>/dev/null)\" | "
+          + "curl -sS -m 12 -K - -X " + method + " -H 'Content-Type: application/json'"
     if (body !== undefined && body !== null) c += " --data-binary " + shellQuote(JSON.stringify(body))
     return c + " \"http://127.0.0.1:$P" + path + "\" 2>/dev/null"
 }

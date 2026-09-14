@@ -45,6 +45,8 @@ PlasmoidItem {
     property string taskTitle: ""
     property string resultText: ""
     property string panelMode: "closed"       // closed | open | min
+    property bool closing: false              // closePanel() called; panelMode stays "open"/"min" for the 300 ms shrink
+    readonly property bool followUp: panelMode !== "closed" && !closing && rootTaskId > 0   // the next submit threads under rootTaskId
     property bool showRaw: false              // daemon setting ui.show_raw
     property var seen: ({})                   // "t<task>s<step>" / "a<approval>" / "q<question>" -> model row
     property int serial: 0
@@ -70,7 +72,7 @@ PlasmoidItem {
     // ---- mark
     property bool markAwake: true
     readonly property string markState: listening ? "listening"
-                                      : (!configured || !aiEnabled || taskStatus === "failed" ? "error"
+                                      : (!configured || !aiEnabled || (taskStatus === "failed" && panelMode !== "closed") ? "error"
                                       : (taskActive || sending ? "thinking"
                                       : (taskStatus === "done" && panelMode !== "closed" ? "done" : "idle")))
 
@@ -84,12 +86,13 @@ PlasmoidItem {
     onTaskActiveChanged: { wake(); if (!taskActive && taskId > 0) { trailingPoll1.restart(); trailingPoll2.restart() } }
     onSendingChanged: wake()
     onListeningChanged: wake()
-    onPanelModeChanged: { wake(); if (panelMode === "min" || panelMode === "open") { closeTimer.stop(); root.openProgress = 1 } }
+    onPanelModeChanged: { wake(); if (panelMode === "min" || panelMode === "open") { closeTimer.stop(); root.closing = false; root.openProgress = 1 } }
 
     Timer { id: sleepTimer; interval: 30000; onTriggered: if (!root.taskActive && !root.sending && !root.listening) root.markAwake = false; else restart() }
     Timer { id: hintTimer; interval: 6000; onTriggered: root.voiceHint = "" }
     Timer { id: toastTimer; interval: 1600; onTriggered: root.toast = "" }
-    Timer { id: closeTimer; interval: 300; onTriggered: root.panelMode = "closed" }
+    // panel fully shrunk: forget the task in the bar so the mark returns to idle (the task itself carries on in the daemon)
+    Timer { id: closeTimer; interval: 300; onTriggered: { root.closing = false; root.panelMode = "closed"; root.taskStatus = "" } }
     Timer { id: stickyTimer; interval: 10000; onTriggered: root.stickyStatus = false }
     Timer { id: trailingPoll1; interval: 1500; onTriggered: if (root.taskId > 0 && root.panelMode !== "closed") root.api("poll", root.taskId, "GET", "/tasks/" + root.taskId) }
     Timer { id: trailingPoll2; interval: 4000; onTriggered: if (root.taskId > 0 && root.panelMode !== "closed") root.api("poll", root.taskId, "GET", "/tasks/" + root.taskId) }
@@ -172,7 +175,7 @@ PlasmoidItem {
         if (!root.aiEnabled) { root.say("System-Wide AI is off — click here to turn it on in Fab AI Controls. Your request stays in the bar."); return }
         root.sending = true
         root.pendingRequest = t
-        var follow = root.panelMode !== "closed" && root.rootTaskId > 0
+        var follow = root.followUp
         var body = { request: t }
         if (follow) body.parent_id = root.rootTaskId
         root.api(follow ? "follow" : "create", 0, "POST", "/tasks", body)
@@ -186,11 +189,12 @@ PlasmoidItem {
             return
         }
         root.status = ""; root.stickyStatus = false
+        var reopen = root.panelMode === "closed" || root.closing   // a task created while the panel shrinks (Edit prompt) re-opens it
         if (!follow) { root.resetConversation(); root.rootTaskId = j.id }
         root.taskRequest = root.pendingRequest
         convo.append(root.row({ kind: "user", key: "u" + j.id, text: root.pendingRequest, status: "request" }))
         root.switchTask(j.id, "")
-        if (root.panelMode === "closed") root.openPanel()
+        if (reopen) root.openPanel()
         else if (root.panelMode === "min") root.panelMode = "open"
     }
     function switchTask(id, noteText) {
@@ -230,13 +234,13 @@ PlasmoidItem {
     property real openProgress: 0
     Behavior on openProgress { id: openBehavior; NumberAnimation { duration: 280; easing.type: Easing.OutCubic } }
     function openPanel() {
-        closeTimer.stop()
+        closeTimer.stop(); root.closing = false
         openBehavior.enabled = false; root.openProgress = 0; openBehavior.enabled = true
         root.panelMode = "open"
         root.api("settings", 0, "GET", "/settings")
         root.openProgress = 1
     }
-    function closePanel() { if (root.panelMode === "closed") return; root.openProgress = 0; closeTimer.restart() }
+    function closePanel() { if (root.panelMode === "closed" || root.closing) return; root.closing = true; root.openProgress = 0; closeTimer.restart() }
 
     // ---------------------------------------------------------------- task JSON -> conversation rows (append-only, no rebuild)
     function row(o) {
@@ -313,7 +317,15 @@ PlasmoidItem {
             return
         }
         if (k === "error") { root.closeGroup(); root.seen[key] = convo.count; convo.append(root.row({ kind: "error", key: key, text: String(s.output || s.input || "Something went wrong") })); return }
-        if (k === "answer") { root.seen[key] = convo.count; convo.append(root.row({ kind: "user", key: key, text: String(s.output || ""), status: "answer" })); return }
+        if (k === "answer") {                                 // the daemon keeps the user's answer in `input` (Store.step 4th argument)
+            var at = String(s.input || s.output || "")
+            for (var ai = convo.count - 1; ai >= 0; ai--) {   // answered from the inline card: bind the row appended locally, never duplicate it
+                var ar = convo.get(ai)
+                if (ar.kind === "user" && ar.status === "answer" && ar.key.indexOf("ans") === 0 && ar.text === at) { convo.setProperty(ai, "key", key); root.seen[key] = ai; return }
+            }
+            if (!at.trim().length) { root.seen[key] = -1; return }
+            root.seen[key] = convo.count; convo.append(root.row({ kind: "user", key: key, text: at, status: "answer" })); return
+        }
         if (k === "compact") { root.seen[key] = convo.count; convo.append(root.row({ kind: "note", key: key, text: "Tidied up earlier results to keep going" })); return }
         if (k === "watch_hit") { root.seen[key] = convo.count; convo.append(root.row({ kind: "note", key: key, text: "Watch fired: " + Agent.plainSummary(s.output, 120) })); return }
         root.seen[key] = -1                                   // "question" steps: the card comes from t.questions (has id + answer)
@@ -454,7 +466,7 @@ PlasmoidItem {
                     Behavior on color { ColorAnimation { duration: 160 } }
                     Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutBack } }
                     Behavior on opacity { NumberAnimation { duration: 160 } }
-                    Text { anchors.centerIn: parent; text: root.sending ? "" : (root.panelMode !== "closed" && root.rootTaskId > 0 ? "Send" : "Do it"); color: Kirigami.Theme.highlightedTextColor; font.family: "Inter"; font.pixelSize: 15; font.weight: Font.DemiBold }
+                    Text { anchors.centerIn: parent; text: root.sending ? "" : (root.followUp ? "Send" : "Do it"); color: Kirigami.Theme.highlightedTextColor; font.family: "Inter"; font.pixelSize: 15; font.weight: Font.DemiBold }
                     Spinner { anchors.centerIn: parent; width: 18; height: 18; color: Kirigami.Theme.highlightedTextColor; visible: root.sending }
                     MouseArea { id: goArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.submit() }
                 }
