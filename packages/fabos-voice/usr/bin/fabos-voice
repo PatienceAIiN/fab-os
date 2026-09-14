@@ -2,21 +2,30 @@
 """fabos-voice — talk to Fab OS from the command line (the VOICE CONTRACT every Fab OS UI calls).
 
   fabos-voice listen-once [--timeout SECONDS]   chime, record until ~1.2 s of silence (or the timeout, default 10 s),
-                                                print the recognised text; exit 3 = nothing heard, 4 = no speech-to-text
-  fabos-voice say TEXT...                       speak TEXT (blocking); exit 4 = no text-to-speech
-  fabos-voice status                            one JSON line: {"wake","listening","stt","tts","mic"}
+                                                print the recognised text on stdout; the reason for a failure goes to
+                                                stderr. Exit 3 = nothing heard (also: microphone muted or silent),
+                                                4 = no backend (no audio session, no microphone, no speech-to-text).
+                                                Never runs longer than the timeout plus a few seconds.
+  fabos-voice say TEXT... | say --test           speak TEXT (blocking; one utterance at a time machine-wide); --test says
+                                                a two-sentence sample and prints the backend and sink used; exit 4 = no TTS
+  fabos-voice status                            one JSON line: {"wake","listening","stt","tts","mic",
+                                                "mic_reason","stt_reason","tts_reason"} (reasons are "" when fine)
+  fabos-voice doctor [--json] [--quiet]         check every stage of the pipeline for real, one OK/FAIL line each with a fix
+                                                hint; exit 0 when every required stage passes (--quiet: render TTS, do not play)
   fabos-voice wake on|off                       turn the always-on "Hey Fab" listener on or off (voice.enabled)
   fabos-voice chime                             play the listening chime (diagnostic)
 
 Speech-to-text: the agent's cloud endpoint when a cloud speech provider is configured and voice.offline_only is off,
 otherwise whisper.cpp with the tiny.en model shipped in /usr/share/fabos/voice. Text-to-speech: the agent's cloud
-voice (Indian English) when available, otherwise espeak-ng (a plain British-English voice, offline).
+voice (Indian English) when available, otherwise espeak-ng (a plain British-English voice, offline, tuned slower and louder).
 """
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
+import threading
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 for _cand in (os.path.join(HERE, "..", "lib", "fabos", "voice"), "/usr/lib/fabos/voice"):
@@ -26,24 +35,51 @@ for _cand in (os.path.join(HERE, "..", "lib", "fabos", "voice"), "/usr/lib/fabos
 import phrases as P  # noqa: E402
 import voicelib as V  # noqa: E402
 
+STT_BUDGET_S = V.WHISPER_TIMEOUT_S + 5      # after recording, the transcription gets at most this long
+
+
+def _watchdog(seconds, reason, code):
+    """A last line of defence against hanging: if the command is still running after `seconds`, say why and exit."""
+    def fire():
+        print(reason, file=sys.stderr, flush=True)
+        os._exit(code)
+    t = threading.Timer(seconds, fire)
+    t.daemon = True
+    t.start()
+    return t
+
 
 def cmd_listen_once(a):
     agent = V.Agent()
+    timeout = max(1.0, float(a.timeout))
+    wd = _watchdog(timeout + V.RECORD_GRACE_S + STT_BUDGET_S, "listen-once gave up: recording or transcription did not finish in time", V.EXIT_NOTHING_HEARD)
     try:
-        text, backend = V.listen_once(a.timeout, agent)
-    except V.NothingHeard:
-        print(P.NOT_HEARD, file=sys.stderr)
+        text, backend = V.listen_once(timeout, agent)
+    except V.NothingHeard as e:
+        print(e.reason or P.NOT_HEARD, file=sys.stderr)
         return V.EXIT_NOTHING_HEARD
     except V.NoBackend as e:
         print(str(e) or P.NO_STT, file=sys.stderr)
         return V.EXIT_NO_BACKEND
+    finally:
+        wd.cancel()
     print(text)
     if a.verbose:
-        print("backend: " + backend, file=sys.stderr)
+        cap = V.LAST_CAPTURE.get("cmd")
+        print("backend: %s; recorder: %s" % (backend, " ".join(cap) if cap else "n/a"), file=sys.stderr)
     return V.EXIT_OK
 
 
 def cmd_say(a):
+    signal.signal(signal.SIGTERM, lambda *_: (V.stop_player(), os._exit(V.EXIT_OK)))
+    if a.test:
+        try:
+            r = V.speak_test(V.Agent())
+        except V.NoBackend as e:
+            print(str(e) or P.NO_TTS, file=sys.stderr)
+            return V.EXIT_NO_BACKEND
+        print("backend: %s; player: %s; sink: %s" % (r["backend"], r["player"] or "n/a", r["sink"] or "default"))
+        return V.EXIT_OK
     text = " ".join(a.text).strip()
     if not text:
         return V.EXIT_OK
@@ -53,16 +89,28 @@ def cmd_say(a):
         print(str(e) or P.NO_TTS, file=sys.stderr)
         return V.EXIT_NO_BACKEND
     if a.verbose:
-        print("backend: " + backend, file=sys.stderr)
+        print("backend: %s; player: %s; sink: %s" % (backend, V.LAST_PLAYBACK.get("player") or "n/a", V.LAST_PLAYBACK.get("sink") or "default"), file=sys.stderr)
     return V.EXIT_OK
+
+
+CONTRACT_KEYS = ("wake", "listening", "stt", "tts", "mic", "mic_reason", "stt_reason", "tts_reason")
 
 
 def cmd_status(a):
     st = V.status(V.Agent())
     if not a.verbose:
-        st = {k: st[k] for k in ("wake", "listening", "stt", "tts", "mic")}
+        st = {k: st[k] for k in CONTRACT_KEYS}
     print(json.dumps(st))
     return V.EXIT_OK
+
+
+def cmd_doctor(a):
+    stages = V.doctor(V.Agent(), play=not a.quiet)
+    if a.json:
+        print(json.dumps({"ok": V.doctor_ok(stages), "stages": stages}))
+    else:
+        print(V.format_doctor(stages))
+    return V.EXIT_OK if V.doctor_ok(stages) else 1
 
 
 def cmd_wake(a):
@@ -92,16 +140,21 @@ def cmd_chime(a):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="fabos-voice", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-v", "--verbose", action="store_true", help="print which backend was used on stderr")
+    ap.add_argument("-v", "--verbose", action="store_true", help="print which backend / recorder / sink was used on stderr")
     sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("listen-once", help="record one utterance and print the text")
     p.add_argument("--timeout", type=float, default=V.DEFAULT_TIMEOUT_S, help="hard cap in seconds (default 10)")
     p.set_defaults(fn=cmd_listen_once)
-    p = sub.add_parser("say", help="speak text")
-    p.add_argument("text", nargs="+")
+    p = sub.add_parser("say", help="speak text (--test: a two-sentence sample, reporting backend and sink)")
+    p.add_argument("--test", action="store_true", help="speak the sample line and print the backend, player and sink used")
+    p.add_argument("text", nargs="*")
     p.set_defaults(fn=cmd_say)
     p = sub.add_parser("status", help="print the voice status as one JSON line")
     p.set_defaults(fn=cmd_status)
+    p = sub.add_parser("doctor", help="check every stage of the voice pipeline, one OK/FAIL line each")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--quiet", action="store_true", help="render the text-to-speech sample but do not play it")
+    p.set_defaults(fn=cmd_doctor)
     p = sub.add_parser("wake", help="turn the 'Hey Fab' listener on or off")
     p.add_argument("state", choices=["on", "off"])
     p.set_defaults(fn=cmd_wake)
@@ -111,6 +164,8 @@ def main(argv=None):
     if not a.cmd:
         ap.print_help()
         return 0
+    if a.cmd == "say" and not a.test and not a.text:
+        ap.error("say needs TEXT or --test")
     return a.fn(a)
 
 

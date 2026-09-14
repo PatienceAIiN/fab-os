@@ -2,9 +2,14 @@
 """Offline tests for fabos-voice (no microphone, no network, no GUI).
 
 Always: RMS voice-activity segmentation on synthetic audio, WAV round-trip, chime, phrase table covers every agent
-tool, yes/no intent mapping, banned-word hygiene, the CLI contract with nothing available (status JSON keys,
-listen-once -> exit 4, say -> exit 4), first-run notification, and the wake daemon's post-wake path end to end
-against fabos-agentd's FakeProvider with fake speak/listen hooks (narration, voice approval, denial, AI off).
+tool, yes/no intent mapping, banned-word hygiene, the CLI contract with nothing available (status JSON keys and
+reasons, listen-once -> exit 4, say -> exit 4, doctor -> FAIL lines with hints), the microphone decision logic on
+synthetic PCM through scripted recorders (all-zero stream -> exit 3 "muted or silent", tone burst -> a segment and
+a transcript, a recorder without data -> the next candidate, no audio session -> exit 4, the timeout + 3 s hard cap),
+playback rules (espeak-ng profile flags, a player that played is never followed by a second one, the machine-wide
+playback lock), the daemon's no-repeat rule over a scripted task (each line once across the polls), the spotter
+pause while speech plays, first-run notification, and the wake daemon's post-wake path end to end against
+fabos-agentd's FakeProvider with fake speak/listen hooks (narration, voice approval, denial, AI off).
 When the engines exist (Ubuntu 26.04 image / container): espeak-ng "hey fab" -> pocketsphinx keyphrase spotting
 (file and real-time stream, plus a negative control) and whisper.cpp transcription with the shipped tiny.en model.
 
@@ -12,6 +17,8 @@ When the engines exist (Ubuntu 26.04 image / container): espeak-ng "hey fab" -> 
     FABOS_VOICE_MODEL=/path/ggml-tiny.en.bin python3 tests/voice-test.py   # container with pocketsphinx/whisper.cpp
 """
 import base64
+import collections
+import contextlib
 import json
 import math
 import os
@@ -20,7 +27,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import types
 import unittest
 import urllib.request
 import wave
@@ -47,6 +56,7 @@ os.environ["FABOS_VOICE_STATE_DIR"] = os.path.join(TMP, "state")
 os.makedirs(os.environ["XDG_RUNTIME_DIR"], mode=0o700)
 os.environ.pop("FABOS_VOICE_FAKE_SPEAK", None)
 os.environ.pop("FABOS_VOICE_FAKE_LISTEN", None)
+os.environ["FABOS_VOICE_SESSION"] = "1"     # the recorder tests script their own microphone; pretend PipeWire is up
 
 sys.path.insert(0, LIB)
 import phrases as P  # noqa: E402
@@ -100,6 +110,17 @@ def espeak_16k(text, voice="en-us", speed=120):
 
 def silence(seconds):
     return b"\0" * (int(V.RATE * seconds) * 2)
+
+
+def with_candidates(cands, fn):
+    """Run fn() with the recorder candidates replaced by scripted commands (the default-source lookup is skipped too)."""
+    saved = V.capture_candidates, V.default_source
+    V.capture_candidates = lambda target=None: [list(c) for c in cands]
+    V.default_source = lambda: {"name": None, "description": None, "muted": None, "volume": None, "via": None, "reason": ""}
+    try:
+        return fn()
+    finally:
+        V.capture_candidates, V.default_source = saved
 
 
 # --------------------------------------------------------------------------- unit tests
@@ -164,6 +185,15 @@ class Transcripts(unittest.TestCase):
         self.assertEqual(V.spotter_command()[-2:], ["live", "-"])
 
 
+ZEROS_FOREVER = "import sys,time\nwhile True:\n sys.stdout.buffer.write(b'\\0'*3200); sys.stdout.buffer.flush(); time.sleep(0.1)"
+NOISE_FOREVER = ("import sys,time,random,struct\nr=random.Random(3)\n"
+                 "while True:\n sys.stdout.buffer.write(b''.join(struct.pack('<h', r.randint(-25,25)) for _ in range(1600))); sys.stdout.buffer.flush(); time.sleep(0.1)")
+TONE_THEN_SILENCE = ("import sys,time,math,struct\n"
+                     "def tone(n,a):\n return b''.join(struct.pack('<h', int(math.sin(2*math.pi*440*i/16000)*a)) for i in range(n))\n"
+                     "sys.stdout.buffer.write(tone(8000,20)); sys.stdout.buffer.write(tone(12800,3000)); sys.stdout.buffer.flush()\n"
+                     "while True:\n sys.stdout.buffer.write(b'\\0'*3200); sys.stdout.buffer.flush(); time.sleep(0.1)")
+
+
 class Recorder(unittest.TestCase):
     """record_utterance against a scripted 'microphone' (a python process writing raw s16 to stdout)."""
 
@@ -171,12 +201,7 @@ class Recorder(unittest.TestCase):
         return [sys.executable, "-c", script]
 
     def with_mic(self, cmd, fn):
-        orig = V.capture_command
-        V.capture_command = lambda: cmd
-        try:
-            return fn()
-        finally:
-            V.capture_command = orig
+        return with_candidates([cmd], fn)
 
     def test_capture_command_order(self):
         orig = V.which
@@ -219,6 +244,210 @@ class Recorder(unittest.TestCase):
         with self.assertRaises(V.NoBackend) as cm:
             self.with_mic(mic, lambda: V.record_utterance(2))
         self.assertIn("no such device", str(cm.exception))
+
+
+class MicDecision(unittest.TestCase):
+    """The listen-once decision logic on synthetic PCM (spec: silence -> exit 3 with the muted reason, tone burst -> a
+    segment; a recorder without data -> the next candidate; no audio session -> exit 4; never longer than timeout + 3 s)."""
+
+    def mic(self, script):
+        return [sys.executable, "-c", script]
+
+    def test_all_zero_stream_is_a_muted_microphone(self):
+        t0 = time.time()
+        with self.assertRaises(V.NothingHeard) as cm:
+            with_candidates([self.mic(ZEROS_FOREVER)], lambda: V.record_utterance(10))
+        self.assertEqual(cm.exception.reason, P.MIC_SILENT)
+        self.assertLess(time.time() - t0, 4.0, "a dead stream must be recognised after its first second, not at the timeout")
+
+    def test_tone_burst_is_one_segment(self):
+        pcm = with_candidates([self.mic(TONE_THEN_SILENCE)], lambda: V.record_utterance(10))
+        self.assertTrue(2.0 <= len(pcm) / 32000.0 <= 2.8, "segment length %.2f s" % (len(pcm) / 32000.0))
+        self.assertGreater(V.rms(pcm), 500)
+        self.assertEqual(V.LAST_CAPTURE["cmd"][0], sys.executable)
+
+    def test_faint_noise_only_is_nothing_heard_without_the_muted_reason(self):
+        t0 = time.time()
+        with self.assertRaises(V.NothingHeard) as cm:
+            with_candidates([self.mic(NOISE_FOREVER)], lambda: V.record_utterance(1.5))
+        self.assertEqual(cm.exception.reason, "")
+        self.assertLess(time.time() - t0, 1.5 + V.RECORD_GRACE_S)
+
+    def test_segmenter_dead_stream_flag(self):
+        seg = V.Segmenter()
+        for c in chunks(silence(1.0)):
+            seg.feed(c)
+        self.assertTrue(seg.dead_stream)
+        seg = V.Segmenter()
+        for c in chunks(silence(0.5)):
+            seg.feed(c)
+        self.assertFalse(seg.dead_stream, "half a second is too early to call the stream dead")
+        seg = V.Segmenter()
+        for c in chunks(pcm_noise(1.0)):
+            seg.feed(c)
+        self.assertFalse(seg.dead_stream)
+        seg = V.Segmenter()
+        for c in chunks(silence(0.5) + pcm_noise(0.5)):
+            seg.feed(c)
+        self.assertFalse(seg.dead_stream, "a stream that comes alive is not dead")
+
+    def test_recorder_without_data_hands_over_to_the_next_candidate(self):
+        dead = self.mic("import sys; sys.exit(0)")                              # ends at once without a byte
+        good = self.mic(TONE_THEN_SILENCE)
+        pcm = with_candidates([dead, good], lambda: V.record_utterance(10))
+        self.assertGreater(len(pcm), 32000)
+        self.assertEqual(V.LAST_CAPTURE["cmd"], good)
+        self.assertEqual(len(V.LAST_CAPTURE["tried"]), 1, V.LAST_CAPTURE["tried"])
+
+    def test_recorder_that_never_delivers_cannot_hang(self):
+        hang = self.mic("import time; time.sleep(60)")
+        t0 = time.time()
+        with self.assertRaises(V.NoBackend) as cm:
+            with_candidates([hang], lambda: V.record_utterance(2))
+        self.assertLess(time.time() - t0, 2 + V.RECORD_GRACE_S + 1.0)
+        self.assertIn("no audio within", str(cm.exception))
+
+    def test_no_audio_session_is_no_backend(self):
+        os.environ["FABOS_VOICE_SESSION"] = "0"
+        try:
+            with self.assertRaises(V.NoBackend) as cm:
+                with_candidates([self.mic(ZEROS_FOREVER)], lambda: V.record_utterance(2))
+            self.assertIn("No audio session", str(cm.exception))
+            self.assertFalse(V.playback_possible()[0])
+        finally:
+            os.environ["FABOS_VOICE_SESSION"] = "1"
+
+    def cli_env(self, recorder_script, whisper_text):
+        """A PATH with a scripted pw-record and whisper-cli, a fake model file and a forced audio session."""
+        fake = os.path.join(TMP, "fakebin-%d" % abs(hash(recorder_script + whisper_text)))
+        os.makedirs(fake, exist_ok=True)
+        with open(os.path.join(fake, "pw-record"), "w") as f:
+            f.write("#!%s\n%s\n" % (sys.executable, recorder_script))
+        with open(os.path.join(fake, "whisper-cli"), "w") as f:
+            f.write("#!/bin/sh\nprintf '%%s\\n' %s\n" % json.dumps(whisper_text))
+        for n in ("pw-record", "whisper-cli"):
+            os.chmod(os.path.join(fake, n), 0o755)
+        model = os.path.join(fake, "ggml-tiny.en.bin")
+        with open(model, "wb") as f:
+            f.write(b"\0" * 64)
+        run = os.path.join(TMP, "cli-run")
+        os.makedirs(run, exist_ok=True)
+        return dict(os.environ, PATH=fake + ":" + BIN, XDG_RUNTIME_DIR=run, FABOS_VOICE_MODEL=model, FABOS_VOICE_SESSION="1", FABOS_VOICE_MIC="1",
+                    FABOS_VOICE_STATE_DIR=os.path.join(TMP, "cli-state"))
+
+    def test_cli_silent_microphone_exits_3_with_the_reason_on_stderr(self):
+        t0 = time.time()
+        r = subprocess.run([sys.executable, CLI, "listen-once", "--timeout", "4"], env=self.cli_env(ZEROS_FOREVER, "should not be called"), capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("muted or silent", r.stderr)
+        self.assertLess(time.time() - t0, 8.0)
+
+    def test_cli_tone_burst_prints_the_transcript(self):
+        r = subprocess.run([sys.executable, CLI, "-v", "listen-once", "--timeout", "6"], env=self.cli_env(TONE_THEN_SILENCE, " Open my downloads folder."), capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.strip(), "Open my downloads folder.")
+        self.assertIn("backend: whisper.cpp", r.stderr)
+        self.assertIn("recorder: pw-record", r.stderr)
+
+    def test_capture_candidates_name_the_default_source(self):
+        orig = V.which
+        V.which = lambda *names: "/usr/bin/" + names[0] if names[0] in ("pw-record", "parec", "arecord") else None
+        try:
+            c = V.capture_candidates("alsa_input.usb-mic")
+            self.assertEqual([x[0] for x in c], ["pw-record", "pw-record", "parec", "arecord"])
+            self.assertIn("--target", c[1])
+            self.assertEqual(c[1][c[1].index("--target") + 1], "alsa_input.usb-mic")
+            self.assertIn("--device=alsa_input.usb-mic", c[2])
+            c = V.capture_candidates()
+            self.assertEqual([x[0] for x in c], ["pw-record", "parec", "arecord"])
+            self.assertIn("--device=@DEFAULT_SOURCE@", c[1])
+        finally:
+            V.which = orig
+
+
+class Playback(unittest.TestCase):
+    """Text-to-speech rules: the tuned espeak-ng profile, one player per utterance, one utterance at a time."""
+
+    def test_espeak_profile_flags(self):
+        cmd = V.espeak_command("hello there", "/tmp/x.wav")
+        self.assertEqual(cmd[0], "espeak-ng")
+        for flag, val in (("-v", "en-gb-x-rp"), ("-s", "150"), ("-p", "45"), ("-a", "175"), ("-g", "6")):
+            self.assertIn(flag, cmd)
+            self.assertEqual(cmd[cmd.index(flag) + 1], val, flag)
+        self.assertLessEqual(int(cmd[cmd.index("-a") + 1]), 200)      # espeak-ng: amplitude 0..200
+        self.assertEqual(cmd[-4:], ["-w", "/tmp/x.wav", "--", "hello there"])
+        self.assertNotIn("-w", V.espeak_command("x"))
+
+    @unittest.skipUnless(shutil.which("espeak-ng"), "espeak-ng not installed")
+    def test_rendered_sample_is_louder_than_stock(self):
+        loud = os.path.join(TMP, "loud.wav")
+        V.render_espeak(P.SAY_TEST, loud)
+        params, pcm = V.read_wav(loud)
+        self.assertEqual(params[:2], (1, 2))
+        self.assertGreater(V.wav_seconds(loud), 3.0)
+        stock = os.path.join(TMP, "stock.wav")
+        subprocess.run(["espeak-ng", "-v", "en-gb-x-rp", "-w", stock, "--", P.SAY_TEST], check=True, capture_output=True, timeout=60)
+        self.assertGreater(V.rms(pcm), V.rms(V.read_wav(stock)[1]) * 1.3, "the -a 175 profile must be clearly louder than the default")
+
+    def test_player_that_played_is_never_followed_by_another(self):
+        wav = V.write_wav(os.path.join(TMP, "one-second.wav"), pcm_tone(1.0))
+        marker = os.path.join(TMP, "second-player-ran")
+        tearing_down = [sys.executable, "-c", "import time,sys; time.sleep(1.0); sys.exit(1)"]     # played, then exited non-zero
+        second = [sys.executable, "-c", "open(%r, 'w').write('x')" % marker]
+        saved = V.player_candidates
+        V.player_candidates = lambda path, sink=None: [tearing_down, second]
+        try:
+            self.assertTrue(V.play_file(wav))
+        finally:
+            V.player_candidates = saved
+        self.assertFalse(os.path.exists(marker), "the second player must not replay audio the first one already played")
+        self.assertEqual(V.LAST_PLAYBACK["player"], sys.executable)
+
+    def test_player_failing_at_once_hands_over(self):
+        wav = V.write_wav(os.path.join(TMP, "one-second-b.wav"), pcm_tone(1.0))
+        marker = os.path.join(TMP, "fallback-player-ran")
+        broken = [sys.executable, "-c", "import sys; sys.stderr.write('Host is down'); sys.exit(1)"]
+        good = [sys.executable, "-c", "open(%r, 'w').write('x')" % marker]
+        saved = V.player_candidates
+        V.player_candidates = lambda path, sink=None: [broken, good]
+        try:
+            self.assertTrue(V.play_file(wav))
+        finally:
+            V.player_candidates = saved
+        self.assertTrue(os.path.exists(marker))
+
+    def test_playback_lock_serialises_and_gives_up_after_max_wait(self):
+        got = []
+        with V.playback_lock() as mine:
+            self.assertTrue(mine)
+            t0 = time.time()
+            t = threading.Thread(target=lambda: got.append(V.playback_lock(max_wait=0.4).__enter__()))
+            t.start()
+            t.join(5)
+            self.assertEqual(got, [False], "a second speaker must wait, then give up after max_wait")
+            self.assertGreaterEqual(time.time() - t0, 0.35)
+        with V.playback_lock(max_wait=0.4) as again:
+            self.assertTrue(again, "released lock is free again")
+
+    def test_wait_for_silence_respects_another_speaker(self):
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            V.ensure_run_dir()
+            with open(os.path.join(V.RUN_DIR, "speaking.lock"), "w") as f:
+                f.write(str(other.pid))
+            self.assertTrue(V.lock_active("speaking"))
+            t0 = time.time()
+            self.assertFalse(V.wait_for_silence(max_wait=0.5))
+            self.assertGreaterEqual(time.time() - t0, 0.45)
+            other.kill()
+            other.wait(5)
+            self.assertTrue(V.wait_for_silence(max_wait=0.5))
+        finally:
+            with contextlib.suppress(Exception):
+                other.kill()
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(V.RUN_DIR, "speaking.lock"))
 
 
 class Wav(unittest.TestCase):
@@ -392,7 +621,7 @@ class CLIContract(unittest.TestCase):
         run = os.path.join(TMP, "empty-run")
         os.makedirs(run, exist_ok=True)
         return dict(os.environ, PATH=BIN, XDG_RUNTIME_DIR=run, FABOS_VOICE_MODEL="/nonexistent/ggml-tiny.en.bin", FABOS_VOICE_MIC="0",
-                    FABOS_VOICE_STATE_DIR=os.path.join(TMP, "empty-state"))
+                    FABOS_VOICE_SESSION="0", FABOS_VOICE_STATE_DIR=os.path.join(TMP, "empty-state"))
 
     def run_cli(self, *args):
         return subprocess.run([sys.executable, CLI] + list(args), env=self.env(), capture_output=True, text=True, timeout=60)
@@ -401,9 +630,61 @@ class CLIContract(unittest.TestCase):
         r = self.run_cli("status")
         self.assertEqual(r.returncode, 0, r.stderr)
         st = json.loads(r.stdout.strip())
-        self.assertEqual(set(st), {"wake", "listening", "stt", "tts", "mic"})
-        self.assertEqual(st, {"wake": False, "listening": False, "stt": "none", "tts": "none", "mic": False})
+        self.assertEqual(set(st), {"wake", "listening", "stt", "tts", "mic", "mic_reason", "stt_reason", "tts_reason"})
+        self.assertEqual({k: st[k] for k in ("wake", "listening", "stt", "tts", "mic")}, {"wake": False, "listening": False, "stt": "none", "tts": "none", "mic": False})
         self.assertEqual(len(r.stdout.strip().splitlines()), 1)
+        # every unavailable piece says why
+        self.assertIn("No audio session", st["mic_reason"])
+        self.assertIn("not available", st["stt_reason"])
+        self.assertIn("No audio session", st["tts_reason"])
+
+    def test_status_reasons_are_empty_when_a_piece_works(self):
+        saved = V.mic_state, V.stt_backends, V.tts_backends
+        V.mic_state = lambda session=None: (True, "", {"name": "mic", "muted": False})
+        V.stt_backends = lambda agent, settings=None: ["whisper.cpp"]
+        V.tts_backends = lambda agent, settings=None, session=None: ["espeak-ng"]
+        try:
+            st = V.status(V.Agent(run_dir=os.path.join(TMP, "no-agent")))
+        finally:
+            V.mic_state, V.stt_backends, V.tts_backends = saved
+        self.assertEqual((st["mic"], st["stt"], st["tts"]), (True, "whisper.cpp", "espeak-ng"))
+        self.assertEqual((st["mic_reason"], st["stt_reason"], st["tts_reason"]), ("", "", ""))
+
+    def test_muted_microphone_is_present_but_says_so(self):
+        saved = V.mic_present, V.default_source
+        V.mic_present = lambda: True
+        V.default_source = lambda: {"name": "alsa_input.x", "description": "Mic", "muted": True, "volume": 1.0, "via": "test", "reason": ""}
+        try:
+            ok, why, src = V.mic_state({"ok": True, "server": "PipeWire", "version": "", "via": "forced", "reason": ""})
+        finally:
+            V.mic_present, V.default_source = saved
+        self.assertTrue(ok)
+        self.assertEqual(why, P.MIC_MUTED)
+
+    def test_doctor_reports_every_stage_with_hints_and_fails(self):
+        r = self.run_cli("doctor", "--quiet")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        lines = r.stdout.splitlines()
+        for stage in V.DOCTOR_STAGES:
+            self.assertTrue(any(l.split()[1] == stage for l in lines if l.startswith(("OK", "FAIL"))), "no line for stage " + stage + "\n" + r.stdout)
+        self.assertTrue(all(l.startswith(("OK ", "FAIL ", "   ")) or "required stages" in l for l in lines), r.stdout)
+        self.assertIn("fix:", r.stdout)
+        self.assertIn("No audio session", r.stdout)
+        r = self.run_cli("doctor", "--quiet", "--json")
+        self.assertEqual(r.returncode, 1)
+        d = json.loads(r.stdout)
+        self.assertFalse(d["ok"])
+        self.assertEqual([s["stage"] for s in d["stages"]], list(V.DOCTOR_STAGES))
+        self.assertEqual({s["stage"] for s in d["stages"] if not s["required"]}, set(V.DOCTOR_OPTIONAL))
+        for s in d["stages"]:
+            if not s["ok"]:
+                self.assertTrue(s["hint"], "no hint for failed stage " + s["stage"])
+        self.assertFalse(next(s for s in d["stages"] if s["stage"] == "audio-session")["ok"])
+
+    def test_say_test_exit_4_without_tts(self):
+        r = self.run_cli("say", "--test")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("No audio session", r.stderr)
 
     def test_listen_once_exit_4_without_backend(self):
         r = self.run_cli("listen-once", "--timeout", "2")
@@ -422,7 +703,7 @@ class CLIContract(unittest.TestCase):
     def test_help(self):
         r = self.run_cli()
         self.assertEqual(r.returncode, 0)
-        for cmd in ("listen-once", "say", "status", "wake"):
+        for cmd in ("listen-once", "say", "status", "doctor", "wake"):
             self.assertIn(cmd, r.stdout)
 
 
@@ -476,6 +757,124 @@ class DaemonUnit(unittest.TestCase):
         d._follow = lambda tid, state: (seen.append(d.interrupt), "done")[1]
         d.follow(1)
         self.assertEqual(seen, [None])
+
+    def scripted_daemon(self, polls, spoken):
+        """A Voiced whose agent returns the scripted task JSONs one per poll (the last one repeats), whose speech is
+        collected in `spoken`, and which hears nothing when it listens."""
+        import fabos_voiced as D
+        D.POLL_S = 0.02
+        d = D.Voiced()
+        d.settings = dict(V.DEFAULT_SETTINGS, mode="auto", **{"ai.enabled": "true", "_agent_up": True})
+        d.settings_ts = time.time() + 3600
+        d.agent = types.SimpleNamespace(get=lambda path, timeout=None: polls.pop(0) if len(polls) > 1 else polls[0],
+                                        post=lambda path, body, timeout=None: {"ok": True},
+                                        settings=lambda max_age=0.0: d.settings, status=lambda: None)
+        d.listen = lambda *a, **k: None
+        d.notify = lambda *a, **k: None
+        return d
+
+    def test_each_line_is_spoken_once_across_the_polls(self):
+        """Scripted task over six polls: a step appears (narration), finishes (done-line), a step whose done-line equals
+        its narration, an approval the agent also narrates as 'This needs your permission…', the same waiting poll
+        again, then the final reply. Every sentence must be spoken exactly once, and a second look at the finished task
+        within 30 s adds nothing."""
+        import fabos_voiced as D
+        step1 = {"id": 1, "kind": "tool_call", "name": "open_app", "input": json.dumps({"app": "dolphin"}), "narration": "Opening Fab Files for you now.", "output": None, "narration_done": None}
+        step1_done = dict(step1, output=json.dumps({"ok": True}), narration_done="Done, I have opened Fab Files for you.")
+        step2 = {"id": 2, "kind": "tool_call", "name": "schedule_watch", "input": "{}", "narration": "The watch is set.", "output": "{}", "narration_done": "The watch is set."}
+        step3 = {"id": 3, "kind": "tool_call", "name": "run_shell", "input": json.dumps({"command": "ls"}), "narration": "This needs your permission: run a command. Shall I go ahead?", "output": None, "narration_done": None}
+        step3_done = dict(step3, narration="Running a command for you now.", output=json.dumps({"stdout": "x"}), narration_done="That command finished.")
+        approval = {"id": 7, "status": "pending", "tool": "run_shell", "input": json.dumps({"command": "ls"}), "risk": "MEDIUM", "reason": "shell"}
+        waiting = {"id": 9, "status": "waiting_approval", "steps": [step1_done, step2, step3], "approvals": [approval]}
+        done = {"id": 9, "status": "done", "steps": [step1_done, step2, step3_done], "approvals": [dict(approval, status="approved")], "result": "All done. Your files are open and the watch is set."}
+        polls = [{"id": 9, "status": "running", "steps": [step1]},
+                 {"id": 9, "status": "running", "steps": [step1_done]},
+                 {"id": 9, "status": "running", "steps": [step1_done, step2]},
+                 waiting, dict(waiting), done]
+        spoken = []
+        saved_speak = V.speak
+        V.speak = lambda text, agent=None, settings=None: (spoken.append(text), "fake")[1]
+        if os.path.exists(V.SPOKEN_LOG):
+            os.remove(V.SPOKEN_LOG)
+        try:
+            d = self.scripted_daemon(polls, spoken)
+            state = {"seen": {}, "approvals": set(), "questions": set(), "spoken": set(), "started": time.time()}
+            self.assertEqual(d._follow(9, state), "done")
+            counts = collections.Counter(spoken)
+            self.assertEqual(max(counts.values()), 1, "repeated lines: %s" % [t for t, n in counts.items() if n > 1])
+            expected = ["Opening Fab Files for you now.", "Done, I have opened Fab Files for you.", "The watch is set.",
+                        "This needs your permission: run a command. Shall I go ahead?", P.WAIT_ON_SCREEN, "That command finished.",
+                        "All done. Your files are open and the watch is set."]
+            self.assertEqual(spoken, expected)
+            self.assertEqual(sum(1 for t in spoken if t.startswith("This needs your permission")), 1)
+            # the finished task looked at again with a fresh follow state within 30 s: nothing already said is said twice
+            # (the one new line is step 3's restored narration, which the first follow rightly skipped while it read
+            # "This needs your permission…" — it was never spoken, so it is not a repeat)
+            before = len(spoken)
+            d._follow(9, {"seen": {}, "approvals": set(), "questions": set(), "spoken": set(), "started": time.time()})
+            again = spoken[before:]
+            self.assertFalse(set(again) & set(expected), "a second follow of the same task repeated: %s" % sorted(set(again) & set(expected)))
+            self.assertLessEqual(again, ["Running a command for you now."])
+            self.assertEqual(max(collections.Counter(spoken).values()), 1)
+            with open(V.SPOKEN_LOG) as fh:
+                logged = [l.split("\t", 2)[2] for l in fh.read().splitlines()]
+            self.assertEqual(logged, spoken)
+            self.assertEqual(len(set(logged)), len(logged), "spoken.log has a repeated line")
+        finally:
+            V.speak = saved_speak
+            D.POLL_S = 1.5
+
+    def test_prompts_and_acknowledgements_are_never_deduplicated(self):
+        """Two approvals with the same wording in a row must both be asked; 'Okay, going ahead.' after each must be heard."""
+        import fabos_voiced as D
+        spoken = []
+        saved_speak = V.speak
+        V.speak = lambda text, agent=None, settings=None: (spoken.append(text), "fake")[1]
+        try:
+            d = self.scripted_daemon([{"id": 1, "status": "done", "steps": []}], spoken)
+            state = {"seen": {}, "approvals": set(), "questions": set(), "spoken": set(), "started": time.time()}
+            for aid in (11, 12):
+                self.assertTrue(d.speak(P.PERMISSION.format(summary="run a command"), "approval", aid, state))
+                self.assertTrue(d.speak(P.APPROVED, "ack"))
+            self.assertFalse(d.speak(P.PERMISSION.format(summary="run a command"), "approval", 11, state), "the same approval id is asked once")
+            self.assertTrue(d.speak("Sure, doing it now.", "ack"))
+            self.assertTrue(d.speak("Sure, doing it now.", "ack"))
+            self.assertTrue(d.speak("Running a command for you now.", "narration", 1, state))
+            self.assertFalse(d.speak("Running a command for you now.", "narration", 2, state), "same text within 30 s is not repeated")
+            self.assertEqual(spoken.count(P.APPROVED), 2)
+            self.assertEqual(spoken.count("Sure, doing it now."), 2)
+        finally:
+            V.speak = saved_speak
+
+    def test_spotter_is_fed_nothing_while_speech_plays(self):
+        """The pump drops microphone audio while the 'speaking' lock is held (ours or Fab AI Controls'), so the wake
+        spotter cannot hear the loudspeaker."""
+        import io
+        import fabos_voiced as D
+
+        class Sink:
+            def __init__(self):
+                self.data = b""
+
+            def write(self, b):
+                self.data += b
+
+            def flush(self):
+                pass
+
+            def close(self):
+                pass
+
+        pcm = pcm_noise(1.0)
+        d = D.Voiced()
+        quiet = Sink()
+        with V.lock("speaking"):
+            d._pump(types.SimpleNamespace(stdout=io.BytesIO(pcm)), types.SimpleNamespace(stdin=quiet))
+        self.assertEqual(quiet.data, b"", "audio must not reach pocketsphinx while speech plays")
+        loud = Sink()
+        d._pump(types.SimpleNamespace(stdout=io.BytesIO(pcm)), types.SimpleNamespace(stdin=loud))
+        self.assertEqual(loud.data, pcm)
+        self.assertEqual(b"".join(d.ring), pcm)
 
     def test_sleep_wakes_on_interrupt_and_on_stop(self):
         import threading
@@ -786,6 +1185,31 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(len(d._warned), 1)                      # repeats are logged once, not per death
         d.spot_started_at = time.time() - D.SPOTTER_HEALTHY_S - 1  # a spotter that ran for a while resets the backoff
         self.assertEqual(d.spotter_died(), 3)
+        # every recorder failure moves the spotter one step down the recorder ladder (explicit target, parec, arecord)
+        self.assertEqual(d.capture_attempt, 7)
+        saved = V.which, V.default_source
+        V.which = lambda *names: "/usr/bin/" + names[0] if names[0] in ("pw-record", "parec") else None
+        V.default_source = lambda: {"name": "alsa_input.test"}
+        try:
+            d.capture_attempt = 0
+            self.assertEqual(d.capture_cmd()[0], "pw-record")
+            self.assertNotIn("--target", d.capture_cmd())
+            d.capture_attempt = 1
+            self.assertIn("--target", d.capture_cmd())
+            self.assertIn("alsa_input.test", d.capture_cmd())
+            d.capture_attempt = 2
+            self.assertEqual(d.capture_cmd()[0], "parec")
+            d.capture_attempt = 3                                 # wraps around to the plain default
+            self.assertEqual(d.capture_cmd()[0], "pw-record")
+        finally:
+            V.which, V.default_source = saved
+        # a recorder that ended cleanly (rc 0 / killed by us) does not move the ladder
+        class Clean:
+            returncode = 0
+        d.rec = Clean()
+        d.capture_attempt = 0
+        d.spotter_died()
+        self.assertEqual(d.capture_attempt, 0)
 
     def test_5_status_sees_agent_and_wake_setting(self):
         self.api("PUT", "/settings", {"voice.enabled": "false"})

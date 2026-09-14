@@ -6,6 +6,11 @@ Loop:  settings (GET /settings, refreshed every 30 s)  ->  is voice.enabled and 
        -> on the wake phrase: chime, "Listening…" notification, record + transcribe like `fabos-voice listen-once`,
           POST /tasks to the agent, then follow the task: speak every tool step's narration, ask for approvals
           by voice (yes/no), relay questions, speak the final reply or the error. Never listens while speaking.
+       -> every sentence at most once: per task a (kind, step id, text) triple is spoken a single time — the narration
+          when the step appears, its done-line once when it finishes (never when it equals the narration), the
+          approval question once per approval id, the final reply once — and any narration text already spoken in the
+          last 30 s is skipped. Speech is queued behind whatever Fab AI Controls is saying (the shared 'speaking' lock,
+          waited for up to 20 s) and the microphone feed to the spotter is dropped while anything speaks.
        -> while a task is followed the spotter keeps running in the background (PipeWire/Pulse only): "Hey Fab" then
           "stop" cancels the task, any other request starts a new task (the old one carries on in Fab AI Controls),
           silence resumes the narration.
@@ -48,8 +53,11 @@ RING_SECONDS = 6           # audio kept in memory (192 KB) for the second look a
                            # request: pocketsphinx reports the phrase at the END of the utterance, so the clip must hold "hey fab"
                            # plus up to ~4.5 s of request (measured in the Ubuntu 26.04 container: a 5 s "hey fab, write a note
                            # that says…" fell off a 5 s ring and was rejected, 6 s kept it); never written to disk unless verifying
+REPEAT_WINDOW_S = 30       # the same narration text is not spoken twice within this window
+NO_DEDUPE_KINDS = ("approval", "question", "prompt", "ack")   # things the user must answer, or answers to what they said
+SPOKEN_LOG_MAX = 256 * 1024
 FIRST_RUN_MARKER = os.path.join(V.STATE_DIR, "first-run-done")
-DICT = "/usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict"
+DICT = V.DICT_PATH
 TERMINAL = ("done", "failed", "cancelled")
 
 
@@ -77,6 +85,8 @@ class Voiced:
         self.spotting_allowed = False   # only the real main loop (run) may open the microphone; --handle never does
         self.interrupt = None           # wake clip caught by the background spotter while a task is followed
         self.bg = None
+        self.recent = {}                # text -> when we last spoke it (REPEAT_WINDOW_S)
+        self.capture_attempt = 0        # 0 = the plain default recorder; after a recorder failure, the explicit candidates in turn
 
     # ------------------------------------------------------------------ settings
     def refresh_settings(self, force=False):
@@ -133,21 +143,57 @@ class Voiced:
         except Exception:
             pass
 
-    def speak(self, text):
+    def speak(self, text, kind="line", key=None, state=None):
+        """Say `text` once. With a follow `state`, the (kind, key, text) triple is spoken at most once for that task;
+        unless `kind` is a prompt the user must answer or an acknowledgement of their answer (NO_DEDUPE_KINDS), a text
+        spoken in the last REPEAT_WINDOW_S is skipped too. Returns True when something was said (or shown)."""
         text = " ".join((text or "").split())
         if not text:
-            return
+            return False
+        now = time.time()
+        triple = (kind, key, text)
+        if state is not None and triple in state["spoken"]:
+            log("skip (already spoken for this task, %s %s): %s" % (kind, key, text))
+            return False
+        if kind not in NO_DEDUPE_KINDS:
+            last = self.recent.get(text)
+            if last is not None and now - last < REPEAT_WINDOW_S:
+                log("skip (spoken %.0f s ago): %s" % (now - last, text))
+                return False
+        if state is not None:
+            state["spoken"].add(triple)
+        self.recent = {t: ts for t, ts in self.recent.items() if now - ts < REPEAT_WINDOW_S}
+        self.recent[text] = now
         V.write_state(speaking=True)
         try:
-            V.speak(text, self.agent, self.settings)
+            backend = V.speak(text, self.agent, self.settings)
+            log("spoke [%s] (%s via %s -> %s): %s" % (kind, backend, V.LAST_PLAYBACK.get("player") or "-", V.LAST_PLAYBACK.get("sink") or "default sink", text))
+            self.record_spoken(text, backend)
         except V.NoBackend as e:
             self.warn_once("no text-to-speech (%s); showing replies as notifications instead" % e)
             self.notify(APP, text, 8000)
+            self.record_spoken(text, "notification")
         except Exception as e:  # never let a speech hiccup kill the listener
             log("speak failed:", e)
         finally:
             V.write_state(speaking=False)
             self.last_spoke_end = time.time()
+        return True
+
+    def record_spoken(self, text, backend):
+        """Append one line per utterance to $XDG_STATE_HOME/fabos-voice/spoken.log (tests assert no line repeats)."""
+        try:
+            os.makedirs(V.STATE_DIR, exist_ok=True)
+            p = V.SPOKEN_LOG
+            if os.path.exists(p) and os.path.getsize(p) > SPOKEN_LOG_MAX:
+                with open(p, errors="replace") as f:
+                    tail = f.read()[-SPOKEN_LOG_MAX // 2:]
+                with open(p, "w") as f:
+                    f.write(tail[tail.find("\n") + 1:])
+            with open(p, "a") as f:
+                f.write("%s\t%s\t%s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), backend, text))
+        except OSError as e:
+            self.warn_once("cannot write %s: %s" % (V.SPOKEN_LOG, e))
 
     def own_voice(self):
         """True while we (or another Fab UI) speak, and for a moment after: the spotter must not wake on itself."""
@@ -183,8 +229,19 @@ class Voiced:
             log("first-run marker:", e)
 
     # ------------------------------------------------------------------ the spotter pipeline
+    def capture_cmd(self):
+        """The recorder for the spotter: the plain default (pw-record, automatic target); once the recorder itself has
+        failed, the explicit candidates in turn — pw-record --target <default source>, parec --device, arecord — the
+        same ladder `fabos-voice listen-once` climbs, so a session whose automatic target delivers nothing still wakes."""
+        if self.capture_attempt == 0:
+            return V.capture_command()
+        cands = V.capture_candidates(V.default_source().get("name"))
+        if not cands:
+            return None
+        return cands[self.capture_attempt % len(cands)]
+
     def start_spotter(self):
-        cmd = V.capture_command()
+        cmd = self.capture_cmd()
         if cmd is None:
             self.warn_once("no recorder (pw-record / parec / arecord) installed")
             return False
@@ -206,15 +263,27 @@ class Voiced:
         self.active_threshold = threshold
         self.spot_started_at = time.time()
         V.write_state(wake=True, listening=False, mic=True, wake_word=wake)
-        log("listening for '%s' (threshold %s) via %s" % (wake, threshold, cmd[0]))
+        log("listening for '%s' (threshold %s) via %s" % (wake, threshold, " ".join(a for a in cmd if a != "-")))
         return True
 
     def _pump(self, rec, spot):
+        """recorder -> ring buffer -> pocketsphinx. While anything speaks (our own 'speaking' lock or Fab AI Controls'
+        `fabos-voice say`) the audio is dropped instead of fed, so the spotter never hears the loudspeaker; that stretch
+        does not enter the ring either."""
+        paused = False
         try:
             while True:
                 chunk = rec.stdout.read(V.CHUNK_BYTES)
                 if not chunk:
                     break
+                if V.lock_active("speaking"):
+                    if not paused:
+                        paused = True
+                        log("speech playing; spotter paused")
+                    continue
+                if paused:
+                    paused = False
+                    log("speech over; spotter resumed")
                 self.ring.append(chunk)
                 spot.stdin.write(chunk)
                 spot.stdin.flush()
@@ -251,6 +320,8 @@ class Voiced:
         if time.time() - self.spot_started_at > SPOTTER_HEALTHY_S:
             self.spot_failures = 0
         self.spot_failures += 1
+        if self.rec.returncode not in (None, 0):
+            self.capture_attempt += 1        # the recorder itself failed: next time name the default source, then parec, arecord
         msg = "spotter stopped (pocketsphinx rc=%s, recorder rc=%s) %s" % (self.spot.returncode, self.rec.returncode, err.decode(errors="replace").strip())
         delay = min(SPOTTER_BACKOFF_S * 2 ** (self.spot_failures - 1), SPOTTER_BACKOFF_MAX_S)
         if self.spot_failures == 1:
@@ -319,11 +390,11 @@ class Voiced:
                 log("no speech after the chime; using the words that followed the wake phrase: %r" % tail)
                 text = tail
         if not text:
-            self.speak(P.NOT_HEARD)
+            self.speak(P.NOT_HEARD, "prompt")
             self.notify(APP, P.LISTENING_AGAIN, 8000)
             text = self.listen(V.DEFAULT_TIMEOUT_S, start_timeout=WAKE_START_S)
         if not text:
-            self.speak(P.NOT_HEARD_FINAL)
+            self.speak(P.NOT_HEARD_FINAL, "prompt")
             return
         self.handle_text(text)
 
@@ -342,7 +413,7 @@ class Voiced:
             self.speak(P.ERROR.format(reason=P.error_reason((r or {}).get("error") if isinstance(r, dict) else str(r))))
             return
         if self.flag("voice.speak_replies"):
-            self.speak(P.STARTED)
+            self.speak(P.STARTED, "ack")
         self.follow(int(r["id"]))
 
     # ------------------------------------------------------------------ "Hey Fab" while a task runs
@@ -385,7 +456,7 @@ class Voiced:
     def follow(self, tid):
         """Follow a task to its end, narrating. "Hey Fab" meanwhile interrupts: "stop" cancels the task, anything else
         becomes a new request (the old task carries on, visible in Fab AI Controls), silence resumes the narration."""
-        state = {"seen": {}, "approvals": set(), "questions": set(), "started": time.time()}
+        state = {"seen": {}, "approvals": set(), "questions": set(), "spoken": set(), "started": time.time()}
         while not self.stop:
             self.interrupt = None        # a wake handled on the previous stretch must not fire again if the spotter cannot restart
             bg = self.bg_spotter_start()
@@ -400,12 +471,12 @@ class Voiced:
             self.notify(APP, P.LISTENING, 8000)
             text = self.listen(V.DEFAULT_TIMEOUT_S, start_timeout=WAKE_START_S)
             if not text:
-                self.speak(P.RESUMING)
+                self.speak(P.RESUMING, "ack")
                 continue
             if P.is_stop(text):
                 self.cancel(tid)
                 return
-            self.speak(P.LEFT_RUNNING)
+            self.speak(P.LEFT_RUNNING, "ack")
             self.handle_text(text)
             return
 
@@ -416,7 +487,7 @@ class Voiced:
             self.speak(P.AGENT_DOWN)
             return
         if isinstance(r, dict) and r.get("status") == "cancelled":
-            self.speak(P.CANCELLED)
+            self.speak(P.CANCELLED, "ack")
         else:
             self.speak(P.ERROR.format(reason=P.error_reason((r or {}).get("error", "") if isinstance(r, dict) else str(r))))
 
@@ -440,32 +511,33 @@ class Voiced:
                     continue
                 sid = s.get("id")
                 has_out = bool(s.get("output"))
+                # The agent replaces a waiting step's narration with its own permission question; that question is
+                # asked once, by ask_approval() below, so it is not read out again here as if it were a narration.
+                line = s.get("narration") or P.narration(s.get("name"), s.get("input"))
+                done_line = s.get("narration_done") or ""
                 if sid not in seen:
                     seen[sid] = has_out
-                    # The agent replaces a waiting step's narration with its own permission question; that question is
-                    # asked once, by ask_approval() below, so it is not read out again here as if it were a narration.
-                    line = s.get("narration") or P.narration(s.get("name"), s.get("input"))
                     if speak_replies and line and not line.startswith("This needs your permission"):
-                        self.speak(line)
-                    if has_out and speak_replies and s.get("narration_done"):
-                        self.speak(s["narration_done"])
+                        self.speak(line, "narration", sid, state)
+                    if has_out and speak_replies and done_line and done_line != line:
+                        self.speak(done_line, "done", sid, state)
                 elif has_out and not seen[sid]:
                     seen[sid] = True
-                    if speak_replies and s.get("narration_done"):
-                        self.speak(s["narration_done"])
+                    if speak_replies and done_line and done_line != line:
+                        self.speak(done_line, "done", sid, state)
             st = task["status"]
             if st == "waiting_approval":
                 for a in task.get("approvals") or []:
                     if a.get("status") == "pending" and a["id"] not in handled_approvals:
                         handled_approvals.add(a["id"])
-                        self.ask_approval(a)
+                        self.ask_approval(a, state)
             elif st == "waiting_user":
                 for q in task.get("questions") or []:
                     if not q.get("answer") and q["id"] not in handled_questions:
                         handled_questions.add(q["id"])
-                        self.ask_question(tid, q)
+                        self.ask_question(tid, q, state)
             elif st in TERMINAL:
-                self.finish(task)
+                self.finish(task, state)
                 return "done"
             if time.time() - state["started"] > FOLLOW_MAX_S:
                 self.speak(P.TIMED_OUT)
@@ -473,20 +545,21 @@ class Voiced:
             self._sleep(POLL_S, until=lambda: self.interrupt is not None)
         return "stopped"
 
-    def ask_approval(self, a):
-        """Ask by voice and listen for a short answer. Only an answer-shaped reply counts (phrases.intent); for a
-        CRITICAL step or anything run as administrator only a clear yes-word up front approves — everything else
-        is left to the approval card on screen."""
+    def ask_approval(self, a, state=None):
+        """Ask by voice (once per approval id) and listen for a short answer. Only an answer-shaped reply counts
+        (phrases.intent); for a CRITICAL step or anything run as administrator only a clear yes-word up front approves —
+        everything else is left to the approval card on screen."""
         inp = P._as_dict(a.get("input"))
         strict = str(a.get("risk") or "").upper() == "CRITICAL" or (a.get("tool") == "run_shell" and bool(inp.get("as_root")))
         summary = P.approval_summary(a.get("tool"), inp, a.get("reason") or "", raw=self.flag("ui.show_raw"))
-        self.speak(P.PERMISSION.format(summary=summary))
+        if not self.speak(P.PERMISSION.format(summary=summary), "approval", a.get("id"), state):
+            return                       # already asked for this approval: the decision is on screen now
         answer = self.listen(APPROVAL_LISTEN_S, chime=True)
         decision = P.intent(answer, strict=strict)
         if answer:
             log("approval answer %r -> %s%s" % (answer, decision, " (strict)" if strict else ""))
         if decision is None:
-            self.speak(P.WAIT_ON_SCREEN)
+            self.speak(P.WAIT_ON_SCREEN, "ack")
             return
         try:
             r = self.agent.post("/approvals/%d" % a["id"], {"decision": "approved" if decision == "approve" else "denied"})
@@ -494,32 +567,35 @@ class Voiced:
             self.speak(P.AGENT_DOWN)
             return
         if isinstance(r, dict) and r.get("ok"):
-            self.speak(P.APPROVED if decision == "approve" else P.DENIED)
+            self.speak(P.APPROVED if decision == "approve" else P.DENIED, "ack")
         else:
-            self.speak(P.WAIT_ON_SCREEN)
+            self.speak(P.WAIT_ON_SCREEN, "ack")
 
-    def ask_question(self, tid, q):
-        self.speak(P.QUESTION.format(question=P.shorten(q.get("question") or "", full=True)))
+    def ask_question(self, tid, q, state=None):
+        if not self.speak(P.QUESTION.format(question=P.shorten(q.get("question") or "", full=True)), "question", q.get("id"), state):
+            return
         answer = self.listen(ANSWER_LISTEN_S, chime=True)
         if not answer:
-            self.speak(P.ANSWER_NOT_HEARD)
+            self.speak(P.ANSWER_NOT_HEARD, "ack")
             return
         try:
             r = self.agent.post("/tasks/%d/answer" % tid, {"text": answer})
         except V.NoBackend:
             self.speak(P.AGENT_DOWN)
             return
-        self.speak(P.ANSWER_TAKEN if isinstance(r, dict) and r.get("ok") else P.ANSWER_NOT_HEARD)
+        self.speak(P.ANSWER_TAKEN if isinstance(r, dict) and r.get("ok") else P.ANSWER_NOT_HEARD, "ack")
 
-    def finish(self, task):
+    def finish(self, task, state=None):
+        """The final line, once per task."""
         st = task["status"]
+        tid = task.get("id")
         if st == "done":
             if self.flag("voice.speak_replies"):
-                self.speak(P.shorten(task.get("result") or "", full=self.flag("voice.speak_full")) or P.DONE_EMPTY)
+                self.speak(P.shorten(task.get("result") or "", full=self.flag("voice.speak_full")) or P.DONE_EMPTY, "final", tid, state)
         elif st == "cancelled":
-            self.speak(P.CANCELLED)
+            self.speak(P.CANCELLED, "ack")
         else:
-            self.speak(P.ERROR.format(reason=P.error_reason(task.get("error") or task.get("result") or "")))
+            self.speak(P.ERROR.format(reason=P.error_reason(task.get("error") or task.get("result") or "")), "final", tid, state)
 
     # ------------------------------------------------------------------ main loop
     def run(self):

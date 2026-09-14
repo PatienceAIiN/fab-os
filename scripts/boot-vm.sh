@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Boot the FabOS OS disk in QEMU/KVM with UEFI (OVMF), under the resource guard so the host never hangs.
 # Usage: scripts/boot-vm.sh [--headless] [--autotest] [--mem MB] [--cpus N] [--timeout S] [--fresh-vars] [--heads N]  (N virtual displays for multi-monitor tests)
+#        [--no-audio]  (default: an emulated Intel HDA card with speaker + microphone on the silent "none" backend, so PipeWire
+#                       in the guest has a default source and sink and tests/voice-vm.sh can exercise the whole voice pipeline)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"
-MEM=2048; CPUS=4; HEADLESS=0; AUTOTEST=0; TIMEOUT=0; GL=0; HEADS=1; DISK=build/fabos-vm.img
+MEM=2048; CPUS=4; HEADLESS=0; AUTOTEST=0; TIMEOUT=0; GL=0; HEADS=1; AUDIO=${VM_AUDIO:-1}; DISK=build/fabos-vm.img
 while [ $# -gt 0 ]; do case $1 in
   --headless) HEADLESS=1;; --autotest) AUTOTEST=1;; --mem) MEM=$2; shift;; --cpus) CPUS=$2; shift;;
-  --timeout) TIMEOUT=$2; shift;; --gl) GL=1;; --heads) HEADS=$2; shift;; --fresh-vars) rm -f build/OVMF_VARS.fd;; --disk) DISK=$2; shift;; *) echo "unknown arg $1"; exit 2;; esac; shift; done
+  --timeout) TIMEOUT=$2; shift;; --gl) GL=1;; --heads) HEADS=$2; shift;; --fresh-vars) rm -f build/OVMF_VARS.fd;; --disk) DISK=$2; shift;;
+  --no-audio) AUDIO=0;; *) echo "unknown arg $1"; exit 2;; esac; shift; done
 [ -f "$DISK" ] || { echo "no $DISK — run scripts/make-disk.sh"; exit 1; }
 [ -e /dev/kvm ] || echo "WARNING: /dev/kvm missing, falling back to TCG (slow)"
 CODE=$(ls /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd 2>/dev/null | head -1)
@@ -22,6 +25,10 @@ args=( -name "Fab OS" -machine q35,accel=$ACCEL -cpu $CPU -smp "$CPUS" -m "$MEM"
   -serial file:"$SERIAL" -monitor unix:build/qemu-monitor.sock,server,nowait -rtc base=utc )
 if [ $HEADLESS = 1 ]; then args+=( -display none -device virtio-vga,id=vga0,max_outputs=$HEADS ); elif [ $GL = 1 ]; then args+=( -device virtio-vga-gl,id=vga0,max_outputs=$HEADS -display gtk,gl=on,show-cursor=on ); else args+=( -device virtio-vga,id=vga0,max_outputs=$HEADS -display gtk,show-cursor=on,zoom-to-fit=on ); fi
 if [ $AUTOTEST = 1 ]; then args+=( -no-reboot -smbios type=11,value=io.systemd.boot.kernel-cmdline-extra=fabos.autopoweroff\ console=ttyS0 ); fi
+# Sound: ich9-intel-hda controller + hda-micro codec (speaker + microphone) on the "none" audiodev — the guest sees a real
+# capture and playback device (the microphone delivers silence, the speaker discards). Names verified with
+# `qemu-system-x86_64 -device help | grep -i hda` and `-audiodev help` (QEMU 10.2).
+if [ "$AUDIO" = 1 ]; then args+=( -audiodev none,id=snd0 -device ich9-intel-hda -device hda-micro,audiodev=snd0 ); fi
 export RG_MEMMAX=${RG_MEMMAX:-$((MEM+1100))M} RG_MEMHIGH=${RG_MEMHIGH:-$((MEM+800))M}
 echo "== booting $DISK  mem=${MEM}M cpus=$CPUS accel=$ACCEL headless=$HEADLESS autotest=$AUTOTEST  (serial -> $SERIAL)"
 if [ "$TIMEOUT" != 0 ]; then tools/rg --profile vm -- timeout --foreground -k 10 "$TIMEOUT" qemu-system-x86_64 "${args[@]}" || true
