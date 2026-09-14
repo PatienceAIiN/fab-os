@@ -123,6 +123,27 @@ t("voiceInfo: available only with exit 0 and a real STT backend", () => {
   assert.strictEqual(A.voiceInfo(127, "").available, false);   // binary missing
   assert.strictEqual(A.voiceInfo(4, "").available, false);
 });
+t("voiceReason: why the mic is dimmed after fabos-voice status ('' = ready)", () => {
+  assert.strictEqual(A.voiceReason(0, A.voiceInfo(0, '{"stt":"whisper.cpp","tts":"espeak-ng","mic":true}')), "");
+  assert.strictEqual(A.voiceReason(0, A.voiceInfo(0, '{"stt":"whisper.cpp","tts":"espeak-ng","mic":false}')), "No microphone found — plug one in and tap the mic again");
+  assert.strictEqual(A.voiceReason(0, A.voiceInfo(0, '{"stt":"none","tts":"none","mic":true}')), "Speech recognition is not available on this machine");
+  assert.strictEqual(A.voiceReason(127, A.voiceInfo(127, "")), "Voice is not installed on this machine");
+  assert.strictEqual(A.voiceReason(1, A.voiceInfo(1, "")), "Voice is not available right now");
+});
+t("voiceFailure: a failed listen-once is never silent; the CLI's own last stderr line is what the user reads", () => {
+  assert.strictEqual(A.voiceFailure(4, "", "No microphone found on this computer."), "No microphone found on this computer.");
+  assert.strictEqual(A.voiceFailure(4, "", "backend: whisper.cpp\nSpeech recognition is not available: no offline model and no cloud provider key.\n"),
+    "Speech recognition is not available: no offline model and no cloud provider key.");
+  assert.strictEqual(A.voiceFailure(4, "", ""), "Voice is not available on this machine");
+  assert.strictEqual(A.voiceFailure(127, "", "sh: 1: fabos-voice: not found"), "Voice is not installed on this machine (fabos-voice is missing)");
+  assert.strictEqual(A.voiceFailure(3, "", "Sorry, I did not catch that. Say it once more?"), "I did not catch that. Tap the mic and try again.");
+  assert.strictEqual(A.voiceFailure(0, "   \n", ""), "I did not catch that. Tap the mic and try again.");   // exit 0 but nothing printed
+  assert.strictEqual(A.voiceFailure(1, "", "Traceback (most recent call last):\n  ...\nRuntimeError: boom"), "Voice did not work just now — RuntimeError: boom");
+  assert.strictEqual(A.voiceFailure(1, "", ""), "Voice did not work just now. Tap the mic to try again.");
+  const long = A.voiceFailure(4, "", "x".repeat(400));
+  assert.ok(long.length <= 160 && long.endsWith("…"), "long reasons are clipped for the status line");
+  assert.strictEqual(A.lastLine("a\n\n  b  \n\n"), "b"); assert.strictEqual(A.lastLine(""), "");
+});
 t("banned words never appear in UI strings produced by the helpers", () => {
   // third-party product names that must never surface in Fab OS UI strings (spelled in halves so this file does not contain them either)
   const banned = new RegExp(["Chat" + "GPT", "Open" + "AI", "G" + "PT", "Snow" + "UI", "So" + "ra", "DA" + "LL", "Upgrade " + "plan", "can make " + "mistakes",

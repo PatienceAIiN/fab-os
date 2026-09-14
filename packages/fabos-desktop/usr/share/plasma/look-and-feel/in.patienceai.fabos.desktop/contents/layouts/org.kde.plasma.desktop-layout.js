@@ -60,5 +60,5 @@ for (var j = 0; j < desktops.length; j++) {
   // The ask bar is a full-width transparent strip; the card inside centres itself from the real screen width at runtime.
   var sw = 3840, sh = 1080
   try { var g = screenGeometry(d.screen >= 0 ? d.screen : 0); if (g && g.width > 0) { sw = g.width; sh = g.height } } catch (e) {}
-  d.addWidget("in.patienceai.fabos.askbar", 0, Math.round(sh * 0.30), sw, 150)
+  d.addWidget("in.patienceai.fabos.askbar", 0, Math.round(sh * 0.24), sw, Math.round(sh * 0.66))   // tall strip: card at its top, the response panel unfolds inside it (desktop layer, behind every window), down to the dock
 }
