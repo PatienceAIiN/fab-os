@@ -1,4 +1,4 @@
-# ADR-0010: Window frame as an Aurorae SVG theme, rendered by the Aurorae v2 engine
+# ADR-0012: Window frame as an Aurorae SVG theme, rendered by the Aurorae v2 engine
 
 **Status:** accepted (2026-09-14) · complements ADR-0004 (Plasma 6 on Wayland)
 

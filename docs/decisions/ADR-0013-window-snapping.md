@@ -1,4 +1,4 @@
-# ADR-0011: Window snapping like Windows/Fedora — edge tiling, tile-layout zones, Snap Assist
+# ADR-0013: Window snapping like Windows/Fedora — edge tiling, tile-layout zones, Snap Assist
 
 Date: 2026-09-14. Status: accepted.
 
