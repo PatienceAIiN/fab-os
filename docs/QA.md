@@ -535,3 +535,26 @@ runs above; none of the numbers above moved because no image has been built from
   `/opt/brave.com/brave/brave` (`brave` from Ubuntu, `brave-browser-stable` from Brave's postinst) load without
   `apparmor.service` errors and Brave's sandbox starts; the VM self-test now prints `NO_WALLET=…`, `APPARMOR_BRAVE=<loaded>:errors=<n>`
   and `SUID_COUNT=<n>:brave_sandbox=root:4755` for exactly this.
+- **`perf-smooth` track (2026-09-15, sources only):** desktop responsiveness — half-length Plasma/KWin animations
+  (`AnimationDurationFactor=0.5`), `AllowTearing=false`, blur off under 3.5 GB via a login tune, File Search runner off,
+  `fabos-voiced` at `Nice=15` + `IOSchedulingClass=idle`, the ask bar's single-curl snapshot, the quick settings' two-process
+  light probe, Fab AI Controls' daemon calls on a worker thread (`ApiQueue`; Settings > Save on its own `ApiJobWorker` after
+  review), `tests/perf-vm.sh`. Review fixes folded in: the login tune is `/usr/lib/fabos/lowram-tune.sh` (with the plain name
+  `packages/build-debs.sh` packaged it 0644 and the `-x` guard in the env hook never ran it; the hook now runs it through
+  `sh` with a `-r` guard, and an unreadable `MemTotal` decides nothing), `ApiQueue.stop()` shuts the in-flight socket so a
+  hung daemon cannot outlive `closeEvent`'s wait, the ask bar keeps a 60 s status heartbeat while asleep (tasks and approvals
+  started elsewhere still reach the closed bar) and counts its two trailing snapshots from the one after the stop, the quick
+  settings run a full probe when a light probe sees the link change (the 30 s closed-pane cadence for Bluetooth / mute /
+  power profile is a documented deviation from the 5 s brief — `fullSeconds` in `main.qml`), `perf-vm.sh` writes
+  well-formed measurement objects and implements `--keep`, MOTION_GUIDELINES no longer claims the factor scales our own
+  literal durations. Verified on this host against `localhost/fabos:vm`: `tests/branding-check.sh` **164 PASS / 9 FAIL**
+  with 173 checks — the 9 failures are exactly the 9 checks this track appended, which describe the rebuilt image;
+  `tests/ai-controls-render.py` full pass **3/3 runs OK** (one earlier run failed a `flush_api` wait at a `DELETE` → refresh
+  point; the untouched baseline failed the same way once and passed once — a timing flake of the seeded daemon under host
+  load, not a regression; the `sync()` helper now names the queued jobs on a timeout), `--settings --welcome` **2/2 OK** after
+  a race in the pass itself was fixed (the window's initial `fabos-voice status` probe overwrote the test's voice fixture);
+  `tests/askbar-qml-test.sh` PASS (117 checks), `tests/desktop-applets-qml-test.sh` soak-qs/harness-qs/soak-dock PASS,
+  `node tests/askbar-js-test.js` and `node tests/quicksettings-js-test.js` OK; the build-debs permission pass simulated on a
+  copy of `packages/fabos-desktop` leaves `lowram-tune.sh` 0755, and the hook run in the image against a mounted
+  `/proc/meminfo` writes `blurEnabled=false` at 1 980 000 kB and nothing at 8 000 000 kB (marker `blur=kept`), keeping a
+  later user choice. **Not run:** `tests/perf-vm.sh` itself (needs the booted VM) — its numbers are still to be pasted here.

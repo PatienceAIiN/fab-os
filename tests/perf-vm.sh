@@ -3,8 +3,10 @@
 # tests/agent-live-vm.sh. Every PASS/FAIL below is a number read in the VM; nothing is inferred from the source tree.
 #
 #   tests/perf-vm.sh [--inject] [--keep] [--idle-wait S] [--sample S]
-#     --inject      push the working-tree desktop files (kwinrc, kdeglobals, krunnerrc, lowram-tune, the three plasmoids,
+#     --inject      push the working-tree desktop files (kwinrc, kdeglobals, krunnerrc, lowram-tune.sh, the three plasmoids,
 #                   command_center.py, the fabos-voiced unit) into the VM first and restart plasmashell / reconfigure KWin
+#     --keep        leave the VM running afterwards; without it a VM that THIS script booted is powered off at the end
+#                   (a VM that was already running when the script started is always left as found)
 #     --idle-wait   seconds to leave the session alone before sampling (default 60)
 #     --sample      length of the idle sample in seconds (default 20)
 #   VM_MEM (default 2048) — scripts/boot-vm.sh is started if no VM is running.
@@ -12,7 +14,7 @@
 #
 # What is measured
 #   1. configuration in effect: kwinrc AllowTearing=false, kdeglobals AnimationDurationFactor=0.5, krunnerrc baloosearch
-#      off, blur off on a < 3.5 GB machine (lowram-tune ran at login), fabos-voiced Nice=15 + IOSchedulingClass=idle
+#      off, blur off on a < 3.5 GB machine (lowram-tune.sh ran at login), fabos-voiced Nice=15 + IOSchedulingClass=idle
 #      (unit AND the running process), no spotter process without a microphone
 #   2. idle budget after `--idle-wait` s: CPU of plasmashell + kwin_wayland + fabos-agentd + fabos-voiced (+ pocketsphinx,
 #      pw-record) + Fab AI Controls (if open) over `--sample` s, as % of ONE core (utime+stime+cutime+cstime deltas, so the
@@ -46,10 +48,12 @@ api() { # api METHOD PATH [JSON]
 jget() { python3 -c "import sys,json; d=json.load(sys.stdin); print(d$1)" 2>/dev/null; }
 pass=0; fail=0; skip=0
 verdict() { case "$1" in PASS) pass=$((pass+1));; FAIL) fail=$((fail+1));; SKIP) skip=$((skip+1));; esac; echo ">>> $1: $2"; }
-declare -A R   # numbers for build/perf-vm.json
+declare -A R   # numbers for build/perf-vm.json; the JSON-valued entries default to an empty object so the summary always parses
+R[idle]='{}'; R[switch]='{}'; R[controls]='{}'; R[streaming]='{}'
+BOOTED=0       # 1 when this script started the VM (then it is powered off at the end unless --keep)
 
-echo "### Fab OS perf VM test — $(date -u +%FT%TZ) — idle-wait=${IDLE_WAIT}s sample=${SAMPLE}s inject=$INJECT"
-pgrep -f qemu-system-x86_64 >/dev/null || { echo "booting VM"; (scripts/boot-vm.sh --headless --mem "${VM_MEM:-2048}" --cpus 4 > build/boot-headless.out 2>&1 &); }
+echo "### Fab OS perf VM test — $(date -u +%FT%TZ) — idle-wait=${IDLE_WAIT}s sample=${SAMPLE}s inject=$INJECT keep=$KEEP"
+pgrep -f qemu-system-x86_64 >/dev/null || { echo "booting VM"; BOOTED=1; (scripts/boot-vm.sh --headless --mem "${VM_MEM:-2048}" --cpus 4 > build/boot-headless.out 2>&1 &); }
 for i in $(seq 1 100); do vm true 2>/dev/null && break; sleep 3; done; vm true || { echo "no ssh to the VM"; exit 3; }
 echo "### waiting for the graphical session (plasmashell + kwin_wayland)"
 for i in $(seq 1 120); do vm "pgrep -x plasmashell >/dev/null && pgrep -x kwin_wayland >/dev/null" && break; sleep 3; done
@@ -59,13 +63,13 @@ vm "nproc; head -1 /proc/meminfo; uptime -p; cat /etc/fabos-release 2>/dev/null 
 if [ "$INJECT" = 1 ]; then
   echo "### injecting working-tree desktop files"
   D=packages/fabos-desktop; A=packages/fabos-agent
-  $SCP -r "$D/etc/xdg/kwinrc" "$D/etc/xdg/kdeglobals" "$D/etc/xdg/krunnerrc" "$D/usr/lib/fabos/lowram-tune" "$D/etc/xdg/plasma-workspace/env/40-fabos-lowram.sh" \
+  $SCP -r "$D/etc/xdg/kwinrc" "$D/etc/xdg/kdeglobals" "$D/etc/xdg/krunnerrc" "$D/usr/lib/fabos/lowram-tune.sh" "$D/etc/xdg/plasma-workspace/env/40-fabos-lowram.sh" \
        "$A/usr/lib/fabos/agent/command_center.py" packages/fabos-voice/usr/lib/systemd/user/fabos-voiced.service fabos@127.0.0.1:/tmp/ >/dev/null
   $SCP -r "$D/usr/share/plasma/plasmoids/in.patienceai.fabos.quicksettings" "$D/usr/share/plasma/plasmoids/in.patienceai.fabos.dock" "$A/usr/share/plasma/plasmoids/in.patienceai.fabos.askbar" fabos@127.0.0.1:/tmp/ >/dev/null
   # brand variables the package build would have rendered
   vm "sed -i 's/@UI_FONT@/Inter/g; s/@MONO_FONT@/JetBrains Mono/g' /tmp/kdeglobals; sed -i 's/@DISTRO_NAME@/Fab OS/g; s/@DOCS_URL@/https:\/\/fabos.patienceai.in\/docs\//g' /tmp/fabos-voiced.service"
-  vm "echo fabos | sudo -S sh -c 'install -m 644 /tmp/kwinrc /tmp/kdeglobals /tmp/krunnerrc /etc/xdg/ && install -m 755 /tmp/lowram-tune /usr/lib/fabos/lowram-tune && install -D -m 644 /tmp/40-fabos-lowram.sh /etc/xdg/plasma-workspace/env/40-fabos-lowram.sh && install -m 755 /tmp/command_center.py /usr/lib/fabos/agent/command_center.py && install -m 644 /tmp/fabos-voiced.service /usr/lib/systemd/user/fabos-voiced.service && for p in in.patienceai.fabos.quicksettings in.patienceai.fabos.dock in.patienceai.fabos.askbar; do rm -rf /usr/share/plasma/plasmoids/\$p && cp -r /tmp/\$p /usr/share/plasma/plasmoids/\$p; done' 2>/dev/null && echo installed"
-  vm "rm -f ~/.config/fabos/lowram-tune-done-v1; /usr/lib/fabos/lowram-tune; systemctl --user daemon-reload; systemctl --user restart fabos-voiced; $SENV qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure; systemctl --user restart plasma-plasmashell; sleep 8; pgrep -x plasmashell >/dev/null && echo plasmashell-restarted"
+  vm "echo fabos | sudo -S sh -c 'install -m 644 /tmp/kwinrc /tmp/kdeglobals /tmp/krunnerrc /etc/xdg/ && install -m 755 /tmp/lowram-tune.sh /usr/lib/fabos/lowram-tune.sh && install -D -m 644 /tmp/40-fabos-lowram.sh /etc/xdg/plasma-workspace/env/40-fabos-lowram.sh && install -m 755 /tmp/command_center.py /usr/lib/fabos/agent/command_center.py && install -m 644 /tmp/fabos-voiced.service /usr/lib/systemd/user/fabos-voiced.service && for p in in.patienceai.fabos.quicksettings in.patienceai.fabos.dock in.patienceai.fabos.askbar; do rm -rf /usr/share/plasma/plasmoids/\$p && cp -r /tmp/\$p /usr/share/plasma/plasmoids/\$p; done' 2>/dev/null && echo installed"
+  vm "rm -f ~/.config/fabos/lowram-tune-done-v1; sh /usr/lib/fabos/lowram-tune.sh; systemctl --user daemon-reload; systemctl --user restart fabos-voiced; $SENV qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure; systemctl --user restart plasma-plasmashell; sleep 8; pgrep -x plasmashell >/dev/null && echo plasmashell-restarted"
 fi
 
 # ---------------------------------------------------------------- 1. configuration in effect
@@ -79,7 +83,7 @@ v=$(vm "kreadconfig6 --file krunnerrc --group Plugins --key baloosearchEnabled -
 memkb=$(vm "awk '/^MemTotal/{print \$2}' /proc/meminfo"); R[mem_kb]=$memkb
 blur=$(vm "kreadconfig6 --file kwinrc --group Plugins --key blurEnabled --default unset"); mark=$(vm "cat ~/.config/fabos/lowram-tune-done-v1 2>/dev/null"); R[blur]=$blur
 if [ "${memkb:-0}" -lt 3500000 ]; then
-  [ "$blur" = false ] && [ -n "$mark" ] && verdict PASS "blur off on this $((memkb/1024)) MB machine (lowram-tune at login: $mark)" || verdict FAIL "blur=$blur marker='$mark' on a $((memkb/1024)) MB machine"
+  [ "$blur" = false ] && [ -n "$mark" ] && verdict PASS "blur off on this $((memkb/1024)) MB machine (lowram-tune.sh at login: $mark)" || verdict FAIL "blur=$blur marker='$mark' on a $((memkb/1024)) MB machine"
 else verdict SKIP "blur rule not applicable: $((memkb/1024)) MB machine keeps blur (blur=$blur)"; fi
 u=$(vm "systemctl --user show fabos-voiced -p Nice -p IOSchedulingClass 2>/dev/null | tr '\n' ' '"); R[voiced_unit]=$u
 echo "$u" | grep -q "Nice=15" && echo "$u" | grep -q "IOSchedulingClass=idle" && verdict PASS "fabos-voiced unit: $u" || verdict FAIL "fabos-voiced unit: $u"
@@ -251,7 +255,8 @@ api POST "/tasks/${TASK:-0}/cancel" >/dev/null 2>&1
 vm "if [ -f /tmp/agent.env.bak ]; then cp /tmp/agent.env.bak ~/.config/fabos/agent.env; else rm -f ~/.config/fabos/agent.env; fi; systemctl --user restart fabos-agent"
 
 # ---------------------------------------------------------------- summary
-python3 - "$JSON" "$pass" "$fail" "$skip" "${R[idle]:-{}}" "${R[switch]:-{}}" "${R[controls]:-{}}" "${R[streaming]:-{}}" "${R[allow_tearing]:-}" "${R[animation_factor]:-}" "${R[blur]:-}" "${R[mem_kb]:-0}" "${R[voiced_unit]:-}" <<'PY'
+# (the JSON-valued entries were pre-set to '{}' above: `${R[x]:-{}}` would append a stray '}' whenever the entry IS set)
+python3 - "$JSON" "$pass" "$fail" "$skip" "${R[idle]}" "${R[switch]}" "${R[controls]}" "${R[streaming]}" "${R[allow_tearing]:-}" "${R[animation_factor]:-}" "${R[blur]:-}" "${R[mem_kb]:-0}" "${R[voiced_unit]:-}" <<'PY'
 import json, sys
 a = sys.argv
 def j(s):
@@ -262,5 +267,11 @@ out = {"pass": int(a[2]), "fail": int(a[3]), "skip": int(a[4]), "idle": j(a[5]),
 open(a[1], "w").write(json.dumps(out, indent=1))
 PY
 echo; echo "### SUMMARY: $pass PASS / $fail FAIL / $skip SKIP  (numbers: $JSON, log: $OUT)"
-[ $KEEP -eq 1 ] || echo "(VM left running for inspection; use scripts/boot-vm.sh monitor to quit)"
+if [ $KEEP -eq 1 ]; then echo "(--keep: VM left running for inspection; use scripts/boot-vm.sh monitor to quit)"
+elif [ $BOOTED -eq 1 ]; then
+  echo "powering the VM off (it was booted by this run; pass --keep to leave it running)"
+  vm "echo fabos | sudo -S poweroff" >/dev/null 2>&1
+  for i in $(seq 1 60); do pgrep -f qemu-system-x86_64 >/dev/null || break; sleep 2; done
+  pgrep -f qemu-system-x86_64 >/dev/null && echo "(VM still running after 120 s; use scripts/boot-vm.sh monitor to quit)" || echo "VM powered off"
+else echo "(VM was already running before this run; left as found)"; fi
 exit $fail

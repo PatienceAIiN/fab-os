@@ -8,9 +8,12 @@ longer than 320 ms to settle.
 Applied:
 - **Plasma / KWin (`/etc/xdg/kdeglobals`)**: `[KDE] AnimationDurationFactor=0.5` — every stock desktop animation
   (window open/close, minimise, popups, Overview, task switcher, Kirigami transitions) runs at half its default length.
-  Settings > Animations moves the same slider; Instant (factor 0) is honoured by our plasmoids too, because they use
-  `Behavior`/`NumberAnimation` whose durations Plasma scales. KWin effects stay as before (magic lamp, scale, fade, slide,
-  dim screen, sliding popups, translucency, Overview); blur is off on machines under 3.5 GB (docs/LOW-RAM.md).
+  Settings > Animations moves the same slider. The factor scales **KWin's effects and everything that takes its duration
+  from `Kirigami.Units.*Duration` / `PlasmaCore.Units`**; our own plasmoids and Fab AI Controls use literal millisecond
+  durations (the 120–220 ms below), which the slider does not scale — they are already at the length the factor gives
+  stock Plasma, and they do not become slower when a user moves the slider back to 1. KWin effects stay as before
+  (magic lamp, scale, fade, slide, dim screen, sliding popups, translucency, Overview); blur is off on machines under
+  3.5 GB (docs/LOW-RAM.md).
 - **Ask bar**: hover scale 1.04 / press 0.95 (140 ms), colour transitions 160 ms, the panel unfolds from the card in
   220 ms OutCubic and shrinks back in 220 ms, new conversation rows fade in and rise 12 px in 200 ms, the panel's
   content-height changes take 200 ms. The AI mark breathes (4 s idle, 1.2 s orbit while working, 0.9 s pulse while
@@ -27,10 +30,11 @@ Applied:
 - **Website**: reveal-on-scroll and the typewriter demo (both respect `prefers-reduced-motion`).
 
 Rules: motion explains state, cause and continuity; never blocks input; is interruptible (KWin animations are, and our
-`Behavior`s retarget mid-flight); collapses to instant when the user sets Reduce Motion (Settings → Animations: speed
-slider to Instant sets the factor to 0, which every Plasma/Kirigami animation and our plasmoids honour). Do not animate
-everything: no motion on static labels, no parallax, **no looping decoration** except the boot animation and the ask
-bar's mark while it is awake. Anything continuous must stop when its widget is hidden or after a bounded number of loops.
+`Behavior`s retarget mid-flight); collapses to instant for the stock desktop when the user sets Reduce Motion (Settings →
+Animations: speed slider to Instant sets the factor to 0, which every KWin effect and every Kirigami/Plasma animation
+honours; our own 120–220 ms transitions keep their fixed length — short enough that nothing waits on them). Do not
+animate everything: no motion on static labels, no parallax, **no looping decoration** except the boot animation and the
+ask bar's mark while it is awake. Anything continuous must stop when its widget is hidden or after a bounded number of loops.
 
 Budget (why the numbers are what they are): a 2 GB machine with an integrated GPU renders a full-screen frame of the
 Plasma shell in 6–12 ms; a 200 ms transition is 12 frames at 60 Hz — enough to read as movement, short enough that a

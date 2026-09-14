@@ -17,8 +17,9 @@ import "status.js" as Status
 // Data: contents/code/status.sh through the Plasma5Support executable engine — ONE script call, ONE JSON line. While the
 // pane is closed the periodic call is the --light probe (kernel readings only: net counters for the rate, Wi-Fi link
 // quality, battery, backlight; 2 processes) every `pollSeconds` (default 5 s) and the full probe (NetworkManager, BlueZ,
-// volume, power profile) every 30 s; while the pane is open the full probe runs every 2 s; after each action the full
-// probe runs once, 400 ms later. Budget: docs/LOW-RAM.md "Idle budget". Actions: nmcli radio wifi, bluetoothctl
+// volume, power profile; 12–25 processes) every `fullSeconds` (30 s) plus once at once whenever a light probe sees the
+// link change (interface / Wi-Fi up-down); while the pane is open the full probe runs every 2 s; after each action the
+// full probe runs once, 400 ms later. Budget: docs/LOW-RAM.md "Idle budget". Actions: nmcli radio wifi, bluetoothctl
 // power, wpctl set-volume/set-mute, powerprofilesctl set, powerdevil's ScreenBrightness D-Bus (BrightnessBridge.qml).
 // Notifications + Do Not Disturb: org.kde.notificationmanager (the model the stock history uses; same process, same
 // server). The stock applets stay reachable: each tile's chevron opens `plasmawindowed <applet>`.
@@ -83,7 +84,11 @@ PlasmoidItem {
         engine: "executable"
         onNewData: (source, data) => { disconnectSource(source); root.applyStatus(String(data["stdout"] || "")) }
     }
-    Timer { id: fullTimer; interval: 30000; repeat: true; running: root.autoRefresh && !root.paneOpen; onTriggered: root.refresh() }
+    // full probe while closed: 30 s = 0.4–0.8 tasks/s on top of the light probe's 0.4/s (12 tasks with the daemons absent,
+    // up to 25 with them present, measured in the image); Bluetooth power, mute and the power profile changed from
+    // elsewhere can therefore show for up to 30 s in the closed bar — the bar's own actions and a link change refresh at once
+    readonly property int fullSeconds: 30
+    Timer { id: fullTimer; interval: root.fullSeconds * 1000; repeat: true; running: root.autoRefresh && !root.paneOpen; onTriggered: root.refresh() }
     P5Support.DataSource {   // one-shot actions; the full status is re-read 400 ms after each finishes
         id: actions
         engine: "executable"
@@ -98,7 +103,14 @@ PlasmoidItem {
     // only the kernel readings inside the last full state; every probe feeds the network counters for the rate.
     function applyStatus(text) {
         var s = Status.parseStatus(text)
-        if (s.light) s = Status.mergeLight(root.st, s)
+        if (s.light) {
+            // the default-route interface changed or the Wi-Fi link came up / went down since the last probe: a network
+            // was joined or left from elsewhere, so the SSID and device list are refreshed by one full probe now (400 ms)
+            // instead of at the next full tick — the light probe stays 2 processes, the full one runs only on a change
+            var linkChanged = s.iface !== root.st.iface || (s.wifiQuality >= 0) !== (root.st.wifiQuality >= 0)
+            s = Status.mergeLight(root.st, s)
+            if (linkChanged && root.autoRefresh && !root.paneOpen) refreshTimer.restart()
+        }
         else if (root.st.hasAudio && s.hasAudio && (s.volume !== root.st.volume || s.muted !== root.st.muted)) root.flashVolume()
         root.st = s
         root.applyNet(Status.counters(s), Date.now())

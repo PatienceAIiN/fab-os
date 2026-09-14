@@ -148,6 +148,10 @@ def quick_passes():
                 w.resize(1280, 800)
                 w.show()
                 spin()
+                # the window's own `fabos-voice status` probe (started in Voice.__init__) overwrites voice.status when it
+                # finishes: let it finish first, or the fixture below is replaced a moment later and the Voice tab's
+                # buttons follow the image's real voice status (a race that made this pass flaky)
+                wait_for(lambda: w.voice._status_proc is None, "initial voice probe")
                 w.voice.bin = fake_new
                 w.voice.status = {"stt": "whisper.cpp", "tts": "espeak-ng", "mic": True, "wake": False, "listening": False}
                 w.update_voice_buttons()
@@ -315,7 +319,9 @@ def quick_passes():
                             posts.append((path, body)); return {"ok": True, "storage": "systemd-creds"}
                         return real_api(method, path, body)
                     cc.api = save_api
-                    sd.save(); spin()
+                    sd.save()
+                    assert not sd.confirm_btn.isEnabled() and sd.confirm_btn.text() == "Saving…" and not sd.cancel_btn.isEnabled(), "Save must disable both buttons while its worker runs"
+                    wait_for(lambda: sd.save_worker is None, "save worker"); spin()
                     assert sd.result() == QDialog.DialogCode.Accepted, "Save did not accept after a good check"
                     body = puts[0]
                     assert body["mail.provider"] == "gmail" and body["mail.address"] == "me@gmail.com" and body["ai.enabled"] == "true" and body["mode"] == "auto", body
@@ -422,8 +428,13 @@ def main():
 
         def sync(win, timeout_ms=8000):
             """Every daemon call of the window runs on its worker thread: wait until all of them are back (they chain:
-            a created task refreshes the list, which refreshes the chat)."""
-            assert win.flush_api(timeout_ms), "daemon calls still in flight after %d ms" % timeout_ms
+            a created task refreshes the list, which refreshes the chat). Slow rounds are printed; a timeout names the
+            jobs still queued (their coalescing keys) so a re-fetch loop or a stuck daemon call can be told apart."""
+            t0 = time.time()
+            ok = win.flush_api(timeout_ms)
+            if time.time() - t0 > 2:
+                print("    (sync took %.1f s; inflight now %d)" % (time.time() - t0, win.api_q.inflight))
+            assert ok, "daemon calls still in flight after %d ms: inflight=%d queued keys=%r" % (timeout_ms, win.api_q.inflight, list(win.api_q._pending))
 
         def close_window(app, win):
             """Tear a window down the way the event loop would (deferred delete), so no zombie widgets survive into the
@@ -756,6 +767,10 @@ def main():
             cc.api = offline_api
             try:
                 sd.save()
+                deadline = time.time() + 8          # Save runs on a worker (ApiJobWorker): wait for its result on the GUI thread
+                while sd.save_worker is not None and time.time() < deadline:
+                    app.processEvents(); time.sleep(0.02)
+                assert sd.save_worker is None, "offline save never came back"
             finally:
                 cc.api = real_api
                 poll.stop()

@@ -117,8 +117,9 @@ What is tuned for small machines, and how to change it back, is in [`docs/LOW-RA
 
 **Smooth on 2 GB.** Fab OS keeps its own components quiet while you are not using them: the ask bar makes one small
 request (a single `curl` for status and task together) every 2 s while it shows a working task, every 8 s while you are
-around, and none at all once it has been idle for 30 s; the quick settings read the kernel's counters every 5 s with a
-two-process script and ask NetworkManager, Bluetooth and the audio server only every 30 s (or while their pane is open);
+around, and one a minute once it has been idle for 30 s (so work started from Fab AI Controls or the CLI still shows in
+the bar); the quick settings read the kernel's counters every 5 s with a two-process script and ask NetworkManager,
+Bluetooth and the audio server only every 30 s, when the link changes, or while their pane is open;
 the dock animates only under the pointer; Fab AI Controls talks to the agent on a worker thread, so a slow reply can
 never freeze the window. Measured in the image, that takes the desktop's idle process creation from about 21 to about 1
 per second ([`docs/LOW-RAM.md`](docs/LOW-RAM.md), "Idle budget"). Every Plasma and KWin animation runs at half its stock

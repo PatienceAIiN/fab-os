@@ -1,6 +1,8 @@
 #!/bin/sh
-# Fab OS low-RAM desktop tune (docs/LOW-RAM.md, "Idle budget"). Runs once per user, before KWin starts, from
-# /etc/xdg/plasma-workspace/env/40-fabos-lowram.sh (Plasma sources the env scripts before the compositor is launched).
+# Fab OS low-RAM desktop tune (docs/LOW-RAM.md, "Idle budget"). Runs once per user, before KWin starts, as
+# `sh /usr/lib/fabos/lowram-tune.sh` from /etc/xdg/plasma-workspace/env/40-fabos-lowram.sh (Plasma sources the env scripts
+# before the compositor is launched). The .sh suffix is load-bearing: packages/build-debs.sh chmods every packaged file to
+# 0644 and restores 0755 only for *.sh / *.py / rebrand-* / tray-defaults under /usr/lib/fabos; the hook runs it via sh anyway.
 #
 # kwinrc is a static default: it cannot know how much memory the machine has. On a machine that reports less than
 # LOWRAM_KB the blur effect is turned off in the USER's kwinrc (blur is the one enabled effect whose cost scales with the
@@ -22,7 +24,7 @@ total=0
 while IFS=' ' read -r key value unit; do
   case "$key" in MemTotal:) total=$value; break;; esac
 done < /proc/meminfo
-case "$total" in ''|*[!0-9]*) exit 0;; esac
+case "$total" in ''|*[!0-9]*|0) exit 0;; esac   # unreadable or zero MemTotal: decide nothing
 mkdir -p "$CFG/fabos" 2>/dev/null || exit 0
 if [ "$total" -lt "$LOWRAM_KB" ]; then
   if command -v kwriteconfig6 >/dev/null 2>&1; then

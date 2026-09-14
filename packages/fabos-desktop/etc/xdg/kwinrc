@@ -12,7 +12,7 @@ ButtonsOnRight=IAX
 library=org.kde.kwin.aurorae.v2
 theme=__aurorae__svg__FabOS
 
-# Effects. Blur stays on here; on machines that report < 3.5 GB of RAM /usr/lib/fabos/lowram-tune (run once per user from
+# Effects. Blur stays on here; on machines that report < 3.5 GB of RAM /usr/lib/fabos/lowram-tune.sh (run once per user from
 # /etc/xdg/plasma-workspace/env before KWin starts) writes blurEnabled=false into the user's own kwinrc — kwinrc is static,
 # so a per-machine choice has to be made at login, and a user who turns blur back on in Settings is not overridden again.
 [Plugins]

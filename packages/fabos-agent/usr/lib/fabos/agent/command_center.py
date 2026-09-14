@@ -12,12 +12,13 @@ A two-column chat app on top of fabos-agentd's local HTTP API (PyQt6), laid out 
   * composer: a two-row rounded card — the text row, then the permission-mode chip, the microphone (fabos-voice
     listen-once) and the filled Send / Stop button
 Everything follows the system colour scheme through QPalette; radii/spacing from the Fab OS design tokens; Inter.
-Responsiveness: every daemon call of the window runs on ONE worker thread (ApiQueue) and its result is applied in place by
+Responsiveness: every daemon call of the window runs on ONE worker thread (ApiQueue; Settings > Save and the connection
+checks on their own short-lived workers) and its result is applied in place by
 a callback on the GUI thread — a slow or hung daemon reply can never freeze the window; polls coalesce (never stack) and
 slow down to 6 s / 12 s while the window is hidden or minimised. Tickers run only while shown (docs/LOW-RAM.md).
 Launch: fabos-command-center [--ask] [--prefill TEXT] [--settings] [--task ID]   (the executable keeps its historical name)
 """
-import datetime, json, math, os, queue, shutil, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
+import datetime, http.client, json, math, os, queue, shutil, socket, subprocess, sys, threading, time, urllib.parse
 from PyQt6.QtCore import (Qt, QTimer, QSize, QPropertyAnimation, QVariantAnimation, QEasingCurve, QRectF, QEvent, QPointF, QPoint, QProcess, QThread,
                           QObject, pyqtSignal, pyqtProperty)
 from PyQt6.QtGui import (QFont, QIcon, QImage, QPixmap, QPainter, QColor, QPalette, QPen, QBrush, QTextDocument, QTextCursor, QTextBlockFormat,
@@ -63,25 +64,38 @@ class AgentOffline(Exception):
     pass
 
 
+_INFLIGHT = {}     # threading.get_ident() -> the http.client connection that thread is waiting on (ApiQueue.stop() shuts it down)
+
+
 def api(method, path, body=None, timeout=API_TIMEOUT):
-    """Call fabos-agentd. Returns the JSON reply ({"error":..., "http":...} on HTTP errors); raises AgentOffline when unreachable."""
+    """Call fabos-agentd. Returns the JSON reply ({"error":..., "http":...} on HTTP errors); raises AgentOffline when unreachable.
+    http.client rather than urllib so the connection is known while the call is in flight (_INFLIGHT): a worker that must
+    stop (the window is closing) has its socket shut down from the GUI thread and returns at once instead of running out
+    the timeout — see ApiQueue.stop()."""
+    ident = threading.get_ident()
     try:
         token = open(os.path.join(RUN, "token")).read().strip()
-        port = open(os.path.join(RUN, "port")).read().strip()
-    except OSError as e:
+        port = int(open(os.path.join(RUN, "port")).read().strip())
+    except (OSError, ValueError) as e:
         raise AgentOffline(str(e))
-    req = urllib.request.Request("http://127.0.0.1:%s%s" % (port, path), method=method, data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    _INFLIGHT[ident] = conn
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        try:
-            return {"error": json.loads(e.read()).get("error", str(e)), "http": e.code}
-        except Exception:
-            return {"error": str(e), "http": e.code}
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        raise AgentOffline(str(e))
+        conn.request(method, path, body=json.dumps(body).encode() if body is not None else None,
+                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+        r = conn.getresponse()
+        raw = r.read()
+        if r.status >= 400:
+            try:
+                return {"error": json.loads(raw).get("error", "HTTP Error %d: %s" % (r.status, r.reason)), "http": r.status}
+            except Exception:
+                return {"error": "HTTP Error %d: %s" % (r.status, r.reason), "http": r.status}
+        return json.loads(raw)
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        raise AgentOffline(str(e) or e.__class__.__name__)
+    finally:
+        _INFLIGHT.pop(ident, None)
+        conn.close()
 
 
 class ApiWorker(QThread):
@@ -99,13 +113,40 @@ class ApiWorker(QThread):
             self.done.emit({"offline": str(e), "error": "agent service offline"})
 
 
+class ApiJobWorker(QThread):
+    """Several daemon calls in order, off the GUI thread: done(results) with one entry per call made ({"offline": msg} for
+    the call that could not reach the daemon, after which the job stops). With gate_first the later calls run only when the
+    first one came back without an error (Settings > Save: PUT /settings, then one POST /secrets per changed key — the
+    same sequence that used to run on the GUI thread and froze the dialog for up to API_TIMEOUT per call)."""
+    done = pyqtSignal(object)
+
+    def __init__(self, calls, gate_first=True, parent=None):
+        super().__init__(parent)
+        self.calls = list(calls)
+        self.gate_first = gate_first
+
+    def run(self):
+        results = []
+        for i, (method, path, body) in enumerate(self.calls):
+            try:
+                r = api(method, path, body)
+            except AgentOffline as e:
+                results.append({"offline": str(e), "error": "agent service offline"})
+                break
+            results.append(r)
+            if i == 0 and self.gate_first and (not isinstance(r, dict) or r.get("error")):
+                break
+        self.done.emit(results)
+
+
 class ApiQueue(QThread):
     """The window's single daemon-call worker. A job is a list of calls [(method, path, body), ...] run here one after the
     other, OFF the GUI thread; the results (one per call, or {"offline": msg} for the call that could not reach the daemon,
     after which the job stops) come back through `done`, a queued signal delivered on the GUI thread. A job with a `key`
     replaces a queued job with the same key that has not started yet, so a slow daemon never piles up polls behind each
     other — the newest state is what the window shows. `inflight` (GUI-thread counter) is what flush_api() waits on.
-    A call in flight is bounded by API_TIMEOUT; nothing here ever blocks the widgets."""
+    A call in flight is bounded by API_TIMEOUT; nothing here ever blocks the widgets. stop() ends the worker within one
+    socket round trip even against a daemon that accepts the connection and never answers (see there)."""
     done = pyqtSignal(object, object)          # job, results (None when the job was replaced before it ran)
 
     def __init__(self):
@@ -113,6 +154,8 @@ class ApiQueue(QThread):
         self._q = queue.Queue()
         self._lock = threading.Lock()
         self._pending = {}                     # key -> queued job (not started)
+        self._stopping = False
+        self._ident = None                     # the worker thread's ident once it runs (its in-flight connection is _INFLIGHT[_ident])
         self.inflight = 0
         self.start()
 
@@ -129,12 +172,25 @@ class ApiQueue(QThread):
         return job
 
     def stop(self):
+        """Ends the worker: no further call of the current job is started, and the call in flight (if any) has its socket
+        shut down so it returns at once. Without this a job of three calls against a daemon that accepts TCP and never
+        answers would hold the thread for 3 x API_TIMEOUT, longer than closeEvent() waits — and Qt aborts the process when
+        a running QThread is destroyed."""
+        self._stopping = True
         self._q.put(None)
+        conn = _INFLIGHT.get(self._ident) if self._ident is not None else None
+        sock = getattr(conn, "sock", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
     def run(self):
+        self._ident = threading.get_ident()
         while True:
             job = self._q.get()
-            if job is None:
+            if job is None or self._stopping:
                 return
             with self._lock:
                 if job["key"] is not None and self._pending.get(job["key"]) is job:
@@ -145,6 +201,8 @@ class ApiQueue(QThread):
                 continue
             results = []
             for method, path, body in job["calls"]:
+                if self._stopping:
+                    return
                 try:
                     results.append(api(method, path, body))
                 except AgentOffline as e:
@@ -2595,6 +2653,7 @@ class SettingsDialog(RoundedDialog):
         self._workers = []
         self.saved_provider = None
         self.mail_worker = None
+        self.save_worker = None            # ApiJobWorker while Save is in flight (buttons disabled, dialog keeps painting)
         self.oauth_flow = None
         self.oauth_timer = QTimer(self)
         self.oauth_timer.setInterval(1500)
@@ -2972,6 +3031,8 @@ class SettingsDialog(RoundedDialog):
         self.worker.start()
 
     def done(self, r):
+        if self.save_worker is not None:      # Save in flight (buttons disabled; Escape lands here): the result decides, not the key
+            return
         self.oauth_timer.stop()
         p, self.doctor_proc = self.doctor_proc, None
         _stop_process(p)
@@ -3013,6 +3074,9 @@ class SettingsDialog(RoundedDialog):
         return self._mail_blocked_reason()
 
     def _update_save_state(self):
+        if getattr(self, "save_worker", None) is not None:      # a save is in flight: nothing may re-enable the button meanwhile
+            self.confirm_btn.setEnabled(False)
+            return
         why = self._blocked_reason() if self.current_pid else ""
         self.confirm_btn.setEnabled(not why)
         self.confirm_btn.setToolTip(why or "Save settings")
@@ -3379,20 +3443,41 @@ class SettingsDialog(RoundedDialog):
             body[k] = "" if (mpid != "other" and v == str(pre.get(pk, ""))) else v
         sec = self.mail_security.currentData()
         body["mail.smtp_security"] = "" if (mpid != "other" and sec == pre.get("smtp_security")) else sec
-        try:
-            r = api("PUT", "/settings", body)
-            if not isinstance(r, dict) or r.get("error"):
-                RoundedDialog.info(self, "Couldn't save the settings", str(r.get("error", "unknown error") if isinstance(r, dict) else r))
-                return
-            for p, st in self.state.items():
-                if st["remove"]:
-                    api("POST", "/secrets", {"name": p + "_api_key", "value": ""})
-                elif st["key"]:
-                    api("POST", "/secrets", {"name": p + "_api_key", "value": st["key"]})
-            if self.mail_pw.text():
-                api("POST", "/secrets", {"name": "mail_password", "value": self.mail_pw.text()})
-        except AgentOffline as e:          # keep the dialog open: nothing was saved and the edits are still in the fields
-            RoundedDialog.info(self, "Agent service offline", "Your changes were not saved. Start the service with:  systemctl --user start fabos-agent   and press Save again. (%s)" % str(e)[:120])
+        calls = [("PUT", "/settings", body)]
+        for p, st in self.state.items():
+            if st["remove"]:
+                calls.append(("POST", "/secrets", {"name": p + "_api_key", "value": ""}))
+            elif st["key"]:
+                calls.append(("POST", "/secrets", {"name": p + "_api_key", "value": st["key"]}))
+        if self.mail_pw.text():
+            calls.append(("POST", "/secrets", {"name": "mail_password", "value": self.mail_pw.text()}))
+        # Off the GUI thread, like the connection checks: PUT first, the secrets only after it succeeded (gate_first). The
+        # dialog keeps painting while a slow daemon answers; both buttons are disabled until _saved() runs.
+        if self.save_worker is not None:
+            return
+        self.save_worker = ApiJobWorker(calls)
+        self.save_worker.done.connect(lambda rs, pid=pid: self._saved(pid, rs))
+        self.save_worker.finished.connect(self.save_worker.deleteLater)
+        self._workers.append(self.save_worker)
+        self.confirm_btn.setText("Saving…")
+        self.cancel_btn.setEnabled(False)
+        self._update_save_state()
+        self.save_worker.start()
+
+    def _saved(self, pid, results):
+        """Save's results, on the GUI thread. Offline or a rejected PUT keeps the dialog open (nothing was saved and the
+        edits are still in the fields); otherwise the dialog closes as before."""
+        self.save_worker = None
+        self.confirm_btn.setText("Save")
+        self.cancel_btn.setEnabled(True)
+        self._update_save_state()
+        off = next((r for r in results if isinstance(r, dict) and "offline" in r), None)
+        if off is not None:
+            RoundedDialog.info(self, "Agent service offline", "Your changes were not saved. Start the service with:  systemctl --user start fabos-agent   and press Save again. (%s)" % off["offline"][:120])
+            return
+        r = results[0] if results else None
+        if not isinstance(r, dict) or r.get("error"):
+            RoundedDialog.info(self, "Couldn't save the settings", str(r.get("error", "unknown error") if isinstance(r, dict) else r))
             return
         self.saved_provider = pid
         self.accept()
@@ -3687,13 +3772,15 @@ class AIControls(QMainWindow):
 
     def closeEvent(self, e):
         """Closing the window ends the polling, the worker and any voice process; nothing keeps running behind a closed window.
-        The worker is waited for (a call in flight is bounded by API_TIMEOUT) because Qt must never destroy a running QThread."""
+        The worker is waited for because Qt must never destroy a running QThread: stop() shuts the in-flight socket and no
+        further call of a job starts, so at most one connect/read (bounded by API_TIMEOUT) can remain — the wait below is
+        longer than that."""
         self._closing = True
         for t in (self.list_timer, self.thread_timer, self._restyle):
             t.stop()
         self.voice.shutdown()
         self.api_q.stop()
-        self.api_q.wait((API_TIMEOUT + 2) * 1000)
+        self.api_q.wait((API_TIMEOUT + 3) * 1000)
         super().closeEvent(e)
 
     def showEvent(self, e):

@@ -144,10 +144,12 @@ PlasmoidItem {
     function api(kind, ref, method, path, body) { root.run(kind, ref, Agent.apiCommand(method, path, body)) }
 
     // ---- ONE periodic snapshot (GET /status + GET /tasks/{id} in a single curl, Agent.snapshotCommand) at an adaptive cadence:
-    //   2 s   while the panel follows an active task, plus two trailing snapshots once it stops
+    //   2 s   while the panel follows an active task, plus two trailing snapshots once it stops (at +2 s and +4 s: the
+    //         daemon writes status=done before the final step)
     //   8 s   otherwise, while the bar is awake (interacted with in the last 30 s, or a task/recording is going on)
-    //   off   when the mark has gone idle: nothing runs, no process is spawned; wake() (hover, focus, click, a task)
-    //         starts the timer again and triggeredOnStart snapshots at once, so the status is never stale when it matters.
+    //   60 s  status-only heartbeat once the mark has gone idle (4 tasks a minute): tasks started elsewhere — Fab AI
+    //         Controls, the CLI, a schedule_watch hit — and their pending approvals still reach the closed bar's status
+    //         line; wake() (hover, focus, click, a task) switches back to the 8 s timer, which snapshots at once.
     // One-off calls (create, cancel, retry, approve, answer, settings, the remembered task) keep using api().
     property int trailing: 0                                 // snapshots still owed after the followed task stopped
     readonly property bool followTask: root.panelMode !== "closed" && root.taskId > 0 && (root.taskActive || root.trailing > 0)
@@ -158,6 +160,7 @@ PlasmoidItem {
         running: root.followTask || root.markAwake
         onTriggered: root.snapshot()
     }
+    Timer { id: heartbeat; interval: 60000; repeat: true; running: !snapTimer.running; onTriggered: root.snapshot() }
     function snapshot() { var t = root.followTask ? root.taskId : 0; root.run("snap", t, Agent.snapshotCommand(t)) }
     function pollSoon() { if (snapTimer.running) snapTimer.restart(); else root.wake() }   // restart() re-triggers at once
 
@@ -166,9 +169,12 @@ PlasmoidItem {
         switch (kind) {
         case "snap": {
             var sn = Agent.parseSnapshot(out)
+            var wasActive = root.taskActive
             root.onStatus(sn.status)
             if (ref > 0 && ref === root.taskId && sn.task && sn.task.id === root.taskId) root.ingest(sn.task)
-            if (!root.taskActive && root.trailing > 0) root.trailing--
+            // the snapshot that itself ended the task (ingest -> onTaskActiveChanged set trailing = 2 synchronously) is
+            // not one of the two trailing ones; only snapshots taken after the stop count down
+            if (!wasActive && !root.taskActive && root.trailing > 0) root.trailing--
             break
         }
         case "status": root.onStatus(j); break
