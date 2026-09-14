@@ -10,6 +10,10 @@ import json, os
 
 INK = (15, 20, 32)  # #0F1420 tinted ink
 
+# Roundness tokens (docs/design/BRANDING.md "Roundness"): popups/dialogs 24, panels/cards 20, tooltips 14.
+# The window frame's 20 px title-bar corners come from brand/gen/aurorae_theme.py; controls (12) from the widget style.
+RADIUS = {"popup": 24, "panel": 20, "tooltip": 14}
+
 
 def _rgba(rgb, a):
     return "rgba(%d,%d,%d,%.3f)" % (rgb[0], rgb[1], rgb[2], a)
@@ -56,16 +60,16 @@ def frame_svg(radius, alpha, margin, border="#2A313B", fill=INK):
 def write_theme(out, conf):
     root = os.path.join(out, "plasma-theme")
     files = {
-        "dialogs/background.svg": frame_svg(24, 0.95, 12),
-        "translucent/dialogs/background.svg": frame_svg(24, 0.84, 12),
-        "opaque/dialogs/background.svg": frame_svg(24, 1.0, 12),
-        "widgets/panel-background.svg": frame_svg(20, 0.93, 4),
-        "translucent/widgets/panel-background.svg": frame_svg(20, 0.76, 4),
-        "opaque/widgets/panel-background.svg": frame_svg(20, 1.0, 4),
-        "widgets/tooltip.svg": frame_svg(14, 0.96, 8),
-        "translucent/widgets/tooltip.svg": frame_svg(14, 0.9, 8),
-        "widgets/background.svg": frame_svg(20, 0.93, 10),
-        "translucent/widgets/background.svg": frame_svg(20, 0.82, 10),
+        "dialogs/background.svg": frame_svg(RADIUS["popup"], 0.95, 12),
+        "translucent/dialogs/background.svg": frame_svg(RADIUS["popup"], 0.84, 12),
+        "opaque/dialogs/background.svg": frame_svg(RADIUS["popup"], 1.0, 12),
+        "widgets/panel-background.svg": frame_svg(RADIUS["panel"], 0.93, 4),
+        "translucent/widgets/panel-background.svg": frame_svg(RADIUS["panel"], 0.76, 4),
+        "opaque/widgets/panel-background.svg": frame_svg(RADIUS["panel"], 1.0, 4),
+        "widgets/tooltip.svg": frame_svg(RADIUS["tooltip"], 0.96, 8),
+        "translucent/widgets/tooltip.svg": frame_svg(RADIUS["tooltip"], 0.9, 8),
+        "widgets/background.svg": frame_svg(RADIUS["panel"], 0.93, 10),
+        "translucent/widgets/background.svg": frame_svg(RADIUS["panel"], 0.82, 10),
     }
     for rel, svg in files.items():
         p = os.path.join(root, rel)

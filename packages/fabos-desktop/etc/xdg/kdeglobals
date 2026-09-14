@@ -1,18 +1,38 @@
+# Typography: Inter 11 pt for UI, menus and toolbars; 9 pt smallest readable; JetBrains Mono 11 pt fixed.
 [General]
-font=@UI_FONT@,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
-menuFont=@UI_FONT@,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
-toolBarFont=@UI_FONT@,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
-smallestReadableFont=@UI_FONT@,8,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
-fixed=@MONO_FONT@,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+font=@UI_FONT@,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+menuFont=@UI_FONT@,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+toolBarFont=@UI_FONT@,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+smallestReadableFont=@UI_FONT@,9,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+fixed=@MONO_FONT@,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
 ColorScheme=FabDark
 AccentColor=59,110,245
 widgetStyle=Breeze
 
 [WM]
-activeFont=@UI_FONT@,10,-1,5,600,0,0,0,0,0,0,0,0,0,0,1
+activeFont=@UI_FONT@,11,-1,5,600,0,0,0,0,0,0,0,0,0,0,1
 
 [Icons]
 Theme=FabOS
+
+# Icon sizes (KIconLoader groups): medium everywhere — 24 px toolbars, 18 px small/menu, 32 px dialogs + panel, 48 px desktop.
+[MainToolbarIcons]
+Size=24
+
+[ToolbarIcons]
+Size=24
+
+[SmallIcons]
+Size=18
+
+[DialogIcons]
+Size=32
+
+[DesktopIcons]
+Size=48
+
+[PanelIcons]
+Size=32
 
 [KDE]
 LookAndFeelPackage=in.patienceai.fabos.desktop

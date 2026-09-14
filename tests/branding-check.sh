@@ -35,7 +35,7 @@ chk "hicolor fabos.svg has no tile"         "! R 'grep -q \"<rect width=\\\"64\\
 chk "pixmaps fabos.png is 1024 px"          "R \"$PNGDIM /usr/share/pixmaps/fabos.png\" | tr -s ' ' x | grep -q x1024x1024"
 chk "default avatar = fabos-face.png"       "R 'readlink /usr/share/sddm/faces/.face.icon' | grep -q fabos-face.png"
 chk "FabOS icon theme: fabos + symbolic"    "R 'test -f /usr/share/icons/FabOS/scalable/apps/fabos.svg && test -f /usr/share/icons/FabOS/scalable/apps/fabos-symbolic.svg && test -f /usr/share/icons/FabOS/512x512/apps/fabos.png'"
-chk "FabOS index.theme: scalable first, follows scheme" "R 'grep -q ^Directories=scalable/apps, /usr/share/icons/FabOS/index.theme && grep -q ^FollowsColorScheme=true /usr/share/icons/FabOS/index.theme'"
+chk "FabOS index.theme: scalable first, follows scheme" "R 'grep -qE \"^Directories=scalable/status,.*scalable/apps,16x16/apps\" /usr/share/icons/FabOS/index.theme && grep -q ^FollowsColorScheme=true /usr/share/icons/FabOS/index.theme'"
 chk "3D logo shipped"                     "R 'test -s /usr/share/fabos/3d/fabos-mark.glb'"
 chk "aios runs"                           "R 'aios settings list' >/dev/null 2>&1"
 chk "llama-cli present"                   "R 'test -x /usr/bin/llama-cli'"
@@ -93,4 +93,22 @@ chk "icon theme Comment names Patience AI"      "R 'grep -q \"^Comment=.*by Pati
 chk "Homepage in every fabos package"           "! R 'for p in fabos-agent fabos-ai fabos-branding fabos-desktop fabos-desktop-meta fabos-feedback fabos-firstboot fabos-updates fabos-welcome; do dpkg -s \$p 2>/dev/null | grep -q \"^Homepage: https://fabos.patienceai.in\" || echo \$p; done' | grep -q ."
 chk "os-release vendor + URLs"                  "R 'grep -q \"^VENDOR_NAME=.Patience AI\" /usr/lib/os-release && grep -q ^HOME_URL= /usr/lib/os-release && grep -q ^SUPPORT_URL= /usr/lib/os-release && grep -q ^BUG_REPORT_URL= /usr/lib/os-release'"
 chk "about line in Fab OS apps"                 "! R 'grep -L \"Fab OS by Patience AI\" /usr/lib/fabos/welcome/fabos_welcome.py /usr/lib/fabos/updates/fabos_updates.py /usr/lib/fabos/feedback/fabos_feedback.py' | grep -q ."
+
+# Desktop chrome (2026-09-14): Aurorae window frame, monochrome scheme-following status icons, peek-desktop placement, 11 pt UI.
+LAYOUT=/usr/share/plasma/look-and-feel/in.patienceai.fabos.desktop/contents/layouts/org.kde.plasma.desktop-layout.js
+chk "Aurorae FabOS decoration shipped (+Light)" "R 'test -f /usr/share/aurorae/themes/FabOS/metadata.desktop && test -f /usr/share/aurorae/themes/FabOS/decoration.svg && test -f /usr/share/aurorae/themes/FabOS/close.svg && test -f /usr/share/aurorae/themes/FabOS/FabOSrc && test -f /usr/share/aurorae/themes/FabOSLight/FabOSLightrc && test -f /usr/share/aurorae/themes/FabOSLight/decoration.svg'"
+chk "decoration SVGs follow the colour scheme" "R 'grep -q ColorScheme-HeaderBackground /usr/share/aurorae/themes/FabOS/decoration.svg && grep -q current-color-scheme /usr/share/aurorae/themes/FabOS/close.svg'"
+chk "Aurorae metadata names the KCM entries Fab OS" "R 'grep -q ^Name=Fab\ OS$ /usr/share/aurorae/themes/FabOS/metadata.desktop && grep -q ^Name=Fab\ OS\ Light$ /usr/share/aurorae/themes/FabOSLight/metadata.desktop'"
+chk "kwinrc selects the FabOS decoration via Aurorae v2" "R 'grep -q ^library=org.kde.kwin.aurorae.v2$ /etc/xdg/kwinrc && grep -q ^theme=__aurorae__svg__FabOS$ /etc/xdg/kwinrc && grep -q ^BorderSizeAuto=false /etc/xdg/kwinrc && grep -q ^BorderSize=None /etc/xdg/kwinrc'"
+chk "look-and-feel defaults select FabOS/FabOSLight (v2)" "R 'grep -q ^theme=__aurorae__svg__FabOS$ /usr/share/plasma/look-and-feel/in.patienceai.fabos.desktop/contents/defaults && grep -q ^theme=__aurorae__svg__FabOSLight$ /usr/share/plasma/look-and-feel/in.patienceai.fabos.light.desktop/contents/defaults && grep -q ^library=org.kde.kwin.aurorae.v2$ /usr/share/plasma/look-and-feel/in.patienceai.fabos.desktop/contents/defaults && grep -q ^library=org.kde.kwin.aurorae.v2$ /usr/share/plasma/look-and-feel/in.patienceai.fabos.light.desktop/contents/defaults'"
+chk "Aurorae v2 engine + its KCM installed"    "R 'test -f /usr/lib/x86_64-linux-gnu/qt6/plugins/org.kde.kdecoration3/org.kde.kwin.aurorae.v2.so && test -f /usr/lib/x86_64-linux-gnu/qt6/plugins/org.kde.kdecoration3.kcm/kcm_auroraedecoration.so'"
+chk "fabos-desktop depends on kwin-style-aurorae" "R 'dpkg -s fabos-desktop' | grep ^Depends | grep -q kwin-style-aurorae"
+chk "decoration KCM model lists Fab OS (Aurorae v2)" "R 'HOME=/tmp QT_QPA_PLATFORM=offscreen /usr/lib/x86_64-linux-gnu/libexec/kwin-applywindowdecoration --list-themes 2>/dev/null' | grep -q 'Fab OS (theme name: __aurorae__svg__FabOS'"
+chk "bottom-right hot corner shows desktop"   "R 'grep -q ^BottomRight=ShowDesktop /etc/xdg/kwinrc'"
+chk "peek-desktop is the last dock item, not in the top bar" "[ \$(R 'grep -c showdesktop $LAYOUT') -eq 1 ] && [ \$(R 'grep -n showdesktop $LAYOUT | cut -d: -f1') -gt \$(R 'grep -n \"^var dock\" $LAYOUT | cut -d: -f1') ]"
+chk "FabOS mono status icons follow scheme"   "R 'grep -q ColorScheme-Text /usr/share/icons/FabOS/scalable/status/network-wireless-signal-excellent.svg && grep -q current-color-scheme /usr/share/icons/FabOS/scalable/status/network-wireless-connected-100.svg && test -e /usr/share/icons/FabOS/scalable/status/battery-080-charging.svg && test -e /usr/share/icons/FabOS/scalable/status/audio-volume-high.svg && test -e /usr/share/icons/FabOS/scalable/status/battery-profile-performance-symbolic.svg && test -e /usr/share/icons/FabOS/scalable/status/preferences-system-bluetooth.svg && test -e /usr/share/icons/FabOS/scalable/actions/arrow-down.svg && test -e /usr/share/icons/FabOS/scalable/places/user-desktop.svg'"
+chk "mono status icons are SVG only (recolourable)" "! R 'ls /usr/share/icons/FabOS/*/status/*.png 2>/dev/null' | grep -q ."
+chk "kdeglobals UI font is 11 pt, icons medium" "R 'grep -q \"^font=Inter,11,\" /etc/xdg/kdeglobals && grep -q \"^menuFont=Inter,11,\" /etc/xdg/kdeglobals && grep -q \"^toolBarFont=Inter,11,\" /etc/xdg/kdeglobals && grep -A1 \"^\\[ToolbarIcons\\]\" /etc/xdg/kdeglobals | grep -q ^Size=24'"
+chk "clock is bold Inter 13 on one line"      "R 'grep -q \"\\\"fontSize\\\", 13\" $LAYOUT && grep -q \"\\\"dateDisplayFormat\\\", \\\"BesideTime\\\"\" $LAYOUT'"
+chk "tray-defaults is executable"             "R 'test -x /usr/lib/fabos/tray-defaults'"
 exit $fail
