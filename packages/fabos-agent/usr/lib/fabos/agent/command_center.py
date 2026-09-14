@@ -818,12 +818,21 @@ class RoundedDialog(QDialog):
 
     def refit(self):
         """Shrink or grow to the content NOW: activate the layout first so the minimum size it imposes is fresh (a bare
-        adjustSize() right after hiding a block is clamped by the stale minimum and the dialog stays tall)."""
+        adjustSize() right after hiding a block is clamped by the stale minimum and the dialog stays tall). Then honour
+        the layout's height-for-width: word-wrapped labels need more rows at the dialog's real width than sizeHint()
+        guesses, and adjustSize() caps a window at 2/3 of the screen — so the content, not the cap, decides the height
+        (bounded by the screen), or wrapped text gets clipped."""
         lay = self.layout()
         if lay is not None:
             lay.invalidate()          # activate() is a no-op on a layout that still counts as activated
             lay.activate()
         self.adjustSize()
+        if lay is not None and lay.hasHeightForWidth():
+            need = lay.totalHeightForWidth(self.width())
+            scr = self.screen()
+            cap = (scr.availableGeometry().height() - 48) if scr is not None else need
+            if need > self.height():
+                self.resize(self.width(), max(self.height(), min(need, cap)))
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -2454,6 +2463,40 @@ class Disclosure(QWidget):
         super().changeEvent(e)
 
 
+class WrapLabel(QLabel):
+    """A word-wrapped label whose sizeHint is its height at the width it ACTUALLY has. QFormLayout (Qt 6) reserves a
+    wrapped field's sizeHint() height — which QLabel computes at a guessed width — and never its heightForWidth() at
+    the real column width (measured: a 6-line hint got a 176 px row for 112 px of text; a result label squeezed next
+    to a button got a 64 px row for 80 px of text and was clipped). Reporting the height for the laid-out width, and
+    asking for a re-layout when that width changes, makes every row exactly as tall as its text."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+        pol = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        pol.setHeightForWidth(True)
+        self.setSizePolicy(pol)
+        self._laid_width = 0
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if e.size().width() != self._laid_width:
+            self._laid_width = e.size().width()
+            self.updateGeometry()              # the height for this width is only known now
+
+    def sizeHint(self):
+        base = super().sizeHint()
+        if self._laid_width > 0 and self.text():
+            return QSize(base.width(), self.heightForWidth(self._laid_width))
+        return base
+
+    def minimumSizeHint(self):
+        base = super().minimumSizeHint()
+        if self._laid_width > 0 and self.text():
+            return QSize(base.width(), self.heightForWidth(self._laid_width))   # never shorter than its text: no clipped rows
+        return base
+
+
 class TabPage(QWidget):
     """One settings tab. QTabWidget::sizeHint() and QStackedLayout::heightForWidth() ask EVERY page directly (bypassing
     size policies and hidden-item rules), so one tall hidden tab would keep the whole dialog tall. A hidden page therefore
@@ -2514,11 +2557,13 @@ class SettingsDialog(RoundedDialog):
             return f
 
         def wrap(label):
-            """A muted / result label that wraps across the whole field column instead of a narrow guess."""
-            label.setWordWrap(True)
-            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            label.setMinimumWidth(240)
-            return label
+            """A muted / result label that wraps across the whole field column and is exactly as tall as its text
+            (WrapLabel — see there for why a plain word-wrapped QLabel in a QFormLayout is not)."""
+            out = WrapLabel(label.text())
+            if label.objectName():
+                out.setObjectName(label.objectName())
+            label.deleteLater()
+            return out
 
         def row(*widgets, stretch_last=False):
             box = QWidget()
@@ -2697,7 +2742,6 @@ class SettingsDialog(RoundedDialog):
         self.mail_mark = ResultMark(28)
         self.mail_result = wrap(QLabel(""))
         self.mail_result.setObjectName("checkResult")
-        f.addRow("", row(self.mail_signin_btn, self.mail_check_btn, self.mail_mark, self.mail_result, stretch_last=True))
         self.mail_pw = QLineEdit()
         self.mail_pw.setEchoMode(QLineEdit.EchoMode.Password)
         self.mail_pw.setClearButtonEnabled(True)
@@ -2708,6 +2752,8 @@ class SettingsDialog(RoundedDialog):
         self.mail_hint.setObjectName("muted")
         self.mail_hint.setTextFormat(Qt.TextFormat.RichText)
         f.addRow("", self.mail_hint)
+        # the action row comes AFTER the field it checks, so the tab reads Address -> App password -> hint -> Check connection
+        f.addRow("", row(self.mail_signin_btn, self.mail_check_btn, self.mail_mark, self.mail_result, stretch_last=True))
         adv = Disclosure()
         self.mail_adv = adv
         self.mail_from_name = QLineEdit(str(s.get("mail.from_name", "") or ""))
@@ -2721,6 +2767,8 @@ class SettingsDialog(RoundedDialog):
             self.mail_security.addItem(lab, sec)
         adv.addRow("SMTP server", row(self.m["mail.smtp_host"], self.m["mail.smtp_port"], self.mail_security))
         adv.addRow("IMAP server", row(self.m["mail.imap_host"], self.m["mail.imap_port"]))
+        self.m["mail.imap_host"].setPlaceholderText("none = sending only")
+        self.m["mail.imap_host"].setToolTip("The preset's IMAP server. Type none for an account that only sends — the agent will not read that inbox.")
         for k, e in self.m.items():
             e.textEdited.connect(self._mail_edited)
         self.mail_security.currentIndexChanged.connect(lambda _i: self._mail_edited(""))
@@ -3023,12 +3071,15 @@ class SettingsDialog(RoundedDialog):
         pre = self._mail_preset(pid)
         steps = pre.get("hint") or []
         if pre.get("app_password"):
-            head = "%s does not accept your account password here — create an <b>app password</b>:" % (pre.get("label") or MAIL_LABELS.get(pid, pid))
+            head = "%s wants an <b>app password</b>, not your account password:" % (pre.get("label") or MAIL_LABELS.get(pid, pid))
         elif pid == "other":
             head = "Any IMAP / SMTP account:"
         else:
             head = "Your normal %s password works unless two-factor authentication is on:" % (pre.get("label") or MAIL_LABELS.get(pid, pid))
-        return head + "<br>" + "<br>".join("%d. %s" % (i + 1, st) for i, st in enumerate(steps))
+        text = head + "<br>" + "<br>".join("%d. %s" % (i + 1, st) for i, st in enumerate(steps))
+        if pre.get("note"):
+            text += "<br><i>%s</i>" % pre["note"]
+        return text
 
     def _mail_provider_changed(self, idx, initial=False):
         pid = self.mail_provider.itemData(idx)
@@ -3065,8 +3116,9 @@ class SettingsDialog(RoundedDialog):
 
     def _mail_set_pw_visible(self, on):
         on = bool(on)
-        for wd in (self.mail_pw, self.mail_pw_label, self.mail_hint):
+        for wd in (self.mail_pw, self.mail_pw_label):
             wd.setVisible(on)
+        self.mail_hint.setVisible(on and not self._mail_check_ok())
         self.mail_check_btn.setVisible(on)
         self.mail_signin_btn.setVisible(not on or (self._mail_pid() == "gmail" and self.mail_state["oauth_available"]))
         if on:
@@ -3083,7 +3135,15 @@ class SettingsDialog(RoundedDialog):
             self._mail_show_check(None)
         self._update_save_state()
 
+    def _mail_check_ok(self):
+        st = getattr(self, "mail_state", None) or {}
+        return bool(st.get("check") and st["check"].get("ok") and st.get("checked_sig") == self._mail_sig())
+
     def _mail_show_check(self, res, animate=True):
+        # the app-password hint is for BEFORE the check: hidden once the sign-in passed, back when the form changes again
+        self.mail_hint.setVisible(self.mail_pw.isVisible() and not (res and res.get("ok")))
+        QTimer.singleShot(0, self.refit)
+        self.mail_result.setToolTip("")
         if res is None:
             self.mail_mark.set_state("idle")
             self.mail_result.setText("")
@@ -3092,7 +3152,10 @@ class SettingsDialog(RoundedDialog):
         if res.get("ok"):
             self.mail_mark.set_state("ok", animate=animate)
             imap = res.get("imap") or {}
-            self.mail_result.setText("Signed in · SMTP ✓ · %s · %d ms" % ("IMAP ✓" if imap.get("ok") else "IMAP skipped", int(res.get("latency_ms") or 0)))
+            text = "Signed in · SMTP ✓ · %s · %d ms" % ("IMAP ✓" if imap.get("ok") else "IMAP off", int(res.get("latency_ms") or 0))
+            if not imap.get("ok") and imap.get("detail"):
+                text += "\n" + str(imap["detail"])          # e.g. Outlook: password sign-in for IMAP switched off — sending works
+            self.mail_result.setText(text)
             self.mail_result.setStyleSheet("color: %s;" % GREEN)
         else:
             detail = str(res.get("detail") or "Check failed")
@@ -3131,9 +3194,11 @@ class SettingsDialog(RoundedDialog):
             self.mail_worker.start()
             return
         # no Google sign-in for this provider (or this build): the app-password path, with the reason when it applies
+        # (short in the label — it shares its row with Check connection; the daemon's full sentence is the tooltip)
         self._mail_set_pw_visible(True)
         if pid == "gmail" and self.mail_state["oauth_why"]:
-            self.mail_result.setText(self.mail_state["oauth_why"])
+            self.mail_result.setText("No Google sign-in on this build — use an app password instead.")
+            self.mail_result.setToolTip(self.mail_state["oauth_why"])
             self.mail_result.setStyleSheet("")
         self.mail_pw.setFocus()
 

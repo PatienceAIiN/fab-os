@@ -18,7 +18,7 @@ Exit code 0 only if every step ran without an exception. Needs PyQt6 — run it 
 Quick passes (no chat seeding; the output directory stays the first argument):
   ... /work/tests/ai-controls-render.py /work/build --settings --welcome
   --settings  the compact Settings dialog in dark + light: every tab rendered (settings-{general,provider,voice,mail}-*.png,
-              settings-general-advanced-*.png, settings-mail-{ok,fail}-*.png, settings-voice-*.png), per-tab heights against the
+              settings-general-advanced-*.png, settings-mail-{ok,fail,outlook}-*.png, settings-voice-*.png), per-tab heights against the
               560 px budget, the Mail Sign in -> app-password path -> Check connection (patched api) -> Save gating, the Voice
               check box with a fake fabos-voice (with and without `doctor` / `say --test`), and the composer mic toast reasons
               (exit 3 / exit 4 / missing binary) — the mic never fails silently
@@ -157,6 +157,13 @@ def quick_passes():
                 spin()
                 sd.refit()
                 spin()
+
+                def fits(what):
+                    """No clipped rows: the dialog is at least as tall as its layout needs at its real width, and within the 560 px budget."""
+                    lay = sd.layout(); need = lay.totalHeightForWidth(sd.width()) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
+                    assert sd.height() >= need, "%s: dialog %d px tall but its content needs %d (clipped rows)" % (what, sd.height(), need)
+                    assert sd.height() <= 560, "%s: dialog %d px tall, budget 560" % (what, sd.height())
+                    return sd.height()
                 per_tab = {}
                 for i in range(sd.tabs.count()):        # the dialog fits the CURRENT tab; every tab must stay inside the 560 px budget
                     sd.tabs.setCurrentIndex(i); spin(); sd.refit(); spin()
@@ -221,7 +228,11 @@ def quick_passes():
                 sp = sd.grab(); assert sp.save(os.path.join(OUT, "settings-mail-%s.png" % name))
                 sd.mail_signin_btn.click(); spin(); sd.refit(); spin()
                 assert sd.mail_pw.isVisible() and sd.mail_hint.isVisible() and sd.mail_check_btn.isVisible() and not sd.mail_signin_btn.isVisible()
-                assert "GOOGLE_OAUTH_CLIENT_ID" in sd.mail_result.text() and "app password" in sd.mail_result.text(), sd.mail_result.text()
+                mail_states = {"gmail app-password path": fits("Mail: app-password path")}
+                top = lambda wd: wd.mapTo(sd, wd.rect().topLeft()).y()
+                order = [top(x) for x in (sd.mail_address, sd.mail_pw, sd.mail_hint, sd.mail_check_btn)]
+                assert order == sorted(order) and len(set(order)) == 4, "rows must read Address, App password, hint, Check connection (y = %r)" % order
+                assert sd.mail_result.text() == "No Google sign-in on this build — use an app password instead." and "GOOGLE_OAUTH_CLIENT_ID" in sd.mail_result.toolTip(), (sd.mail_result.text(), sd.mail_result.toolTip())
                 hint = sd.mail_hint.text()
                 assert "1. " in hint and "2. " in hint and "3. " in hint and "App passwords" in hint and "2-Step Verification" in hint, hint
                 sd.mail_address.setText("me@gmail.com"); sd.mail_address.textEdited.emit("me@gmail.com")
@@ -232,6 +243,10 @@ def quick_passes():
                 def fake_api(method, path, body=None, timeout=5):
                     if path == "/mail/test":
                         mail_calls.append(body)
+                        if body.get("provider") == "outlook":
+                            return {"ok": True, "detail": "Signed in (sending only)", "smtp": {"ok": True, "detail": "signed in at smtp-mail.outlook.com:587"},
+                                    "imap": {"ok": False, "skipped": True, "login_disabled": True, "detail": "Outlook / Hotmail has switched off password sign-in for IMAP (LOGINDISABLED) — sending with the app password works, reading the inbox does not"},
+                                    "latency_ms": 388, "provider": "outlook", "address": body["address"], "auth": "password"}
                         if body.get("password") == "abcd efgh ijkl mnop":
                             return {"ok": True, "detail": "Signed in", "smtp": {"ok": True, "detail": "signed in at smtp.gmail.com:587"}, "imap": {"ok": True, "detail": "signed in at imap.gmail.com:993"},
                                     "latency_ms": 412, "provider": body["provider"], "address": body["address"], "auth": "password"}
@@ -247,6 +262,8 @@ def quick_passes():
                     assert mail_calls[0]["mail.smtp_host"] == "smtp.gmail.com" and mail_calls[0]["mail.imap_host"] == "imap.gmail.com", mail_calls[0]
                     assert sd.mail_mark.state == "ok" and sd.mail_result.text() == "Signed in · SMTP ✓ · IMAP ✓ · 412 ms", (sd.mail_mark.state, sd.mail_result.text())
                     assert sd.confirm_btn.isEnabled() and not sd.save_note.isVisible(), "Save must be enabled after a successful mail check"
+                    spin(); assert not sd.mail_hint.isVisible(), "the app-password hint is noise once the check passed"
+                    mail_states["gmail ok"] = fits("Mail: gmail ok")
                     settle(600)
                     sp = sd.grab(); assert sp.save(os.path.join(OUT, "settings-mail-ok-%s.png" % name))
                     # a different password invalidates the check; a rejected one shakes the field, says why, blocks Save
@@ -255,6 +272,8 @@ def quick_passes():
                     sd.mail_check_btn.click(); wait_for(lambda: sd.mail_worker is None, "mail check 2")
                     assert sd.mail_mark.state == "fail" and sd.mail_result.text().startswith("Wrong password — Gmail needs an app password"), sd.mail_result.text()
                     assert getattr(sd.mail_pw, "_shake_anim", None) is not None, "no shake on the password field"
+                    spin(); assert sd.mail_hint.isVisible(), "the hint comes back after a failed check"
+                    mail_states["gmail wrong password"] = fits("Mail: gmail wrong password")
                     assert not sd.confirm_btn.isEnabled() and sd.save_note.isVisible() and "failed" in sd.save_note.text()
                     settle(600)
                     sp = sd.grab(); assert sp.save(os.path.join(OUT, "settings-mail-fail-%s.png" % name))
@@ -264,6 +283,23 @@ def quick_passes():
                     assert sd.mail_pw_label.text() == "App password" and "Yahoo" in sd.mail_hint.text() and sd.mail_mark.state == "idle"
                     sd.mail_provider.setCurrentIndex(5); spin()
                     assert sd.m["mail.smtp_host"].text() == "" and sd.mail_pw_label.text() == "Password" and sd.mail_provider.currentData() == "other"
+                    # Outlook: the preset note warns that IMAP password sign-in is off; a sending-only check still enables Save and says why
+                    sd.mail_provider.setCurrentIndex(1); spin()
+                    assert "cannot check its inbox" in sd.mail_hint.text() and sd.m["mail.imap_host"].placeholderText() == "none = sending only", sd.mail_hint.text()
+                    sd.mail_address.setText("me@outlook.com"); sd.mail_address.textEdited.emit("me@outlook.com")
+                    sd.mail_pw.setText("outlook-app-pw"); sd.mail_pw.textEdited.emit("outlook-app-pw")
+                    assert not sd.confirm_btn.isEnabled()
+                    spin(); sd.refit(); spin(); mail_states["outlook before the check (hint + note)"] = fits("Mail: outlook hint + note")
+                    sd.mail_check_btn.click(); wait_for(lambda: sd.mail_worker is None, "mail check outlook")
+                    assert sd.mail_mark.state == "ok" and sd.mail_result.text().startswith("Signed in · SMTP ✓ · IMAP off · 388 ms\n") and "switched off password sign-in" in sd.mail_result.text(), sd.mail_result.text()
+                    assert sd.confirm_btn.isEnabled(), "Save must be enabled for a sending-only account"
+                    settle(600); sd.refit(); spin()
+                    assert not sd.mail_hint.isVisible()
+                    mail_states["outlook sending-only result"] = fits("Mail: outlook sending-only")
+                    print("[%s] Mail tab states (px, budget 560, none clipped): %s" % (name, mail_states))
+                    heights[name] = max([heights[name]] + list(mail_states.values()))
+                    sp = sd.grab(); assert sp.save(os.path.join(OUT, "settings-mail-outlook-%s.png" % name))
+                    sd.mail_address.setText("me@gmail.com"); sd.mail_address.textEdited.emit("me@gmail.com")
                     sd.mail_provider.setCurrentIndex(0); spin()
                     # Save after a good check: PUT carries the account, no Brevo keys, servers equal to the preset are stored as "auto" (empty)
                     sd.mail_pw.setText("abcd efgh ijkl mnop"); sd.mail_pw.textEdited.emit("abcd efgh ijkl mnop")

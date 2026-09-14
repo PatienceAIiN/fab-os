@@ -7,6 +7,7 @@
   fabos approvals | approve APPROVAL_ID | deny APPROVAL_ID | answer TASK_ID "text"
   fabos mode [ask|auto|bypass]      permission mode (ask: approve MEDIUM+, auto: approve CRITICAL only, bypass: never ask)
   fabos settings [KEY VALUE]         e.g. fabos settings provider openai ; fabos settings mail.provider gmail ; fabos settings mail.address me@gmail.com
+                                     (an empty VALUE unsets a key: fabos settings mail.provider '' infers the provider from the address again)
   fabos set-key claude|gemini|openai|deepseek|local|mail   store a secret (prompted, never echoed; mail = the app password)
   fabos check [claude|gemini|openai|deepseek|local]   real connection check of the (given or active) AI provider
   fabos mail-check [--provider P] [--address A]       real SMTP + IMAP sign-in with the stored mail account (exit 0 = both fine)
@@ -189,6 +190,8 @@ def main():
             if not out["provider_ready"]: s = "AI provider not configured — open Fab AI Controls → Settings · " + s
             print(s); return
     print(json.dumps(out, indent=1, default=str) if out is not None else "")
+    if isinstance(out, dict) and int(out.get("http") or 0) >= 400:       # the daemon refused it: the exit code says so too
+        sys.exit(1)
 
 
 if __name__ == "__main__":

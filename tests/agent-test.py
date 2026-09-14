@@ -346,6 +346,8 @@ class FakeSMTP:
     instances = []
     reject = False          # 535 on login / AUTH
     unreachable = False     # connection refused
+    drop_on_login = False   # the server closes the TLS connection at AUTH instead of answering 535 (Yahoo on 465 and 587)
+    drop_on_connect = False  # the server closes the connection during the greeting / EHLO (before any sign-in)
 
     def __init__(self, host, port, timeout=None, **kw):
         self.host, self.port, self.timeout, self.ssl = host, port, timeout, False
@@ -353,6 +355,8 @@ class FakeSMTP:
         FakeSMTP.instances.append(self)
         if FakeSMTP.unreachable:
             raise ConnectionRefusedError(111, "Connection refused")
+        if FakeSMTP.drop_on_connect:
+            raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
 
     def ehlo(self):
         pass
@@ -361,11 +365,15 @@ class FakeSMTP:
         self.started_tls = True
 
     def login(self, user, pw):
+        if FakeSMTP.drop_on_login:
+            raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
         if FakeSMTP.reject:
             raise smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted")
         self.logged = (user, pw)
 
     def auth(self, mech, authobject, initial_response_ok=True):
+        if FakeSMTP.drop_on_login:
+            raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
         if FakeSMTP.reject:
             raise smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted")
         self.auth_calls.append((mech, authobject()))
@@ -390,16 +398,21 @@ class FakeIMAP:
     instances = []
     reject = False
     unreachable = False
+    login_disabled = False            # Outlook.com: capabilities carry LOGINDISABLED (only AUTH=XOAUTH2), LOGIN answers NO "Basic authentication is disabled."
+    login_disabled_text_only = False  # a server that does not advertise it but refuses the same way
     error = imaplib.IMAP4.error
 
     def __init__(self, host, port, timeout=None, **kw):
         self.host, self.port, self.timeout = host, port, timeout
         self.logged, self.auth_calls, self.logged_out = None, [], False
+        self.capabilities = ("IMAP4", "IMAP4REV1", "AUTH=XOAUTH2", "LOGINDISABLED") if FakeIMAP.login_disabled else ("IMAP4REV1", "AUTH=PLAIN", "AUTH=XOAUTH2", "IDLE")
         FakeIMAP.instances.append(self)
         if FakeIMAP.unreachable:
             raise socket.gaierror(-2, "Name or service not known")
 
     def login(self, user, pw):
+        if FakeIMAP.login_disabled or FakeIMAP.login_disabled_text_only:
+            raise imaplib.IMAP4.error("Basic authentication is disabled.")
         if FakeIMAP.reject:
             raise imaplib.IMAP4.error(b"[AUTHENTICATIONFAILED] Invalid credentials (Failure)")
         self.logged = (user, pw)
@@ -418,7 +431,8 @@ def patch_mail(test):
     real = (fa.smtplib.SMTP, fa.smtplib.SMTP_SSL, fa.imaplib.IMAP4_SSL)
     fa.smtplib.SMTP, fa.smtplib.SMTP_SSL, fa.imaplib.IMAP4_SSL = FakeSMTP, FakeSMTPSSL, FakeIMAP
     FakeSMTP.instances, FakeIMAP.instances = [], []
-    FakeSMTP.reject = FakeSMTP.unreachable = FakeIMAP.reject = FakeIMAP.unreachable = False
+    FakeSMTP.reject = FakeSMTP.unreachable = FakeSMTP.drop_on_login = FakeSMTP.drop_on_connect = False
+    FakeIMAP.reject = FakeIMAP.unreachable = FakeIMAP.login_disabled = FakeIMAP.login_disabled_text_only = False
 
     def restore():
         fa.smtplib.SMTP, fa.smtplib.SMTP_SSL, fa.imaplib.IMAP4_SSL = real
@@ -508,6 +522,60 @@ class MailAccounts(unittest.TestCase):
         fa.set_secret("mail_password", "stored-app-pw"); FakeSMTP.instances.clear()
         self.assertTrue(fa.test_mail(self.st, "gmail", "me@gmail.com")["ok"]); self.assertEqual(FakeSMTP.instances[0].logged, ("me@gmail.com", "stored-app-pw"))
 
+    def test_login_disabled_and_dropped_connection_are_not_network_errors(self):
+        # Outlook.com: IMAP advertises LOGINDISABLED (only AUTH=XOAUTH2). That is neither "wrong password" nor "cannot reach":
+        # IMAP is reported as switched off WITH the reason, SMTP decides, so Save can be enabled for a sending-only account
+        FakeIMAP.login_disabled = True
+        r = fa.test_mail(self.st, "outlook", "me@outlook.com", "app-pw")
+        self.assertTrue(r["ok"], r); self.assertEqual(r["detail"], "Signed in (sending only)"); self.assertTrue(r["smtp"]["ok"])
+        self.assertFalse(r["imap"]["ok"]); self.assertTrue(r["imap"]["skipped"] and r["imap"]["login_disabled"])
+        self.assertEqual(r["imap"]["detail"], "Outlook / Hotmail has switched off password sign-in for IMAP (LOGINDISABLED) — sending with the app password works, reading the inbox does not")
+        self.assertNotIn("wrong password", r["imap"]["detail"]); self.assertNotIn("cannot reach", json.dumps(r)); self.assertNotIn("mail server error", json.dumps(r))
+        self.assertIsNone(FakeIMAP.instances[-1].logged); self.assertTrue(FakeIMAP.instances[-1].logged_out)     # no LOGIN is even attempted
+        FakeSMTP.reject = True                                                                                    # a wrong SMTP password on top keeps its own class
+        r = fa.test_mail(self.st, "outlook", "me@outlook.com", "normal-pw"); self.assertFalse(r["ok"]); self.assertEqual(r["smtp"]["detail"], "wrong password — Outlook / Hotmail needs an app password, not your account password")
+        FakeSMTP.reject = False
+        # a server that does not advertise LOGINDISABLED but answers NO "Basic authentication is disabled." lands in the same class
+        FakeIMAP.login_disabled = False; FakeIMAP.login_disabled_text_only = True
+        r = fa.test_mail(self.st, "other", "me@corp.example", "pw", {"mail.smtp_host": "mail.corp.example", "mail.imap_host": "mail.corp.example"})
+        self.assertTrue(r["ok"]); self.assertTrue(r["imap"].get("login_disabled")); self.assertIn("sending with the password works", r["imap"]["detail"])
+        FakeIMAP.login_disabled_text_only = False
+        # check_email on such an account: one clear sentence, not an imaplib repr
+        FakeIMAP.login_disabled = True; fa.set_secret("mail_password", "app-pw")
+        for k, v in (("mail.provider", "outlook"), ("mail.address", "me@outlook.com")):
+            self.st.set_setting(k, v)
+        tools = fa.Tools(self.st, fa.Agent.__new__(fa.Agent)); tools.agent.store = self.st
+        out, failed = tools.run(1, "check_email", {"limit": 3}); self.assertTrue(failed); self.assertIn("switched off password sign-in for IMAP", out["error"]); self.assertNotIn("IMAP4", out["error"])
+        FakeIMAP.login_disabled = False
+        # the explicit no-IMAP sentinel: "none" in the Advanced IMAP field means sending only even for a preset that has an IMAP host ("" = the preset)
+        self.assertEqual(fa.mail_config(self.st, "outlook", "me@outlook.com", overrides={"mail.imap_host": "none"})["imap_host"], "")
+        self.st.set_setting("mail.imap_host", "None"); self.assertEqual(fa.mail_config(self.st)["imap_host"], "")
+        FakeIMAP.instances.clear(); r = fa.test_mail(self.st, "outlook", "me@outlook.com", "app-pw")
+        self.assertTrue(r["ok"]); self.assertTrue(r["imap"]["skipped"]); self.assertEqual(r["detail"], "Signed in (sending only)"); self.assertEqual(FakeIMAP.instances, [])
+        out, failed = tools.run(1, "check_email", {}); self.assertTrue(failed); self.assertIn("no IMAP server", out["error"])
+        self.st.set_setting("mail.imap_host", ""); self.assertEqual(fa.mail_config(self.st)["imap_host"], "outlook.office365.com")
+        # Yahoo drops the TLS connection at AUTH instead of answering 535: after a good EHLO that is the wrong-password class, on the PASSWORD
+        FakeSMTP.drop_on_login = True
+        r = fa.test_mail(self.st, "yahoo", "me@yahoo.com", "normal-pw")
+        self.assertFalse(r["ok"]); self.assertTrue(r["smtp"]["closed_at_auth"]); self.assertTrue(r["imap"]["ok"])
+        self.assertEqual(r["smtp"]["detail"], "wrong password — Yahoo Mail closed the connection at sign-in, which it does for a wrong or missing app password")
+        self.assertTrue(r["detail"].startswith("wrong password")); self.assertNotIn("mail server error", json.dumps(r)); self.assertNotIn("cannot reach", json.dumps(r))
+        r = fa.test_mail(self.st, "other", "me@corp.example", "pw", {"mail.smtp_host": "mail.corp.example", "mail.imap_host": "none"})
+        self.assertEqual(r["smtp"]["detail"], "wrong password — the server closed the connection at sign-in (the login was refused)")
+        # sending through such an account fails with the same sentence and a pointer to Settings -> Mail, not a raw exception
+        for k, v in (("mail.provider", "yahoo"), ("mail.address", "me@yahoo.com")):
+            self.st.set_setting(k, v)
+        out, failed = tools.run(1, "send_email", {"to": "x@example.com", "subject": "s", "body": "b"})
+        self.assertTrue(failed); self.assertIn("wrong password — Yahoo Mail closed the connection", out["error"]); self.assertIn("Settings → Mail", out["error"]); self.assertNotIn("SMTPServerDisconnected", out["error"])
+        FakeSMTP.drop_on_login = False; FakeSMTP.reject = True
+        out, failed = tools.run(1, "send_email", {"to": "x@example.com", "subject": "s", "body": "b"})
+        self.assertTrue(failed); self.assertIn("wrong password — Yahoo Mail needs an app password", out["error"]); self.assertNotIn("535", out["error"])
+        FakeSMTP.reject = False
+        # a drop BEFORE the sign-in (greeting / EHLO) stays a server error and never claims a wrong password
+        FakeSMTP.drop_on_connect = True
+        r = fa.test_mail(self.st, "yahoo", "me@yahoo.com", "pw"); self.assertFalse(r["smtp"]["ok"]); self.assertTrue(r["smtp"]["detail"].startswith("mail server error")); self.assertNotIn("password", r["smtp"]["detail"])
+        FakeSMTP.drop_on_connect = False
+
     def test_xoauth2_login_and_token_refresh(self):
         with open(fa.GOOGLE_OAUTH_ENV, "w") as f:
             f.write("GOOGLE_OAUTH_CLIENT_ID=cid.apps.googleusercontent.com\nGOOGLE_OAUTH_CLIENT_SECRET=csecret\n")
@@ -545,6 +613,7 @@ class MailAccounts(unittest.TestCase):
         client, why = fa.google_oauth_client(); self.assertEqual(client, ("cid.apps.googleusercontent.com", "csecret")); self.assertTrue(fa.mail_oauth_status()["google"])
         urllib.request.urlopen = FakeHTTP([("oauth2.googleapis.com/token", (200, {"access_token": "ya29.first", "refresh_token": "1//new-refresh", "expires_in": 3599})),
                                            ("gmail.googleapis.com/gmail/v1/users/me/profile", (200, {"emailAddress": "me@gmail.com"}))])
+        real_grace = fa.OAUTH_RESULT_GRACE; fa.OAUTH_RESULT_GRACE = 1.5; self.addCleanup(lambda: setattr(fa, "OAUTH_RESULT_GRACE", real_grace))
         flow = fa.OAuthFlow(self.st, client, open_browser=False)
         q = urllib.parse.parse_qs(urllib.parse.urlparse(flow.url).query)
         self.assertTrue(flow.url.startswith("https://accounts.google.com/o/oauth2/v2/auth?"))
@@ -555,15 +624,26 @@ class MailAccounts(unittest.TestCase):
         port = int(urllib.parse.urlparse(flow.redirect).port)
 
         def browser(path):
-            c = http.client.HTTPConnection("127.0.0.1", port, timeout=10); c.request("GET", path); r = c.getresponse(); page = r.read().decode(); c.close()
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5); c.request("GET", path); r = c.getresponse(); page = r.read().decode(); c.close()
             return r.status, page
-        # a reply that does not belong to this flow is refused and stores nothing
+
+        def refused(p):
+            """True once nothing listens on p any more: a CLOSED socket refuses at once (a merely shut-down server would still accept)."""
+            for _ in range(60):
+                try:
+                    c = http.client.HTTPConnection("127.0.0.1", p, timeout=1); c.connect(); c.close(); time.sleep(0.05)
+                except ConnectionRefusedError:
+                    return True
+            return False
+        # a reply that does not belong to this flow is refused and stores nothing; that flow's loopback server is closed too
         st, page = browser("/?state=wrong&code=abc"); self.assertEqual(st, 200); self.assertIn("did not belong", page)
         self.assertEqual(flow.status()["state"], "error"); self.assertFalse(fa.has_secret("mail_oauth_refresh"))
+        port1 = port; self.assertTrue(refused(port1), "the failed flow's loopback server is still listening"); self.assertTrue(flow._timer.finished.is_set())
         # the real thing: code + matching state -> token exchange with PKCE verifier -> refresh token stored, address from the profile
         flow2 = fa.OAuthFlow(self.st, client, open_browser=False); port = int(urllib.parse.urlparse(flow2.redirect).port)
         fake = urllib.request.urlopen; fake.calls.clear()
         st, page = browser("/?state=%s&code=4/auth-code&scope=https://mail.google.com/" % flow2.state)
+        self.assertIs(fa.OAuthFlow.flows.get(flow2.id), flow2)        # still pollable right after the redirect (OAUTH_RESULT_GRACE)
         self.assertEqual(st, 200); self.assertIn("Signed in as me@gmail.com", page); self.assertIn("Fab OS", page)
         self.assertEqual(flow2.status()["state"], "done"); self.assertEqual(flow2.status()["address"], "me@gmail.com")
         tok = urllib.parse.parse_qs(fake.calls[0]["data"].decode())
@@ -573,13 +653,16 @@ class MailAccounts(unittest.TestCase):
         self.assertEqual((self.st.setting("mail.provider"), self.st.setting("mail.auth"), self.st.setting("mail.address")), ("gmail", "oauth", "me@gmail.com"))
         self.assertTrue(fa.mail_ready(self.st)); self.assertEqual(fa.mail_config(self.st)["auth"], "oauth")
         self.assertTrue(self.st.one("SELECT id FROM activity WHERE kind='mail_signin'")); self.assertNotIn("1//new-refresh", json.dumps(self.st.all("SELECT * FROM activity")))
-        for _ in range(50):                    # the loopback server shuts itself down once the flow is decided
-            try:
-                browser("/"); time.sleep(0.05)
-            except (ConnectionRefusedError, OSError):
+        # the loopback server is shut down AND closed once the flow is decided (no bound socket left for the daemon's lifetime),
+        # the result stays pollable for OAUTH_RESULT_GRACE, then the flow is forgotten
+        self.assertTrue(refused(port), "loopback server still listening after the sign-in finished")
+        self.assertEqual((flow.srv.socket.fileno(), flow2.srv.socket.fileno()), (-1, -1)); self.assertTrue(flow2.closed and flow2._timer.finished.is_set())
+        for _ in range(100):
+            if flow.id not in fa.OAuthFlow.flows and flow2.id not in fa.OAuthFlow.flows:
                 break
-        else:
-            self.fail("loopback server still listening after the sign-in finished")
+            time.sleep(0.05)
+        self.assertNotIn(flow.id, fa.OAuthFlow.flows); self.assertNotIn(flow2.id, fa.OAuthFlow.flows)
+        flow2.finish()                         # idempotent
         # the freshly exchanged access token is cached, so the first check needs no refresh call
         fake.calls.clear(); self.assertTrue(fa.test_mail(self.st)["ok"]); self.assertEqual(fake.calls, [])
         self.assertEqual(FakeSMTP.instances[-1].auth_calls[0], ("XOAUTH2", "user=me@gmail.com\x01auth=Bearer ya29.first\x01\x01"))
@@ -659,6 +742,10 @@ class Endpoints(unittest.TestCase):
         st, r = self.call("POST", "/mail/oauth/start", {"provider": "gmail"}); self.assertEqual(st, 200); self.assertFalse(r["ok"]); self.assertFalse(r["configured"]); self.assertIn("app password", r["detail"])
         st, r = self.call("GET", "/mail/oauth/status?flow_id=nope"); self.assertEqual(st, 404)
         st, r = self.call("POST", "/secrets", {"name": "mail_api_key", "value": "x"}); self.assertEqual(st, 400)          # the Brevo key is gone from the agent
+        # "" unsets the provider (inferred from the address again) and the auth kind — the CLI's cleanup path; the preset note reaches the UI
+        st, r = self.call("PUT", "/settings", {"mail.provider": "", "mail.auth": ""}); self.assertEqual(st, 200, r)
+        st, r = self.call("GET", "/status"); self.assertEqual((r["mail_provider"], r["mail_auth"]), ("yahoo", "password"))
+        self.assertIn("cannot check its inbox", s["mail_providers"]["outlook"]["note"]); self.assertEqual(s["mail_providers"]["gmail"]["note"], "")
         self.call("POST", "/secrets", {"name": "mail_password", "value": ""}); self.call("PUT", "/settings", {"mail.provider": "gmail", "mail.address": ""})
 
     def test_approvals_filter_and_feedback(self):
@@ -763,8 +850,10 @@ class Daemon(unittest.TestCase):
 
     def cli(self, *args):
         r = subprocess.run([sys.executable, CLI, "--json"] + list(args), env=self.env, capture_output=True, text=True, timeout=30)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        return json.loads(r.stdout) if r.stdout.strip().startswith(("{", "[")) else r.stdout
+        out = json.loads(r.stdout) if r.stdout.strip().startswith(("{", "[")) else r.stdout
+        refused = isinstance(out, dict) and int(out.get("http") or 0) >= 400
+        self.assertEqual(r.returncode, 1 if refused else 0, r.stdout + r.stderr)      # the exit code follows the daemon's verdict
+        return out
 
     def wait(self, tid, states=("done", "failed", "cancelled", "waiting_approval", "waiting_user"), timeout=30):
         for _ in range(timeout * 5):
@@ -993,6 +1082,14 @@ class Daemon(unittest.TestCase):
         r = self.cli("do", "--mode", "bypass", "write a hi note and send it to nobody@example.com"); t = self.wait(r["id"])
         out = json.loads([s for s in t["steps"] if s["name"] == "send_email"][0]["output"])
         self.assertIn("Mail is not configured", out["error"]); self.assertIn("Settings → Mail", out["error"])
+
+    def test_19_cli_exit_code_follows_the_daemon(self):
+        # a refused setting exits 1 (the reply carries http >= 400) and still prints the reason; "" unsets mail.provider and exits 0
+        r = subprocess.run([sys.executable, CLI, "--json", "settings", "mail.provider", "carrier-pigeon"], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr); rep = json.loads(r.stdout); self.assertEqual(rep["http"], 400); self.assertIn("mail.provider must be one of", rep["error"])
+        self.assertEqual(self.cli("settings", "mail.provider", ""), {"ok": True})
+        r = subprocess.run([sys.executable, CLI, "mail-check"], env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr); self.assertTrue(r.stdout.startswith("Mail check failed"), r.stdout)   # no account: exit 1 with the reason
 
 
 if __name__ == "__main__":

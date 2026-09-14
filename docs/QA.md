@@ -225,8 +225,8 @@ level 1–3 tasks passed, `1` = one failed or was skipped, `2` = levels 1–3 gr
 `3` = a setup problem.
 
 ```bash
-# cloud provider
-ANTHROPIC_API_KEY=… [BREVO_API_KEY=… MAIL_TO=you@example.com] \
+# cloud provider (mail tasks are optional: the user's OWN account — Gmail/Outlook/Yahoo/Zoho/iCloud app password — see ADR-0014)
+ANTHROPIC_API_KEY=… [MAIL_ADDRESS=you@gmail.com MAIL_APP_PASSWORD=… MAIL_TO=friend@example.com MAIL_PROVIDER=gmail] \
   tests/agent-ladder-vm.sh --provider claude --model claude-sonnet-5 --keep
 
 # built-in offline model — needs a 4 GB test machine
@@ -269,7 +269,7 @@ Seventeen named checks driven against a booted machine over SSH, with a real mod
 e-mail.
 
 ```bash
-ANTHROPIC_API_KEY=… [BREVO_API_KEY=… MAIL_TO=you@example.com] \
+ANTHROPIC_API_KEY=… [MAIL_ADDRESS=you@gmail.com MAIL_APP_PASSWORD=… MAIL_TO=friend@example.com MAIL_PROVIDER=gmail] \
   tests/agent-live-vm.sh --model claude-sonnet-5 --heavy-model claude-opus-5 --keep
 ```
 

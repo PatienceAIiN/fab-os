@@ -573,14 +573,23 @@ class Tools:
             with open(ap, "rb") as f:
                 msg.add_attachment(f.read(), maintype="application", subtype="octet-stream", filename=os.path.basename(ap))
         with smtp_connect(cfg, timeout=60) as srv:
-            smtp_login(srv, cfg)
+            try:
+                smtp_login(srv, cfg)
+            except (smtplib.SMTPAuthenticationError, smtplib.SMTPServerDisconnected) as e:
+                raise RuntimeError(mail_login_error(cfg, e))
             srv.send_message(msg)
         self.store.activity("agent", "email_sent", task_id, "via=%s to=%s subject=%s" % (cfg["provider"], inp["to"], inp["subject"]))
         return {"sent": True, "message_id": msg["Message-ID"], "to": inp["to"], "via": cfg["provider"]}
 
     def _imap_search(self, cfg, from_contains=None, subject_contains=None, since_hours=48, unseen_only=False, limit=10, include_body=True, seen_uids=None):
         M = imaplib.IMAP4_SSL(cfg["imap_host"], int(cfg["imap_port"] or 993), timeout=60)
-        imap_login(M, cfg)
+        try:
+            imap_login(M, cfg)
+        except (MailLoginDisabled, imaplib.IMAP4.error) as e:
+            why = mail_login_error(cfg, e)
+            if why:
+                raise RuntimeError(why)
+            raise
         M.select("INBOX", readonly=True)
         since = (datetime.now(timezone.utc) - _dt.timedelta(hours=int(since_hours or 48))).strftime("%d-%b-%Y")
         crit = ["SINCE", since]
@@ -1572,24 +1581,27 @@ def test_provider(store, kind, api_key=None, base_url=None, model=None):
 MAIL_PROVIDERS = {
     "gmail": {"label": "Gmail", "smtp_host": "smtp.gmail.com", "smtp_port": 587, "smtp_security": "starttls", "imap_host": "imap.gmail.com", "imap_port": 993,
               "domains": ("gmail.com", "googlemail.com"), "app_password": True, "oauth": "google",
-              "hint": ("Google Account → Security", "2-Step Verification (turn it on)", "App passwords → create one named Fab OS, paste the 16 characters")},
+              "hint": ("Google Account → Security", "2-Step Verification (turn it on)", "App passwords → create one named Fab OS, paste the 16 characters"), "note": ""},
     "outlook": {"label": "Outlook / Hotmail", "smtp_host": "smtp-mail.outlook.com", "smtp_port": 587, "smtp_security": "starttls", "imap_host": "outlook.office365.com", "imap_port": 993,
                 "domains": ("outlook.com", "outlook.in", "hotmail.com", "hotmail.co.uk", "live.com", "live.in", "msn.com"), "app_password": True, "oauth": None,
-                "hint": ("Microsoft account → Security", "Advanced security options → two-step verification on", "App passwords → create a new app password")},
+                "hint": ("Microsoft account → Security", "Advanced security options → two-step verification on", "App passwords → create a new app password"),
+                "note": "Microsoft has switched off password sign-in for reading mail (IMAP LOGINDISABLED): the agent can send from this account with the app password but cannot check its inbox."},
     "yahoo": {"label": "Yahoo Mail", "smtp_host": "smtp.mail.yahoo.com", "smtp_port": 465, "smtp_security": "ssl", "imap_host": "imap.mail.yahoo.com", "imap_port": 993,
               "domains": ("yahoo.com", "yahoo.in", "yahoo.co.in", "yahoo.co.uk", "ymail.com", "rocketmail.com"), "app_password": True, "oauth": None,
-              "hint": ("Yahoo Account Security", "Generate and manage app passwords", "Copy the 16-character password")},
+              "hint": ("Yahoo Account Security", "Generate and manage app passwords", "Copy the 16-character password"), "note": ""},
     "zoho": {"label": "Zoho Mail", "smtp_host": "smtp.zoho.com", "smtp_port": 465, "smtp_security": "ssl", "imap_host": "imap.zoho.com", "imap_port": 993,
              "domains": ("zoho.com", "zohomail.com", "zoho.in", "zohomail.in", "zoho.eu"), "app_password": False, "oauth": None,
-             "hint": ("Zoho Mail → Settings → Mail accounts → IMAP access on", "Zoho Accounts → Security → App passwords (only with two-factor on)", "Otherwise use your normal Zoho password")},
+             "hint": ("Zoho Mail → Settings → Mail accounts → IMAP access on", "Zoho Accounts → Security → App passwords (only with two-factor on)", "Otherwise use your normal Zoho password"), "note": ""},
     "icloud": {"label": "iCloud Mail", "smtp_host": "smtp.mail.me.com", "smtp_port": 587, "smtp_security": "starttls", "imap_host": "imap.mail.me.com", "imap_port": 993,
                "domains": ("icloud.com", "me.com", "mac.com"), "app_password": True, "oauth": None,
-               "hint": ("account.apple.com → Sign-In and Security", "App-Specific Passwords", "Generate one named Fab OS")},
+               "hint": ("account.apple.com → Sign-In and Security", "App-Specific Passwords", "Generate one named Fab OS"), "note": ""},
     "other": {"label": "Other (IMAP / SMTP)", "smtp_host": "", "smtp_port": 587, "smtp_security": "starttls", "imap_host": "", "imap_port": 993,
               "domains": (), "app_password": False, "oauth": None,
-              "hint": ("Ask your provider for the SMTP and IMAP server names", "Fill them in under Advanced", "Use your normal mail password")},
+              "hint": ("Ask your provider for the SMTP and IMAP server names", "Fill them in under Advanced", "Use your normal mail password"), "note": ""},
 }
 MAIL_PROVIDER_ORDER = ("gmail", "outlook", "yahoo", "zoho", "icloud", "other")
+MAIL_PROVIDER_FIELDS = ("label", "smtp_host", "smtp_port", "smtp_security", "imap_host", "imap_port", "app_password", "oauth", "hint", "note")
+MAIL_NO_IMAP = ("none", "-", "off")     # typed into the Advanced IMAP field: "this account has no IMAP" even when the preset has one
 MAIL_TEST_TIMEOUT = 15
 MAIL_NOT_CONFIGURED = ("Mail is not configured. Ask the user to open Fab AI Controls → Settings → Mail and sign in with their own account "
                        "(Gmail, Outlook, Yahoo, Zoho, iCloud or another IMAP/SMTP account).")
@@ -1614,7 +1626,8 @@ def mail_infer_provider(address):
 def mail_config(store, provider=None, address=None, overrides=None):
     """The effective mail account: preset (mail.provider) + Advanced overrides (mail.smtp_host … stored only when they
     differ from the preset) + auth kind (password | oauth). provider / address / overrides come from a /mail/test request
-    so a form that is not saved yet can be checked. mail.user is the pre-1.0-2 name of mail.address."""
+    so a form that is not saved yet can be checked. mail.user is the pre-1.0-2 name of mail.address. An empty override
+    means "use the preset"; mail.imap_host in MAIL_NO_IMAP ("none") means "this account has no IMAP" (sending only)."""
     s = store.setting
     ov = overrides or {}
     address = (address if address not in (None, "") else (s("mail.address") or s("mail.user") or "")).strip()
@@ -1632,6 +1645,8 @@ def mail_config(store, provider=None, address=None, overrides=None):
            "smtp_host": pick("smtp_host"), "smtp_port": _int(pick("smtp_port"), pre["smtp_port"]), "smtp_security": str(pick("smtp_security")).lower(),
            "imap_host": pick("imap_host"), "imap_port": _int(pick("imap_port"), pre["imap_port"]),
            "auth": str(ov.get("auth") or s("mail.auth") or "password").lower(), "app_password": pre["app_password"], "oauth": pre["oauth"]}
+    if cfg["imap_host"].lower() in MAIL_NO_IMAP:
+        cfg["imap_host"] = ""
     if cfg["auth"] == "oauth" and not (pre["oauth"] and has_secret("mail_oauth_refresh")):
         cfg["auth"] = "password"
     return cfg
@@ -1668,12 +1683,49 @@ def smtp_login(srv, cfg, password=None):
         srv.login(cfg["address"], password if password is not None else (get_secret("mail_password") or ""))
 
 
+class MailLoginDisabled(RuntimeError):
+    """The IMAP server does not take passwords at all (LOGINDISABLED); sending may still work."""
+
+
+def imap_login_disabled(M, cfg, err=None):
+    """True when the IMAP server refuses password logins altogether (capability LOGINDISABLED without a PLAIN/LOGIN SASL
+    mechanism, or the NO reply says "Basic authentication is disabled" — Outlook.com since 2024). Not a wrong password:
+    no app password can fix it."""
+    if cfg["auth"] == "oauth":
+        return False
+    caps = tuple(str(c).upper() for c in (getattr(M, "capabilities", None) or ()))
+    if "LOGINDISABLED" in caps and not any(c in ("AUTH=PLAIN", "AUTH=LOGIN") for c in caps):
+        return True
+    return bool(err is not None and re.search(r"LOGINDISABLED|basic auth\w* (is )?(disabled|not (supported|enabled))|LOGIN (command )?(is )?(disabled|not supported)", str(err), re.I))
+
+
 def imap_login(M, cfg, password=None):
     if cfg["auth"] == "oauth":
         token = oauth_access_token(cfg)
         M.authenticate("XOAUTH2", lambda _resp: xoauth2_string(cfg["address"], token).encode())
-    else:
+        return
+    if imap_login_disabled(M, cfg):
+        raise MailLoginDisabled(_mail_login_disabled(cfg))
+    try:
         M.login(cfg["address"], password if password is not None else (get_secret("mail_password") or ""))
+    except imaplib.IMAP4.error as e:
+        if imap_login_disabled(M, cfg, e):
+            raise MailLoginDisabled(_mail_login_disabled(cfg))
+        raise
+
+
+def mail_login_error(cfg, e):
+    """A tool-facing sentence for a failed SMTP/IMAP sign-in (instead of the raw smtplib/imaplib repr), or None."""
+    where = " — the user fixes it in Fab AI Controls → Settings → Mail (Check connection)."
+    if isinstance(e, MailLoginDisabled):
+        return str(e)
+    if isinstance(e, smtplib.SMTPAuthenticationError):
+        return _mail_auth_failure(cfg) + where
+    if isinstance(e, smtplib.SMTPServerDisconnected):
+        return _mail_auth_failure(cfg, closed=True) + where
+    if isinstance(e, imaplib.IMAP4.error) and re.search(r"AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed|authentication failed|\[AUTH\]", str(e), re.I):
+        return _mail_auth_failure(cfg) + where
+    return None
 
 
 # ---- "Sign in with Google": OAuth 2.0 for installed apps (loopback redirect + PKCE), XOAUTH2 on IMAP/SMTP afterwards.
@@ -1685,6 +1737,7 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 GOOGLE_SCOPE = "https://mail.google.com/"          # the one scope Google accepts for IMAP/SMTP XOAUTH2
 OAUTH_FLOW_TIMEOUT = 600
+OAUTH_RESULT_GRACE = 120                    # a finished flow stays pollable this long, then OAuthFlow.flows forgets it
 OAUTH_PAGE = ("<!doctype html><html><head><meta charset='utf-8'><title>Fab OS — Mail sign-in</title>"
               "<style>body{font-family:Inter,'Noto Sans',sans-serif;margin:0;display:grid;place-items:center;height:100vh;background:#F5F7FD;color:#232629}"
               "@media(prefers-color-scheme:dark){body{background:#0F1420;color:#FCFCFC}}"
@@ -1775,6 +1828,8 @@ class OAuthFlow:
         challenge = base64.urlsafe_b64encode(hashlib.sha256(self.verifier.encode()).digest()).rstrip(b"=").decode()
         self.result = {"state": "pending", "detail": "Finish signing in in the browser window…"}
         self.created = time.time()
+        self.closed = False
+        self._lock = threading.Lock()
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.srv.daemon_threads = True
         self.redirect = "http://127.0.0.1:%d/" % self.srv.server_address[1]
@@ -1782,16 +1837,33 @@ class OAuthFlow:
                   "prompt": "consent", "state": self.state, "code_challenge": challenge, "code_challenge_method": "S256"}
         self.url = GOOGLE_AUTH_URL + "?" + urllib.parse.urlencode(params)
         threading.Thread(target=self.srv.serve_forever, daemon=True, name="oauth-" + self.id).start()
-        t = threading.Timer(OAUTH_FLOW_TIMEOUT, self._expire)
-        t.daemon = True
-        t.start()
+        self._timer = threading.Timer(OAUTH_FLOW_TIMEOUT, self._expire)
+        self._timer.daemon = True
+        self._timer.start()
         OAuthFlow.flows[self.id] = self
         self.browser_opened = bool(open_browser) and open_in_session(self.url, env or os.environ)
 
     def _expire(self):
         if self.result["state"] == "pending":
             self.result = {"state": "error", "detail": "The sign-in timed out after %d minutes. Press Sign in to try again." % (OAUTH_FLOW_TIMEOUT // 60)}
-        threading.Thread(target=self.srv.shutdown, daemon=True).start()
+        self.finish()
+
+    def finish(self):
+        """Stop and CLOSE the loopback server (shutdown alone leaves the bound socket open) and forget the flow after
+        OAUTH_RESULT_GRACE so the UI's last poll still sees the outcome. Idempotent; the work runs off the handler thread."""
+        with self._lock:
+            if self.closed:
+                return
+            self.closed = True
+        self._timer.cancel()
+
+        def close():
+            self.srv.shutdown()                  # returns once serve_forever() has exited
+            self.srv.server_close()              # releases the listening socket (and joins the last handler thread)
+            t = threading.Timer(OAUTH_RESULT_GRACE, OAuthFlow.flows.pop, args=(self.id, None))
+            t.daemon = True
+            t.start()
+        threading.Thread(target=close, daemon=True, name="oauth-close-" + self.id).start()
 
     def _handler(self):
         flow = self
@@ -1814,7 +1886,7 @@ class OAuthFlow:
                 self.end_headers()
                 self.wfile.write(body)
                 if flow.result["state"] != "pending":
-                    threading.Thread(target=flow.srv.shutdown, daemon=True).start()
+                    flow.finish()
         return H
 
     def _callback(self, qs):
@@ -1865,10 +1937,21 @@ class OAuthFlow:
         return dict(self.result, flow_id=self.id, url=self.url, browser_opened=self.browser_opened)
 
 
-def _mail_auth_failure(cfg):
+def _mail_auth_failure(cfg, closed=False):
+    """closed=True: the server dropped the TLS connection at AUTH instead of answering 535 (Yahoo does this on 465 and
+    587 for a wrong or missing app password); after a successful EHLO that is an authentication failure, not a network one."""
+    if closed:
+        if cfg["app_password"]:
+            return "wrong password — %s closed the connection at sign-in, which it does for a wrong or missing app password" % cfg["label"]
+        return "wrong password — the server closed the connection at sign-in (the login was refused)"
     if cfg["app_password"]:
         return "wrong password — %s needs an app password, not your account password" % cfg["label"]
     return "wrong password — the server refused the login"
+
+
+def _mail_login_disabled(cfg):
+    return ("%s has switched off password sign-in for IMAP (LOGINDISABLED) — sending with %s works, reading the inbox does not"
+            % (cfg["label"], "the app password" if cfg["app_password"] else "the password"))
 
 
 def _mail_net_failure(host, port, e):
@@ -1907,12 +1990,19 @@ def test_mail(store, provider=None, address=None, password=None, overrides=None)
 
     def smtp_check():
         host, port = cfg["smtp_host"], cfg["smtp_port"]
+        phase = "connect"
         try:
             with smtp_connect(cfg, MAIL_TEST_TIMEOUT) as srv:
+                phase = "auth"                       # EHLO (and STARTTLS) went through: what fails now is the sign-in
                 smtp_login(srv, cfg, pw)
             out["smtp"] = {"ok": True, "detail": "signed in at %s:%d" % (host, port)}
         except smtplib.SMTPAuthenticationError as e:
             out["smtp"] = {"ok": False, "detail": _mail_auth_failure(cfg), "code": e.smtp_code}
+        except smtplib.SMTPServerDisconnected as e:
+            if phase == "auth":
+                out["smtp"] = {"ok": False, "detail": _mail_auth_failure(cfg, closed=True), "closed_at_auth": True}
+            else:
+                out["smtp"] = {"ok": False, "detail": "mail server error: %s" % str(e)[:120]}
         except smtplib.SMTPException as e:
             text = str(e)
             auth = re.search(r"\b53[45]\b|authenticat|credential", text, re.I)
@@ -1937,6 +2027,8 @@ def test_mail(store, provider=None, address=None, password=None, overrides=None)
                 except Exception:
                     pass
             out["imap"] = {"ok": True, "detail": "signed in at %s:%d" % (host, port)}
+        except MailLoginDisabled as e:               # not a wrong password: the server takes no passwords at all (Outlook.com)
+            out["imap"] = {"ok": False, "skipped": True, "login_disabled": True, "detail": str(e)}
         except imaplib.IMAP4.error as e:
             text = str(e)
             auth = re.search(r"AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed|authentication failed|\[AUTH\]|Application-specific password", text, re.I)
@@ -1955,7 +2047,7 @@ def test_mail(store, provider=None, address=None, password=None, overrides=None)
     smtp = out.get("smtp") or {"ok": False, "detail": "cannot reach %s:%d (timed out)" % (cfg["smtp_host"], cfg["smtp_port"])}
     imap = out.get("imap") or {"ok": False, "detail": "cannot reach %s:%d (timed out)" % (cfg["imap_host"], cfg["imap_port"])}
     ok = bool(smtp["ok"] and (imap["ok"] or imap.get("skipped")))
-    detail = "Signed in" if ok else (smtp["detail"] if not smtp["ok"] else "IMAP: " + imap["detail"])
+    detail = ("Signed in" if imap["ok"] else "Signed in (sending only)") if ok else (smtp["detail"] if not smtp["ok"] else "IMAP: " + imap["detail"])
     return dict(base, ok=ok, detail=detail, smtp=smtp, imap=imap, latency_ms=ms)
 
 
@@ -2157,7 +2249,7 @@ def make_handler(store, agent, token):
                 s.setdefault("mail.auth", "password")
                 s["secrets"] = {n: has_secret(n) for n in SECRET_NAMES}
                 s["providers"] = {k: {"label": v["label"], "model": v["model"], "base_url": v.get("base_url"), "help": v.get("help", ""), "secret": v["secret"]} for k, v in PROVIDERS.items()}
-                s["mail_providers"] = {k: {kk: v[kk] for kk in ("label", "smtp_host", "smtp_port", "smtp_security", "imap_host", "imap_port", "app_password", "oauth", "hint")} for k, v in MAIL_PROVIDERS.items()}
+                s["mail_providers"] = {k: {kk: v[kk] for kk in MAIL_PROVIDER_FIELDS} for k, v in MAIL_PROVIDERS.items()}
                 s["mail_provider_order"] = list(MAIL_PROVIDER_ORDER)
                 s["mail_oauth"] = mail_oauth_status()
                 s["mail_ready"] = mail_ready(store)
@@ -2294,10 +2386,10 @@ def make_handler(store, agent, token):
                         return self._send(400, {"error": "mode must be ask|auto|bypass"})
                     if k == "provider" and v not in PROVIDERS and v != "fake":
                         return self._send(400, {"error": "provider must be one of " + ", ".join(PROVIDERS)})
-                    if k == "mail.provider" and str(v).lower() not in MAIL_PROVIDERS:
-                        return self._send(400, {"error": "mail.provider must be one of " + ", ".join(MAIL_PROVIDER_ORDER)})
-                    if k == "mail.auth" and str(v).lower() not in ("password", "oauth"):
-                        return self._send(400, {"error": "mail.auth must be password or oauth"})
+                    if k == "mail.provider" and str(v).lower() not in MAIL_PROVIDERS and str(v) != "":       # "" = unset: infer it from the address
+                        return self._send(400, {"error": "mail.provider must be one of " + ", ".join(MAIL_PROVIDER_ORDER) + " (or empty to infer it from the address)"})
+                    if k == "mail.auth" and str(v).lower() not in ("password", "oauth", ""):
+                        return self._send(400, {"error": "mail.auth must be password or oauth (or empty)"})
                     if k in ("secrets", "providers", "mail_providers", "mail_provider_order", "mail_oauth", "mail_ready"):
                         continue
                     if k == "ai.enabled":
