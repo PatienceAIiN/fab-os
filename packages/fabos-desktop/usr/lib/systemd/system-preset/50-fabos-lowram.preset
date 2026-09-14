@@ -1,0 +1,5 @@
+# Fab OS low-RAM defaults (docs/LOW-RAM.md): services that are redundant on a desktop and cost memory at boot.
+# Presets apply whenever a unit is first installed, so this holds even when the package lands after fabos-desktop.
+disable cups-browsed.service
+disable smartmontools.service
+disable motd-news.timer
