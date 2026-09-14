@@ -92,7 +92,11 @@ chk "Patience AI author in every metadata.json" "! R 'grep -L \"\\\"Name\\\": \\
 chk "icon theme Comment names Patience AI"      "R 'grep -q \"^Comment=.*by Patience AI\" /usr/share/icons/FabOS/index.theme'"
 chk "Homepage in every fabos package"           "! R 'for p in fabos-agent fabos-ai fabos-branding fabos-desktop fabos-desktop-meta fabos-feedback fabos-firstboot fabos-updates fabos-welcome; do dpkg -s \$p 2>/dev/null | grep -q \"^Homepage: https://fabos.patienceai.in\" || echo \$p; done' | grep -q ."
 chk "os-release vendor + URLs"                  "R 'grep -q \"^VENDOR_NAME=.Patience AI\" /usr/lib/os-release && grep -q ^HOME_URL= /usr/lib/os-release && grep -q ^SUPPORT_URL= /usr/lib/os-release && grep -q ^BUG_REPORT_URL= /usr/lib/os-release'"
-chk "about line in Fab OS apps"                 "! R 'grep -L \"Fab OS by Patience AI\" /usr/lib/fabos/welcome/fabos_welcome.py /usr/lib/fabos/updates/fabos_updates.py /usr/lib/fabos/feedback/fabos_feedback.py' | grep -q ."
+# NB: negative `grep -L` checks end the container command with `; true` so the pipeline status (pipefail) is that of the
+# outer `grep -q .` alone, whatever exit status this grep version gives -L.
+chk "about line in Fab OS apps (with ™)"         "! R 'grep -L \"Fab OS™ by Patience AI\" /usr/lib/fabos/welcome/fabos_welcome.py /usr/lib/fabos/updates/fabos_updates.py /usr/lib/fabos/feedback/fabos_feedback.py; true' | grep -q ."
+chk "Welcome first page says Fab OS™"           "R 'grep -q \"Page(\\\"Welcome to Fab OS™\\\"\" /usr/lib/fabos/welcome/fabos_welcome.py'"
+chk "™ never in machine ids"                    "! R 'grep -l ™ /usr/lib/os-release /etc/lsb-release /var/lib/dpkg/status /usr/share/applications/fabos-*.desktop 2>/dev/null; true' | grep -q ."
 
 # Desktop chrome (2026-09-14): Aurorae window frame, monochrome scheme-following status icons, peek-desktop placement, 11 pt UI.
 LAYOUT=/usr/share/plasma/look-and-feel/in.patienceai.fabos.desktop/contents/layouts/org.kde.plasma.desktop-layout.js
@@ -133,4 +137,26 @@ chk "voice: fabos-voiced user unit enabled"        "R 'systemctl --global is-ena
 chk "voice: whisper tiny.en model shipped (sha256)" "R 'sha256sum /usr/share/fabos/voice/ggml-tiny.en.bin' | grep -q ^921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
 chk "voice: dictionary knows the wake phrase"      "R 'grep -q \"^hey HH EY\" /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict && grep -q \"^fab F AE B\" /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict'"
 chk "voice: status reports offline whisper.cpp"    "R 'fabos-voice status' | grep -q '\"stt\": \"whisper.cpp\"'"
+
+# Firewall on by default, window snapping + Snap Assist, package revision (2026-09-14; ADR-0011, brand.conf PKG_REVISION)
+chk "ufw on: ENABLED=yes, unit enabled, deny in / allow out" "R 'grep -q ^ENABLED=yes$ /etc/ufw/ufw.conf && systemctl is-enabled ufw | grep -q ^enabled && grep -q ^DEFAULT_INPUT_POLICY=.DROP /etc/default/ufw && grep -q ^DEFAULT_OUTPUT_POLICY=.ACCEPT /etc/default/ufw'"
+chk "iso profile: no SSH server, no ufw rules"           "[ \"$PROFILE\" != iso ] || ! R 'dpkg -s openssh-server 2>/dev/null | grep ^Package; grep -c \"^-A ufw-user-input\" /etc/ufw/user.rules' | grep -qE '^Package|^[1-9]'"
+chk "vm profile: exactly one ufw rule (22/tcp), v4 + v6" "[ \"$PROFILE\" != vm ] || R 'test \$(grep -c \"^-A ufw-user-input\" /etc/ufw/user.rules) -eq 1 && grep -q \"^-A ufw-user-input -p tcp --dport 22 -j ACCEPT\" /etc/ufw/user.rules && test \$(grep -c \"^-A ufw6-user-input\" /etc/ufw/user6.rules) -eq 1'"
+chk "snap assist KWin script shipped + enabled"          "R 'test -f /usr/share/kwin/scripts/fabos-snap-assist/contents/code/main.js && grep -q \"\\\"Id\\\": \\\"fabos-snap-assist\\\"\" /usr/share/kwin/scripts/fabos-snap-assist/metadata.json && grep -q \"\\\"Name\\\": \\\"Patience AI\\\"\" /usr/share/kwin/scripts/fabos-snap-assist/metadata.json && grep -q ^fabos-snap-assistEnabled=true /etc/xdg/kwinrc'"
+chk "edge tiling: halves, quarter corners, maximise"     "R 'grep -q ^ElectricBorderTiling=true /etc/xdg/kwinrc && grep -q ^ElectricBorderCornerRatio=0.25 /etc/xdg/kwinrc && grep -q ^ElectricBorderMaximize=true /etc/xdg/kwinrc && grep -q ^ElectricBorderDelay=150 /etc/xdg/kwinrc'"
+chk "all 10 fabos packages at 1.0-2 in the manifest"     "[ \$(R 'grep -c -P \"^fabos-[a-z-]+\\t1\\.0-2\$\" /usr/share/fabos/manifest.txt') -eq 10 ]"
+
+# Forbidden third-party product names (owner rule): never in UI strings, QML, Python UI, desktop files, website or docs.
+# "OpenAI" is allowed only as a provider label: the daemon's PROVIDERS table, Fab AI Controls' provider dropdown/help
+# text, the welcome wizard's provider list, the ask bar's "add a provider" hint (main.qml: 'Claude, OpenAI, Gemini or a
+# local model' — a provider-label list; owner may drop this entry if the ask-bar track rewords it), README's provider list,
+# licence/attribution files.
+SRC=$(cd "$(dirname "$0")/.." && pwd)
+FORBID='ChatGPT|SnowUI|Sora|DALL.E|Upgrade plan|can make mistakes'
+OPENAI_OK='fabos_agentd\.py$|command_center\.py$|fabos_welcome\.py$|in\.patienceai\.fabos\.askbar/contents/ui/main\.qml$|(^|/)README\.md$|ATTRIBUTIONS\.md$|LICENSING\.md$|THIRD_PARTY_LICENSES/|(^|/)legal/'
+chk "no forbidden product names in the source tree"     "! grep -rIn -E '$FORBID' $SRC/packages $SRC/website $SRC/brand $SRC/docs | grep -q ."
+chk "no forbidden product names in the image"           "! R 'grep -rIn -E \"$FORBID\" /usr/share/fabos /usr/lib/fabos /usr/share/plasma /usr/share/applications 2>/dev/null; true' | grep -q ."
+chk "OpenAI only as a provider label (source tree)"     "! grep -rIl OpenAI $SRC/packages $SRC/website $SRC/brand $SRC/docs $SRC/README.md | grep -vE '$OPENAI_OK' | grep -q ."
+chk "OpenAI only as a provider label (image)"           "! R 'grep -rIl OpenAI /usr/share/fabos /usr/lib/fabos /usr/share/plasma /usr/share/applications 2>/dev/null; true' | grep -vE '$OPENAI_OK' | grep -q ."
+chk "no files named after those products"              "! find $SRC/packages $SRC/website \( -iname '*chatgpt*' -o -iname '*openai*' -o -iname '*snowui*' \) | grep -q ."
 exit $fail

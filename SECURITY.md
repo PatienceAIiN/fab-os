@@ -52,7 +52,8 @@ The design is described in `docs/decisions/ADR-0005-agent-architecture.md`; the 
 
 ## Posture
 
-Unmodified Ubuntu kernel and shim (Secure Boot works on the ISO), AppArmor on, LUKS full-disk encryption
+Unmodified Ubuntu kernel and shim (Secure Boot works on the ISO), AppArmor on, firewall on by default (ufw:
+incoming denied, outgoing allowed, no rules; no SSH server in the shipped image), LUKS full-disk encryption
 offered by the installer, no snap, no telemetry (`legal/PRIVACY.md`). Cloud AI providers are off until the
 user adds a key; model output is treated as untrusted data. Fab OS updates are apt packages signed with the
 Fab OS Archive key; Ubuntu updates come from Ubuntu unchanged. Known gap: the Fab OS repository is served

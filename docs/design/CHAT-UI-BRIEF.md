@@ -1,6 +1,6 @@
-# Fab AI Controls — chat UI brief (from the ChatGPT UI Kit reference in Figma)
+# Fab AI Controls — chat UI brief (from the reference chat UI kit in Figma)
 
-Source: Figma file `U8et3QcXI42VtSdIsx15ty` ("ChatGPT UI Kit, AI Chat (Community)", SnowUI).
+Source: Figma file `U8et3QcXI42VtSdIsx15ty` (a community "AI Chat" UI kit, CC BY 4.0). It is used for layout and measurements only: none of its names, logos or assets appear anywhere in Fab OS.
 Extracted 2026-09-14 via the Figma REST API. Reference renders are kept OUTSIDE the repository (they are screenshots of a third-party product) on the build host at build/figma/:
 
 | PNG | What it shows |
@@ -11,7 +11,7 @@ Extracted 2026-09-14 via the Figma REST API. Reference renders are kept OUTSIDE 
 | `chat-676-4554.png`, `chat-676-4874.png` | Authenticated start-chat flow (model dropdown, Share, avatar) |
 | `chat-676-2591/2644/2743/2792.png` | Guest chat states (empty, typing, streaming, long answer) |
 | `chat-676-3190.png`, `chat-676-3233.png` | "Write or code" answers with code blocks |
-| `695-809.png` | SnowUI design system colour sheet |
+| `695-809.png` | The kit's design-system colour sheet |
 | `webclient-overview.png` | Whole web-client page (all flows) |
 
 ## Layout (measured from the frames, 1440×1024)
@@ -43,7 +43,7 @@ Extracted 2026-09-14 via the Figma REST API. Reference renders are kept OUTSIDE 
 | Accent | #adadfb (lavender) | **#3B6EF5** Fab OS accent (`Kirigami.Theme.highlightColor` / `palette().highlight()`) |
 | Text primary | #ffffff / #000000 | `palette().windowText()` |
 | Text secondary / placeholder | 60 % / 20 % | windowText @ 60 % / 40 % |
-| Success / Warning | #34c759 / #ff9500 (SnowUI) | keep |
+| Success / Warning | #34c759 / #ff9500 (kit) | keep |
 | Radii | 24 window/pills · 16 composer · 12 buttons+rows · 8 small cards/tags · 4 code | Fab OS: control 12, field 14–16, card 20, popup 24 |
 | Type | Inter 400 14 body · 600 18 section titles · 400 12 captions · 400 16/24 message body | Inter (already the system UI font) |
 | Icon size | 20 (rows), 24 (empty-state glyphs), 20 (action row) | Material Symbols from the FabOS icon theme |
@@ -56,4 +56,4 @@ Extracted 2026-09-14 via the Figma REST API. Reference renders are kept OUTSIDE 
 2. Empty state with the Fab AI mark + "Fab AI Controls" and three columns: **Try asking** (examples of OS tasks), **What I can do** (tools), **Keep in mind** (limits / permission modes).
 3. Messages per the web client: user pill right, assistant plain text left with the action row (copy, good, bad, speak, edit, retry) — Fab OS adds **Stop** while running and the live action timeline under the assistant turn.
 4. Composer per the web client: two-row rounded card at the bottom, "Ask me to do anything…" placeholder, "+" attach and a mode chip left, **mic** and **voice** buttons right; Enter sends, Shift+Enter newline; follow-ups attach to the same conversation.
-5. Palette-driven colours (system light/dark), accent #3B6EF5, Inter, Material Symbols icons. Nothing from OpenAI/ChatGPT branding (no logo, no name) — layout only; SnowUI kit is CC BY 4.0 community, we reuse structure and measurements, not assets.
+5. Palette-driven colours (system light/dark), accent #3B6EF5, Inter, Material Symbols icons. Nothing from the kit's or its vendor's branding (no logo, no product name) — layout only; the kit is CC BY 4.0 and we reuse structure and measurements, never its assets.

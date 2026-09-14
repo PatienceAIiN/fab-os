@@ -24,6 +24,9 @@ dimscreenEnabled=true
 kwin4_effect_translucencyEnabled=true
 zoomEnabled=true
 slidingpopupsEnabled=true
+# Snap Assist (KWin script in /usr/share/kwin/scripts/fabos-snap-assist, ADR-0011): after a window is tiled to one half,
+# the other windows are shown in Window View so one can be picked for the remaining half.
+fabos-snap-assistEnabled=true
 
 # Multitasking: top-left hot corner opens the Overview (all windows + desktops, like GNOME/Fedora); Meta+W does the same.
 [Effect-overview]
@@ -36,7 +39,9 @@ TouchBorderActivate=7
 BottomRight=ShowDesktop
 
 # Windows-style arrangement: drag a window to the top to maximise, to a side to tile half, to a corner to tile a quarter;
-# Meta+T opens the tile layout editor, Meta+Arrows quick-tile.
+# Meta+T opens the tile layout editor, Meta+Arrows quick-tile. Holding Shift while dragging drops the window into the
+# tile layout (KWin 6.6 has no setting to show those zones without a modifier: kwin.kcfg only has ElectricBorderTiling
+# and ElectricBorderCornerRatio).
 [Windows]
 ElectricBorderMaximize=true
 ElectricBorderTiling=true

@@ -16,7 +16,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QIcon
 from PyQt6.QtWidgets import (QApplication, QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QLabel, QRadioButton, QPushButton, QCheckBox, QButtonGroup)
 
-ABOUT = "Fab OS by Patience AI · fabos.patienceai.in · support@patienceai.in"
+ABOUT = "Fab OS™ by Patience AI · fabos.patienceai.in · support@patienceai.in"  # ™: legal/TRADEMARKS.md (claimed, unregistered); never in machine ids
 STYLE = "QWidget{font-family:Inter,'Noto Sans';font-size:14px} QLabel#h1{font-size:26px;font-weight:700} QLabel#muted{color:palette(mid)} QPushButton{border-radius:10px;padding:8px 16px}"
 
 
@@ -64,7 +64,7 @@ def main():
     logo = QPixmap("/usr/share/pixmaps/fabos-logo-dark.png" if "Dark" in current_scheme() else "/usr/share/pixmaps/fabos-logo.png")
 
     # 1 Welcome
-    p1 = Page("Welcome to Fab OS", "A modern desktop operating system by Patience AI. Ubuntu underneath, so every Linux application works. "
+    p1 = Page("Welcome to Fab OS™", "A modern desktop operating system by Patience AI. Ubuntu underneath, so every Linux application works. "
               "The built-in agent can do tasks for you when you ask — it is off until you connect an AI provider.")
     lg = QLabel()
     lg.setPixmap(logo.scaledToHeight(96, Qt.TransformationMode.SmoothTransformation))

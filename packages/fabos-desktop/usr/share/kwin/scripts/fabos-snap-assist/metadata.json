@@ -1,0 +1,21 @@
+{
+    "KPackageStructure": "KWin/Script",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "support@patienceai.in",
+                "Name": "Patience AI"
+            }
+        ],
+        "Description": "After a window is tiled to one half of the screen, shows the other open windows so one can be picked for the remaining half.",
+        "EnabledByDefault": true,
+        "Icon": "preferences-system-windows",
+        "Id": "fabos-snap-assist",
+        "License": "Apache-2.0",
+        "Name": "Fab OS Snap Assist",
+        "Version": "1.0",
+        "Website": "https://fabos.patienceai.in"
+    },
+    "X-Plasma-API": "javascript",
+    "X-Plasma-MainScript": "code/main.js"
+}
