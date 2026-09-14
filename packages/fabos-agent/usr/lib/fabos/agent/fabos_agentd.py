@@ -259,6 +259,7 @@ READ_ONLY = re.compile(r"^\s*(ls|cat|head|tail|less|grep|rg|find|fd|wc|stat|file
 SYSTEM_DIRS = {"/", "/home", "/root", "/usr", "/etc", "/var", "/boot", "/opt", "/bin", "/sbin", "/lib", "/lib64", "/srv", "/dev", "/proc", "/sys"}
 SENSITIVE_PATHS = ("~/.ssh", "~/.gnupg", "~/.config/fabos", "/etc/sudoers")     # credentials, keys and the agent's own secrets
 BLOCK_DEVICE = r"/dev/(sd[a-z]|nvme\d|vd[a-z]|mmcblk\d)"
+WIPE_CMDS = {"shred", "wipe", "srm"}          # secure-delete tools: irrecoverable, so CRITICAL — but only as the command word, never as a plain word in an argument
 
 
 def _norm_target(tok):
@@ -315,8 +316,6 @@ def catastrophic(command):
     c = command
     if re.search(r":\s*\(\s*\)\s*\{|:\s*\|\s*:\s*&", c):
         return "fork bomb"
-    if re.search(r"\b(shred|wipe|srm)\b", c):
-        return "irrecoverable data wipe"
     if re.search(r">\s*" + BLOCK_DEVICE + r"|\bof=" + BLOCK_DEVICE, c):
         return "writes directly to a disk device"
     if re.search(r"\bhistory\s+-c\b", c):
@@ -331,6 +330,14 @@ def catastrophic(command):
         flags = [a for a in args if a.startswith("-")]
         targets = [a for a in args if not a.startswith("-")]
         recursive = any(f in ("--recursive", "-R") or (f.startswith("-") and not f.startswith("--") and "r" in f.lower()) for f in flags)
+        # secure-delete tools as the command word, via xargs/parallel, or as find's -exec/-ok action ('grep -i wipe notes.txt' is not one)
+        if cmd in WIPE_CMDS or (cmd in ("xargs", "parallel") and any(os.path.basename(a) in WIPE_CMDS for a in targets)) or \
+                (cmd == "find" and any(a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args) and os.path.basename(args[i + 1]) in WIPE_CMDS for i, a in enumerate(args))):
+            return "irrecoverable data wipe"
+        # copying onto a disk device (tee: any target; cp/mv/rsync/install: the destination) is as final as '> /dev/sda'
+        dests = targets if cmd == "tee" else (targets[-1:] if cmd in ("cp", "mv", "rsync", "install") and len(targets) >= 2 else [])
+        if any(re.match(BLOCK_DEVICE, d.strip("'\"")) for d in dests):
+            return "writes directly to a disk device"
         if cmd == "rm" and recursive and any(_is_fatal_target(t) for t in targets):
             return "recursive delete of the home directory, a system directory or everything (wildcard)"
         if cmd == "find" and (any(a == "-delete" for a in args) or any(a == "-exec" and i + 1 < len(args) and args[i + 1] == "rm" for i, a in enumerate(args))):

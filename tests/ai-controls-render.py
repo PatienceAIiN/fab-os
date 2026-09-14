@@ -167,6 +167,36 @@ def main():
             assert not any(r.raw.isVisible() for r in done_rows), "raw output shown with ui.show_raw off"
             assert w.provider_chip.text() == "Test provider · ready", w.provider_chip.text()
             assert not w.mic_btn.isEnabled() and w.mic_btn.toolTip() == cc.VOICE_UNAVAILABLE, "mic must be disabled without fabos-voice"
+            # item 10 while a task runs: a voice transcript is kept as the follow-up in the composer — never a "Stop this
+            # task?" prompt, never sent while the agent works (fake an available fabos-voice for this check only)
+            saved_voice = (w.voice.bin, w.voice.status)
+            w.voice.bin, w.voice.status = "/bin/true", {"stt": "whisper.cpp", "tts": "none", "mic": True, "wake": False, "listening": False}
+            w.update_voice_buttons()
+            assert w.mic_btn.isEnabled() and w.mic_btn.toolTip() == "Speak your request", (w.mic_btn.isEnabled(), w.mic_btn.toolTip())
+            dialogs, posts = [], []
+            orig_confirm = cc.RoundedDialog.confirm
+            cc.RoundedDialog.confirm = staticmethod(lambda *a, **k: (dialogs.append(a[1:3]), False)[1])
+
+            def spy_api(method, path, body=None, *a, _o=real_api, **k):
+                if method == "POST":
+                    posts.append((path, body))
+                return _o(method, path, body, *a, **k)
+            cc.api = spy_api
+            try:
+                w.on_transcript("open fab files please")
+                spin(app)
+            finally:
+                cc.RoundedDialog.confirm = orig_confirm
+                cc.api = real_api
+            assert not dialogs, "a transcript while the agent works must not open a confirmation: %r" % dialogs
+            assert not posts, "a transcript while the agent works must not be sent: %r" % posts
+            assert w.ask.text() == "open fab files please", w.ask.text()
+            assert w.send_btn.glyph == "stop" and cc.api("GET", "/tasks/%d" % run).get("status") == "running", "the running task must survive a transcript"
+            assert w.toast.isVisible() and "still working" in w.toast.text(), (w.toast.isVisible(), w.toast.text())
+            w.ask.clear()
+            w.voice.bin, w.voice.status = saved_voice
+            w.update_voice_buttons()
+            assert not w.mic_btn.isEnabled() and w.mic_btn.toolTip() == cc.VOICE_UNAVAILABLE
             assert w.mode_btn.text() == "Auto", w.mode_btn.text()
             assert w.sidebar.width() == 282 and w.sidebar.new_btn.height() == 36
             assert w.sidebar.rows[root].height() == 48, w.sidebar.rows[root].height()
@@ -289,11 +319,18 @@ def main():
                     time.sleep(0.02)
                 assert sd.mark.state == "fail" and sd.check_result.text() == "Key rejected", (sd.mark.state, sd.check_result.text())
                 assert not sd.confirm_btn.isEnabled() and "failed" in sd.confirm_btn.toolTip()
+                # the reason is written inline next to the buttons, not only in the tooltip
+                spin(app)
+                assert sd.save_note.isVisible() and sd.save_note.text() == sd.confirm_btn.toolTip(), (sd.save_note.isVisible(), sd.save_note.text())
+                assert sd.save_note.x() < sd.cancel_btn.x() and sd.save_note.width() > 100, (sd.save_note.geometry(), sd.cancel_btn.geometry())
+                pb = sd.grab()
+                assert pb.save(os.path.join(OUT, "provider-blocked-%s.png" % name))
+                results["provider-blocked-" + name] = (pb.width(), pb.height())
                 assert getattr(sd.key, "_shake_anim", None) is not None, "no shake animation on the key field"
                 sd.require_check.setChecked(False)
-                assert sd.confirm_btn.isEnabled(), "unticking the requirement must allow Save"
+                assert sd.confirm_btn.isEnabled() and not sd.save_note.isVisible(), "unticking the requirement must allow Save and hide the note"
                 sd.require_check.setChecked(True)
-                assert not sd.confirm_btn.isEnabled()
+                assert not sd.confirm_btn.isEnabled() and sd.save_note.isVisible()
             finally:
                 cc.api = real_api
             assert sd.tabs.tabText(2) == "Voice" and sd.wake_word.text() == "hey fab" and sd.speak_replies.isChecked() and not sd.offline_only.isChecked()

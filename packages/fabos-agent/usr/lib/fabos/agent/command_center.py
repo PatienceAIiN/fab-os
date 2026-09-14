@@ -2489,6 +2489,11 @@ class SettingsDialog(RoundedDialog):
         self.cancel_btn.setIconSize(QSize(18, 18))
         self.confirm_btn.clicked.disconnect()
         self.confirm_btn.clicked.connect(self.save)
+        # why Save is blocked, inline next to the buttons (the tooltip alone is easy to miss)
+        self.save_note = QLabel("", objectName="muted")
+        self.save_note.setWordWrap(True)
+        self.save_note.setVisible(False)
+        self.buttons.insertWidget(0, self.save_note, 1)
         self._update_save_state()
 
     # ---- provider section
@@ -2615,6 +2620,10 @@ class SettingsDialog(RoundedDialog):
         why = self._blocked_reason() if self.current_pid else ""
         self.confirm_btn.setEnabled(not why)
         self.confirm_btn.setToolTip(why or "Save settings")
+        note = getattr(self, "save_note", None)
+        if note is not None:
+            note.setText(why)
+            note.setVisible(bool(why))
 
     def _remove_key(self):
         pid = self.current_pid
@@ -3178,8 +3187,12 @@ class AIControls(QMainWindow):
         text = self.ask.text().strip()
         latest = self.latest_task()
         busy = bool(latest and latest["status"] in ACTIVE and latest["status"] != "waiting_user")
-        if busy and source == "enter":
-            return           # Enter while the agent works keeps the typed follow-up; only the STOP button stops the task
+        if busy and source in ("enter", "voice"):
+            # Enter or a voice transcript while the agent works keeps the follow-up in the composer; only the STOP button
+            # stops the task (a dictated sentence must never turn into a "Stop this task?" prompt or be sent early).
+            if source == "voice" and text:
+                self.toast.show_message("The agent is still working — your follow-up is kept in the box; send it when it finishes.")
+            return
         try:
             if busy:
                 self.stop_task(latest["id"])

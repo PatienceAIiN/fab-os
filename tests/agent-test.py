@@ -54,11 +54,19 @@ class Hardening(unittest.TestCase):
                 "shred -u ~/notes.txt", "dd if=/dev/zero of=/dev/sda", "cat x > /dev/nvme0n1", "echo hi > /dev/vda", "cat img > /dev/mmcblk0",
                 ":(){ :|:& };:", ":|:&", "chmod -R 777 ~", "chown -R user:user /", "history -c", "truncate -s 0 /etc/passwd", "git push --force origin main",
                 "git push -f", "crontab -r", "cat ~/.ssh/id_rsa", "ls ~/.gnupg", "cat ~/.config/fabos/agent/secrets/x", "echo x >> /etc/sudoers",
-                "truncate -s 0 /var/log/syslog", "truncate -s0 /boot/grub/grub.cfg", "sudo rm -rf /usr", "rm -rf --no-preserve-root /", "chown -R $USER /etc"]
+                "truncate -s 0 /var/log/syslog", "truncate -s0 /boot/grub/grub.cfg", "sudo rm -rf /usr", "rm -rf --no-preserve-root /", "chown -R $USER /etc",
+                "shred -n 3 secret.txt", "/usr/bin/shred -u x", "cd ~/Documents && srm -r old", "wipe -rf ~/old", "find . -name '*.log' -exec shred {} \\;",
+                "find ~/tmp -execdir shred -u {} +", "ls *.bak | xargs shred -u", "find . -print0 | xargs -0 -I{} srm {}", "tee /dev/nvme0n1 < x",
+                "cat x | tee /dev/sda", "cp image.iso /dev/sdb", "cp fab.img /dev/mmcblk0p1", "mv x /dev/vda", "rsync -a img/ /dev/sda1", "install x /dev/sdc"]
     NOT = [("rm -rf ./build", "HIGH"), ("rm -rf ~/Ladder/tmp", "HIGH"), ("rm -rf ~/Projects/x", "HIGH"), ("rm -rf /tmp/fabos-build", "HIGH"), ("rm -rf build/*", "HIGH"),
            ("find ~/Ladder/tmp -name '*.o' -delete", "MEDIUM"), ("chmod -R 755 ~/Projects/site", "MEDIUM"), ("git push origin main", "HIGH"),
            ("truncate -s 0 ~/log.txt", "MEDIUM"), ("truncate -s 0 /tmp/scratch.log", "MEDIUM"), ("rm file.txt", "MEDIUM"), ("ls -la ~", "LOW"), ("crontab -l", "HIGH"),
-           ("history | tail", "MEDIUM"), ("echo hello", "LOW"), ("rm -rf ~/.cache/thumbnails", "HIGH"), ("chmod -R 700 ~/Projects", "MEDIUM")]
+           ("history | tail", "MEDIUM"), ("echo hello", "LOW"), ("rm -rf ~/.cache/thumbnails", "HIGH"), ("chmod -R 700 ~/Projects", "MEDIUM"),
+           # the wipe words as arguments, not as the command: harmless
+           ("grep -i wipe notes.txt", "LOW"), ("echo 'shred the docs' > x", "MEDIUM"), ("cat notes-about-shred.md", "LOW"), ("ls ~/wipe", "LOW"),
+           ("find . -name 'shred*'", "LOW"), ("git log --grep srm", "LOW"), ("echo wipe | wc -c", "MEDIUM"),
+           # reading from a disk device or copying to a plain file is not a device write
+           ("cp /dev/sdb backup.img", "MEDIUM"), ("tee ~/dev/sda.txt < x", "MEDIUM"), ("cp image.iso ~/images/", "MEDIUM"), ("cp /dev/sda", "MEDIUM")]
 
     def test_escalated_to_critical(self):
         for c in self.CRITICAL:

@@ -35,6 +35,15 @@ def mem_total_gib():
 STYLE = "QWidget{font-family:Inter,'Noto Sans';font-size:14px} QLabel#h1{font-size:26px;font-weight:700} QLabel#muted{color:palette(mid)} QPushButton{border-radius:10px;padding:8px 16px}"
 
 
+def fabos_setting(key, value):
+    """Store one agent setting through the fabos CLI. fabos-agent is only Recommended, so a missing CLI (FileNotFoundError)
+    or a hung daemon (TimeoutExpired) must not raise inside a Qt slot and abort the wizard; returns True when it was written."""
+    try:
+        return subprocess.run(["fabos", "settings", key, value], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def run(*cmd):
     try:
         subprocess.Popen(list(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -178,7 +187,7 @@ def main():
     def apply_provider():
         pid = selected_provider()
         if pid:
-            subprocess.run(["fabos", "settings", "provider", pid], capture_output=True, timeout=10)
+            fabos_setting("provider", pid)
 
     # 5 Finish
     p5 = Page("You're ready", "Fab OS is set up. A few things you may want to adjust:")
@@ -196,7 +205,7 @@ def main():
     w.addPage(p5)
 
     def finish():
-        subprocess.run(["fabos", "settings", "ai.enabled", "true" if ai_on.isChecked() else "false"], capture_output=True, timeout=10)
+        fabos_setting("ai.enabled", "true" if ai_on.isChecked() else "false")
         apply_provider()
         if extras.isChecked():
             run("pkexec", "/usr/lib/fabos/firstboot.sh", "extras")
