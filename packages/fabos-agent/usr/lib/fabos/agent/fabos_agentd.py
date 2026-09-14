@@ -17,12 +17,20 @@ HTTP API on 127.0.0.1:8790 (bearer token in $XDG_RUNTIME_DIR/fabos-agent/token, 
   POST /speech/transcribe {audio_b64, format} -> {ok, text, backend}     POST /speech/say {text} -> {ok, audio_b64, format, backend}
        cloud speech through the configured provider (OpenAI or Gemini); other providers answer ok=false so the caller
        falls back to the offline engine (fabos-voice).
+  POST /mail/test {provider, address, password?, smtp_host?...} -> {ok, smtp:{ok,detail}, imap:{ok,detail}, latency_ms}
+       a real SMTP AUTH + IMAP LOGIN with the user's own account (15 s each); "wrong password / app password required"
+       (535, AUTHENTICATIONFAILED) is told apart from "cannot reach". Passwords are never logged.
+  POST /mail/oauth/start {provider: gmail}  GET /mail/oauth/status?flow_id=  — "Sign in with Google" (OAuth 2.0 loopback +
+       PKCE, XOAUTH2 for SMTP/IMAP); only offered when /etc/fabos/google-oauth.env carries the owner's Desktop client id.
   POST /tasks/{id}/feedback {rating: good|bad}      DELETE /watches/{id}
 Providers: Claude (Anthropic), OpenAI, Google Gemini, DeepSeek, or any OpenAI-compatible chat endpoint (local llama-server).
+Mail: the user's OWN account (Gmail, Outlook/Hotmail, Yahoo, Zoho, iCloud presets, or any IMAP/SMTP server) — settings
+mail.provider / mail.address / mail.from_name, secret mail_password (an app password where the provider requires one) or
+the Google refresh token mail_oauth_refresh. The feedback relay (fabos-feedback) is a separate channel and is not used here.
 Every tool step carries a one-sentence "narration" (Indian English) that UIs display and the voice daemon speaks.
 FABOS_AGENT_PROVIDER=fake runs a scripted provider for tests.
 """
-import base64, io, json, os, re, shlex, sqlite3, subprocess, sys, threading, time, uuid, wave, urllib.request, urllib.error, urllib.parse
+import base64, hashlib, io, json, os, re, secrets as _secrets, shlex, socket, sqlite3, subprocess, sys, threading, time, uuid, wave, urllib.request, urllib.error, urllib.parse
 import smtplib, imaplib, email, email.utils, email.header, datetime as _dt
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -169,13 +177,13 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}, "append": {"type": "boolean", "default": False}}, "required": ["path", "content"]}},
     {"name": "list_dir", "description": "List a directory.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
     {"name": "open_app",
-     "description": "Open a desktop application, file or URL in the user's graphical session (e.g. app='kate' with args=['/path/file.txt'], app='dolphin', app='xdg-open' with args=['https://...']). Returns immediately.",
+     "description": "Open a desktop application, file or URL in the user's graphical session (e.g. app='kate' (Fab Editor) with args=['/path/file.txt'], app='dolphin' (Fab Files), app='brave-browser' (Brave) with args=['https://...'], app='libreoffice' with args=['--writer'], app='xdg-open' with args=['https://...']). Returns immediately.",
      "input_schema": {"type": "object", "properties": {"app": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}}, "required": ["app"]}},
     {"name": "type_text",
-     "description": "Type text into the currently focused window through the Wayland virtual keyboard. Prefer write_file + open_app when the goal is to put text in a document; use this only when typing into a live app is required.",
-     "input_schema": {"type": "object", "properties": {"text": {"type": "string"}, "press_enter": {"type": "boolean", "default": False}, "delay_ms": {"type": "integer", "default": 800, "description": "wait before typing so the window can focus"}}, "required": ["text"]}},
+     "description": "Type text into the currently focused window through the Wayland virtual keyboard, so the user watches it appear. Use it right after open_app when the user asked you to write or compose something (note, letter, mail body, document, code) — see 'Show your work'. Save afterwards with write_file to the same path.",
+     "input_schema": {"type": "object", "properties": {"text": {"type": "string"}, "press_enter": {"type": "boolean", "default": False}, "delay_ms": {"type": "integer", "default": 800, "description": "wait before typing so the window can focus (use 1500 right after open_app)"}}, "required": ["text"]}},
     {"name": "send_email",
-     "description": "Send an email from the user's configured mail account (SMTP, or the Brevo API transport). Requires mail settings; if missing, tell the user to configure Mail in Fab AI Controls settings.",
+     "description": "Send an email from the user's own mail account (Gmail, Outlook, Yahoo, Zoho, iCloud or any IMAP/SMTP account they signed in with under Fab AI Controls → Settings → Mail). If mail is not configured, tell the user to sign in there; never ask for their password yourself.",
      "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"}, "cc": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}}}, "required": ["to", "subject", "body"]}},
     {"name": "check_email",
      "description": "Search the user's inbox (IMAP) and return recent message summaries. Filters: from_contains, subject_contains, since_hours, unseen_only, limit.",
@@ -541,55 +549,18 @@ class Tools:
             subprocess.run(["wtype", "-k", "Return"], env=env, timeout=10)
         return {"typed_chars": len(inp["text"])}
 
-    # ---- mail
+    # ---- mail: the user's own account (presets for Gmail / Outlook / Yahoo / Zoho / iCloud, or any IMAP/SMTP server)
     def _mail(self):
-        s = self.store
-        cfg = {k: s.setting("mail." + k) for k in ("imap_host", "imap_port", "smtp_host", "smtp_port", "user", "from", "from_name", "smtp_security", "transport")}
-        cfg["password"] = get_secret("mail_password")
-        cfg["api_key"] = get_secret("mail_api_key")
-        cfg["transport"] = (cfg["transport"] or "smtp").lower()
-        if cfg["transport"] == "brevo":
-            # Brevo transactional API (same channel Fab Feedback uses): needs a verified sender address and an API key
-            if not (cfg["from"] and cfg["api_key"]):
-                raise RuntimeError("Mail is not configured. Ask the user to fill Settings → Mail in Fab AI Controls (transport brevo needs a From address and the API key).")
-            return cfg
-        if not (cfg["user"] and cfg["password"] and (cfg["smtp_host"] or cfg["imap_host"])):
-            raise RuntimeError("Mail is not configured. Ask the user to fill Settings → Mail in Fab AI Controls (IMAP/SMTP host, user, password).")
+        cfg = mail_config(self.store)
+        if not mail_ready(self.store, cfg):
+            raise RuntimeError(MAIL_NOT_CONFIGURED)
         return cfg
-
-    def _send_brevo(self, task_id, cfg, inp):
-        import base64
-        def addrs(v):
-            return [{"email": a.strip()} for a in re.split(r"[,;]", v or "") if a.strip()]
-        payload = {"sender": {"email": cfg["from"], "name": cfg["from_name"] or "Fab OS"}, "to": addrs(inp["to"]),
-                   "subject": inp["subject"], "textContent": inp["body"]}
-        if inp.get("cc"):
-            payload["cc"] = addrs(inp["cc"])
-        atts = []
-        for a in inp.get("attachments") or []:
-            ap = os.path.expanduser(a)
-            with open(ap, "rb") as f:
-                atts.append({"name": os.path.basename(ap), "content": base64.b64encode(f.read()).decode()})
-        if atts:
-            payload["attachment"] = atts
-        req = urllib.request.Request("https://api.brevo.com/v3/smtp/email", data=json.dumps(payload).encode(), method="POST",
-                                     headers={"api-key": cfg["api_key"], "content-type": "application/json", "accept": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                resp = json.loads(r.read().decode() or "{}")
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode(errors="replace")[:300]
-            raise RuntimeError("Mail provider rejected the message (HTTP %s): %s" % (e.code, detail))
-        self.store.activity("agent", "email_sent", task_id, "via=brevo to=%s subject=%s" % (inp["to"], inp["subject"]))
-        return {"sent": True, "message_id": resp.get("messageId"), "to": inp["to"], "via": "brevo"}
 
     def t_send_email(self, task_id, inp):
         cfg = self._mail()
-        if cfg["transport"] == "brevo":
-            return self._send_brevo(task_id, cfg, inp)
         msg = EmailMessage()
-        sender = cfg["from"] or cfg["user"]
-        msg["From"] = sender
+        sender = cfg["address"]
+        msg["From"] = email.utils.formataddr((cfg["from_name"], sender)) if cfg.get("from_name") else sender
         msg["To"] = inp["to"]
         msg["Subject"] = inp["subject"]
         if inp.get("cc"):
@@ -601,25 +572,24 @@ class Tools:
             ap = os.path.expanduser(a)
             with open(ap, "rb") as f:
                 msg.add_attachment(f.read(), maintype="application", subtype="octet-stream", filename=os.path.basename(ap))
-        port = int(cfg["smtp_port"] or 587)
-        sec = (cfg["smtp_security"] or ("ssl" if port == 465 else "starttls")).lower()
-        if sec == "ssl":
-            srv = smtplib.SMTP_SSL(cfg["smtp_host"], port, timeout=60)
-        else:
-            srv = smtplib.SMTP(cfg["smtp_host"], port, timeout=60)
-            srv.ehlo()
-            if sec == "starttls":
-                srv.starttls()
-                srv.ehlo()
-        with srv:
-            srv.login(cfg["user"], cfg["password"])
+        with smtp_connect(cfg, timeout=60) as srv:
+            try:
+                smtp_login(srv, cfg)
+            except (smtplib.SMTPAuthenticationError, smtplib.SMTPServerDisconnected) as e:
+                raise RuntimeError(mail_login_error(cfg, e))
             srv.send_message(msg)
-        self.store.activity("agent", "email_sent", task_id, "to=%s subject=%s" % (inp["to"], inp["subject"]))
-        return {"sent": True, "message_id": msg["Message-ID"], "to": inp["to"]}
+        self.store.activity("agent", "email_sent", task_id, "via=%s to=%s subject=%s" % (cfg["provider"], inp["to"], inp["subject"]))
+        return {"sent": True, "message_id": msg["Message-ID"], "to": inp["to"], "via": cfg["provider"]}
 
     def _imap_search(self, cfg, from_contains=None, subject_contains=None, since_hours=48, unseen_only=False, limit=10, include_body=True, seen_uids=None):
-        M = imaplib.IMAP4_SSL(cfg["imap_host"], int(cfg["imap_port"] or 993))
-        M.login(cfg["user"], cfg["password"])
+        M = imaplib.IMAP4_SSL(cfg["imap_host"], int(cfg["imap_port"] or 993), timeout=60)
+        try:
+            imap_login(M, cfg)
+        except (MailLoginDisabled, imaplib.IMAP4.error) as e:
+            why = mail_login_error(cfg, e)
+            if why:
+                raise RuntimeError(why)
+            raise
         M.select("INBOX", readonly=True)
         since = (datetime.now(timezone.utc) - _dt.timedelta(hours=int(since_hours or 48))).strftime("%d-%b-%Y")
         crit = ["SINCE", since]
@@ -663,7 +633,7 @@ class Tools:
     def t_check_email(self, task_id, inp):
         cfg = self._mail()
         if not cfg["imap_host"]:
-            raise RuntimeError("IMAP host not configured (Settings → Mail).")
+            raise RuntimeError("This mail account has no IMAP server set (Fab AI Controls → Settings → Mail → Advanced), so the inbox cannot be read.")
         msgs = self._imap_search(cfg, inp.get("from_contains"), inp.get("subject_contains"), inp.get("since_hours", 48),
                                  inp.get("unseen_only", False), inp.get("limit", 10), inp.get("include_body", True))
         return {"count": len(msgs), "messages": msgs}
@@ -716,10 +686,10 @@ SYSTEM_PROMPT = """You are the {app} agent: the autonomous operator built into t
 
 How to work:
 - Act autonomously. Plan briefly, then execute step by step and verify results (read files back, check exit codes, list processes). Do not stop half-way and do not ask the user things you can find out yourself. Use ask_user only for genuinely missing information such as a credential you must not guess.
-- To put text into a document: write_file with the content, then open_app the editor on that file (kate is installed). Use type_text only when you must type into a live application.
+- Show your work. When the user asks you to WRITE or COMPOSE something they will read (a note, a letter, a mail body, a document, code they will look at), do it where they can watch, in this order: (1) open_app the right app first — kate (Fab Editor) with the target file path for notes, text and code; libreoffice --writer for documents; a mail body is composed in Fab Editor too; (2) type_text the content so it appears on screen (delay_ms 1500 right after opening); (3) save with write_file to the same path (there is no keyboard-shortcut tool, so say "saving the file for you"); (4) then do the follow-up — send_email, run the code — and narrate every step in one short sentence. Pure file or system operations (copy, rename, count, install, configure) need no window: do them directly.
 - For coding tasks: create a project under ~/Projects/<name>, write the code and tests, run them with run_shell, fix failures, then summarise what was built and how it was verified.
-- For email: send_email to send; check_email to read. To wait for a reply after sending, call schedule_watch(kind="email_reply", from_contains=<recipient address>, ...) so the user is notified and, if asked, a follow-up task runs automatically. Then finish; never poll in a loop.
-- Applications: every installed app (system, Flatpak, user) is available to you the moment it is installed. Use list_apps to discover names, launch commands and supported file types, open_app to launch them, and their CLI or D-Bus interfaces via run_shell (KDE apps: qdbus6 / kdialog / kioclient). Installed now ({app_count} apps): {app_names}.
+- For email: send_email to send (the user's own account, signed in under Settings → Mail; if it is not configured say so and stop, never ask for a password); check_email to read. To wait for a reply after sending, call schedule_watch(kind="email_reply", from_contains=<recipient address>, ...) so the user is notified and, if asked, a follow-up task runs automatically. Then finish; never poll in a loop.
+- Applications: every installed app (system, Flatpak, user) is available to you the moment it is installed. Use list_apps to discover names, launch commands and supported file types, open_app to launch them (kate = Fab Editor, dolphin = Fab Files, konsole = Fab Terminal, brave-browser = Brave for the web), and their CLI or D-Bus interfaces via run_shell (KDE apps: qdbus6 / kdialog / kioclient). Installed now ({app_count} apps): {app_names}.
 - System administration (packages, services, kernel modules, sysctl, disks, files under /etc or /usr) is done with run_shell(as_root=true). It is CRITICAL risk: the user approves it unless their mode is bypass. Never put sudo in the command; as_root already runs it as root. Verify the result afterwards (e.g. systemctl is-active, dpkg -s, lsmod).
 - Every tool call passes a deterministic policy check (risk LOW/MEDIUM/HIGH/CRITICAL against the user's permission mode). A denied call returns an error: respect it, explain, and find an allowed way or stop.
 - Never fabosate results. Report exactly what happened, including partial failures. Keep the final message short: what was done, where outputs are, what the user should look at.
@@ -761,7 +731,7 @@ def _base(path):
 def _app_name(inp):
     app = str(inp.get("app") or "").split("/")[-1]
     return {"kate": "Fab Editor", "dolphin": "Fab Files", "konsole": "Fab Terminal", "xdg-open": "the default app", "open": "the default app",
-            "firefox": "Firefox", "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos",
+            "brave-browser": "Brave", "brave": "Brave", "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos",
             "okular": "Fab Documents", "kcalc": "Fab Calculator", "spectacle": "Fab Screenshot", "systemsettings": "Fab Settings"}.get(app, app or "the app")
 
 
@@ -866,7 +836,7 @@ PROVIDERS = {
     "local": {"label": "Local model", "secret": "local_api_key", "base_url": "http://127.0.0.1:8080/v1", "model": "local",
               "help": "Runs on this computer (llama-server or any OpenAI-compatible endpoint). No account, no key needed."},
 }
-SECRET_NAMES = ("claude_api_key", "openai_api_key", "gemini_api_key", "deepseek_api_key", "local_api_key", "mail_password", "mail_api_key")
+SECRET_NAMES = ("claude_api_key", "openai_api_key", "gemini_api_key", "deepseek_api_key", "local_api_key", "mail_password", "mail_oauth_refresh")
 # Providers with cloud speech (transcription / text-to-speech) through the same key; the rest fall back to the offline engine
 SPEECH_PROVIDERS = ("openai", "gemini")
 INDIAN_ENGLISH_STYLE = "Speak in warm, natural Indian English, like a helpful colleague from India; clear and unhurried."
@@ -1095,6 +1065,20 @@ class FakeProvider:
                 path = (m2.group(1) if m2 else "~/") + path
             plan = [tu("write_file", {"path": path, "content": word + "\n"})]
             final = "Done, I have created %s with the word %s. Anything else?" % (path, word)
+        elif re.search(r"\btype\s+['\"]?[^'\"]+?['\"]?\s+into\b", req, re.I) and ("editor" in low or "kate" in low):
+            # ladder L1-f "type 'hello' into a new Fab Editor window": show your work = open the app FIRST, then type
+            text = re.search(r"\btype\s+['\"]?([^'\"]+?)['\"]?\s+into\b", req, re.I).group(1).strip()
+            plan = [tu("open_app", {"app": "kate"}), tu("type_text", {"text": text, "delay_ms": 100})]
+            final = "Done, I opened Fab Editor and typed '%s' for you. Anything else?" % text
+        elif re.search(r"\bwrite\b.*\bnote\b.*\b(?:send|mail)\b.*\bto\s+[\w.+-]+@[\w-]+\.[\w.]+", req, re.I):
+            # ladder L2-f "write a hi note and send it to X": open Fab Editor -> type -> save -> send (that order)
+            m = re.search(r"\bwrite\s+(?:a\s+|an\s+)?['\"]?(.+?)['\"]?\s+note\b", req, re.I)
+            text = (m.group(1) if m else "hi").strip()
+            addr = re.search(r"\bto\s+([\w.+-]+@[\w-]+\.[\w.]+)", req, re.I).group(1)
+            path = "~/Documents/fabos-note.txt"
+            plan = [tu("open_app", {"app": "kate", "args": [path]}), tu("type_text", {"text": text, "delay_ms": 100}),
+                    tu("write_file", {"path": path, "content": text + "\n"}), tu("send_email", {"to": addr, "subject": text[:1].upper() + text[1:], "body": text})]
+            final = "Done, I wrote the note in Fab Editor, saved it and sent it to %s. Anything else?" % addr
         elif "editor" in low or "kate" in low:
             m = re.search(r"write\s+['\"]?(.+?)['\"]?(\s+and\b|\s*,|\s*$)", req, re.I)
             text = (m.group(1) if m else "hi").strip()
@@ -1591,6 +1575,482 @@ def test_provider(store, kind, api_key=None, base_url=None, model=None):
     return out
 
 
+# ----------------------------------------------------------------------------- mail accounts (the user's own Gmail / Outlook / Yahoo / Zoho / iCloud / other)
+# Presets checked against the providers' public documentation on 2026-09-15 (docs/decisions/ADR-0014-user-mail-accounts.md).
+# "app_password": the provider refuses the normal account password for IMAP/SMTP and wants a generated app password.
+MAIL_PROVIDERS = {
+    "gmail": {"label": "Gmail", "smtp_host": "smtp.gmail.com", "smtp_port": 587, "smtp_security": "starttls", "imap_host": "imap.gmail.com", "imap_port": 993,
+              "domains": ("gmail.com", "googlemail.com"), "app_password": True, "oauth": "google",
+              "hint": ("Google Account → Security", "2-Step Verification (turn it on)", "App passwords → create one named Fab OS, paste the 16 characters"), "note": ""},
+    "outlook": {"label": "Outlook / Hotmail", "smtp_host": "smtp-mail.outlook.com", "smtp_port": 587, "smtp_security": "starttls", "imap_host": "outlook.office365.com", "imap_port": 993,
+                "domains": ("outlook.com", "outlook.in", "hotmail.com", "hotmail.co.uk", "live.com", "live.in", "msn.com"), "app_password": True, "oauth": None,
+                "hint": ("Microsoft account → Security", "Advanced security options → two-step verification on", "App passwords → create a new app password"),
+                "note": "Microsoft has switched off password sign-in for reading mail (IMAP LOGINDISABLED): the agent can send from this account with the app password but cannot check its inbox."},
+    "yahoo": {"label": "Yahoo Mail", "smtp_host": "smtp.mail.yahoo.com", "smtp_port": 465, "smtp_security": "ssl", "imap_host": "imap.mail.yahoo.com", "imap_port": 993,
+              "domains": ("yahoo.com", "yahoo.in", "yahoo.co.in", "yahoo.co.uk", "ymail.com", "rocketmail.com"), "app_password": True, "oauth": None,
+              "hint": ("Yahoo Account Security", "Generate and manage app passwords", "Copy the 16-character password"), "note": ""},
+    "zoho": {"label": "Zoho Mail", "smtp_host": "smtp.zoho.com", "smtp_port": 465, "smtp_security": "ssl", "imap_host": "imap.zoho.com", "imap_port": 993,
+             "domains": ("zoho.com", "zohomail.com", "zoho.in", "zohomail.in", "zoho.eu"), "app_password": False, "oauth": None,
+             "hint": ("Zoho Mail → Settings → Mail accounts → IMAP access on", "Zoho Accounts → Security → App passwords (only with two-factor on)", "Otherwise use your normal Zoho password"), "note": ""},
+    "icloud": {"label": "iCloud Mail", "smtp_host": "smtp.mail.me.com", "smtp_port": 587, "smtp_security": "starttls", "imap_host": "imap.mail.me.com", "imap_port": 993,
+               "domains": ("icloud.com", "me.com", "mac.com"), "app_password": True, "oauth": None,
+               "hint": ("account.apple.com → Sign-In and Security", "App-Specific Passwords", "Generate one named Fab OS"), "note": ""},
+    "other": {"label": "Other (IMAP / SMTP)", "smtp_host": "", "smtp_port": 587, "smtp_security": "starttls", "imap_host": "", "imap_port": 993,
+              "domains": (), "app_password": False, "oauth": None,
+              "hint": ("Ask your provider for the SMTP and IMAP server names", "Fill them in under Advanced", "Use your normal mail password"), "note": ""},
+}
+MAIL_PROVIDER_ORDER = ("gmail", "outlook", "yahoo", "zoho", "icloud", "other")
+MAIL_PROVIDER_FIELDS = ("label", "smtp_host", "smtp_port", "smtp_security", "imap_host", "imap_port", "app_password", "oauth", "hint", "note")
+MAIL_NO_IMAP = ("none", "-", "off")     # typed into the Advanced IMAP field: "this account has no IMAP" even when the preset has one
+MAIL_TEST_TIMEOUT = 15
+MAIL_NOT_CONFIGURED = ("Mail is not configured. Ask the user to open Fab AI Controls → Settings → Mail and sign in with their own account "
+                       "(Gmail, Outlook, Yahoo, Zoho, iCloud or another IMAP/SMTP account).")
+
+
+def _int(v, default):
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def mail_infer_provider(address):
+    """gmail.com -> gmail, hotmail.com -> outlook, … ; anything else -> other."""
+    dom = (address or "").rsplit("@", 1)[-1].lower().strip()
+    for pid in MAIL_PROVIDER_ORDER:
+        if dom and dom in MAIL_PROVIDERS[pid]["domains"]:
+            return pid
+    return "other"
+
+
+def mail_config(store, provider=None, address=None, overrides=None):
+    """The effective mail account: preset (mail.provider) + Advanced overrides (mail.smtp_host … stored only when they
+    differ from the preset) + auth kind (password | oauth). provider / address / overrides come from a /mail/test request
+    so a form that is not saved yet can be checked. mail.user is the pre-1.0-2 name of mail.address. An empty override
+    means "use the preset"; mail.imap_host in MAIL_NO_IMAP ("none") means "this account has no IMAP" (sending only)."""
+    s = store.setting
+    ov = overrides or {}
+    address = (address if address not in (None, "") else (s("mail.address") or s("mail.user") or "")).strip()
+    provider = (provider or s("mail.provider") or "").strip().lower()
+    if provider not in MAIL_PROVIDERS:
+        provider = mail_infer_provider(address)
+    pre = MAIL_PROVIDERS[provider]
+
+    def pick(key):
+        for src in (ov.get("mail." + key), ov.get(key), s("mail." + key)):
+            if src not in (None, ""):
+                return str(src).strip()
+        return pre[key]
+    cfg = {"provider": provider, "label": pre["label"], "address": address, "from_name": (ov.get("mail.from_name") or ov.get("from_name") or s("mail.from_name") or "").strip(),
+           "smtp_host": pick("smtp_host"), "smtp_port": _int(pick("smtp_port"), pre["smtp_port"]), "smtp_security": str(pick("smtp_security")).lower(),
+           "imap_host": pick("imap_host"), "imap_port": _int(pick("imap_port"), pre["imap_port"]),
+           "auth": str(ov.get("auth") or s("mail.auth") or "password").lower(), "app_password": pre["app_password"], "oauth": pre["oauth"]}
+    if cfg["imap_host"].lower() in MAIL_NO_IMAP:
+        cfg["imap_host"] = ""
+    if cfg["auth"] == "oauth" and not (pre["oauth"] and has_secret("mail_oauth_refresh")):
+        cfg["auth"] = "password"
+    return cfg
+
+
+def mail_ready(store, cfg=None):
+    cfg = cfg or mail_config(store)
+    if not (cfg["address"] and "@" in cfg["address"] and cfg["smtp_host"]):
+        return False
+    return has_secret("mail_oauth_refresh") if cfg["auth"] == "oauth" else has_secret("mail_password")
+
+
+def xoauth2_string(user, token):
+    return "user=%s\x01auth=Bearer %s\x01\x01" % (user, token)
+
+
+def smtp_connect(cfg, timeout):
+    port, sec = cfg["smtp_port"], cfg["smtp_security"]
+    if sec == "ssl" or (sec not in ("starttls", "none") and port == 465):
+        return smtplib.SMTP_SSL(cfg["smtp_host"], port, timeout=timeout)
+    srv = smtplib.SMTP(cfg["smtp_host"], port, timeout=timeout)
+    srv.ehlo()
+    if sec != "none":
+        srv.starttls()
+        srv.ehlo()
+    return srv
+
+
+def smtp_login(srv, cfg, password=None):
+    if cfg["auth"] == "oauth":
+        token = oauth_access_token(cfg)
+        srv.auth("XOAUTH2", lambda challenge=None: xoauth2_string(cfg["address"], token), initial_response_ok=True)
+    else:
+        srv.login(cfg["address"], password if password is not None else (get_secret("mail_password") or ""))
+
+
+class MailLoginDisabled(RuntimeError):
+    """The IMAP server does not take passwords at all (LOGINDISABLED); sending may still work."""
+
+
+def imap_login_disabled(M, cfg, err=None):
+    """True when the IMAP server refuses password logins altogether (capability LOGINDISABLED without a PLAIN/LOGIN SASL
+    mechanism, or the NO reply says "Basic authentication is disabled" — Outlook.com since 2024). Not a wrong password:
+    no app password can fix it."""
+    if cfg["auth"] == "oauth":
+        return False
+    caps = tuple(str(c).upper() for c in (getattr(M, "capabilities", None) or ()))
+    if "LOGINDISABLED" in caps and not any(c in ("AUTH=PLAIN", "AUTH=LOGIN") for c in caps):
+        return True
+    return bool(err is not None and re.search(r"LOGINDISABLED|basic auth\w* (is )?(disabled|not (supported|enabled))|LOGIN (command )?(is )?(disabled|not supported)", str(err), re.I))
+
+
+def imap_login(M, cfg, password=None):
+    if cfg["auth"] == "oauth":
+        token = oauth_access_token(cfg)
+        M.authenticate("XOAUTH2", lambda _resp: xoauth2_string(cfg["address"], token).encode())
+        return
+    if imap_login_disabled(M, cfg):
+        raise MailLoginDisabled(_mail_login_disabled(cfg))
+    try:
+        M.login(cfg["address"], password if password is not None else (get_secret("mail_password") or ""))
+    except imaplib.IMAP4.error as e:
+        if imap_login_disabled(M, cfg, e):
+            raise MailLoginDisabled(_mail_login_disabled(cfg))
+        raise
+
+
+def mail_login_error(cfg, e):
+    """A tool-facing sentence for a failed SMTP/IMAP sign-in (instead of the raw smtplib/imaplib repr), or None."""
+    where = " — the user fixes it in Fab AI Controls → Settings → Mail (Check connection)."
+    if isinstance(e, MailLoginDisabled):
+        return str(e)
+    if isinstance(e, smtplib.SMTPAuthenticationError):
+        return _mail_auth_failure(cfg) + where
+    if isinstance(e, smtplib.SMTPServerDisconnected):
+        return _mail_auth_failure(cfg, closed=True) + where
+    if isinstance(e, imaplib.IMAP4.error) and re.search(r"AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed|authentication failed|\[AUTH\]", str(e), re.I):
+        return _mail_auth_failure(cfg) + where
+    return None
+
+
+# ---- "Sign in with Google": OAuth 2.0 for installed apps (loopback redirect + PKCE), XOAUTH2 on IMAP/SMTP afterwards.
+# Only offered when the distributor registered a Desktop OAuth client and shipped its id in GOOGLE_OAUTH_ENV; without
+# it the UI shows the app-password path and says why. The refresh token is stored like every other secret.
+GOOGLE_OAUTH_ENV = os.environ.get("FABOS_GOOGLE_OAUTH_ENV", "/etc/fabos/google-oauth.env")
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
+GOOGLE_SCOPE = "https://mail.google.com/"          # the one scope Google accepts for IMAP/SMTP XOAUTH2
+OAUTH_FLOW_TIMEOUT = 600
+OAUTH_RESULT_GRACE = 120                    # a finished flow stays pollable this long, then OAuthFlow.flows forgets it
+OAUTH_PAGE = ("<!doctype html><html><head><meta charset='utf-8'><title>Fab OS — Mail sign-in</title>"
+              "<style>body{font-family:Inter,'Noto Sans',sans-serif;margin:0;display:grid;place-items:center;height:100vh;background:#F5F7FD;color:#232629}"
+              "@media(prefers-color-scheme:dark){body{background:#0F1420;color:#FCFCFC}}"
+              ".card{max-width:440px;padding:28px 32px;border-radius:20px;border:1px solid rgba(128,128,128,.25)}h1{font-size:20px;margin:0 0 8px}p{margin:0;line-height:1.5}</style></head>"
+              "<body><div class='card'><h1>%s</h1><p>%s</p></div></body></html>")
+_oauth_cache = {"token": None, "expires": 0.0, "refresh": None}
+_oauth_lock = threading.Lock()
+
+
+def read_env_file(path):
+    out = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
+def google_oauth_client():
+    """(client_id, client_secret) from GOOGLE_OAUTH_ENV, or (None, why-not)."""
+    env = read_env_file(GOOGLE_OAUTH_ENV)
+    cid, sec = env.get("GOOGLE_OAUTH_CLIENT_ID", ""), env.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+    if not cid:
+        return None, ("Sign in with Google is not set up on this build (%s has no GOOGLE_OAUTH_CLIENT_ID; the distributor registers a Desktop OAuth client, "
+                      "see ADR-0014). Use an app password instead." % GOOGLE_OAUTH_ENV)
+    return (cid, sec), ""
+
+
+def mail_oauth_status():
+    client, why = google_oauth_client()
+    return {"google": bool(client), "why": why, "env": GOOGLE_OAUTH_ENV}
+
+
+def oauth_access_token(cfg):
+    """A live Google access token for XOAUTH2 (refreshed from the stored refresh token, cached until it expires)."""
+    if MAIL_PROVIDERS.get(cfg["provider"], {}).get("oauth") != "google":
+        raise RuntimeError("Sign in with Google works only for Gmail accounts; use an app password for %s." % cfg["label"])
+    refresh = get_secret("mail_oauth_refresh")
+    if not refresh:
+        raise RuntimeError("Not signed in with Google any more — open Fab AI Controls → Settings → Mail and sign in again.")
+    client, why = google_oauth_client()
+    if not client:
+        raise RuntimeError(why)
+    with _oauth_lock:
+        if _oauth_cache["token"] and _oauth_cache["refresh"] == refresh and time.time() < _oauth_cache["expires"] - 60:
+            return _oauth_cache["token"]
+        data = urllib.parse.urlencode({"client_id": client[0], "client_secret": client[1], "refresh_token": refresh, "grant_type": "refresh_token"}).encode()
+        try:
+            _st, body = _http_json(GOOGLE_TOKEN_URL, {"Content-Type": "application/x-www-form-urlencoded"}, data, MAIL_TEST_TIMEOUT)
+        except urllib.error.HTTPError as e:
+            if e.code in (400, 401):
+                raise RuntimeError("Google no longer accepts the saved sign-in (HTTP %d) — sign in again under Settings → Mail." % e.code)
+            raise RuntimeError("Google's token service answered HTTP %d." % e.code)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise RuntimeError("Cannot reach Google to refresh the sign-in (%s)." % str(getattr(e, "reason", e))[:80])
+        token = body.get("access_token") if isinstance(body, dict) else None
+        if not token:
+            raise RuntimeError("Google returned no access token.")
+        _oauth_cache.update(token=token, refresh=refresh, expires=time.time() + _int(body.get("expires_in"), 3600))
+        return token
+
+
+def open_in_session(url, env):
+    try:
+        subprocess.Popen(["xdg-open", url], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except OSError:
+        return False
+
+
+class OAuthFlow:
+    """One "Sign in with Google": a loopback HTTP server on 127.0.0.1 (random port) receives Google's redirect, the code is
+    exchanged (PKCE) for a refresh token stored with set_secret('mail_oauth_refresh'); the signed-in address is read from
+    the Gmail profile. State machine: pending -> done | error (timed out after OAUTH_FLOW_TIMEOUT)."""
+    flows = {}
+
+    def __init__(self, store, client, env=None, open_browser=True):
+        self.store, self.client = store, client
+        self.id = uuid.uuid4().hex[:12]
+        self.state = _secrets.token_urlsafe(24)
+        self.verifier = _secrets.token_urlsafe(64)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(self.verifier.encode()).digest()).rstrip(b"=").decode()
+        self.result = {"state": "pending", "detail": "Finish signing in in the browser window…"}
+        self.created = time.time()
+        self.closed = False
+        self._lock = threading.Lock()
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        self.srv.daemon_threads = True
+        self.redirect = "http://127.0.0.1:%d/" % self.srv.server_address[1]
+        params = {"client_id": client[0], "redirect_uri": self.redirect, "response_type": "code", "scope": GOOGLE_SCOPE, "access_type": "offline",
+                  "prompt": "consent", "state": self.state, "code_challenge": challenge, "code_challenge_method": "S256"}
+        self.url = GOOGLE_AUTH_URL + "?" + urllib.parse.urlencode(params)
+        threading.Thread(target=self.srv.serve_forever, daemon=True, name="oauth-" + self.id).start()
+        self._timer = threading.Timer(OAUTH_FLOW_TIMEOUT, self._expire)
+        self._timer.daemon = True
+        self._timer.start()
+        OAuthFlow.flows[self.id] = self
+        self.browser_opened = bool(open_browser) and open_in_session(self.url, env or os.environ)
+
+    def _expire(self):
+        if self.result["state"] == "pending":
+            self.result = {"state": "error", "detail": "The sign-in timed out after %d minutes. Press Sign in to try again." % (OAUTH_FLOW_TIMEOUT // 60)}
+        self.finish()
+
+    def finish(self):
+        """Stop and CLOSE the loopback server (shutdown alone leaves the bound socket open) and forget the flow after
+        OAUTH_RESULT_GRACE so the UI's last poll still sees the outcome. Idempotent; the work runs off the handler thread."""
+        with self._lock:
+            if self.closed:
+                return
+            self.closed = True
+        self._timer.cancel()
+
+        def close():
+            self.srv.shutdown()                  # returns once serve_forever() has exited
+            self.srv.server_close()              # releases the listening socket (and joins the last handler thread)
+            t = threading.Timer(OAUTH_RESULT_GRACE, OAuthFlow.flows.pop, args=(self.id, None))
+            t.daemon = True
+            t.start()
+        threading.Thread(target=close, daemon=True, name="oauth-close-" + self.id).start()
+
+    def _handler(self):
+        flow = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if self.path.startswith("/favicon"):
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                ok, text = flow._callback(qs)
+                body = (OAUTH_PAGE % ("Signed in to Fab OS" if ok else "Sign-in did not finish", text)).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                if flow.result["state"] != "pending":
+                    flow.finish()
+        return H
+
+    def _callback(self, qs):
+        if self.result["state"] != "pending":
+            return self.result["state"] == "done", "This sign-in has already finished. You can close this tab."
+        if qs.get("state", [""])[0] != self.state:
+            self.result = {"state": "error", "detail": "The reply from the browser did not belong to this sign-in (state mismatch). Try again."}
+            return False, self.result["detail"]
+        if qs.get("error"):
+            self.result = {"state": "error", "detail": "Google reported: %s. Nothing was stored." % qs["error"][0][:80]}
+            return False, self.result["detail"]
+        code = qs.get("code", [""])[0]
+        if not code:
+            self.result = {"state": "error", "detail": "Google sent no authorization code."}
+            return False, self.result["detail"]
+        data = urllib.parse.urlencode({"client_id": self.client[0], "client_secret": self.client[1], "code": code, "code_verifier": self.verifier,
+                                       "grant_type": "authorization_code", "redirect_uri": self.redirect}).encode()
+        try:
+            _st, tok = _http_json(GOOGLE_TOKEN_URL, {"Content-Type": "application/x-www-form-urlencoded"}, data, MAIL_TEST_TIMEOUT)
+        except urllib.error.HTTPError as e:
+            self.result = {"state": "error", "detail": "Google rejected the sign-in code (HTTP %d). Check the client id and secret in %s." % (e.code, GOOGLE_OAUTH_ENV)}
+            return False, self.result["detail"]
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            self.result = {"state": "error", "detail": "Cannot reach Google to finish the sign-in (%s)." % str(getattr(e, "reason", e))[:80]}
+            return False, self.result["detail"]
+        refresh, access = (tok.get("refresh_token"), tok.get("access_token")) if isinstance(tok, dict) else (None, None)
+        if not refresh:
+            self.result = {"state": "error", "detail": "Google did not return a refresh token. Remove Fab OS from your Google account's third-party access and sign in again."}
+            return False, self.result["detail"]
+        address = ""
+        try:
+            _st, prof = _http_json(GOOGLE_PROFILE_URL, {"Authorization": "Bearer " + (access or "")}, None, MAIL_TEST_TIMEOUT)
+            address = (prof.get("emailAddress") or "") if isinstance(prof, dict) else ""
+        except Exception as e:                      # the address is a convenience; the sign-in itself succeeded
+            LOG("gmail profile lookup failed", type(e).__name__)
+        how = set_secret("mail_oauth_refresh", refresh)
+        self.store.set_setting("mail.provider", "gmail")
+        self.store.set_setting("mail.auth", "oauth")
+        if address:
+            self.store.set_setting("mail.address", address)
+        with _oauth_lock:
+            _oauth_cache.update(token=access, refresh=refresh, expires=time.time() + _int(tok.get("expires_in"), 3600))
+        self.store.activity("user", "mail_signin", None, "google %s (refresh token via %s)" % (address or "(address unknown)", how))
+        self.result = {"state": "done", "detail": "Signed in", "address": address}
+        return True, "Signed in as %s. You can close this tab and go back to Fab AI Controls." % (address or "your Google account")
+
+    def status(self):
+        return dict(self.result, flow_id=self.id, url=self.url, browser_opened=self.browser_opened)
+
+
+def _mail_auth_failure(cfg, closed=False):
+    """closed=True: the server dropped the TLS connection at AUTH instead of answering 535 (Yahoo does this on 465 and
+    587 for a wrong or missing app password); after a successful EHLO that is an authentication failure, not a network one."""
+    if closed:
+        if cfg["app_password"]:
+            return "wrong password — %s closed the connection at sign-in, which it does for a wrong or missing app password" % cfg["label"]
+        return "wrong password — the server closed the connection at sign-in (the login was refused)"
+    if cfg["app_password"]:
+        return "wrong password — %s needs an app password, not your account password" % cfg["label"]
+    return "wrong password — the server refused the login"
+
+
+def _mail_login_disabled(cfg):
+    return ("%s has switched off password sign-in for IMAP (LOGINDISABLED) — sending with %s works, reading the inbox does not"
+            % (cfg["label"], "the app password" if cfg["app_password"] else "the password"))
+
+
+def _mail_net_failure(host, port, e):
+    why = "timed out" if isinstance(e, (socket.timeout, TimeoutError)) else str(getattr(e, "strerror", None) or e)[:80]
+    return "cannot reach %s:%d (%s)" % (host, port, why)
+
+
+def test_mail(store, provider=None, address=None, password=None, overrides=None):
+    """A real sign-in to the SMTP and IMAP servers of the account (both in parallel, MAIL_TEST_TIMEOUT each).
+    Returns {ok, detail, smtp:{ok,detail}, imap:{ok,detail}, latency_ms, provider, address, auth}. The password is
+    taken from the request when typed (so it can be checked before it is saved), else from the stored secret; it is
+    never logged or returned."""
+    cfg = mail_config(store, provider, address, overrides)
+    base = {"provider": cfg["provider"], "address": cfg["address"], "auth": cfg["auth"], "smtp_host": cfg["smtp_host"], "imap_host": cfg["imap_host"], "latency_ms": 0}
+
+    def early(detail):
+        return dict(base, ok=False, detail=detail, smtp={"ok": False, "detail": detail}, imap={"ok": False, "detail": detail})
+    if not cfg["address"] or "@" not in cfg["address"]:
+        return early("enter the mail address first")
+    if not cfg["smtp_host"]:
+        return early("no SMTP server for this account — choose a provider or fill in Advanced")
+    pw = (password or "").strip() or None
+    if pw is not None:
+        cfg = dict(cfg, auth="password")             # a typed password always checks the password path
+        base["auth"] = "password"
+    elif cfg["auth"] == "oauth":
+        try:
+            oauth_access_token(cfg)                  # refreshes once here; the two logins reuse the cached token
+        except RuntimeError as e:
+            return early(str(e))
+    else:
+        pw = get_secret("mail_password")
+        if not pw:
+            return early("no password stored — type the app password and check again")
+    out = {}
+
+    def smtp_check():
+        host, port = cfg["smtp_host"], cfg["smtp_port"]
+        phase = "connect"
+        try:
+            with smtp_connect(cfg, MAIL_TEST_TIMEOUT) as srv:
+                phase = "auth"                       # EHLO (and STARTTLS) went through: what fails now is the sign-in
+                smtp_login(srv, cfg, pw)
+            out["smtp"] = {"ok": True, "detail": "signed in at %s:%d" % (host, port)}
+        except smtplib.SMTPAuthenticationError as e:
+            out["smtp"] = {"ok": False, "detail": _mail_auth_failure(cfg), "code": e.smtp_code}
+        except smtplib.SMTPServerDisconnected as e:
+            if phase == "auth":
+                out["smtp"] = {"ok": False, "detail": _mail_auth_failure(cfg, closed=True), "closed_at_auth": True}
+            else:
+                out["smtp"] = {"ok": False, "detail": "mail server error: %s" % str(e)[:120]}
+        except smtplib.SMTPException as e:
+            text = str(e)
+            auth = re.search(r"\b53[45]\b|authenticat|credential", text, re.I)
+            out["smtp"] = {"ok": False, "detail": _mail_auth_failure(cfg) if auth else "mail server error: %s" % text[:120]}
+        except RuntimeError as e:                    # OAuth token problems
+            out["smtp"] = {"ok": False, "detail": str(e)}
+        except (socket.timeout, TimeoutError, OSError) as e:
+            out["smtp"] = {"ok": False, "detail": _mail_net_failure(host, port, e)}
+
+    def imap_check():
+        host, port = cfg["imap_host"], cfg["imap_port"]
+        if not host:
+            out["imap"] = {"ok": False, "skipped": True, "detail": "no IMAP server set — sending works, reading the inbox does not"}
+            return
+        try:
+            M = imaplib.IMAP4_SSL(host, port, timeout=MAIL_TEST_TIMEOUT)
+            try:
+                imap_login(M, cfg, pw)
+            finally:
+                try:
+                    M.logout()
+                except Exception:
+                    pass
+            out["imap"] = {"ok": True, "detail": "signed in at %s:%d" % (host, port)}
+        except MailLoginDisabled as e:               # not a wrong password: the server takes no passwords at all (Outlook.com)
+            out["imap"] = {"ok": False, "skipped": True, "login_disabled": True, "detail": str(e)}
+        except imaplib.IMAP4.error as e:
+            text = str(e)
+            auth = re.search(r"AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed|authentication failed|\[AUTH\]|Application-specific password", text, re.I)
+            out["imap"] = {"ok": False, "detail": _mail_auth_failure(cfg) if auth else "mail server error: %s" % text[:120]}
+        except RuntimeError as e:
+            out["imap"] = {"ok": False, "detail": str(e)}
+        except (socket.timeout, TimeoutError, OSError) as e:
+            out["imap"] = {"ok": False, "detail": _mail_net_failure(host, port, e)}
+    t0 = time.time()
+    threads = [threading.Thread(target=smtp_check, daemon=True), threading.Thread(target=imap_check, daemon=True)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(MAIL_TEST_TIMEOUT + 5)
+    ms = int((time.time() - t0) * 1000)
+    smtp = out.get("smtp") or {"ok": False, "detail": "cannot reach %s:%d (timed out)" % (cfg["smtp_host"], cfg["smtp_port"])}
+    imap = out.get("imap") or {"ok": False, "detail": "cannot reach %s:%d (timed out)" % (cfg["imap_host"], cfg["imap_port"])}
+    ok = bool(smtp["ok"] and (imap["ok"] or imap.get("skipped")))
+    detail = ("Signed in" if imap["ok"] else "Signed in (sending only)") if ok else (smtp["detail"] if not smtp["ok"] else "IMAP: " + imap["detail"])
+    return dict(base, ok=ok, detail=detail, smtp=smtp, imap=imap, latency_ms=ms)
+
+
 # ----------------------------------------------------------------------------- cloud speech (through the configured provider)
 SPEECH_TIMEOUT = 30
 
@@ -1759,13 +2219,14 @@ def make_handler(store, agent, token):
                 counts = {r["status"]: r["n"] for r in store.all("SELECT status, COUNT(*) n FROM tasks GROUP BY status")}
                 prov = os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude")
                 ready = prov == "fake" or prov == "local" or (prov in PROVIDERS and (has_secret(PROVIDERS[prov]["secret"]) or (prov == "claude" and bool(os.environ.get("ANTHROPIC_API_KEY")))))
+                mcfg = mail_config(store)
                 return self._send(200, {"mode": store.setting("mode", "auto"), "provider": prov, "provider_ready": ready, "ai_enabled": agent.ai_enabled(),
                                         "provider_label": PROVIDERS[prov]["label"] if prov in PROVIDERS else prov,
                                         "provider_model": store.setting(prov + ".model", PROVIDERS[prov]["model"]) if prov in PROVIDERS else "",
                                         "ui_show_raw": store.setting("ui.show_raw", "false") == "true",
                                         "voice": {k[len("voice."):]: store.setting(k, d) for k, d in VOICE_DEFAULTS.items()},
                                         "providers": {k: {"label": v["label"], "has_key": has_secret(v["secret"])} for k, v in PROVIDERS.items()},
-                                        "mail_ready": bool((store.setting("mail.transport") or "smtp").lower() == "brevo" and store.setting("mail.from") and has_secret("mail_api_key")) or bool(store.setting("mail.user") and has_secret("mail_password")), "tasks": counts,
+                                        "mail_ready": mail_ready(store, mcfg), "mail_provider": mcfg["provider"], "mail_address": mcfg["address"], "mail_auth": mcfg["auth"], "tasks": counts,
                                         "pending_approvals": store.one("SELECT COUNT(*) n FROM approvals WHERE status='pending'")["n"],
                                         "active_watches": store.one("SELECT COUNT(*) n FROM watches WHERE status='active'")["n"],
                                         "latest": store.all("SELECT id,title,status,updated FROM tasks ORDER BY updated DESC LIMIT 3")})
@@ -1782,8 +2243,16 @@ def make_handler(store, agent, token):
                     s.setdefault(k + ".model", v["model"])
                     if "base_url" in v:
                         s.setdefault(k + ".base_url", v["base_url"])
+                s.setdefault("mail.provider", "gmail")
+                s.setdefault("mail.address", s.get("mail.user", ""))
+                s.setdefault("mail.from_name", "")
+                s.setdefault("mail.auth", "password")
                 s["secrets"] = {n: has_secret(n) for n in SECRET_NAMES}
                 s["providers"] = {k: {"label": v["label"], "model": v["model"], "base_url": v.get("base_url"), "help": v.get("help", ""), "secret": v["secret"]} for k, v in PROVIDERS.items()}
+                s["mail_providers"] = {k: {kk: v[kk] for kk in MAIL_PROVIDER_FIELDS} for k, v in MAIL_PROVIDERS.items()}
+                s["mail_provider_order"] = list(MAIL_PROVIDER_ORDER)
+                s["mail_oauth"] = mail_oauth_status()
+                s["mail_ready"] = mail_ready(store)
                 return self._send(200, s)
             if p == "/tasks":
                 return self._send(200, store.all("SELECT id,title,status,mode,created,updated,parent_id,cost_in,cost_out,substr(result,1,200) result,error,substr(request,1,400) request FROM tasks ORDER BY id DESC LIMIT ?", int(qs.get("limit", 100))))
@@ -1805,6 +2274,11 @@ def make_handler(store, agent, token):
                         return self._send(400, {"error": "task_id must be a number"})
                     return self._send(200, store.all("SELECT a.*, t.title FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE a.status='pending' AND a.task_id=? ORDER BY a.id", tid))
                 return self._send(200, store.all("SELECT a.*, t.title FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE a.status='pending' ORDER BY a.id"))
+            if p == "/mail/oauth/status":
+                flow = OAuthFlow.flows.get(qs.get("flow_id", ""))
+                if not flow:
+                    return self._send(404, {"error": "no such sign-in flow"})
+                return self._send(200, flow.status())
             if p == "/watches":
                 return self._send(200, store.all("SELECT * FROM watches ORDER BY id DESC LIMIT 200"))
             if p == "/activity":
@@ -1824,6 +2298,19 @@ def make_handler(store, agent, token):
                 r = test_provider(store, kind, b.get("api_key"), b.get("base_url"), b.get("model"))
                 store.activity("user", "provider_test", None, "%s: %s (%s ms)" % (kind, "ok" if r.get("ok") else r.get("detail"), r.get("latency_ms", 0)))
                 return self._send(200, r)
+            if p == "/mail/test":
+                r = test_mail(store, b.get("provider"), b.get("address"), b.get("password"), b)
+                store.activity("user", "mail_test", None, "%s %s: %s (%s ms)" % (r.get("provider"), r.get("address") or "-", "ok" if r.get("ok") else r.get("detail"), r.get("latency_ms", 0)))
+                return self._send(200, r)
+            if p == "/mail/oauth/start":
+                if (b.get("provider") or "gmail") != "gmail":
+                    return self._send(200, {"ok": False, "detail": "Sign in with Google is for Gmail accounts; other providers use an app password."})
+                client, why = google_oauth_client()
+                if not client:
+                    return self._send(200, {"ok": False, "detail": why, "configured": False})
+                flow = OAuthFlow(store, client, env=agent.session_env(), open_browser=b.get("open_browser", True))
+                store.activity("user", "mail_signin_started", None, "google flow %s" % flow.id)
+                return self._send(200, dict(flow.status(), ok=True, configured=True))
             if p == "/speech/transcribe":
                 r = speech_transcribe(store, b.get("audio_b64"), b.get("format") or "wav")
                 return self._send(200, r)
@@ -1875,9 +2362,13 @@ def make_handler(store, agent, token):
                     return self._send(400, {"error": "unknown secret"})
                 if b.get("value") in (None, ""):
                     del_secret(b["name"])
+                    if b["name"] == "mail_oauth_refresh":
+                        store.set_setting("mail.auth", "password")
                     store.activity("user", "secret_removed", None, b["name"])
                     return self._send(200, {"ok": True, "removed": True})
                 how = set_secret(b["name"], b["value"])
+                if b["name"] == "mail_password":
+                    store.set_setting("mail.auth", "password")           # a typed app password takes over from a Google sign-in
                 store.activity("user", "secret_set", None, "%s via %s" % (b["name"], how))
                 return self._send(200, {"ok": True, "storage": how})
             self._send(404, {"error": "not found"})
@@ -1895,7 +2386,11 @@ def make_handler(store, agent, token):
                         return self._send(400, {"error": "mode must be ask|auto|bypass"})
                     if k == "provider" and v not in PROVIDERS and v != "fake":
                         return self._send(400, {"error": "provider must be one of " + ", ".join(PROVIDERS)})
-                    if k == "secrets":
+                    if k == "mail.provider" and str(v).lower() not in MAIL_PROVIDERS and str(v) != "":       # "" = unset: infer it from the address
+                        return self._send(400, {"error": "mail.provider must be one of " + ", ".join(MAIL_PROVIDER_ORDER) + " (or empty to infer it from the address)"})
+                    if k == "mail.auth" and str(v).lower() not in ("password", "oauth", ""):
+                        return self._send(400, {"error": "mail.auth must be password or oauth (or empty)"})
+                    if k in ("secrets", "providers", "mail_providers", "mail_provider_order", "mail_oauth", "mail_ready"):
                         continue
                     if k == "ai.enabled":
                         v = "true" if str(v).lower() in ("true", "1", "on", "yes") else "false"

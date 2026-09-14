@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Live end-to-end test of the Fab OS agent INSIDE the booted VM, driven over SSH (vm profile ships openssh-server).
-# Real provider (Claude), real desktop session (GUI tasks), real mail (Brevo transport) to the address you authorise.
-#   ANTHROPIC_API_KEY=... BREVO_API_KEY=... MAIL_TO=you@example.com tests/agent-live-vm.sh [--model claude-sonnet-5] [--keep]
+# Real provider (Claude), real desktop session (GUI tasks), real mail through the user's OWN account (ADR-0014) to the address you authorise.
+#   ANTHROPIC_API_KEY=... MAIL_ADDRESS=you@gmail.com MAIL_APP_PASSWORD=... MAIL_TO=friend@example.com [MAIL_PROVIDER=gmail] tests/agent-live-vm.sh [--model claude-sonnet-5] [--keep]
 # Output: build/agent-live-vm.out (full log) — every PASS/FAIL below is backed by a file/log check run in the VM.
 set -uo pipefail; HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"
 : "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}"
-MODEL=${MODEL:-claude-opus-5}; HEAVY_MODEL=${HEAVY_MODEL:-$MODEL}; MAIL_TO=${MAIL_TO:-}; MAIL_FROM=${MAIL_FROM:-support@patienceai.in}; KEEP=0
+MODEL=${MODEL:-claude-opus-5}; HEAVY_MODEL=${HEAVY_MODEL:-$MODEL}; MAIL_TO=${MAIL_TO:-}; KEEP=0
 while [ $# -gt 0 ]; do case "$1" in --model) MODEL=$2; shift;; --heavy-model) HEAVY_MODEL=$2; shift;; --keep) KEEP=1;; esac; shift; done
 SSH="sshpass -p fabos ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -p 2222 fabos@127.0.0.1"
 OUT=build/agent-live-vm.out; : > "$OUT"; exec > >(tee -a "$OUT") 2>&1
@@ -32,8 +32,8 @@ if [ "${INJECT:-0}" = 1 ]; then   # test the working-tree agent code without reb
 fi
 echo "### configure provider + mail"
 vm "fabos settings provider claude >/dev/null; fabos settings claude.model $MODEL >/dev/null; fabos settings ai.enabled true >/dev/null; fabos mode auto >/dev/null; printf '%s\n' '$ANTHROPIC_API_KEY' | fabos set-key claude >/dev/null 2>&1"
-if [ -n "${BREVO_API_KEY:-}" ] && [ -n "$MAIL_TO" ]; then
-  vm "fabos settings mail.transport brevo >/dev/null; fabos settings mail.from $MAIL_FROM >/dev/null; fabos settings mail.from_name 'Fab OS agent' >/dev/null; printf '%s\n' '$BREVO_API_KEY' | fabos set-key mail-api >/dev/null 2>&1"; fi
+if [ -n "${MAIL_APP_PASSWORD:-}" ] && [ -n "${MAIL_ADDRESS:-}" ] && [ -n "$MAIL_TO" ]; then
+  vm "fabos settings mail.provider ${MAIL_PROVIDER:-gmail} >/dev/null; fabos settings mail.address $MAIL_ADDRESS >/dev/null; fabos settings mail.from_name 'Fab OS agent' >/dev/null; printf '%s\n' '$MAIL_APP_PASSWORD' | fabos set-key mail >/dev/null 2>&1; fabos mail-check"; fi
 vm "fabos status"
 
 approve_pending() { # approve everything pending, print what was approved
@@ -92,7 +92,7 @@ if [ "$APPROVED" -ge 1 ] && ! vm "test -e ~/notes/hello.txt"; then verdict PASS 
 # ---------- MAIL (only to the address you authorised)
 if [ -n "$MAIL_TO" ]; then
   run_task mail-1 300 auto "$MODEL" "Send an email to $MAIL_TO with the subject 'Fab OS agent test' and a short body that reports this machine's hostname and disk usage of /."
-  check "email_sent logged" "fabos log --limit 60 | grep -i 'email_sent'" && verdict PASS "mail-1 sent via Brevo to $MAIL_TO (check the inbox)" || verdict FAIL "mail-1 ($TASK_STATUS)"
+  check "email_sent logged" "fabos log --limit 60 | grep -i 'email_sent'" && verdict PASS "mail-1 sent from the user's own account to $MAIL_TO (check the inbox)" || verdict FAIL "mail-1 ($TASK_STATUS)"
 fi
 # ---------- WATCH
 run_task watch-1 240 auto "$MODEL" "Every 20 seconds check whether the file ~/work/flag.txt exists; when it appears, notify me and stop checking."

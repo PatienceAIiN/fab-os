@@ -29,6 +29,7 @@
  "fixture_dir_in_vm": "/tmp/ladder",
  "generated_by": "tests/ladder/gen_fixtures.py",
  "hello_text": "Hello from Fab OS",
+ "hi_note_text": "hi",
  "largest": {
   "name": "archive.dat",
   "relpath": "archive.dat",

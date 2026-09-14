@@ -6,9 +6,12 @@
   fabos tasks | show ID | cancel ID | retry ID | delete ID | edit ID --title T --request R
   fabos approvals | approve APPROVAL_ID | deny APPROVAL_ID | answer TASK_ID "text"
   fabos mode [ask|auto|bypass]      permission mode (ask: approve MEDIUM+, auto: approve CRITICAL only, bypass: never ask)
-  fabos settings [KEY VALUE]         e.g. fabos settings provider openai ; fabos settings mail.smtp_host smtp.example.com
-  fabos set-key claude|gemini|openai|deepseek|local|mail|mail-api   store a secret (prompted, never echoed)
+  fabos settings [KEY VALUE]         e.g. fabos settings provider openai ; fabos settings mail.provider gmail ; fabos settings mail.address me@gmail.com
+                                     (an empty VALUE unsets a key: fabos settings mail.provider '' infers the provider from the address again)
+  fabos set-key claude|gemini|openai|deepseek|local|mail   store a secret (prompted, never echoed; mail = the app password)
   fabos check [claude|gemini|openai|deepseek|local]   real connection check of the (given or active) AI provider
+  fabos mail-check [--provider P] [--address A]       real SMTP + IMAP sign-in with the stored mail account (exit 0 = both fine)
+  fabos mail-signin                                    "Sign in with Google" for Gmail (opens the browser; needs the distributor's OAuth client)
   fabos approvals [--task ID]        pending approvals (optionally only those of one task)
   fabos watches | unwatch ID | log [--limit N] | status [--brief]
 """
@@ -55,8 +58,10 @@ def main():
     p = sub.add_parser("approvals"); p.add_argument("--task", type=int, metavar="ID")
     p = sub.add_parser("mode"); p.add_argument("value", nargs="?", choices=["ask", "auto", "bypass"])
     p = sub.add_parser("settings"); p.add_argument("key", nargs="?"); p.add_argument("value", nargs="?")
-    p = sub.add_parser("set-key"); p.add_argument("which", choices=["claude", "gemini", "openai", "deepseek", "local", "mail", "mail-api"]); p.add_argument("--remove", action="store_true")
+    p = sub.add_parser("set-key"); p.add_argument("which", choices=["claude", "gemini", "openai", "deepseek", "local", "mail"]); p.add_argument("--remove", action="store_true")
     p = sub.add_parser("check"); p.add_argument("provider", nargs="?", choices=["claude", "gemini", "openai", "deepseek", "local"])
+    p = sub.add_parser("mail-check"); p.add_argument("--provider", choices=["gmail", "outlook", "yahoo", "zoho", "icloud", "other"]); p.add_argument("--address")
+    sub.add_parser("mail-signin")
     sub.add_parser("watches")
     p = sub.add_parser("log"); p.add_argument("--limit", type=int, default=50)
     p = sub.add_parser("status"); p.add_argument("--brief", action="store_true")
@@ -128,7 +133,7 @@ def main():
                     if k != "secrets": print("%-22s %s" % (k, out[k]))
                 print("secrets: " + ", ".join("%s=%s" % (k, "set" if v else "unset") for k, v in out["secrets"].items())); return
     elif a.cmd == "set-key":
-        name = {"claude": "claude_api_key", "gemini": "gemini_api_key", "openai": "openai_api_key", "deepseek": "deepseek_api_key", "local": "local_api_key", "mail": "mail_password", "mail-api": "mail_api_key"}[a.which]
+        name = {"claude": "claude_api_key", "gemini": "gemini_api_key", "openai": "openai_api_key", "deepseek": "deepseek_api_key", "local": "local_api_key", "mail": "mail_password"}[a.which]
         val = "" if a.remove else getpass.getpass("%s: " % name)
         out = api("POST", "/secrets", {"name": name, "value": val})
     elif a.cmd == "check":
@@ -138,6 +143,28 @@ def main():
                   else ("%s: %s" % (out.get("provider") or "provider", out.get("detail"))))
             if out.get("models_sample"): print("models: " + ", ".join(out["models_sample"]))
             sys.exit(0 if out["ok"] else 1)
+    elif a.cmd == "mail-check":
+        body = {k: v for k, v in (("provider", a.provider), ("address", a.address)) if v}
+        out = api("POST", "/mail/test", body)
+        if not a.json and "ok" in out:
+            print("%s · %s · %s" % ("Mail OK" if out["ok"] else "Mail check failed", out.get("provider"), out.get("address") or "(no address)"))
+            for leg in ("smtp", "imap"):
+                r = out.get(leg) or {}
+                print("  %-4s %s %s" % (leg.upper(), "ok  " if r.get("ok") else ("skip" if r.get("skipped") else "FAIL"), r.get("detail", "")))
+            print("  %d ms · auth: %s" % (out.get("latency_ms", 0), out.get("auth")))
+            sys.exit(0 if out["ok"] else 1)
+    elif a.cmd == "mail-signin":
+        out = api("POST", "/mail/oauth/start", {"provider": "gmail"})
+        if not a.json:
+            if not out.get("ok"):
+                sys.exit(out.get("detail") or out.get("error") or "sign-in unavailable")
+            print("Finish the sign-in in the browser window%s.\nIf it did not open, visit:\n  %s" % ("" if out.get("browser_opened") else " (could not open one)", out["url"]))
+            while True:
+                st = api("GET", "/mail/oauth/status?flow_id=" + out["flow_id"])
+                if st.get("state") != "pending":
+                    print("%s: %s%s" % (st.get("state"), st.get("detail"), (" as " + st["address"]) if st.get("address") else ""))
+                    sys.exit(0 if st.get("state") == "done" else 1)
+                time.sleep(2)
     elif a.cmd == "watches":
         out = api("GET", "/watches")
         if not a.json:
@@ -163,6 +190,8 @@ def main():
             if not out["provider_ready"]: s = "AI provider not configured — open Fab AI Controls → Settings · " + s
             print(s); return
     print(json.dumps(out, indent=1, default=str) if out is not None else "")
+    if isinstance(out, dict) and int(out.get("http") or 0) >= 400:       # the daemon refused it: the exit code says so too
+        sys.exit(1)
 
 
 if __name__ == "__main__":

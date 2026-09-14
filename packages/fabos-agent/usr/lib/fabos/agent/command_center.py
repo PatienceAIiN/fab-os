@@ -298,6 +298,8 @@ QPushButton#pillOutline:hover { background: %(hover)s; }
 QPushButton#check { background: %(alt)s; color: %(text)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 8px 16px; font-weight: 500; }
 QPushButton#check:hover { background: %(hover)s; }
 QPushButton#check:disabled { color: %(muted)s; }
+QToolButton#disclosure { background: transparent; border: none; border-radius: 8px; padding: 4px 8px 4px 4px; color: %(muted)s; font-size: 12.5px; font-weight: 600; letter-spacing: 0.3px; }
+QToolButton#disclosure:hover { background: %(hover)s; color: %(text)s; }
 QLineEdit { background: %(alt)s; border: 1px solid %(line)s; border-radius: %(rfield)dpx; padding: 8px 12px; selection-background-color: %(hi)s; selection-color: %(hit)s; }
 QLineEdit:focus { border-color: %(hi)s; }
 QLineEdit#search { padding-left: 34px; border-radius: %(rctl)dpx; background: %(tint4)s; }
@@ -814,6 +816,24 @@ class RoundedDialog(QDialog):
             g = par.window().frameGeometry()
             self.move(g.center().x() - self.width() // 2, g.center().y() - self.height() // 2)
 
+    def refit(self):
+        """Shrink or grow to the content NOW: activate the layout first so the minimum size it imposes is fresh (a bare
+        adjustSize() right after hiding a block is clamped by the stale minimum and the dialog stays tall). Then honour
+        the layout's height-for-width: word-wrapped labels need more rows at the dialog's real width than sizeHint()
+        guesses, and adjustSize() caps a window at 2/3 of the screen — so the content, not the cap, decides the height
+        (bounded by the screen), or wrapped text gets clipped."""
+        lay = self.layout()
+        if lay is not None:
+            lay.invalidate()          # activate() is a no-op on a layout that still counts as activated
+            lay.activate()
+        self.adjustSize()
+        if lay is not None and lay.hasHeightForWidth():
+            need = lay.totalHeightForWidth(self.width())
+            scr = self.screen()
+            cap = (scr.availableGeometry().height() - 48) if scr is not None else need
+            if need > self.height():
+                self.resize(self.width(), max(self.height(), min(need, cap)))
+
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -926,9 +946,9 @@ LIVE = {"run_shell": "Running a command", "read_file": "Reading a file", "write_
         "context": "Tidying earlier notes"}
 STEP_GLYPH = {"run_shell": "terminal", "type_text": "keyboard", "write_file": "file", "read_file": "file", "list_dir": "folder", "web_fetch": "globe", "send_email": "mail",
               "check_email": "mail", "notify_user": "bell", "ask_user": "question", "schedule_watch": "eye", "list_apps": "apps", "open_app": "apps", "context": "tools"}
-APP_NAMES = {"kate": "Fab Editor", "dolphin": "Fab Files", "konsole": "Fab Terminal", "xdg-open": "the default app", "open": "the default app", "firefox": "Firefox",
-             "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos", "okular": "Fab Documents", "kcalc": "Fab Calculator",
-             "spectacle": "Fab Screenshot", "systemsettings": "Fab Settings"}
+APP_NAMES = {"kate": "Fab Editor", "dolphin": "Fab Files", "konsole": "Fab Terminal", "xdg-open": "the default app", "open": "the default app", "brave-browser": "Brave",
+             "brave": "Brave", "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos", "okular": "Fab Documents",
+             "kcalc": "Fab Calculator", "spectacle": "Fab Screenshot", "systemsettings": "Fab Settings"}
 
 
 def parse_input(raw):
@@ -2186,14 +2206,34 @@ class Sidebar(QFrame):
 
 
 # ----------------------------------------------------------------------------- voice (fabos-voice CLI, see the voice contract)
+def _stop_process(p, wait_ms=400):
+    """Stop a fabos-voice QProcess for good: no more signals from it, killed, and given a moment to exit — Qt must never
+    destroy a QProcess that is still running (the finished signal would then land on a deleted wrapper and abort the app)."""
+    if p is None:
+        return
+    try:
+        for sig in (p.finished, p.errorOccurred):
+            try:
+                sig.disconnect()
+            except TypeError:
+                pass
+        if p.state() != QProcess.ProcessState.NotRunning:
+            p.kill()
+            p.waitForFinished(wait_ms)
+    except RuntimeError:              # the wrapper is already gone
+        pass
+
+
 class Voice(QObject):
     """Thin client of the fabos-voice CLI. listen-once records after a chime and prints the transcript (exit 3 = nothing
-    heard, exit 4 = no speech-to-text backend); say TEXT speaks; status prints one JSON line. Everything runs through
-    QProcess so the UI never blocks; when the binary is missing or stt == none the UI shows the mic disabled."""
+    heard, exit 4 = no speech-to-text backend); say TEXT speaks (say --test says the test line); status prints one JSON
+    line. Everything runs through QProcess so the UI never blocks; when the binary is missing or stt == none the UI shows
+    the mic disabled. A failed listen NEVER fails silently: nothing_heard / unavailable carry the CLI's stderr reason
+    (voice_failure_text) and the composer shows it in the toast."""
     status_changed = pyqtSignal()
     transcript = pyqtSignal(str)
-    nothing_heard = pyqtSignal()
-    unavailable = pyqtSignal()
+    nothing_heard = pyqtSignal(str)
+    unavailable = pyqtSignal(str)
     listening_changed = pyqtSignal(bool)
     speaking_changed = pyqtSignal(bool)
 
@@ -2211,6 +2251,7 @@ class Voice(QObject):
             self.status = {"stt": "none", "tts": "none", "mic": False, "wake": False, "listening": False}
             self.status_changed.emit()
             return
+        self.stop_probe()
         p = QProcess(self)
         p.setProgram(self.bin)
         p.setArguments(["status"])
@@ -2218,12 +2259,27 @@ class Voice(QObject):
         self._status_proc = p
         p.start()
 
+    def stop_probe(self):
+        p, self._status_proc = self._status_proc, None
+        _stop_process(p)
+
+    def shutdown(self):
+        """Closing the window: every fabos-voice process is stopped before Qt tears the objects down."""
+        self.stop_listening()
+        self.stop_speaking()
+        self.stop_probe()
+
     def _probed(self, p, code):
+        if p is not self._status_proc:
+            return
+        self._status_proc = None
         try:
             line = bytes(p.readAllStandardOutput()).decode(errors="replace").strip().splitlines()
             self.status = json.loads(line[-1]) if line else {"stt": "none", "tts": "none"}
         except (ValueError, IndexError):
             self.status = {"stt": "none", "tts": "none"}
+        except RuntimeError:              # wrapper deleted underneath us
+            return
         if code != 0 and not isinstance(self.status, dict):
             self.status = {"stt": "none", "tts": "none"}
         self.status_changed.emit()
@@ -2239,7 +2295,7 @@ class Voice(QObject):
 
     def listen(self, timeout=10):
         if not self.stt_available():
-            self.unavailable.emit()
+            self.unavailable.emit(voice_failure_text(None if not self.bin else 4, "" if self.bin else "fabos-voice is not installed"))
             return False
         if self.listen_proc is not None:
             self.stop_listening()
@@ -2248,7 +2304,7 @@ class Voice(QObject):
         p.setProgram(self.bin)
         p.setArguments(["listen-once", "--timeout", str(int(timeout))])
         p.finished.connect(lambda code, _st, p=p: self._listened(p, code))
-        p.errorOccurred.connect(lambda _e, p=p: self._listened(p, 4) if p is self.listen_proc else None)
+        p.errorOccurred.connect(lambda _e, p=p: self._listened(p, 127) if p is self.listen_proc else None)    # FailedToStart: no binary
         self.listen_proc = p
         p.start()
         self.listening_changed.emit(True)
@@ -2257,7 +2313,7 @@ class Voice(QObject):
     def stop_listening(self):
         p, self.listen_proc = self.listen_proc, None
         if p is not None:
-            p.kill()
+            _stop_process(p)
             self.listening_changed.emit(False)
 
     def _listened(self, p, code):
@@ -2265,29 +2321,33 @@ class Voice(QObject):
             return
         self.listen_proc = None
         self.listening_changed.emit(False)
-        out = bytes(p.readAllStandardOutput()).decode(errors="replace").strip()
+        try:
+            out = bytes(p.readAllStandardOutput()).decode(errors="replace").strip()
+            err = bytes(p.readAllStandardError()).decode(errors="replace")
+        except RuntimeError:
+            return
         if code == 0 and out:
             self.transcript.emit(out)
         elif code == 3 or (code == 0 and not out):
-            self.nothing_heard.emit()
+            self.nothing_heard.emit(voice_failure_text(3, err))
         else:
-            if code == 4:
+            if code in (4, 127):
                 self.status = dict(self.status or {}, stt="none")
                 self.status_changed.emit()
-            self.unavailable.emit()
+            self.unavailable.emit(voice_failure_text(code, err))
 
     def is_speaking(self):
         return self.say_proc is not None
 
-    def say(self, text):
+    def say(self, text, args=None):
         if self.say_proc is not None:
             self.stop_speaking()
             return False
-        if not self.tts_available() or not (text or "").strip():
+        if not self.tts_available() or not (args or (text or "").strip()):
             return False
         p = QProcess(self)
         p.setProgram(self.bin)
-        p.setArguments(["say", text[:4000]])
+        p.setArguments(args or ["say", text[:4000]])
         p.finished.connect(lambda code, _st, p=p: self._spoken(p, code))
         p.errorOccurred.connect(lambda _e, p=p: self._spoken(p, 4) if p is self.say_proc else None)
         self.say_proc = p
@@ -2295,16 +2355,31 @@ class Voice(QObject):
         self.speaking_changed.emit(True)
         return True
 
+    def say_test(self):
+        """fabos-voice say --test (the CLI's own test line); an older CLI without --test gets the line as plain text."""
+        self._test_fallback = True
+        return self.say(VOICE_TEST_LINE, args=["say", "--test"])
+
     def stop_speaking(self):
         p, self.say_proc = self.say_proc, None
         if p is not None:
-            p.kill()
+            _stop_process(p)
             self.speaking_changed.emit(False)
 
     def _spoken(self, p, code):
         if p is not self.say_proc:
             return
         self.say_proc = None
+        try:
+            args = list(p.arguments())
+        except RuntimeError:
+            args = []
+        if code == 2 and getattr(self, "_test_fallback", False) and args == ["say", "--test"]:
+            self._test_fallback = False                  # this fabos-voice has no --test yet: say the line as text
+            self.speaking_changed.emit(False)
+            self.say(VOICE_TEST_LINE)
+            return
+        self._test_fallback = False
         if code == 4:
             self.status = dict(self.status or {}, tts="none")
             self.status_changed.emit()
@@ -2312,11 +2387,148 @@ class Voice(QObject):
 
 
 # ----------------------------------------------------------------------------- settings
-class SettingsDialog(RoundedDialog):
-    """Settings: General · AI provider (ONE provider dropdown, one key field, model, endpoint for Local, a real connection
-    check with an animated result; the key is only saved after a successful check unless the user opts out) · Voice · Mail."""
+def voice_failure_text(code, stderr=""):
+    """The toast for a failed fabos-voice run. The CLI's own stderr reason wins when it gave one ("No microphone found on
+    this computer."); otherwise a plain sentence per exit code: 3 = nothing heard, 4 = no speech backend, 127 / None =
+    the binary is missing. Never silent."""
+    lines = [ln.strip() for ln in (stderr or "").strip().splitlines() if ln.strip()]
+    reason = lines[-1] if lines else ""
+    low = reason.lower()
+    if any(k in low for k in ("pw-record", "pipewire", "pulse", "parec", "arecord", "connection refused", "no audio")):
+        return "No audio session — " + reason
+    if code == 3:
+        return reason or "Microphone is muted or silent — I heard nothing. Check the input level in Fab Settings › Sound."
+    if code in (127, None) or "not installed" in low or "no such file" in low:
+        return "Speech engine missing — fabos-voice is not installed; run fabos-voice doctor once it is."
+    if code == 4:
+        return reason or "Speech engine missing — run fabos-voice doctor"
+    return reason or "Voice failed (exit %s) — run fabos-voice doctor" % code
 
-    def __init__(self, parent, settings, voice=None):
+
+class Disclosure(QWidget):
+    """An "Advanced" expander: one chevron row, collapsed by default, that reveals a small form underneath. No height
+    animation (cheap, and the dialog simply re-fits); the chevron flips and follows the palette."""
+    toggled = pyqtSignal(bool)
+
+    def __init__(self, title="Advanced", parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 2, 0, 0)
+        v.setSpacing(6)
+        self.btn = QToolButton()
+        self.btn.setObjectName("disclosure")
+        self.btn.setCheckable(True)
+        self.btn.setText(title)
+        self.btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn.setIconSize(QSize(16, 16))
+        v.addWidget(self.btn, 0, Qt.AlignmentFlag.AlignLeft)
+        self.content = QWidget()
+        self.content.setVisible(False)
+        self.form = QFormLayout(self.content)
+        self.form.setContentsMargins(8, 0, 0, 0)
+        self.form.setSpacing(8)
+        v.addWidget(self.content)
+        self.btn.toggled.connect(self._toggle)
+        self.refresh_icon()
+
+    def addRow(self, label, widget=None):
+        if widget is None:
+            self.form.addRow(label)
+        else:
+            self.form.addRow(label, widget)
+
+    def is_open(self):
+        return self.btn.isChecked()
+
+    def set_open(self, on):
+        self.btn.setChecked(bool(on))
+
+    def _toggle(self, on):
+        self.content.setVisible(on)
+        self.refresh_icon()
+        self.toggled.emit(on)
+        w = self.window()
+        if w is not None and w is not self:
+            QTimer.singleShot(0, getattr(w, "refit", w.adjustSize))
+
+    def refresh_icon(self):
+        c = QColor(self.palette().color(QPalette.ColorRole.Text))
+        c.setAlphaF(0.72)
+        self.btn.setIcon(glyph_icon("chevron-up" if self.btn.isChecked() else "chevron-down", c, 16))
+
+    def changeEvent(self, e):
+        if e.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange):
+            self.refresh_icon()
+        super().changeEvent(e)
+
+
+class WrapLabel(QLabel):
+    """A word-wrapped label whose sizeHint is its height at the width it ACTUALLY has. QFormLayout (Qt 6) reserves a
+    wrapped field's sizeHint() height — which QLabel computes at a guessed width — and never its heightForWidth() at
+    the real column width (measured: a 6-line hint got a 176 px row for 112 px of text; a result label squeezed next
+    to a button got a 64 px row for 80 px of text and was clipped). Reporting the height for the laid-out width, and
+    asking for a re-layout when that width changes, makes every row exactly as tall as its text."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+        pol = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        pol.setHeightForWidth(True)
+        self.setSizePolicy(pol)
+        self._laid_width = 0
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if e.size().width() != self._laid_width:
+            self._laid_width = e.size().width()
+            self.updateGeometry()              # the height for this width is only known now
+
+    def sizeHint(self):
+        base = super().sizeHint()
+        if self._laid_width > 0 and self.text():
+            return QSize(base.width(), self.heightForWidth(self._laid_width))
+        return base
+
+    def minimumSizeHint(self):
+        base = super().minimumSizeHint()
+        if self._laid_width > 0 and self.text():
+            return QSize(base.width(), self.heightForWidth(self._laid_width))   # never shorter than its text: no clipped rows
+        return base
+
+
+class TabPage(QWidget):
+    """One settings tab. QTabWidget::sizeHint() and QStackedLayout::heightForWidth() ask EVERY page directly (bypassing
+    size policies and hidden-item rules), so one tall hidden tab would keep the whole dialog tall. A hidden page therefore
+    reports no size at all, and the dialog is exactly as tall as the tab on screen (SettingsDialog._fit_tab)."""
+
+    def sizeHint(self):
+        return QSize(0, 0) if self.isHidden() else super().sizeHint()
+
+    def minimumSizeHint(self):
+        return QSize(0, 0) if self.isHidden() else super().minimumSizeHint()
+
+    def heightForWidth(self, w):
+        if self.isHidden():
+            return -1
+        return super().heightForWidth(w)
+
+
+MAIL_LABELS = {"gmail": "Gmail", "outlook": "Outlook / Hotmail", "yahoo": "Yahoo Mail", "zoho": "Zoho Mail", "icloud": "iCloud Mail", "other": "Other (IMAP / SMTP)"}
+MAIL_ORDER = ["gmail", "outlook", "yahoo", "zoho", "icloud", "other"]
+SETTINGS_TABS = {"general": 0, "provider": 1, "voice": 2, "mail": 3}
+
+
+class SettingsDialog(RoundedDialog):
+    """Settings, kept compact (owner: "remove unnecessary settings things and collapse the rest"). Four tabs whose FIRST
+    level holds only what most people touch — General: permission mode, System-Wide AI · AI provider: one dropdown, the
+    key, Check connection · Voice: "Hey Fab" on/off, speak replies, Voice check / Test voice · Mail: provider (Gmail
+    first), address, Sign in. Everything else sits in a collapsed "Advanced" expander per tab (persona, raw responses,
+    step / result limits · model, endpoint, the check requirement · wake-word text, offline-only, cloud voice · sender
+    name, SMTP / IMAP servers auto-filled by the preset). An API key or a mail password is saved only after a successful
+    check, unless the requirement is unticked."""
+
+    def __init__(self, parent, settings, voice=None, tab=None):
         super().__init__(parent, APP_NAME + " — Settings", "", "Save", "Cancel", radius=R_POPUP, width=620)
         s = settings
         self.s = s
@@ -2324,40 +2536,83 @@ class SettingsDialog(RoundedDialog):
         self.worker = None
         self._workers = []
         self.saved_provider = None
+        self.mail_worker = None
+        self.oauth_flow = None
+        self.oauth_timer = QTimer(self)
+        self.oauth_timer.setInterval(1500)
+        self.oauth_timer.timeout.connect(self._poll_oauth)
+        self.doctor_proc = None
+        secrets = s.get("secrets") or {}
+        self.lay.setSpacing(10)
         tabs = QTabWidget()
         self.tabs = tabs
         self.body.addWidget(tabs)
-        # --- General
-        w = QWidget()
-        f = QFormLayout(w)
-        f.setSpacing(10)
+        tabs.currentChanged.connect(self._fit_tab)     # the dialog is as tall as the CURRENT tab, not the tallest one
+
+        def form(widget):
+            f = QFormLayout(widget)
+            f.setSpacing(8)
+            f.setContentsMargins(0, 8, 0, 0)
+            f.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+            return f
+
+        def wrap(label):
+            """A muted / result label that wraps across the whole field column and is exactly as tall as its text
+            (WrapLabel — see there for why a plain word-wrapped QLabel in a QFormLayout is not)."""
+            out = WrapLabel(label.text())
+            if label.objectName():
+                out.setObjectName(label.objectName())
+            label.deleteLater()
+            return out
+
+        def row(*widgets, stretch_last=False):
+            box = QWidget()
+            h = QHBoxLayout(box)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(8)
+            for i, wd in enumerate(widgets):
+                h.addWidget(wd, 1 if (stretch_last and i == len(widgets) - 1) else 0)
+            if not stretch_last:
+                h.addStretch(1)
+            return box
+
+        # --- General: permission mode + System-Wide AI; Advanced: persona, raw responses, limits
+        w = TabPage()
+        f = form(w)
         self.mode = QComboBox()
         for m, lab in (("ask", "Ask — approve every risky step"), ("auto", "Auto — ask only for critical steps"), ("bypass", "Bypass — never ask")):
             self.mode.addItem(lab, m)
-        self.mode.setCurrentIndex(max(0, ["ask", "auto", "bypass"].index(s.get("mode", "auto")) if s.get("mode", "auto") in ("ask", "auto", "bypass") else 1))
+        cur_mode = s.get("mode", "auto")
+        self.mode.setCurrentIndex(["ask", "auto", "bypass"].index(cur_mode) if cur_mode in ("ask", "auto", "bypass") else 1)
         f.addRow("Permission mode", self.mode)
-        self.max_turns = QLineEdit(str(s.get("agent.max_turns", "60")))
-        f.addRow("Max steps per task", self.max_turns)
-        self.persona = QCheckBox("Warm Indian-English colleague who narrates each step")
+        self.ai_switch = Switch("Off stops the agent from taking tasks and pauses background watches")
+        self.ai_switch.setChecked(str(s.get("ai.enabled", "true")) == "true")
+        self.ai_note = wrap(QLabel("", objectName="muted"))
+        self.ai_switch.toggled.connect(self._ai_toggled)
+        self._ai_toggled(self.ai_switch.isChecked())
+        f.addRow("System-Wide AI", row(self.ai_switch, self.ai_note, stretch_last=True))
+        adv = Disclosure()
+        self.general_adv = adv
+        self.persona = QCheckBox("Warm Indian-English colleague, narrates each step")
         self.persona.setChecked(str(s.get("ui.persona", "indian-english")).lower() not in ("off", "none", "false", "", "0"))
-        f.addRow("Persona", self.persona)
-        self.show_raw = QCheckBox("Show raw responses (commands and tool output)")
+        adv.addRow("Persona", self.persona)
+        self.show_raw = QCheckBox("Show raw responses (commands, tool output)")
         self.show_raw.setChecked(str(s.get("ui.show_raw", "false")) == "true")
         self.show_raw.toggled.connect(self._raw_toggled)
-        f.addRow("", self.show_raw)
-        hint = QLabel("Off: the chat shows only friendly summaries like “Ran a command” or “Wrote a file”. On: the exact commands and their output are shown inside the action timeline.")
-        hint.setObjectName("muted")
-        hint.setWordWrap(True)
-        f.addRow("", hint)
+        adv.addRow("Chat", self.show_raw)
+        self.max_turns = QLineEdit(str(s.get("agent.max_turns", "60")))
+        self.max_turns.setMaximumWidth(96)
+        adv.addRow("Max steps per task", self.max_turns)
+        self.result_limit = QLineEdit(str(s.get("agent.tool_result_max_chars", "") or ""))
+        self.result_limit.setPlaceholderText("provider default")
+        self.result_limit.setMaximumWidth(140)
+        adv.addRow("Tool result limit (chars)", self.result_limit)
+        f.addRow(adv)
         tabs.addTab(w, "General")
-        # --- AI provider: one dropdown, one key field, model, endpoint (Local only), Check connection
-        w = QWidget()
-        pv = QVBoxLayout(w)
-        pv.setSpacing(10)
-        pv.setContentsMargins(0, 6, 0, 0)
-        f = QFormLayout()
-        f.setSpacing(10)
-        pv.addLayout(f)
+
+        # --- AI provider: one dropdown, one key field, Check connection; Advanced: model, endpoint, the check requirement
+        w = TabPage()
+        f = form(w)
         self.provider = QComboBox()
         self.prov_ids = list(PROVIDER_ORDER)
         table = s.get("providers") or {}
@@ -2369,111 +2624,167 @@ class SettingsDialog(RoundedDialog):
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.key.setClearButtonEnabled(True)
+        self.remove_btn = IconButton("delete", "Remove the stored API key", size=32, icon_size=16)
+        self.remove_btn.clicked.connect(self._remove_key)
         key_row = QWidget()
         kl = QHBoxLayout(key_row)
         kl.setContentsMargins(0, 0, 0, 0)
         kl.setSpacing(6)
         kl.addWidget(self.key, 1)
-        self.remove_btn = IconButton("delete", "Remove the stored API key", size=32, icon_size=16)
-        self.remove_btn.clicked.connect(self._remove_key)
         kl.addWidget(self.remove_btn, 0)
         f.addRow("API key", key_row)
-        self.model = QLineEdit()
-        f.addRow("Model", self.model)
-        self.base_url = QLineEdit()
-        self.base_label = QLabel("Endpoint")
-        f.addRow(self.base_label, self.base_url)
-        self.help = QLabel()
-        self.help.setObjectName("muted")
-        self.help.setWordWrap(True)
-        pv.addWidget(self.help)
-        crow = QHBoxLayout()
-        crow.setSpacing(10)
         self.check_btn = QPushButton("Check connection")
         self.check_btn.setObjectName("check")
         self.check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.check_btn.clicked.connect(self.check_connection)
-        crow.addWidget(self.check_btn, 0)
         self.mark = ResultMark(28)
-        crow.addWidget(self.mark, 0)
-        self.check_result = QLabel("")
+        self.check_result = wrap(QLabel(""))
         self.check_result.setObjectName("checkResult")
-        self.check_result.setWordWrap(True)
-        crow.addWidget(self.check_result, 1)
-        pv.addLayout(crow)
-        self.require_check = QCheckBox("Require a successful check before saving the key")
+        f.addRow("", row(self.check_btn, self.mark, self.check_result, stretch_last=True))
+        self.help = wrap(QLabel())
+        self.help.setObjectName("muted")
+        f.addRow("", self.help)
+        adv = Disclosure()
+        self.provider_adv = adv
+        self.model = QLineEdit()
+        adv.addRow("Model", self.model)
+        self.base_url = QLineEdit()
+        self.base_label = QLabel("Endpoint")
+        adv.addRow(self.base_label, self.base_url)
+        self.require_check = QCheckBox("Require a successful check before saving a key or a mail password")
         self.require_check.setChecked(True)
         self.require_check.toggled.connect(self._update_save_state)
-        pv.addWidget(self.require_check)
-        note = QLabel("Keys are encrypted with systemd-creds, never displayed again, and sent only to the provider you chose. The check calls the provider's model list with your key — nothing else.")
+        adv.addRow("", self.require_check)
+        note = wrap(QLabel("Keys are encrypted with systemd-creds, never displayed again, and sent only to the provider you chose. The check calls the provider's model list with your key — nothing else."))
         note.setObjectName("muted")
-        note.setWordWrap(True)
-        pv.addWidget(note)
-        pv.addStretch(1)
+        adv.addRow("", note)
+        f.addRow(adv)
         tabs.addTab(w, "AI provider")
         # per-provider edit state (typed key, model, endpoint, last check) so switching the dropdown loses nothing
         self.state = {}
         for pid in self.prov_ids:
             m, u = PROVIDER_DEFAULTS[pid]
             self.state[pid] = {"key": "", "model": s.get(pid + ".model", m), "base_url": s.get(pid + ".base_url", u or ""), "check": None, "checked_key": None,
-                               "stored": bool((s.get("secrets") or {}).get(pid + "_api_key")), "remove": False}
+                               "stored": bool(secrets.get(pid + "_api_key")), "remove": False}
         self.current_pid = None
         self.provider.currentIndexChanged.connect(self._provider_changed)
         self.key.textEdited.connect(self._key_edited)
         self.model.textEdited.connect(lambda t: self._set_state("model", t))
         self.base_url.textEdited.connect(lambda t: self._set_state("base_url", t))
-        self._provider_changed(self.provider.currentIndex())
-        # --- Voice
-        w = QWidget()
-        f = QFormLayout(w)
-        f.setSpacing(10)
-        self.voice_enabled = QCheckBox("Enable voice (microphone in the chat, spoken narration)")
+
+        # --- Voice: "Hey Fab" on/off, speak replies, Voice check + Test voice; Advanced: wake-word text, offline only, cloud voice
+        w = TabPage()
+        f = form(w)
+        self.voice_enabled = QCheckBox("Listen for “Hey Fab” — microphone in the chat, spoken narration")
         self.voice_enabled.setChecked(str(s.get("voice.enabled", "true")) == "true")
         f.addRow("Voice", self.voice_enabled)
-        self.wake_word = QLineEdit(str(s.get("voice.wake_word", "hey fab") or "hey fab"))
-        f.addRow("Wake word", self.wake_word)
         self.speak_replies = QCheckBox("Speak the agent's replies and step narration aloud")
         self.speak_replies.setChecked(str(s.get("voice.speak_replies", "true")) == "true")
         f.addRow("", self.speak_replies)
-        self.offline_only = QCheckBox("Offline only — never send audio to the cloud provider")
-        self.offline_only.setChecked(str(s.get("voice.offline_only", "false")) == "true")
-        f.addRow("", self.offline_only)
-        vrow = QHBoxLayout()
+        self.doctor_btn = QPushButton("Voice check")
+        self.doctor_btn.setObjectName("check")
+        self.doctor_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.doctor_btn.setToolTip("Runs fabos-voice doctor: microphone, audio session, speech engines")
+        self.doctor_btn.clicked.connect(self.run_doctor)
         self.test_voice_btn = QPushButton("Test voice")
         self.test_voice_btn.setObjectName("check")
         self.test_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.test_voice_btn.clicked.connect(self.test_voice)
-        vrow.addWidget(self.test_voice_btn, 0)
-        self.voice_note = QLabel()
+        self.voice_note = wrap(QLabel())
         self.voice_note.setObjectName("muted")
-        self.voice_note.setWordWrap(True)
-        vrow.addWidget(self.voice_note, 1)
-        f.addRow("", vrow)
+        f.addRow("", row(self.doctor_btn, self.test_voice_btn, self.voice_note, stretch_last=True))
+        self.doctor_box = wrap(QLabel(""))
+        self.doctor_box.setObjectName("raw")
+        self.doctor_box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.doctor_box.setVisible(False)
+        f.addRow("", self.doctor_box)
+        adv = Disclosure()
+        self.voice_adv = adv
+        self.wake_word = QLineEdit(str(s.get("voice.wake_word", "hey fab") or "hey fab"))
+        adv.addRow("Wake word", self.wake_word)
+        self.offline_only = QCheckBox("Offline only — never send audio to the cloud provider")
+        self.offline_only.setChecked(str(s.get("voice.offline_only", "false")) == "true")
+        adv.addRow("", self.offline_only)
+        self.cloud_voice = QLineEdit(str(s.get("voice.cloud_voice", "") or ""))
+        self.cloud_voice.setPlaceholderText("the provider's default voice")
+        adv.addRow("Cloud voice name", self.cloud_voice)
+        f.addRow(adv)
         self._refresh_voice_note()
         if voice is not None:
             voice.status_changed.connect(self._refresh_voice_note)
         tabs.addTab(w, "Voice")
-        # --- Mail
-        w = QWidget()
-        f = QFormLayout(w)
-        f.setSpacing(10)
-        self.m = {}
-        for key, label, default in (("mail.user", "Account (login / address)", ""), ("mail.from", "From address (optional)", ""), ("mail.imap_host", "IMAP host", ""), ("mail.imap_port", "IMAP port", "993"),
-                                    ("mail.smtp_host", "SMTP host", ""), ("mail.smtp_port", "SMTP port", "587"), ("mail.smtp_security", "SMTP security (starttls/ssl/none)", "starttls"),
-                                    ("mail.transport", "Transport (smtp / brevo)", "smtp"), ("mail.from_name", "Sender name (brevo)", "")):
-            e = QLineEdit(str(s.get(key, default)))
-            self.m[key] = e
-            f.addRow(label, e)
-        secrets = s.get("secrets") or {}
+
+        # --- Mail: provider (Gmail first), address, Sign in; app-password path revealed when Google sign-in is not
+        # available; Advanced: sender name, SMTP / IMAP servers (auto-filled by the preset)
+        w = TabPage()
+        f = form(w)
+        self.mail_table = s.get("mail_providers") or {}
+        self.mail_ids = [p for p in (s.get("mail_provider_order") or MAIL_ORDER) if p in MAIL_LABELS or p in self.mail_table]
+        self.mail_provider = QComboBox()
+        for pid in self.mail_ids:
+            self.mail_provider.addItem((self.mail_table.get(pid) or {}).get("label") or MAIL_LABELS.get(pid, pid), pid)
+        cur = str(s.get("mail.provider", "gmail") or "gmail")
+        self.mail_provider.setCurrentIndex(self.mail_ids.index(cur) if cur in self.mail_ids else 0)
+        f.addRow("Mail provider", self.mail_provider)
+        self.mail_address = QLineEdit(str(s.get("mail.address", "") or ""))
+        self.mail_address.setPlaceholderText("you@gmail.com")
+        self.mail_address.setClearButtonEnabled(True)
+        f.addRow("Address", self.mail_address)
+        self.mail_signin_btn = QPushButton("Sign in")
+        self.mail_signin_btn.setObjectName("check")
+        self.mail_signin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mail_signin_btn.clicked.connect(self.mail_signin)
+        self.mail_check_btn = QPushButton("Check connection")
+        self.mail_check_btn.setObjectName("check")
+        self.mail_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mail_check_btn.clicked.connect(self.mail_check)
+        self.mail_check_btn.setVisible(False)
+        self.mail_mark = ResultMark(28)
+        self.mail_result = wrap(QLabel(""))
+        self.mail_result.setObjectName("checkResult")
         self.mail_pw = QLineEdit()
         self.mail_pw.setEchoMode(QLineEdit.EchoMode.Password)
-        self.mail_pw.setPlaceholderText("stored" if secrets.get("mail_password") else "password or app password")
-        f.addRow("Password", self.mail_pw)
-        self.mail_api = QLineEdit()
-        self.mail_api.setEchoMode(QLineEdit.EchoMode.Password)
-        self.mail_api.setPlaceholderText("stored" if secrets.get("mail_api_key") else "Brevo API key (transport brevo)")
-        f.addRow("API key", self.mail_api)
+        self.mail_pw.setClearButtonEnabled(True)
+        self.mail_pw.textEdited.connect(self._mail_edited)
+        self.mail_pw_label = QLabel("App password")
+        f.addRow(self.mail_pw_label, self.mail_pw)
+        self.mail_hint = wrap(QLabel(""))
+        self.mail_hint.setObjectName("muted")
+        self.mail_hint.setTextFormat(Qt.TextFormat.RichText)
+        f.addRow("", self.mail_hint)
+        # the action row comes AFTER the field it checks, so the tab reads Address -> App password -> hint -> Check connection
+        f.addRow("", row(self.mail_signin_btn, self.mail_check_btn, self.mail_mark, self.mail_result, stretch_last=True))
+        adv = Disclosure()
+        self.mail_adv = adv
+        self.mail_from_name = QLineEdit(str(s.get("mail.from_name", "") or ""))
+        self.mail_from_name.setPlaceholderText("shown to the people you write to (optional)")
+        adv.addRow("Sender name", self.mail_from_name)
+        self.m = {k: QLineEdit() for k in ("mail.smtp_host", "mail.smtp_port", "mail.imap_host", "mail.imap_port")}
+        for k in ("mail.smtp_port", "mail.imap_port"):
+            self.m[k].setMaximumWidth(72)
+        self.mail_security = QComboBox()
+        for sec, lab in (("starttls", "STARTTLS"), ("ssl", "SSL / TLS"), ("none", "None")):
+            self.mail_security.addItem(lab, sec)
+        adv.addRow("SMTP server", row(self.m["mail.smtp_host"], self.m["mail.smtp_port"], self.mail_security))
+        adv.addRow("IMAP server", row(self.m["mail.imap_host"], self.m["mail.imap_port"]))
+        self.m["mail.imap_host"].setPlaceholderText("none = sending only")
+        self.m["mail.imap_host"].setToolTip("The preset's IMAP server. Type none for an account that only sends — the agent will not read that inbox.")
+        for k, e in self.m.items():
+            e.textEdited.connect(self._mail_edited)
+        self.mail_security.currentIndexChanged.connect(lambda _i: self._mail_edited(""))
+        f.addRow(adv)
         tabs.addTab(w, "Mail")
+        oauth = s.get("mail_oauth") or {}
+        self.mail_state = {"check": None, "checked_sig": None, "oauth_done": False, "stored_pw": bool(secrets.get("mail_password")),
+                           "stored_oauth": bool(secrets.get("mail_oauth_refresh")) and str(s.get("mail.auth", "")) == "oauth",
+                           "oauth_available": bool(oauth.get("google")), "oauth_why": oauth.get("why") or "", "pw_shown": False, "initial": None}
+        self.current_mail = None
+        self._mail_fill_advanced(cur, from_store=True)
+        self.mail_state["initial"] = self._mail_sig()
+        self.mail_provider.currentIndexChanged.connect(self._mail_provider_changed)
+        self.mail_address.textEdited.connect(self._mail_edited)
+        self._mail_provider_changed(self.mail_provider.currentIndex(), initial=True)
+
         self.body.addWidget(QLabel(APP_NAME + " by Patience AI · fabos.patienceai.in · support@patienceai.in", objectName="muted"))   # about / author line
         # Save / Cancel as icons with tooltips (the confirm/cancel pair keeps the dialog's shape)
         self.confirm_btn.setText("")
@@ -2494,7 +2805,29 @@ class SettingsDialog(RoundedDialog):
         self.save_note.setWordWrap(True)
         self.save_note.setVisible(False)
         self.buttons.insertWidget(0, self.save_note, 1)
+        self._provider_changed(self.provider.currentIndex())
+        if tab in SETTINGS_TABS:
+            tabs.setCurrentIndex(SETTINGS_TABS[tab])
+        self._fit_tab(tabs.currentIndex())
         self._update_save_state()
+
+    def _fit_tab(self, idx):
+        """Only the current tab counts for the dialog's size (a QTabWidget otherwise grows to its tallest page)."""
+        for i in range(self.tabs.count()):
+            pol = QSizePolicy.Policy.Preferred if i == idx else QSizePolicy.Policy.Ignored
+            self.tabs.widget(i).setSizePolicy(pol, pol)
+        QTimer.singleShot(0, self.refit)
+
+    # ---- general
+    def _ai_toggled(self, on):
+        self.ai_note.setText("On — the agent takes tasks from the bar, the chat and voice" if on else "Off — no tasks are taken, background watches pause")
+
+    def _raw_toggled(self, on):
+        if on and str(self.s.get("ui.show_raw", "false")) != "true":
+            if not RoundedDialog.confirm(self, "Show raw responses?", "Chats will show the exact commands the agent runs and their full output, including file contents and anything printed by programs. Turn this on only if you want that level of detail.", "Show raw responses"):
+                self.show_raw.blockSignals(True)
+                self.show_raw.setChecked(False)
+                self.show_raw.blockSignals(False)
 
     # ---- provider section
     def _set_state(self, k, v):
@@ -2515,6 +2848,8 @@ class SettingsDialog(RoundedDialog):
         local = pid == "local"
         self.base_url.setVisible(local)
         self.base_label.setVisible(local)
+        if local and not self.provider_adv.is_open():
+            self.provider_adv.set_open(True)          # the endpoint is the one thing Local needs; show it
         if st["remove"]:
             self.key.setPlaceholderText("will be removed when you save")
         else:
@@ -2579,6 +2914,9 @@ class SettingsDialog(RoundedDialog):
         self.worker.start()
 
     def done(self, r):
+        self.oauth_timer.stop()
+        p, self.doctor_proc = self.doctor_proc, None
+        _stop_process(p)
         for w in list(self._workers):
             try:
                 if w.isRunning():
@@ -2606,15 +2944,15 @@ class SettingsDialog(RoundedDialog):
         self._update_save_state()
 
     def _blocked_reason(self):
-        """Why Save is disabled right now ('' when it is allowed)."""
+        """Why Save is disabled right now ('' when it is allowed): the provider key, then the mail account."""
         if not self.require_check.isChecked():
             return ""
         st = self.state[self.current_pid]
         if st["check"] is not None and not st["check"].get("ok") and (st["key"] or self.current_pid == "local" or not st["stored"] or st["checked_key"] == st["key"]):
             return "The last connection check failed — fix the key or endpoint and check again."
         if st["key"] and not (st["check"] and st["check"].get("ok") and st["checked_key"] == st["key"]):
-            return "Check the connection with this key first (or untick the requirement)."
-        return ""
+            return "Check the connection with this key first (or untick the requirement under Advanced)."
+        return self._mail_blocked_reason()
 
     def _update_save_state(self):
         why = self._blocked_reason() if self.current_pid else ""
@@ -2645,46 +2983,344 @@ class SettingsDialog(RoundedDialog):
             self.voice_note.setText(VOICE_UNAVAILABLE + " (fabos-voice is not installed).")
             self.test_voice_btn.setEnabled(False)
             self.test_voice_btn.setToolTip(VOICE_UNAVAILABLE)
+            self.doctor_btn.setEnabled(False)
+            self.doctor_btn.setToolTip(VOICE_UNAVAILABLE)
             return
         st = v.status or {}
         parts = ["speech-to-text: %s" % st.get("stt", "…"), "text-to-speech: %s" % st.get("tts", "…"), "microphone: %s" % ("yes" if st.get("mic") else "no")]
         self.voice_note.setText(" · ".join(parts))
         ok = v.tts_available()
         self.test_voice_btn.setEnabled(ok)
-        self.test_voice_btn.setToolTip("Says: “%s”" % VOICE_TEST_LINE if ok else VOICE_UNAVAILABLE)
+        self.test_voice_btn.setToolTip("Says: “%s” (fabos-voice say --test)" % VOICE_TEST_LINE if ok else VOICE_UNAVAILABLE)
+        self.doctor_btn.setEnabled(True)
 
     def test_voice(self):
         if self.voice is not None:
-            self.voice.say(VOICE_TEST_LINE)
+            self.voice.say_test()
 
-    # ---- general
-    def _raw_toggled(self, on):
-        if on and str(self.s.get("ui.show_raw", "false")) != "true":
-            if not RoundedDialog.confirm(self, "Show raw responses?", "Chats will show the exact commands the agent runs and their full output, including file contents and anything printed by programs. Turn this on only if you want that level of detail.", "Show raw responses"):
-                self.show_raw.blockSignals(True)
-                self.show_raw.setChecked(False)
-                self.show_raw.blockSignals(False)
+    def run_doctor(self):
+        """fabos-voice doctor (another track ships the subcommand): its lines land in the monospace box. When the
+        installed CLI has no 'doctor' yet, fabos-voice status is shown instead and the box says so."""
+        if self.voice is None or not self.voice.bin or self.doctor_proc is not None:
+            return
+        self.doctor_btn.setEnabled(False)
+        self.doctor_btn.setText("Checking…")
+        self.doctor_box.setText("Running fabos-voice doctor…")
+        self.doctor_box.setVisible(True)
+        self._doctor_run(["doctor"])
 
+    def _doctor_run(self, args):
+        p = QProcess(self)
+        p.setProgram(self.voice.bin)
+        p.setArguments(args)
+        p.finished.connect(lambda code, _st, p=p, args=args: self._doctor_done(p, code, args))
+        p.errorOccurred.connect(lambda _e, p=p, args=args: self._doctor_done(p, 127, args) if p is self.doctor_proc else None)
+        self.doctor_proc = p
+        p.start()
+
+    def _doctor_done(self, p, code, args):
+        if p is not self.doctor_proc:
+            return
+        self.doctor_proc = None
+        try:
+            out = bytes(p.readAllStandardOutput()).decode(errors="replace").strip()
+            err = bytes(p.readAllStandardError()).decode(errors="replace").strip()
+        except RuntimeError:
+            return
+        if args == ["doctor"] and (code == 2 and ("invalid choice" in err or "unrecognized" in err)):
+            # this fabos-voice has no doctor yet: fall back to its status line
+            self.doctor_box.setText("fabos-voice doctor is not available in this build — showing fabos-voice status instead…")
+            self._doctor_run(["status"])
+            return
+        lines = [ln for ln in (out + ("\n" + err if err else "")).splitlines() if ln.strip()]
+        if args == ["status"]:
+            lines = ["(no 'doctor' in this fabos-voice; status only)"] + lines
+        if code == 127:
+            lines = ["fabos-voice could not be started (%s)" % (self.voice.bin or "not installed")] + lines
+        self.doctor_box.setText("\n".join(lines[-14:]) or "fabos-voice printed nothing (exit %s)" % code)
+        self.doctor_btn.setEnabled(True)
+        self.doctor_btn.setText("Voice check")
+        QTimer.singleShot(0, self.refit)
+
+    # ---- mail section
+    def _mail_pid(self):
+        return self.mail_provider.currentData()
+
+    def _mail_preset(self, pid):
+        pre = dict(self.mail_table.get(pid) or {})
+        return pre
+
+    def _mail_fill_advanced(self, pid, from_store=False):
+        """Advanced server fields follow the preset; stored overrides (set only when they differ from the preset) win."""
+        pre = self._mail_preset(pid)
+        vals = {"mail.smtp_host": pre.get("smtp_host", ""), "mail.smtp_port": pre.get("smtp_port", 587), "mail.imap_host": pre.get("imap_host", ""),
+                "mail.imap_port": pre.get("imap_port", 993)}
+        sec = pre.get("smtp_security", "starttls")
+        if from_store:
+            for k in vals:
+                if self.s.get(k):
+                    vals[k] = self.s.get(k)
+            if self.s.get("mail.smtp_security"):
+                sec = self.s.get("mail.smtp_security")
+        for k, v in vals.items():
+            self.m[k].setText(str(v or ""))
+        idx = [self.mail_security.itemData(i) for i in range(self.mail_security.count())]
+        self.mail_security.setCurrentIndex(idx.index(sec) if sec in idx else 0)
+
+    def _mail_hint_text(self, pid):
+        pre = self._mail_preset(pid)
+        steps = pre.get("hint") or []
+        if pre.get("app_password"):
+            head = "%s wants an <b>app password</b>, not your account password:" % (pre.get("label") or MAIL_LABELS.get(pid, pid))
+        elif pid == "other":
+            head = "Any IMAP / SMTP account:"
+        else:
+            head = "Your normal %s password works unless two-factor authentication is on:" % (pre.get("label") or MAIL_LABELS.get(pid, pid))
+        text = head + "<br>" + "<br>".join("%d. %s" % (i + 1, st) for i, st in enumerate(steps))
+        if pre.get("note"):
+            text += "<br><i>%s</i>" % pre["note"]
+        return text
+
+    def _mail_provider_changed(self, idx, initial=False):
+        pid = self.mail_provider.itemData(idx)
+        if pid == self.current_mail:
+            return
+        self.current_mail = pid
+        if not initial:
+            self._mail_fill_advanced(pid)
+        pre = self._mail_preset(pid)
+        google = pid == "gmail" and self.mail_state["oauth_available"]
+        self.mail_signin_btn.setText("Sign in with Google" if google else "Sign in")
+        self.mail_pw_label.setText("App password" if pre.get("app_password") else "Password")
+        self.mail_address.setPlaceholderText({"gmail": "you@gmail.com", "outlook": "you@outlook.com", "yahoo": "you@yahoo.com", "zoho": "you@zohomail.com",
+                                              "icloud": "you@icloud.com"}.get(pid, "you@example.com"))
+        self.mail_hint.setText(self._mail_hint_text(pid))
+        signed_in = initial and self.mail_state["stored_oauth"] and pid == "gmail"
+        if signed_in:
+            self.mail_mark.set_state("ok", animate=False)
+            self.mail_result.setText("Signed in with Google as %s" % (self.mail_address.text() or "your account"))
+            self.mail_result.setStyleSheet("color: %s;" % GREEN)
+            self.mail_signin_btn.setText("Sign in again")
+        elif not initial or self.mail_state["check"] is None:
+            self._mail_show_check(None)
+        # the app-password path is visible when Google sign-in is not possible for this provider, when a password is
+        # stored, or once the user pressed Sign in without OAuth (pw_shown)
+        show_pw = (not google and (self.mail_state["stored_pw"] or self.mail_state["pw_shown"] or not initial)) or (google and self.mail_state["pw_shown"])
+        if pid == "other" and not initial:
+            show_pw = True
+        self._mail_set_pw_visible(show_pw)
+        self.mail_pw.setPlaceholderText("stored — paste to replace" if self.mail_state["stored_pw"] else ("16-character app password" if pre.get("app_password") else "your mail password"))
+        if not initial:
+            self._mail_edited("")
+        self._update_save_state()
+
+    def _mail_set_pw_visible(self, on):
+        on = bool(on)
+        for wd in (self.mail_pw, self.mail_pw_label):
+            wd.setVisible(on)
+        self.mail_hint.setVisible(on and not self._mail_check_ok())
+        self.mail_check_btn.setVisible(on)
+        self.mail_signin_btn.setVisible(not on or (self._mail_pid() == "gmail" and self.mail_state["oauth_available"]))
+        if on:
+            self.mail_state["pw_shown"] = True
+        QTimer.singleShot(0, self.refit)
+
+    def _mail_sig(self):
+        return (self._mail_pid(), self.mail_address.text().strip().lower(), self.mail_pw.text(), self.m["mail.smtp_host"].text().strip(), self.m["mail.smtp_port"].text().strip(),
+                self.mail_security.currentData(), self.m["mail.imap_host"].text().strip(), self.m["mail.imap_port"].text().strip())
+
+    def _mail_edited(self, _text):
+        if self.mail_state["checked_sig"] != self._mail_sig():
+            self.mail_state["check"] = None
+            self._mail_show_check(None)
+        self._update_save_state()
+
+    def _mail_check_ok(self):
+        st = getattr(self, "mail_state", None) or {}
+        return bool(st.get("check") and st["check"].get("ok") and st.get("checked_sig") == self._mail_sig())
+
+    def _mail_show_check(self, res, animate=True):
+        # the app-password hint is for BEFORE the check: hidden once the sign-in passed, back when the form changes again
+        self.mail_hint.setVisible(self.mail_pw.isVisible() and not (res and res.get("ok")))
+        QTimer.singleShot(0, self.refit)
+        self.mail_result.setToolTip("")
+        if res is None:
+            self.mail_mark.set_state("idle")
+            self.mail_result.setText("")
+            self.mail_result.setStyleSheet("")
+            return
+        if res.get("ok"):
+            self.mail_mark.set_state("ok", animate=animate)
+            imap = res.get("imap") or {}
+            text = "Signed in · SMTP ✓ · %s · %d ms" % ("IMAP ✓" if imap.get("ok") else "IMAP off", int(res.get("latency_ms") or 0))
+            if not imap.get("ok") and imap.get("detail"):
+                text += "\n" + str(imap["detail"])          # e.g. Outlook: password sign-in for IMAP switched off — sending works
+            self.mail_result.setText(text)
+            self.mail_result.setStyleSheet("color: %s;" % GREEN)
+        else:
+            detail = str(res.get("detail") or "Check failed")
+            wrong = detail.lower().startswith("wrong password")
+            self.mail_mark.set_state("fail", animate=animate, color=RED if wrong else AMBER)
+            self.mail_result.setText(detail[:1].upper() + detail[1:])
+            self.mail_result.setStyleSheet("color: %s;" % (RED if wrong else AMBER))
+
+    def _mail_blocked_reason(self):
+        st = self.mail_state
+        sig = self._mail_sig()
+        if st["oauth_done"] and not sig[2]:
+            return ""
+        if sig == st["initial"]:
+            return ""
+        if st["check"] is not None and st["checked_sig"] == sig:
+            return "" if st["check"].get("ok") else "The last mail check failed — fix the address or password and check again."
+        if not sig[1]:
+            return "Enter the mail address, then Sign in or Check connection."
+        return "Check the mail connection first (Settings → Mail), or untick the requirement under AI provider → Advanced."
+
+    def mail_signin(self):
+        pid = self._mail_pid()
+        if pid == "gmail" and self.mail_state["oauth_available"]:
+            if self.mail_worker is not None:
+                return
+            self.mail_signin_btn.setEnabled(False)
+            self.mail_signin_btn.setText("Opening the browser…")
+            self.mail_mark.set_state("busy")
+            self.mail_result.setText("")
+            self.mail_result.setStyleSheet("")
+            self.mail_worker = ApiWorker("POST", "/mail/oauth/start", {"provider": "gmail"}, timeout=20)
+            self.mail_worker.done.connect(self._oauth_started)
+            self.mail_worker.finished.connect(self.mail_worker.deleteLater)
+            self._workers.append(self.mail_worker)
+            self.mail_worker.start()
+            return
+        # no Google sign-in for this provider (or this build): the app-password path, with the reason when it applies
+        # (short in the label — it shares its row with Check connection; the daemon's full sentence is the tooltip)
+        self._mail_set_pw_visible(True)
+        if pid == "gmail" and self.mail_state["oauth_why"]:
+            self.mail_result.setText("No Google sign-in on this build — use an app password instead.")
+            self.mail_result.setToolTip(self.mail_state["oauth_why"])
+            self.mail_result.setStyleSheet("")
+        self.mail_pw.setFocus()
+
+    def _oauth_started(self, res):
+        self.mail_worker = None
+        self.mail_signin_btn.setEnabled(True)
+        self.mail_signin_btn.setText("Sign in with Google")
+        if not isinstance(res, dict) or res.get("offline"):
+            self._mail_show_check({"ok": False, "detail": "Cannot reach the agent service"})
+            shake(self.mail_signin_btn)
+            return
+        if not res.get("ok"):
+            self.mail_state["oauth_available"] = False
+            self.mail_state["oauth_why"] = res.get("detail") or ""
+            self.mail_signin_btn.setText("Sign in")
+            self.mail_mark.set_state("idle")
+            self.mail_signin()
+            return
+        self.oauth_flow = res
+        self.mail_result.setText("Finish signing in in the browser window%s" % ("" if res.get("browser_opened", True) else " — it could not be opened; the address is in the log"))
+        self.mail_result.setStyleSheet("")
+        self.oauth_timer.start()
+
+    def _poll_oauth(self):
+        if not self.oauth_flow or self.mail_worker is not None:
+            return
+        self.mail_worker = ApiWorker("GET", "/mail/oauth/status?flow_id=" + str(self.oauth_flow.get("flow_id")), None, timeout=10)
+        self.mail_worker.done.connect(self._oauth_polled)
+        self.mail_worker.finished.connect(self.mail_worker.deleteLater)
+        self._workers.append(self.mail_worker)
+        self.mail_worker.start()
+
+    def _oauth_polled(self, res):
+        self.mail_worker = None
+        if not isinstance(res, dict) or res.get("state") == "pending":
+            return
+        self.oauth_timer.stop()
+        self.oauth_flow = None
+        if res.get("state") == "done":
+            self.mail_state["oauth_done"] = True
+            self.mail_state["stored_oauth"] = True
+            if res.get("address"):
+                self.mail_address.setText(res["address"])
+            self.mail_pw.clear()
+            self._mail_set_pw_visible(False)
+            self.mail_mark.set_state("ok", animate=True)
+            self.mail_result.setText("Signed in with Google as %s" % (res.get("address") or "your account"))
+            self.mail_result.setStyleSheet("color: %s;" % GREEN)
+            self.mail_signin_btn.setText("Sign in again")
+        else:
+            self._mail_show_check({"ok": False, "detail": res.get("detail") or res.get("error") or "Sign-in did not finish"})
+            shake(self.mail_signin_btn)
+        self._update_save_state()
+
+    def mail_check(self):
+        if self.mail_worker is not None:
+            return
+        sig = self._mail_sig()
+        body = {"provider": sig[0], "address": self.mail_address.text().strip(), "mail.smtp_host": sig[3], "mail.smtp_port": sig[4], "mail.smtp_security": sig[5],
+                "mail.imap_host": sig[6], "mail.imap_port": sig[7], "mail.from_name": self.mail_from_name.text().strip()}
+        if self.mail_pw.text():
+            body["password"] = self.mail_pw.text()          # the typed password is checked before it is saved
+        self.mail_check_btn.setEnabled(False)
+        self.mail_check_btn.setText("Checking…")
+        self.mail_mark.set_state("busy")
+        self.mail_result.setText("")
+        self.mail_result.setStyleSheet("")
+        self.mail_worker = ApiWorker("POST", "/mail/test", body, timeout=45)
+        self.mail_worker.done.connect(lambda res, sig=sig: self._mail_checked(sig, res))
+        self.mail_worker.finished.connect(self.mail_worker.deleteLater)
+        self._workers.append(self.mail_worker)
+        self.mail_worker.start()
+
+    def _mail_checked(self, sig, res):
+        self.mail_worker = None
+        self.mail_check_btn.setEnabled(True)
+        self.mail_check_btn.setText("Check connection")
+        if not isinstance(res, dict):
+            res = {"ok": False, "detail": "unexpected reply"}
+        if res.get("offline"):
+            res = {"ok": False, "detail": "Cannot reach the agent service"}
+        self.mail_state["check"] = res
+        self.mail_state["checked_sig"] = sig
+        if sig == self._mail_sig():
+            self._mail_show_check(res, animate=True)
+            if not res.get("ok"):
+                detail = str(res.get("detail") or "").lower()
+                shake(self.mail_pw if "password" in detail else self.mail_address)
+        self._update_save_state()
+
+    # ---- save
     def save(self):
         if self._blocked_reason():
             self._update_save_state()
-            shake(self.key)
+            shake(self.key if self._blocked_reason() != self._mail_blocked_reason() else (self.mail_pw if self.mail_pw.isVisible() else self.mail_address))
             return
         mode = self.mode.currentData()
         if mode == "bypass" and self.s.get("mode", "auto") != "bypass":
             if not RoundedDialog.confirm(self, "Switch to Bypass mode?", "In Bypass the agent never asks before acting — including administrator commands, deleting files and sending mail. Use it only for tasks you fully trust.", "Use Bypass"):
                 return
         pid = self.current_pid
-        body = {"mode": mode, "agent.max_turns": self.max_turns.text().strip() or "60", "provider": pid,
+        body = {"mode": mode, "agent.max_turns": self.max_turns.text().strip() or "60", "agent.tool_result_max_chars": self.result_limit.text().strip(), "provider": pid,
+                "ai.enabled": "true" if self.ai_switch.isChecked() else "false",
                 "ui.show_raw": "true" if self.show_raw.isChecked() else "false", "ui.persona": "indian-english" if self.persona.isChecked() else "off",
                 "voice.enabled": "true" if self.voice_enabled.isChecked() else "false", "voice.wake_word": self.wake_word.text().strip() or "hey fab",
-                "voice.speak_replies": "true" if self.speak_replies.isChecked() else "false", "voice.offline_only": "true" if self.offline_only.isChecked() else "false"}
+                "voice.speak_replies": "true" if self.speak_replies.isChecked() else "false", "voice.offline_only": "true" if self.offline_only.isChecked() else "false",
+                "voice.cloud_voice": self.cloud_voice.text().strip()}
         for p, st in self.state.items():
             body[p + ".model"] = st["model"].strip() or PROVIDER_DEFAULTS[p][0]
             if PROVIDER_DEFAULTS[p][1]:
                 body[p + ".base_url"] = st["base_url"].strip() or PROVIDER_DEFAULTS[p][1]
-        for k, e in self.m.items():
-            body[k] = e.text()
+        mpid = self._mail_pid()
+        pre = self._mail_preset(mpid)
+        body["mail.provider"] = mpid
+        body["mail.address"] = self.mail_address.text().strip()
+        body["mail.from_name"] = self.mail_from_name.text().strip()
+        # Advanced server fields are stored only when they differ from the preset, so a later preset change follows through
+        for k, pk in (("mail.smtp_host", "smtp_host"), ("mail.smtp_port", "smtp_port"), ("mail.imap_host", "imap_host"), ("mail.imap_port", "imap_port")):
+            v = self.m[k].text().strip()
+            body[k] = "" if (mpid != "other" and v == str(pre.get(pk, ""))) else v
+        sec = self.mail_security.currentData()
+        body["mail.smtp_security"] = "" if (mpid != "other" and sec == pre.get("smtp_security")) else sec
         try:
             r = api("PUT", "/settings", body)
             if not isinstance(r, dict) or r.get("error"):
@@ -2697,8 +3333,6 @@ class SettingsDialog(RoundedDialog):
                     api("POST", "/secrets", {"name": p + "_api_key", "value": st["key"]})
             if self.mail_pw.text():
                 api("POST", "/secrets", {"name": "mail_password", "value": self.mail_pw.text()})
-            if self.mail_api.text():
-                api("POST", "/secrets", {"name": "mail_api_key", "value": self.mail_api.text()})
         except AgentOffline as e:          # keep the dialog open: nothing was saved and the edits are still in the fields
             RoundedDialog.info(self, "Agent service offline", "Your changes were not saved. Start the service with:  systemctl --user start fabos-agent   and press Save again. (%s)" % str(e)[:120])
             return
@@ -2708,7 +3342,7 @@ class SettingsDialog(RoundedDialog):
 
 # ----------------------------------------------------------------------------- main window
 EMPTY_COLUMNS = [
-    ("bulb", "Try asking", ["Open Fab Files in Downloads", "Write a short note in Fab Editor", "Check my inbox for new mail"]),
+    ("bulb", "Try asking", ["Open Fab Files in Downloads", "Write a hi note in Fab Editor and mail it to a friend", "Open Brave on fabos.patienceai.in"]),
     ("bolt", "What I can do", ["Open and drive apps, type into them", "Read, write and organise your files, run commands", "Send and check mail, fetch the web, keep a watch"]),
     ("shield", "Keep in mind", ["Every step is scored LOW to CRITICAL", "Ask · Auto · Bypass decide when I ask you first", "Nothing leaves this computer except your requests to the AI provider you chose"]),
 ]
@@ -2740,7 +3374,7 @@ class AIControls(QMainWindow):
         self.voice = Voice(self)
         self.voice.status_changed.connect(self.update_voice_buttons)
         self.voice.transcript.connect(self.on_transcript)
-        self.voice.nothing_heard.connect(lambda: self.toast.show_message("I did not catch that."))
+        self.voice.nothing_heard.connect(lambda reason: self.toast.show_message(reason or "I did not catch that.", 4200))
         self.voice.unavailable.connect(self.on_voice_unavailable)
         self.voice.listening_changed.connect(self.on_listening)
         self.voice.speaking_changed.connect(self.on_speaking)
@@ -2992,8 +3626,7 @@ class AIControls(QMainWindow):
         """Closing the window ends the polling and any voice process; nothing keeps running behind a closed window."""
         for t in (self.list_timer, self.thread_timer, self._restyle):
             t.stop()
-        self.voice.stop_listening()
-        self.voice.stop_speaking()
+        self.voice.shutdown()
         super().closeEvent(e)
 
     def resizeEvent(self, e):
@@ -3375,7 +4008,7 @@ class AIControls(QMainWindow):
         elif not self._was_maximized:
             self.showNormal()
 
-    def open_settings(self):
+    def open_settings(self, tab=None):
         try:
             s = api("GET", "/settings")
         except AgentOffline as e:
@@ -3383,7 +4016,7 @@ class AIControls(QMainWindow):
             return
         if not isinstance(s, dict) or "error" in s:
             return
-        dlg = SettingsDialog(self, s, self.voice)
+        dlg = SettingsDialog(self, s, self.voice, tab=tab if isinstance(tab, str) else None)
         if dlg.exec():
             self.refresh_list()
             self.refresh_thread(force=True)
@@ -3438,9 +4071,11 @@ class AIControls(QMainWindow):
         self.ask.setText(text)
         self.submit(source="voice")
 
-    def on_voice_unavailable(self):
+    def on_voice_unavailable(self, reason=""):
+        """The mic never fails silently: the toast carries fabos-voice's own reason (muted mic, no audio session, missing
+        engine) and points at Settings › Voice › Voice check."""
         self.update_voice_buttons()
-        self.toast.show_message(VOICE_UNAVAILABLE)
+        self.toast.show_message((reason or VOICE_UNAVAILABLE) + "  ·  Settings › Voice › Voice check", 5200)
 
     def speak(self, text):
         """Speak icon on an assistant message: starts fabos-voice say; a second click (or another message) stops it."""
@@ -3518,7 +4153,9 @@ def main():
     w = AIControls(focus_ask="--ask" in sys.argv, prefill=_arg("--prefill"), task_id=task_id)
     w.show()
     if "--settings" in sys.argv:
-        QTimer.singleShot(300, w.open_settings)   # straight to Settings (the AI provider tab is where keys go)
+        tab = _arg("--settings")                   # optional tab: general | provider | voice | mail (the welcome wizard opens Mail)
+        tab = tab if tab in SETTINGS_TABS else None
+        QTimer.singleShot(300, lambda: w.open_settings(tab))   # straight to Settings (the AI provider tab is where keys go)
     sys.exit(app.exec())
 
 
