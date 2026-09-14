@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DAEMON = os.path.join(ROOT, "packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py")
 CLI = os.path.join(ROOT, "packages/fabos-agent/usr/bin/fabos")
 PROVIDER = os.environ.get("FABOS_LIVE_PROVIDER", "claude")
-KEYS = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "local": None}
+KEYS = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "local": None}
 
 
 def main():

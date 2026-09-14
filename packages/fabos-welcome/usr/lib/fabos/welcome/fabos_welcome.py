@@ -17,7 +17,31 @@ from PyQt6.QtGui import QPixmap, QIcon
 from PyQt6.QtWidgets import (QApplication, QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QLabel, QRadioButton, QPushButton, QCheckBox, QButtonGroup)
 
 ABOUT = "Fab OS™ by Patience AI · fabos.patienceai.in · support@patienceai.in"  # ™: legal/TRADEMARKS.md (claimed, unregistered); never in machine ids
+# AI providers offered on the AI page (ids = fabos-agentd PROVIDERS). The offline model comes first and is preselected
+# when the machine has enough memory for it; the cloud ones only need an API key, pasted in Fab AI Controls › Settings.
+PROVIDERS = [("local", "Built-in offline model (no account, runs on this computer)"), ("claude", "Anthropic (Claude)"), ("gemini", "Google Gemini"),
+             ("openai", "OpenAI"), ("deepseek", "DeepSeek")]
+
+
+def mem_total_gib():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) / (1024 * 1024)
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0.0
 STYLE = "QWidget{font-family:Inter,'Noto Sans';font-size:14px} QLabel#h1{font-size:26px;font-weight:700} QLabel#muted{color:palette(mid)} QPushButton{border-radius:10px;padding:8px 16px}"
+
+
+def fabos_setting(key, value):
+    """Store one agent setting through the fabos CLI. fabos-agent is only Recommended, so a missing CLI (FileNotFoundError)
+    or a hung daemon (TimeoutExpired) must not raise inside a Qt slot and abort the wizard; returns True when it was written."""
+    try:
+        return subprocess.run(["fabos", "settings", key, value], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def run(*cmd):
@@ -121,20 +145,49 @@ def main():
     p3.v.addStretch(1)
     w.addPage(p3)
 
-    # 4 AI
+    # 4 AI — pick the provider; the built-in offline model needs no account and is preselected on machines with enough RAM
     p4 = Page("The Fab OS agent", "Ask it to do anything on this computer — open apps, write files and code, send mail, watch for replies. "
-              "It needs an AI provider: Claude, OpenAI, Google Gemini, or a local model (fully offline).")
+              "Choose how it thinks:")
+    mem_ok = mem_total_gib() >= 3.5
+    prov_grp = QButtonGroup(p4)
+    prov_buttons = {}
+    for pid, label in PROVIDERS:
+        rb = QRadioButton(label)
+        prov_grp.addButton(rb)
+        prov_buttons[pid] = rb
+        p4.v.addWidget(rb)
+        if pid == "local":
+            if mem_ok:
+                rb.setChecked(True)
+            else:
+                rb.setEnabled(False)
+                rb.setText(label + " — needs 4 GB RAM")
     ai_on = QCheckBox("Keep System-Wide AI on (you can turn it off any time in Fab AI Controls)")
     ai_on.setChecked(True)
     p4.v.addWidget(ai_on)
     row = QHBoxLayout()
-    b = QPushButton("Connect an AI provider now…")
-    b.clicked.connect(lambda: run("fabos-command-center"))
+    b = QPushButton("Add the API key in Fab AI Controls…")
+    b.clicked.connect(lambda: (apply_provider(), run("fabos-command-center", "--settings")))
     row.addWidget(b)
     row.addStretch(1)
     p4.v.addLayout(row)
+    note = QLabel("Cloud providers need an API key from your own account; it is stored encrypted on this computer and used only for your requests. "
+                  "The built-in model runs fully offline.", objectName="muted")
+    note.setWordWrap(True)
+    p4.v.addWidget(note)
     p4.v.addStretch(1)
     w.addPage(p4)
+
+    def selected_provider():
+        for pid, rb in prov_buttons.items():
+            if rb.isChecked() and rb.isEnabled():
+                return pid
+        return None
+
+    def apply_provider():
+        pid = selected_provider()
+        if pid:
+            fabos_setting("provider", pid)
 
     # 5 Finish
     p5 = Page("You're ready", "Fab OS is set up. A few things you may want to adjust:")
@@ -152,7 +205,8 @@ def main():
     w.addPage(p5)
 
     def finish():
-        subprocess.run(["fabos", "settings", "ai.enabled", "true" if ai_on.isChecked() else "false"], capture_output=True, timeout=10)
+        fabos_setting("ai.enabled", "true" if ai_on.isChecked() else "false")
+        apply_provider()
         if extras.isChecked():
             run("pkexec", "/usr/lib/fabos/firstboot.sh", "extras")
         os.makedirs(os.path.dirname(MARK), exist_ok=True)

@@ -10,11 +10,19 @@ HTTP API on 127.0.0.1:8790 (bearer token in $XDG_RUNTIME_DIR/fabos-agent/token, 
   parent_id threads a follow-up into an existing chat: the daemon prepends a short context (earlier requests + outcomes)
   to the request, separated by FOLLOWUP_MARK, so the model has continuity and UIs can show only the user's own words.
   POST /approvals/{id} {decision}      PUT  /settings {key: value,...}         POST /secrets {name,value}
-  DELETE /watches/{id}
-Providers: Claude (Anthropic SDK) or any OpenAI-compatible chat endpoint (e.g. llama-server).
+  GET  /approvals/pending?task_id=N    (optional filter; every item carries its task_id)
+  POST /providers/test {provider, api_key?, base_url?, model?} -> {ok, latency_ms, detail, models_sample?}
+       a real, lightweight authenticated call to the provider (its model list); 401/403 = "key rejected",
+       network failure = "cannot reach provider". Keys are never logged.
+  POST /speech/transcribe {audio_b64, format} -> {ok, text, backend}     POST /speech/say {text} -> {ok, audio_b64, format, backend}
+       cloud speech through the configured provider (OpenAI or Gemini); other providers answer ok=false so the caller
+       falls back to the offline engine (fabos-voice).
+  POST /tasks/{id}/feedback {rating: good|bad}      DELETE /watches/{id}
+Providers: Claude (Anthropic), OpenAI, Google Gemini, DeepSeek, or any OpenAI-compatible chat endpoint (local llama-server).
+Every tool step carries a one-sentence "narration" (Indian English) that UIs display and the voice daemon speaks.
 FABOS_AGENT_PROVIDER=fake runs a scripted provider for tests.
 """
-import json, os, re, shlex, sqlite3, subprocess, sys, threading, time, uuid, urllib.request, urllib.error
+import base64, io, json, os, re, shlex, sqlite3, subprocess, sys, threading, time, uuid, wave, urllib.request, urllib.error, urllib.parse
 import smtplib, imaplib, email, email.utils, email.header, datetime as _dt
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,6 +66,18 @@ class Store:
             CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, actor TEXT, kind TEXT, task_id INTEGER, detail TEXT);
             CREATE TABLE IF NOT EXISTS questions(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER, question TEXT, answer TEXT, created REAL, answered REAL);
             """)
+            self.migrate()
+
+    def migrate(self):
+        """Schema additions for databases created by earlier releases (ALTER TABLE only when the column is missing)."""
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(steps)").fetchall()}
+        for col in ("narration", "narration_done"):
+            if col not in cols:
+                self.db.execute("ALTER TABLE steps ADD COLUMN %s TEXT" % col)
+        self.db.commit()
+
+    def columns(self, table):
+        return [r["name"] for r in self.db.execute("PRAGMA table_info(%s)" % table).fetchall()]
 
     def q(self, sql, *args):
         with self.lock:
@@ -82,11 +102,15 @@ class Store:
     def activity(self, actor, kind, task_id=None, detail=""):
         self.q("INSERT INTO activity(ts,actor,kind,task_id,detail) VALUES(?,?,?,?,?)", time.time(), actor, kind, task_id, detail[:4000])
 
-    def step(self, task_id, kind, name="", inp="", out="", risk="", decision=""):
-        cur = self.q("INSERT INTO steps(task_id,ts,kind,name,input,output,risk,decision) VALUES(?,?,?,?,?,?,?,?)",
-                     task_id, time.time(), kind, name, str(inp)[:20000], str(out)[:40000], risk, decision)
+    def step(self, task_id, kind, name="", inp="", out="", risk="", decision="", narration=""):
+        cur = self.q("INSERT INTO steps(task_id,ts,kind,name,input,output,risk,decision,narration) VALUES(?,?,?,?,?,?,?,?,?)",
+                     task_id, time.time(), kind, name, str(inp)[:20000], str(out)[:40000], risk, decision, narration or None)
         self.q("UPDATE tasks SET updated=? WHERE id=?", time.time(), task_id)
         return cur.lastrowid
+
+    def finish_step(self, step_id, out, narration_done=""):
+        """Record a tool step's result together with its spoken confirmation."""
+        self.q("UPDATE steps SET output=?, narration_done=? WHERE id=?", str(out)[:40000], narration_done or None, step_id)
 
 
 # ----------------------------------------------------------------------------- secrets (systemd-creds user scope; 0600 file fallback)
@@ -229,8 +253,124 @@ READ_ONLY = re.compile(r"^\s*(ls|cat|head|tail|less|grep|rg|find|fd|wc|stat|file
                        r"dpkg\s+-[lLs]|apt\s+(list|search|show)|apt-cache|flatpak\s+(list|search|info)|python3?\s+--version|node\s+--version|cargo\s+--version)\b")
 
 
+# ---- catastrophic commands: always CRITICAL, whatever the mode says about HIGH.
+# Top-level system directories and the home directory itself: a recursive delete / chmod / chown / truncate here wipes
+# the system or the user's data. Ordinary project paths (~/Projects/x, ./build) stay at HIGH.
+SYSTEM_DIRS = {"/", "/home", "/root", "/usr", "/etc", "/var", "/boot", "/opt", "/bin", "/sbin", "/lib", "/lib64", "/srv", "/dev", "/proc", "/sys"}
+SENSITIVE_PATHS = ("~/.ssh", "~/.gnupg", "~/.config/fabos", "/etc/sudoers")     # credentials, keys and the agent's own secrets
+BLOCK_DEVICE = r"/dev/(sd[a-z]|nvme\d|vd[a-z]|mmcblk\d)"
+WIPE_CMDS = {"shred", "wipe", "srm"}          # secure-delete tools: irrecoverable, so CRITICAL — but only as the command word, never as a plain word in an argument
+
+
+def _norm_target(tok):
+    """Normalise a path token as bash would (quotes, ~, $HOME). Returns (path, bare_wildcard)."""
+    t = tok.strip().strip("'\"")
+    if not t or t.startswith("-"):
+        return None, False
+    t = re.sub(r"^(\$\{HOME\}|\$HOME)", HOME, t)
+    if t == "~" or t.startswith("~/"):
+        t = HOME + t[1:]
+    if t in (".", "..", "./", "../", "*", "./*", ".*"):
+        return t.rstrip("/") or t, True
+    wildcard = t.endswith("/*")
+    if wildcard:
+        t = t[:-2] or "/"
+    return (os.path.normpath(t) if t.startswith("/") else t), wildcard
+
+
+def _top_dir(path):
+    """'/etc/passwd' -> '/etc'; '/' -> '/'."""
+    parts = path.split("/")
+    return "/" + parts[1] if len(parts) > 1 and parts[1] else "/"
+
+
+def _is_fatal_target(tok):
+    """True when tok names the home directory, a top-level system directory, the cwd (which defaults to home) or a bare wildcard."""
+    path, wildcard = _norm_target(tok)
+    if path is None:
+        return False
+    if wildcard and path in (".", "..", "*", ".*"):
+        return True
+    if path in (".", "..", "*"):
+        return True
+    return path == HOME or path in SYSTEM_DIRS
+
+
+def _segments(command):
+    """Split a shell line into simple commands (on ; && || | and newlines) and tokenise each."""
+    out = []
+    for seg in re.split(r"\|\||&&|[;|\n]", command):
+        try:
+            toks = shlex.split(seg, posix=True)
+        except ValueError:
+            toks = seg.split()
+        while toks and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]) or toks[0] in ("sudo", "doas", "env", "nice", "nohup", "time", "command", "builtin", "exec")):
+            toks = toks[1:]
+        if toks:
+            out.append(toks)
+    return out
+
+
+def catastrophic(command):
+    """Deterministic reasons a shell command is CRITICAL whatever the permission mode. Returns the reason or None."""
+    c = command
+    if re.search(r":\s*\(\s*\)\s*\{|:\s*\|\s*:\s*&", c):
+        return "fork bomb"
+    if re.search(r">\s*" + BLOCK_DEVICE + r"|\bof=" + BLOCK_DEVICE, c):
+        return "writes directly to a disk device"
+    if re.search(r"\bhistory\s+-c\b", c):
+        return "clears the shell history"
+    if re.search(r"\bcrontab\s+-r\b", c):
+        return "removes every scheduled job"
+    if re.search(r"\bgit\s+push\b[^;&|]*(\s--force(-with-lease)?\b|\s-f\b)", c):
+        return "force-push rewrites remote history"
+    for toks in _segments(c):
+        cmd = os.path.basename(toks[0])
+        args = toks[1:]
+        flags = [a for a in args if a.startswith("-")]
+        targets = [a for a in args if not a.startswith("-")]
+        recursive = any(f in ("--recursive", "-R") or (f.startswith("-") and not f.startswith("--") and "r" in f.lower()) for f in flags)
+        # secure-delete tools as the command word, via xargs/parallel, or as find's -exec/-ok action ('grep -i wipe notes.txt' is not one)
+        if cmd in WIPE_CMDS or (cmd in ("xargs", "parallel") and any(os.path.basename(a) in WIPE_CMDS for a in targets)) or \
+                (cmd == "find" and any(a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args) and os.path.basename(args[i + 1]) in WIPE_CMDS for i, a in enumerate(args))):
+            return "irrecoverable data wipe"
+        # copying onto a disk device (tee: any target; cp/mv/rsync/install: the destination) is as final as '> /dev/sda'
+        dests = targets if cmd == "tee" else (targets[-1:] if cmd in ("cp", "mv", "rsync", "install") and len(targets) >= 2 else [])
+        if any(re.match(BLOCK_DEVICE, d.strip("'\"")) for d in dests):
+            return "writes directly to a disk device"
+        if cmd == "rm" and recursive and any(_is_fatal_target(t) for t in targets):
+            return "recursive delete of the home directory, a system directory or everything (wildcard)"
+        if cmd == "find" and (any(a == "-delete" for a in args) or any(a == "-exec" and i + 1 < len(args) and args[i + 1] == "rm" for i, a in enumerate(args))):
+            first_pred = next((i for i, a in enumerate(args) if a.startswith("-") or a in ("(", "!")), len(args))
+            roots = args[:first_pred] or ["."]           # find's start points come before the first predicate; none = cwd
+            if any(_is_fatal_target(r) for r in roots):
+                return "recursive delete (find) of the home directory, a system directory or everything"
+        if cmd in ("chmod", "chown", "chgrp") and recursive and any(_is_fatal_target(t) for t in (targets[1:] or targets)):
+            return "recursive permission change on the home directory or a system directory"
+        if cmd == "truncate" and any(f.startswith("-s") for f in flags):
+            for t in targets:
+                path, _ = _norm_target(t)
+                if path and path.startswith("/") and not path.startswith(HOME + os.sep) and path != HOME and _top_dir(path) in SYSTEM_DIRS - {"/"}:
+                    return "truncates a system file"
+    return None
+
+
+def touches_sensitive(text):
+    """True when text references the SSH / GnuPG directories, the agent's own configuration or the sudoers file."""
+    if not text:
+        return False
+    t = str(text)
+    pats = [r"(~|\$\{?HOME\}?|/home/[^/\s'\"]+|%s)/\.ssh(/|\b)" % re.escape(HOME), r"(~|\$\{?HOME\}?|/home/[^/\s'\"]+|%s)/\.gnupg(/|\b)" % re.escape(HOME),
+            r"(~|\$\{?HOME\}?|/home/[^/\s'\"]+|%s)/\.config/fabos(/|\b)" % re.escape(HOME), r"/etc/sudoers(\.d)?(/|\b)"]
+    return any(re.search(p, t) for p in pats)
+
+
 def classify(tool, inp):
     """Deterministic risk classification. Returns (RISK, reason)."""
+    if tool in ("write_file", "type_text", "run_shell"):
+        probe = inp.get("path") if tool == "write_file" else (inp.get("text") if tool == "type_text" else inp.get("command"))
+        if touches_sensitive(probe):
+            return "CRITICAL", "touches credentials or the agent's own configuration (~/.ssh, ~/.gnupg, ~/.config/fabos, /etc/sudoers)"
     if tool in ("read_file", "list_dir", "notify_user", "ask_user", "list_apps"):
         return "LOW", "read-only or user-facing"
     if tool == "check_email":
@@ -257,11 +397,14 @@ def classify(tool, inp):
         c = inp.get("command", "")
         if inp.get("as_root"):
             return "CRITICAL", "runs as root"
+        fatal = catastrophic(c)
+        if fatal:
+            return "CRITICAL", fatal
         worst, why = "MEDIUM", "runs a command"
         for pat, risk, reason in DANGER:
             if re.search(pat, c, re.I) and RISK.index(risk) > RISK.index(worst):
                 worst, why = risk, reason
-        if worst == "MEDIUM" and READ_ONLY.match(c) and not re.search(r"[|>;&]|\$\(", c):
+        if worst == "MEDIUM" and READ_ONLY.match(c) and not re.search(r"[|>;&]|\$\(|\s-(delete|exec|execdir|ok|okdir)\b", c):
             return "LOW", "read-only command"
         return worst, why
     return "HIGH", "unknown tool"
@@ -574,14 +717,153 @@ How to work:
 - Never fabosate results. Report exactly what happened, including partial failures. Keep the final message short: what was done, where outputs are, what the user should look at.
 - Current user: {user}. Home: {home}. Date/time: {now}. Permission mode: {mode}."""
 
+# Persona (setting ui.persona, default "indian-english"; "off" disables). Appended to the system prompt so the agent
+# talks like a warm colleague and narrates what it is about to do — the same voice the step narration uses.
+PERSONA_PROMPTS = {
+    "indian-english": ("Speak like a warm, helpful colleague from India using natural Indian English (e.g. 'Sure, I will do that right away', "
+                       "'Done, I have opened Fab Files for you', 'Shall I go ahead?'); before every action say in one short sentence what you are "
+                       "about to do; after finishing confirm what was done and ask if anything else is needed; keep replies short, human and "
+                       "friendly; never robotic, never use markdown tables in spoken-style replies."),
+}
+PERSONA_DEFAULT = "indian-english"
+
+
+def persona_prompt(store):
+    """The persona sentence for the current ui.persona setting ('' when the persona is off or unknown)."""
+    p = (store.setting("ui.persona", PERSONA_DEFAULT) or "").strip().lower()
+    if p in ("", "off", "none", "false", "0"):
+        return ""
+    return PERSONA_PROMPTS.get(p, "")
+
+
+def build_system_prompt(store, mode, apps):
+    names = ", ".join(sorted(a["name"] for a in apps)[:120])
+    system = SYSTEM_PROMPT.format(app=APP, user=os.environ.get("USER", "user"), home=HOME, app_count=len(apps), app_names=names,
+                                  now=datetime.now().strftime("%Y-%m-%d %H:%M %Z"), mode=mode)
+    persona = persona_prompt(store)
+    return system + ("\n- " + persona if persona else "")
+
+
+# ---- narration: one human sentence per tool step (Indian English), filled deterministically at insert time and on
+# completion. UIs show it under the step; the voice daemon speaks it. Never includes raw commands unless ui.show_raw.
+def _base(path):
+    return os.path.basename(str(path or "").rstrip("/")) or str(path or "")
+
+
+def _app_name(inp):
+    app = str(inp.get("app") or "").split("/")[-1]
+    return {"kate": "Fab Editor", "dolphin": "Fab Files", "konsole": "Fab Terminal", "xdg-open": "the default app", "open": "the default app",
+            "firefox": "Firefox", "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos",
+            "okular": "Fab Documents", "kcalc": "Fab Calculator", "spectacle": "Fab Screenshot", "systemsettings": "Fab Settings"}.get(app, app or "the app")
+
+
+def _host(url):
+    try:
+        return urllib.parse.urlparse(str(url)).netloc or str(url)
+    except Exception:
+        return str(url)
+
+
+def narration_for(name, inp, show_raw=False):
+    """What the agent says before a tool step runs."""
+    inp = inp if isinstance(inp, dict) else {}
+    if name == "open_app":
+        return "Opening %s for you now." % _app_name(inp)
+    if name == "type_text":
+        return "Typing that in now."
+    if name == "run_shell":
+        cmd = str(inp.get("command") or "").strip().split("\n")[0]
+        if show_raw and cmd:
+            return "Running: %s" % cmd[:120]
+        return "Running a command for you." if not inp.get("as_root") else "Running an administrator command for you."
+    if name == "write_file":
+        return "Saving the file %s." % _base(inp.get("path"))
+    if name == "read_file":
+        return "Having a look at %s." % _base(inp.get("path"))
+    if name == "list_dir":
+        return "Checking the folder %s." % _base(inp.get("path"))
+    if name == "web_fetch":
+        return "Fetching %s for you." % _host(inp.get("url"))
+    if name == "send_email":
+        return "Sending the mail to %s." % (inp.get("to") or "the recipient")
+    if name == "check_email":
+        return "Checking your mail now."
+    if name == "notify_user":
+        return "Letting you know."
+    if name == "ask_user":
+        return "I need to ask you something."
+    if name == "schedule_watch":
+        return "I will keep a watch on that."
+    if name == "list_apps":
+        return "Checking which apps are installed."
+    return "Working on it."
+
+
+def narration_done_for(name, inp, out, error=False):
+    """What the agent says once a tool step has finished (or failed)."""
+    inp = inp if isinstance(inp, dict) else {}
+    if error:
+        reason = (out.get("error") if isinstance(out, dict) else str(out)) or "something went wrong"
+        reason = str(reason).strip().split("\n")[0]
+        if len(reason) > 90:
+            reason = reason[:87] + "…"
+        return "Sorry, that did not work: %s" % reason
+    if name == "open_app":
+        return "Done, %s is open." % _app_name(inp)
+    if name == "type_text":
+        return "Typed it in."
+    if name == "run_shell":
+        return "That command finished."
+    if name == "write_file":
+        return "Saved %s." % _base(inp.get("path"))
+    if name == "read_file":
+        return "Read %s." % _base(inp.get("path"))
+    if name == "list_dir":
+        return "Checked %s." % _base(inp.get("path"))
+    if name == "web_fetch":
+        return "Fetched %s." % _host(inp.get("url"))
+    if name == "send_email":
+        return "Sent the mail to %s." % (inp.get("to") or "the recipient")
+    if name == "check_email":
+        return "Checked your mail."
+    if name == "notify_user":
+        return "Notified you."
+    if name == "ask_user":
+        return "Thank you for the answer."
+    if name == "schedule_watch":
+        return "The watch is set; I will tell you when it happens."
+    if name == "list_apps":
+        return "Got the list of apps."
+    return "Done."
+
+
+def approval_narration(name, inp):
+    """Spoken while the step waits for the user's permission."""
+    inp = inp if isinstance(inp, dict) else {}
+    summary = {"run_shell": "run a command as administrator" if inp.get("as_root") else "run a command", "write_file": "write the file %s" % _base(inp.get("path")),
+               "read_file": "read %s" % _base(inp.get("path")), "list_dir": "look inside %s" % _base(inp.get("path")), "open_app": "open %s" % _app_name(inp),
+               "type_text": "type into the focused window", "send_email": "send a mail to %s" % (inp.get("to") or "someone"), "check_email": "check your mail",
+               "schedule_watch": "set up a background watch", "web_fetch": "fetch %s" % _host(inp.get("url")), "notify_user": "show a notification",
+               "ask_user": "ask you a question", "list_apps": "look up installed apps"}.get(name, (name or "do something").replace("_", " "))
+    return "This needs your permission: %s. Shall I go ahead?" % summary
+
+
 # Provider presets. All non-Claude providers speak the OpenAI-compatible chat API with tool calling.
 PROVIDERS = {
-    "claude": {"label": "Claude (Anthropic)", "secret": "claude_api_key", "model": "claude-opus-5"},
-    "openai": {"label": "OpenAI", "secret": "openai_api_key", "base_url": "https://api.openai.com/v1", "model": "gpt-4.1"},
-    "gemini": {"label": "Google Gemini", "secret": "gemini_api_key", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-2.5-pro"},
-    "local": {"label": "Local model (llama-server / any OpenAI-compatible)", "secret": "local_api_key", "base_url": "http://127.0.0.1:8080/v1", "model": "local"},
+    "claude": {"label": "Anthropic (Claude)", "secret": "claude_api_key", "model": "claude-opus-5", "help": "Paste an API key from your Anthropic account."},
+    "gemini": {"label": "Google Gemini", "secret": "gemini_api_key", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-2.5-pro",
+               "help": "Paste an API key from Google AI Studio."},
+    "openai": {"label": "OpenAI", "secret": "openai_api_key", "base_url": "https://api.openai.com/v1", "model": "gpt-4.1", "help": "Paste an API key from your OpenAI account."},
+    "deepseek": {"label": "DeepSeek", "secret": "deepseek_api_key", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat", "help": "Paste an API key from the DeepSeek platform."},
+    "local": {"label": "Local model", "secret": "local_api_key", "base_url": "http://127.0.0.1:8080/v1", "model": "local",
+              "help": "Runs on this computer (llama-server or any OpenAI-compatible endpoint). No account, no key needed."},
 }
-SECRET_NAMES = ("claude_api_key", "openai_api_key", "gemini_api_key", "local_api_key", "mail_password", "mail_api_key")
+SECRET_NAMES = ("claude_api_key", "openai_api_key", "gemini_api_key", "deepseek_api_key", "local_api_key", "mail_password", "mail_api_key")
+# Providers with cloud speech (transcription / text-to-speech) through the same key; the rest fall back to the offline engine
+SPEECH_PROVIDERS = ("openai", "gemini")
+INDIAN_ENGLISH_STYLE = "Speak in warm, natural Indian English, like a helpful colleague from India; clear and unhurried."
+VOICE_DEFAULTS = {"voice.enabled": "true", "voice.wake_word": "hey fab", "voice.speak_replies": "true", "voice.offline_only": "false", "voice.cloud_voice": ""}
+MAX_BODY = 25 * 1024 * 1024      # request bodies (speech audio) are capped at 25 MB
 # Characters of a tool result handed back to the model (the full output is always kept in history). Local models have
 # small context windows (llama-server default 4-8k tokens), so they get a much tighter default; override with the
 # setting agent.tool_result_max_chars.
@@ -786,13 +1068,26 @@ class FakeProvider:
 
     def step(self, system, messages, tools, on_usage=None):
         first = messages[0]["content"]
-        req = user_text(first if isinstance(first, str) else first[0].get("text", ""))   # follow-ups carry a context prefix; the script keys off the user's words
+        full = first if isinstance(first, str) else first[0].get("text", "")
+        req = user_text(full)   # follow-ups carry a context prefix; the script keys off the user's words
         n_results = sum(1 for m in messages if m["role"] == "user" and not isinstance(m["content"], str))
         low = req.lower()
+        final = None
 
         def tu(name, inp):
             return {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": name, "input": inp}
-        if "editor" in low or "kate" in low:
+        mk = re.search(r"create\s+(\S+\.txt)\s+(?:next to it\s+)?with the word\s+(\w+)", req, re.I)
+        if mk:
+            # "create X.txt with the word W"; a follow-up like "create b.txt next to it" only works if the context of the
+            # earlier turn (its request / touched files) reached the model: the directory is taken from there
+            path, word = mk.group(1), mk.group(2)
+            if "/" not in path:
+                ctx = full.rsplit(FOLLOWUP_MARK, 1)[0] if FOLLOWUP_MARK in full else ""
+                m2 = re.search(r"((?:~|/)[\w./-]*/)[\w-]+\.txt", ctx)
+                path = (m2.group(1) if m2 else "~/") + path
+            plan = [tu("write_file", {"path": path, "content": word + "\n"})]
+            final = "Done, I have created %s with the word %s. Anything else?" % (path, word)
+        elif "editor" in low or "kate" in low:
             m = re.search(r"write\s+['\"]?(.+?)['\"]?(\s+and\b|\s*,|\s*$)", req, re.I)
             text = (m.group(1) if m else "hi").strip()
             plan = [tu("write_file", {"path": "~/Documents/fabos-note.txt", "content": text + "\n"}),
@@ -823,7 +1118,7 @@ class FakeProvider:
             plan = [tu("run_shell", {"command": "uname -a; date"})]
         if n_results < len(plan):
             return {"content": [{"type": "text", "text": "Step %d/%d" % (n_results + 1, len(plan))}, plan[n_results]], "stop_reason": "tool_use"}
-        return {"content": [{"type": "text", "text": "Done: executed %d steps for '%s'." % (len(plan), req[:60])}], "stop_reason": "end_turn"}
+        return {"content": [{"type": "text", "text": final or "Done: executed %d steps for '%s'." % (len(plan), req[:60])}], "stop_reason": "end_turn"}
 
 
 # ----------------------------------------------------------------------------- chats (threads of tasks)
@@ -832,6 +1127,13 @@ class FakeProvider:
 FOLLOWUP_MARK = "\n\nFollow-up request:\n"
 FOLLOWUP_CONTEXT_TURNS = 3          # how many earlier turns are summarised into a follow-up
 FOLLOWUP_CLIP_REQUEST, FOLLOWUP_CLIP_RESULT = 600, 900
+# the whole context block is bounded too (same head+tail clip as tool results): cloud models get ~4 000 chars, small local ones ~1 500
+FOLLOWUP_LIMIT_CLOUD, FOLLOWUP_LIMIT_LOCAL = 4000, 1500
+
+
+def followup_limit(store):
+    kind = os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude")
+    return FOLLOWUP_LIMIT_LOCAL if kind == "local" else FOLLOWUP_LIMIT_CLOUD
 
 
 def user_text(request):
@@ -863,15 +1165,44 @@ def chat_tasks(store, root_id):
     return store.all("SELECT * FROM tasks WHERE id IN (%s) ORDER BY id" % ",".join("?" * len(ids)), *sorted(ids))
 
 
-def followup_request(store, root_id, text):
-    """Build the request of a follow-up: a short context of the last turns of the chat, then the user's new request."""
+def task_touched(store, task_id):
+    """Files and apps a task actually touched (from its recorded tool steps) — the concrete outcome a follow-up needs."""
+    touched = []
+    for s in store.all("SELECT name, input FROM steps WHERE task_id=? AND kind='tool_call' AND (decision IS NULL OR decision NOT IN ('denied','expired')) ORDER BY id", task_id):
+        try:
+            inp = json.loads(s["input"] or "{}")
+        except ValueError:
+            continue
+        if s["name"] in ("write_file", "read_file", "list_dir") and inp.get("path"):
+            touched.append(("wrote " if s["name"] == "write_file" else "read ") + str(inp["path"]))
+        elif s["name"] == "open_app" and inp.get("app"):
+            touched.append("opened " + " ".join([str(inp["app"])] + [str(a) for a in (inp.get("args") or [])[:2]]))
+        elif s["name"] == "send_email" and inp.get("to"):
+            touched.append("mailed " + str(inp["to"]))
+    seen, out = set(), []
+    for t in touched:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out[:8]
+
+
+def followup_request(store, root_id, text, limit=None):
+    """Build the request of a follow-up: a short context of the last turns of the chat, then the user's new request.
+    The context block is clipped to `limit` chars (FOLLOWUP_LIMIT_CLOUD / _LOCAL by provider) so small models still fit."""
     turns = [t for t in chat_tasks(store, root_id) if not (t["title"] or "").startswith("(superseded)")][-FOLLOWUP_CONTEXT_TURNS:]
     ctx = ["Context from the earlier turns of this chat (for continuity; the new request is at the end):"]
     for t in turns:
         ctx.append("- You were asked: " + clip(user_text(t["request"]).strip(), FOLLOWUP_CLIP_REQUEST).replace("\n", " "))
         outcome = t["result"] or t["error"] or ("(still %s)" % t["status"].replace("_", " ") if t["status"] not in ("done", "failed", "cancelled") else "(no result)")
         ctx.append("  Outcome: " + clip(outcome.strip(), FOLLOWUP_CLIP_RESULT).replace("\n", " "))
-    return "\n".join(ctx) + FOLLOWUP_MARK + text
+        touched = task_touched(store, t["id"])
+        if touched:
+            ctx.append("  Touched: " + "; ".join(touched))
+    block = "\n".join(ctx)
+    if limit is None:
+        limit = followup_limit(store)
+    return clip(block, limit) + FOLLOWUP_MARK + text
 
 
 # ----------------------------------------------------------------------------- the agent
@@ -919,7 +1250,7 @@ class Agent:
         if kind == "claude":
             key = get_secret("claude_api_key") or os.environ.get("ANTHROPIC_API_KEY")
             if not key:
-                raise RuntimeError("No Claude API key configured. Open Fab AI Controls → Settings → AI provider and paste your key, or choose another provider (OpenAI, Gemini, local model).")
+                raise RuntimeError("No Claude API key configured. Open Fab AI Controls → Settings → AI provider and paste your key, or choose another provider (Gemini, OpenAI, DeepSeek, local model).")
             return ClaudeProvider(key, self.store.setting("claude.model", PROVIDERS["claude"]["model"]), self.store.setting("claude.fallbacks", "true") == "true")
         if kind in PROVIDERS:
             pre = PROVIDERS[kind]
@@ -929,6 +1260,9 @@ class Agent:
             return OpenAICompatProvider(self.store.setting(kind + ".base_url", pre["base_url"]), key, self.store.setting(kind + ".model", pre["model"]),
                                         name=kind, result_limit=RESULT_LIMIT_LOCAL if kind == "local" else RESULT_LIMIT_CLOUD)
         raise RuntimeError("unknown provider " + kind)
+
+    def show_raw(self):
+        return self.store.setting("ui.show_raw", "false") == "true"
 
     def result_limit(self, prov):
         """Max chars of a tool result shown to the model (setting agent.tool_result_max_chars overrides the provider default)."""
@@ -1024,10 +1358,12 @@ class Agent:
     def _gate(self, tid, task, name, inp):
         risk, reason = classify(name, inp)
         mode = self.mode(task)
-        sid = self.store.step(tid, "tool_call", name, json.dumps(inp)[:20000], "", risk, "")
+        narration = narration_for(name, inp, self.show_raw())
         if not self.needs_approval(risk, mode):
-            self.store.q("UPDATE steps SET decision='auto-approved' WHERE id=?", sid)
+            sid = self.store.step(tid, "tool_call", name, json.dumps(inp)[:20000], "", risk, "auto-approved", narration=narration)
             return sid, True, risk, reason
+        # while the step waits, its narration asks for permission; once allowed it says what it is doing
+        sid = self.store.step(tid, "tool_call", name, json.dumps(inp)[:20000], "", risk, "", narration=approval_narration(name, inp))
         aid = self.store.q("INSERT INTO approvals(task_id,step_id,tool,input,risk,reason,status,created) VALUES(?,?,?,?,?,?,?,?)",
                            tid, sid, name, json.dumps(inp)[:20000], risk, reason, "pending", time.time()).lastrowid
         self.store.q("UPDATE tasks SET status='waiting_approval', updated=? WHERE id=?", time.time(), tid)
@@ -1040,6 +1376,8 @@ class Agent:
         if a["status"] == "pending":
             self.store.q("UPDATE approvals SET status='expired', decided=? WHERE id=?", time.time(), aid)
             self.store.q("UPDATE steps SET decision='expired' WHERE id=?", sid)
+        if a["status"] == "approved":
+            self.store.q("UPDATE steps SET narration=? WHERE id=?", narration, sid)
         if tid not in self.cancel:
             self.store.q("UPDATE tasks SET status='running', updated=? WHERE id=?", time.time(), tid)
         return sid, (a["status"] == "approved"), risk, reason
@@ -1058,9 +1396,7 @@ class Agent:
                 notify(APP + ": task failed", str(e)[:200])
                 return
             apps = installed_apps()
-            names = ", ".join(sorted(a["name"] for a in apps)[:120])
-            system = SYSTEM_PROMPT.format(app=APP, user=os.environ.get("USER", "user"), home=HOME, app_count=len(apps), app_names=names,
-                                          now=datetime.now().strftime("%Y-%m-%d %H:%M %Z"), mode=self.mode(task))
+            system = build_system_prompt(self.store, self.mode(task), apps)
             messages = [{"role": "user", "content": task["request"]}]
             final = ""
             limit = self.result_limit(prov)
@@ -1091,9 +1427,11 @@ class Agent:
                         sid, ok, risk, reason = self._gate(tid, task, c["name"], inp)
                         if not ok:
                             out, err = {"error": "Denied by user/policy (%s: %s). Do not retry the same action; explain or find an allowed way." % (risk, reason)}, True
+                            done_line = "Sorry, that did not work: you did not allow it."
                         else:
                             out, err = self.tools.run(tid, c["name"], inp)
-                        self.store.q("UPDATE steps SET output=? WHERE id=?", json.dumps(out)[:40000], sid)
+                            done_line = narration_done_for(c["name"], inp, out, error=err)
+                        self.store.finish_step(sid, json.dumps(out), done_line)
                         res = {"type": "tool_result", "tool_use_id": c["id"], "content": clip(json.dumps(out), limit)}
                         if err:
                             res["is_error"] = True
@@ -1169,6 +1507,208 @@ class Watcher(threading.Thread):
                 self.agent.create(spec["followup_task"] + "\n\nTriggering event:\n" + detail, title="Follow-up: " + spec["followup_task"][:60], parent_id=w["task_id"], actor="watch")
 
 
+# ----------------------------------------------------------------------------- provider connection check
+PROVIDER_TEST_TIMEOUT = 15
+
+
+def gemini_native_base(base_url):
+    """The stored Gemini endpoint is the OpenAI-compatible one (…/v1beta/openai); the native API sits one level up."""
+    b = (base_url or PROVIDERS["gemini"]["base_url"]).rstrip("/")
+    return b[:-len("/openai")] if b.endswith("/openai") else b
+
+
+def _http_json(url, headers=None, data=None, timeout=PROVIDER_TEST_TIMEOUT, method=None):
+    """GET/POST returning (status, parsed-json-or-text). Raises urllib errors; the caller maps them to friendly details."""
+    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method or ("POST" if data is not None else "GET"))
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+        try:
+            return r.status, json.loads(raw.decode() or "{}")
+        except ValueError:
+            return r.status, raw.decode(errors="replace")
+
+
+def test_provider(store, kind, api_key=None, base_url=None, model=None):
+    """A real, lightweight authenticated call (the provider's model list). Returns {ok, latency_ms, detail, models_sample, provider, model}.
+    The key is taken from the request when given (so a typed key can be checked before it is saved), else from the stored secret."""
+    if kind not in PROVIDERS:
+        return {"ok": False, "detail": "unknown provider %s" % kind, "latency_ms": 0}
+    pre = PROVIDERS[kind]
+    key = (api_key or "").strip() or get_secret(pre["secret"]) or (os.environ.get("ANTHROPIC_API_KEY") if kind == "claude" else None) or ""
+    model = (model or store.setting(kind + ".model") or pre["model"]).strip()
+    base = (base_url or store.setting(kind + ".base_url") or pre.get("base_url") or "").strip().rstrip("/")
+    if not key and kind != "local":
+        return {"ok": False, "detail": "no API key", "latency_ms": 0, "provider": kind, "model": model}
+    t0 = time.time()
+    try:
+        if kind == "claude":
+            status, body = _http_json("https://api.anthropic.com/v1/models", {"x-api-key": key, "anthropic-version": "2023-06-01", "accept": "application/json"})
+        elif kind == "gemini" and "generativelanguage.googleapis.com" in base:
+            status, body = _http_json(gemini_native_base(base) + "/models?key=" + urllib.parse.quote(key, safe=""), {"accept": "application/json"})
+        else:
+            headers = {"accept": "application/json"}
+            if key:
+                headers["Authorization"] = "Bearer " + key
+            status, body = _http_json(base + "/models", headers)
+    except urllib.error.HTTPError as e:
+        ms = int((time.time() - t0) * 1000)
+        try:
+            err_body = e.read().decode(errors="replace")[:600]
+        except Exception:
+            err_body = ""
+        if e.code in (401, 403) or (e.code == 400 and re.search(r"api[ _-]?key", err_body, re.I)):
+            return {"ok": False, "detail": "key rejected", "http": e.code, "latency_ms": ms, "provider": kind, "model": model}
+        if e.code == 404:
+            return {"ok": False, "detail": "endpoint not found (check the base URL)", "http": e.code, "latency_ms": ms, "provider": kind, "model": model}
+        return {"ok": False, "detail": "provider error HTTP %d" % e.code, "http": e.code, "latency_ms": ms, "provider": kind, "model": model}
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        ms = int((time.time() - t0) * 1000)
+        why = getattr(e, "reason", None) or e
+        if kind == "local":
+            return {"ok": False, "detail": "cannot reach provider — the local model server is not running at %s" % base, "latency_ms": ms, "provider": kind, "model": model}
+        return {"ok": False, "detail": "cannot reach provider (%s)" % str(why)[:80], "latency_ms": ms, "provider": kind, "model": model}
+    ms = int((time.time() - t0) * 1000)
+    ids = []
+    if isinstance(body, dict):
+        for m in (body.get("data") or body.get("models") or []):
+            mid = m.get("id") or m.get("name") if isinstance(m, dict) else str(m)
+            if mid:
+                ids.append(str(mid).split("/")[-1])
+    out = {"ok": True, "latency_ms": ms, "detail": "Connected", "models_sample": ids[:8], "provider": kind, "model": model}
+    if ids and model and model != "local" and not any(model == i or model in i for i in ids):
+        out["detail"] = "Connected (the model %s is not in the provider's list — check its name)" % model
+    return out
+
+
+# ----------------------------------------------------------------------------- cloud speech (through the configured provider)
+SPEECH_TIMEOUT = 30
+
+
+def _speech_provider(store):
+    kind = os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude")
+    if kind not in SPEECH_PROVIDERS:
+        return None, None, None, {"ok": False, "detail": "no cloud speech for this provider", "backend": "none", "provider": kind}
+    key = get_secret(PROVIDERS[kind]["secret"])
+    if not key:
+        return None, None, None, {"ok": False, "detail": "no API key for %s" % PROVIDERS[kind]["label"], "backend": "none", "provider": kind}
+    return kind, key, (store.setting(kind + ".base_url") or PROVIDERS[kind]["base_url"]).rstrip("/"), None
+
+
+def _speech_error(e, backend):
+    if isinstance(e, urllib.error.HTTPError):
+        if e.code in (401, 403):
+            return {"ok": False, "detail": "key rejected", "http": e.code, "backend": backend}
+        return {"ok": False, "detail": "provider error HTTP %d" % e.code, "http": e.code, "backend": backend}
+    return {"ok": False, "detail": "cannot reach provider", "backend": backend}
+
+
+def _multipart(fields, file_field, filename, content, mime):
+    boundary = "----FabOS" + uuid.uuid4().hex
+    body = io.BytesIO()
+    for k, v in fields.items():
+        body.write(("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n" % (boundary, k, v)).encode())
+    body.write(("--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n" % (boundary, file_field, filename, mime)).encode())
+    body.write(content)
+    body.write(("\r\n--%s--\r\n" % boundary).encode())
+    return body.getvalue(), "multipart/form-data; boundary=" + boundary
+
+
+def speech_transcribe(store, audio_b64, fmt="wav"):
+    """Speech to text with the configured cloud provider. Audio and keys are never logged."""
+    kind, key, base, err = _speech_provider(store)
+    if err:
+        return err
+    try:
+        audio = base64.b64decode(audio_b64 or "", validate=False)
+    except (ValueError, TypeError):
+        return {"ok": False, "detail": "audio_b64 is not valid base64", "backend": "none"}
+    if not audio:
+        return {"ok": False, "detail": "no audio", "backend": "none"}
+    fmt = (fmt or "wav").lower().strip(".")
+    mime = {"wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg", "webm": "audio/webm", "flac": "audio/flac", "m4a": "audio/mp4"}.get(fmt, "audio/wav")
+    if kind == "openai":
+        last = None
+        for model in ("gpt-4o-mini-transcribe", "whisper-1"):
+            data, ctype = _multipart({"model": model, "response_format": "json", "language": "en"}, "file", "speech." + fmt, audio, mime)
+            try:
+                _st, body = _http_json(base + "/audio/transcriptions", {"Authorization": "Bearer " + key, "Content-Type": ctype}, data, SPEECH_TIMEOUT)
+                text = (body.get("text") if isinstance(body, dict) else str(body)) or ""
+                return {"ok": True, "text": text.strip(), "backend": "openai:" + model}
+            except urllib.error.HTTPError as e:
+                last = e
+                if e.code in (400, 404):          # model not available on this account/endpoint: try the fallback
+                    continue
+                return _speech_error(e, "openai")
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                return _speech_error(e, "openai")
+        return _speech_error(last, "openai") if last else {"ok": False, "detail": "transcription failed", "backend": "openai"}
+    # gemini: generateContent with inline audio
+    model = store.setting("speech.gemini_model") or "gemini-2.5-flash"
+    payload = {"contents": [{"parts": [{"text": "Transcribe exactly what is said in this audio. Return only the transcript, nothing else."},
+                                        {"inline_data": {"mime_type": mime, "data": base64.b64encode(audio).decode()}}]}]}
+    url = "%s/models/%s:generateContent?key=%s" % (gemini_native_base(base), model, urllib.parse.quote(key, safe=""))
+    try:
+        _st, body = _http_json(url, {"Content-Type": "application/json"}, json.dumps(payload).encode(), SPEECH_TIMEOUT)
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return _speech_error(e, "gemini")
+    text = ""
+    try:
+        for part in body["candidates"][0]["content"]["parts"]:
+            text += part.get("text", "")
+    except (KeyError, IndexError, TypeError):
+        return {"ok": False, "detail": "no transcript in the provider's reply", "backend": "gemini:" + model}
+    return {"ok": True, "text": text.strip(), "backend": "gemini:" + model}
+
+
+def pcm_to_wav(pcm, rate=24000, channels=1, width=2):
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(width)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+def speech_say(store, text):
+    """Text to speech with the configured cloud provider, Indian-English voice instructions. Returns base64 audio."""
+    kind, key, base, err = _speech_provider(store)
+    if err:
+        return err
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "detail": "no text", "backend": "none"}
+    voice = (store.setting("voice.cloud_voice") or "").strip()
+    if kind == "openai":
+        payload = {"model": "gpt-4o-mini-tts", "voice": voice or "alloy", "input": text[:4000], "instructions": INDIAN_ENGLISH_STYLE, "response_format": "wav"}
+        req = urllib.request.Request(base + "/audio/speech", data=json.dumps(payload).encode(), headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=SPEECH_TIMEOUT) as r:
+                audio = r.read()
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            return _speech_error(e, "openai")
+        return {"ok": True, "audio_b64": base64.b64encode(audio).decode(), "format": "wav", "backend": "openai:gpt-4o-mini-tts"}
+    model = "gemini-2.5-flash-preview-tts"
+    payload = {"contents": [{"parts": [{"text": INDIAN_ENGLISH_STYLE + " Say exactly this:\n\n" + text[:4000]}]}],
+               "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice or "Kore"}}}}}
+    url = "%s/models/%s:generateContent?key=%s" % (gemini_native_base(base), model, urllib.parse.quote(key, safe=""))
+    try:
+        _st, body = _http_json(url, {"Content-Type": "application/json"}, json.dumps(payload).encode(), SPEECH_TIMEOUT)
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return _speech_error(e, "gemini")
+    try:
+        part = next(p for p in body["candidates"][0]["content"]["parts"] if "inlineData" in p or "inline_data" in p)
+        blob = part.get("inlineData") or part.get("inline_data")
+        pcm = base64.b64decode(blob["data"])
+        mime = blob.get("mimeType") or blob.get("mime_type") or ""
+    except (KeyError, IndexError, TypeError, StopIteration, ValueError):
+        return {"ok": False, "detail": "no audio in the provider's reply", "backend": "gemini:" + model}
+    m = re.search(r"rate=(\d+)", mime)
+    rate = int(m.group(1)) if m else 24000
+    wav = pcm if mime.startswith("audio/wav") else pcm_to_wav(pcm, rate)
+    return {"ok": True, "audio_b64": base64.b64encode(wav).decode(), "format": "wav", "backend": "gemini:" + model}
+
+
 # ----------------------------------------------------------------------------- HTTP API
 def make_handler(store, agent, token):
     class H(BaseHTTPRequestHandler):
@@ -1187,6 +1727,8 @@ def make_handler(store, agent, token):
 
         def _body(self):
             n = int(self.headers.get("Content-Length") or 0)
+            if n > MAX_BODY:
+                raise ValueError("request body too large (limit %d MB)" % (MAX_BODY // (1024 * 1024)))
             return json.loads(self.rfile.read(n) or b"{}") if n else {}
 
         def _auth(self):
@@ -1207,7 +1749,10 @@ def make_handler(store, agent, token):
                 prov = os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude")
                 ready = prov == "fake" or prov == "local" or (prov in PROVIDERS and (has_secret(PROVIDERS[prov]["secret"]) or (prov == "claude" and bool(os.environ.get("ANTHROPIC_API_KEY")))))
                 return self._send(200, {"mode": store.setting("mode", "auto"), "provider": prov, "provider_ready": ready, "ai_enabled": agent.ai_enabled(),
+                                        "provider_label": PROVIDERS[prov]["label"] if prov in PROVIDERS else prov,
+                                        "provider_model": store.setting(prov + ".model", PROVIDERS[prov]["model"]) if prov in PROVIDERS else "",
                                         "ui_show_raw": store.setting("ui.show_raw", "false") == "true",
+                                        "voice": {k[len("voice."):]: store.setting(k, d) for k, d in VOICE_DEFAULTS.items()},
                                         "providers": {k: {"label": v["label"], "has_key": has_secret(v["secret"])} for k, v in PROVIDERS.items()},
                                         "mail_ready": bool((store.setting("mail.transport") or "smtp").lower() == "brevo" and store.setting("mail.from") and has_secret("mail_api_key")) or bool(store.setting("mail.user") and has_secret("mail_password")), "tasks": counts,
                                         "pending_approvals": store.one("SELECT COUNT(*) n FROM approvals WHERE status='pending'")["n"],
@@ -1219,11 +1764,15 @@ def make_handler(store, agent, token):
                 s.setdefault("provider", "claude")
                 s.setdefault("ai.enabled", "true")
                 s.setdefault("ui.show_raw", "false")     # Fab AI Controls: show commands / raw tool output in chats
+                s.setdefault("ui.persona", PERSONA_DEFAULT)
+                for k, d in VOICE_DEFAULTS.items():
+                    s.setdefault(k, d)
                 for k, v in PROVIDERS.items():
                     s.setdefault(k + ".model", v["model"])
                     if "base_url" in v:
                         s.setdefault(k + ".base_url", v["base_url"])
                 s["secrets"] = {n: has_secret(n) for n in SECRET_NAMES}
+                s["providers"] = {k: {"label": v["label"], "model": v["model"], "base_url": v.get("base_url"), "help": v.get("help", ""), "secret": v["secret"]} for k, v in PROVIDERS.items()}
                 return self._send(200, s)
             if p == "/tasks":
                 return self._send(200, store.all("SELECT id,title,status,mode,created,updated,parent_id,cost_in,cost_out,substr(result,1,200) result,error,substr(request,1,400) request FROM tasks ORDER BY id DESC LIMIT ?", int(qs.get("limit", 100))))
@@ -1238,6 +1787,12 @@ def make_handler(store, agent, token):
                 t["questions"] = store.all("SELECT * FROM questions WHERE task_id=? ORDER BY id", t["id"])
                 return self._send(200, t)
             if p == "/approvals/pending":
+                if qs.get("task_id"):
+                    try:
+                        tid = int(qs["task_id"])
+                    except ValueError:
+                        return self._send(400, {"error": "task_id must be a number"})
+                    return self._send(200, store.all("SELECT a.*, t.title FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE a.status='pending' AND a.task_id=? ORDER BY a.id", tid))
                 return self._send(200, store.all("SELECT a.*, t.title FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE a.status='pending' ORDER BY a.id"))
             if p == "/watches":
                 return self._send(200, store.all("SELECT * FROM watches ORDER BY id DESC LIMIT 200"))
@@ -1248,8 +1803,22 @@ def make_handler(store, agent, token):
         def do_POST(self):
             if not self._auth():
                 return
-            p = self.path
-            b = self._body()
+            p = self.path.split("?")[0]
+            try:
+                b = self._body()
+            except ValueError as e:
+                return self._send(413 if "too large" in str(e) else 400, {"error": str(e)})
+            if p == "/providers/test":
+                kind = b.get("provider") or store.setting("provider", "claude")
+                r = test_provider(store, kind, b.get("api_key"), b.get("base_url"), b.get("model"))
+                store.activity("user", "provider_test", None, "%s: %s (%s ms)" % (kind, "ok" if r.get("ok") else r.get("detail"), r.get("latency_ms", 0)))
+                return self._send(200, r)
+            if p == "/speech/transcribe":
+                r = speech_transcribe(store, b.get("audio_b64"), b.get("format") or "wav")
+                return self._send(200, r)
+            if p == "/speech/say":
+                r = speech_say(store, b.get("text"))
+                return self._send(200, r)
             if p == "/tasks":
                 if not b.get("request", "").strip():
                     return self._send(400, {"error": "request is required"})
@@ -1266,12 +1835,18 @@ def make_handler(store, agent, token):
                     request = followup_request(store, parent, b["request"])
                 tid = agent.create(request, b.get("title") or b["request"].strip().split("\n")[0][:80], b.get("mode"), parent_id=parent)
                 return self._send(201, {"id": tid, "status": "queued", "parent_id": parent})
-            m = re.match(r"^/tasks/(\d+)/(cancel|retry|answer)$", p)
+            m = re.match(r"^/tasks/(\d+)/(cancel|retry|answer|feedback)$", p)
             if m:
                 tid, act = int(m.group(1)), m.group(2)
                 t = store.one("SELECT * FROM tasks WHERE id=?", tid)
                 if not t:
                     return self._send(404, {"error": "no such task"})
+                if act == "feedback":
+                    rating = b.get("rating")
+                    if rating not in ("good", "bad", "none"):
+                        return self._send(400, {"error": "rating must be good|bad|none"})
+                    store.activity("user", "feedback_" + rating, tid, (b.get("comment") or "")[:500])
+                    return self._send(200, {"ok": True, "rating": rating})
                 if act == "cancel":
                     agent.cancel_task(tid)
                     return self._send(200, {"id": tid, "status": "cancelled"})
@@ -1300,7 +1875,10 @@ def make_handler(store, agent, token):
             if not self._auth():
                 return
             if self.path == "/settings":
-                b = self._body()
+                try:
+                    b = self._body()
+                except ValueError as e:
+                    return self._send(413 if "too large" in str(e) else 400, {"error": str(e)})
                 for k, v in b.items():
                     if k == "mode" and v not in MODES:
                         return self._send(400, {"error": "mode must be ask|auto|bypass"})
@@ -1311,6 +1889,8 @@ def make_handler(store, agent, token):
                     if k == "ai.enabled":
                         v = "true" if str(v).lower() in ("true", "1", "on", "yes") else "false"
                         notify(APP, "System-Wide AI is now %s" % ("ON" if v == "true" else "OFF"))
+                    if k in ("voice.enabled", "voice.speak_replies", "voice.offline_only", "ui.show_raw"):
+                        v = "true" if str(v).lower() in ("true", "1", "on", "yes") else "false"
                     store.set_setting(k, v)
                     store.activity("user", "setting", None, "%s=%s" % (k, v if "pass" not in k else "***"))
                 return self._send(200, {"ok": True})
@@ -1321,7 +1901,10 @@ def make_handler(store, agent, token):
                 return
             m = re.match(r"^/tasks/(\d+)$", self.path)
             if m:
-                b = self._body()
+                try:
+                    b = self._body()
+                except ValueError as e:
+                    return self._send(413 if "too large" in str(e) else 400, {"error": str(e)})
                 t = store.one("SELECT * FROM tasks WHERE id=?", m.group(1))
                 if not t:
                     return self._send(404, {"error": "no such task"})

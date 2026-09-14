@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""Fab AI Controls — chat with the Fab OS agent: ask it to do things, follow up, watch it work, approve risky steps.
+"""Fab AI Controls — chat with the Fab OS agent: ask it to do things, follow up, watch it work live, approve risky steps.
 
-A chat-style desktop app on top of fabos-agentd's local HTTP API (PyQt6):
-  * left sidebar: New chat, search, chats grouped Today / Yesterday / Earlier (a chat = a root task + its follow-ups)
-  * main pane: the chat as bubbles (your requests right/accent, the agent's answers left/surface), tool steps folded into
-    one "Worked: N actions" chip per turn, typing indicator + fade-in while a task runs
-  * bottom: rounded composer = follow-up bar of the selected chat; the send button turns into STOP while a task runs
-Everything follows the system colour scheme through QPalette; radii/spacing from the Fab OS design tokens.
-Launch: fabos-command-center [--ask] [--prefill TEXT] [--settings]   (the executable keeps its historical name)
+A two-column chat app on top of fabos-agentd's local HTTP API (PyQt6), laid out after docs/design/CHAT-UI-BRIEF.md:
+  * sidebar 282 px: "New chat" pill, search, chats grouped Today / Yesterday / Earlier (a chat = a root task + its
+    follow-ups), and a bottom group (Clear conversations · Appearance follows system · Settings · About Fab OS)
+  * main column: empty state (Fab AI mark, "Try asking" / "What I can do" / "Keep in mind"), then the conversation —
+    your requests as pills on the right, the agent's answers as plain text on the left with an action row (copy, good,
+    bad, speak, edit, retry), and a LIVE action timeline per turn (one row per tool step: app icon / keyboard / terminal /
+    file / globe / mail / bell / question / eye, a spinner while it runs, a check or cross when it finishes, the agent's
+    spoken narration in italics underneath; type_text is revealed with a typewriter effect)
+  * composer: a two-row rounded card — the text row, then the permission-mode chip, the microphone (fabos-voice
+    listen-once) and the filled Send / Stop button
+Everything follows the system colour scheme through QPalette; radii/spacing from the Fab OS design tokens; Inter.
+Launch: fabos-command-center [--ask] [--prefill TEXT] [--settings] [--task ID]   (the executable keeps its historical name)
 """
-import datetime, json, math, os, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
-from PyQt6.QtCore import (Qt, QTimer, QSize, QPropertyAnimation, QVariantAnimation, QEasingCurve, QRectF, QEvent, QPointF, pyqtSignal)
+import datetime, json, math, os, shutil, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+from PyQt6.QtCore import (Qt, QTimer, QSize, QPropertyAnimation, QVariantAnimation, QEasingCurve, QRectF, QEvent, QPointF, QPoint, QProcess, QThread,
+                          QObject, pyqtSignal, pyqtProperty)
 from PyQt6.QtGui import (QFont, QIcon, QImage, QPixmap, QPainter, QColor, QPalette, QPen, QBrush, QTextDocument, QTextCursor, QTextBlockFormat,
-                         QTextCharFormat, QTextFormat, QGuiApplication, QAction, QFontMetrics)
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QListWidget, QListWidgetItem,
-                             QTextBrowser, QLabel, QComboBox, QTabWidget, QDialog, QFormLayout, QFrame, QScrollArea, QSizePolicy, QToolButton,
+                         QTextCharFormat, QTextFormat, QGuiApplication, QAction, QFontMetrics, QPainterPath, QKeyEvent)
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QPushButton, QListWidget, QListWidgetItem,
+                             QTextBrowser, QPlainTextEdit, QLabel, QComboBox, QTabWidget, QDialog, QFormLayout, QFrame, QScrollArea, QSizePolicy, QToolButton,
                              QCheckBox, QStackedWidget, QMenu, QGraphicsOpacityEffect, QStyle)
 
 APP_NAME = "Fab AI Controls"
@@ -23,17 +29,29 @@ RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "fabos-agent")
 FOLLOWUP_MARK = "\n\nFollow-up request:\n"    # must match fabos_agentd.FOLLOWUP_MARK
 SUPERSEDED = "(superseded) "
 ACTIVE = ("queued", "running", "waiting_approval", "waiting_user")
-# design tokens (px): radii control 12 · field 14 · card 20 · panel 20 · popup 24; spacing grid 12/16
-R_CONTROL, R_FIELD, R_CARD, R_PANEL, R_POPUP = 12, 14, 20, 20, 24
-SP, SP2 = 12, 16
+# design tokens (px): radii control 12 · field 14 · card 20 · popup / pills 24 · small cards 8; spacing grid 12/16/20
+R_CONTROL, R_FIELD, R_CARD, R_PANEL, R_POPUP, R_SMALL = 12, 14, 20, 20, 24, 8
+SP, SP2, SP3 = 12, 16, 20
+SIDEBAR_W = 282
 POLL_LIST_MS, POLL_THREAD_MS = 4000, 1500
 API_TIMEOUT = 5                  # s — the daemon is local; calls run on the GUI thread, so a hung daemon must not freeze the UI for long
+TYPEWRITER_MS = 25               # ms per character when a typed text is revealed in the action timeline
 KEY_ROLE = int(Qt.ItemDataRole.UserRole) + 1     # sidebar list items: their reconcile key ("h:Today" / "c:<root id>")
-PROVIDER_LABELS = {"claude": "Claude", "openai": "OpenAI", "gemini": "Gemini", "local": "Local model", "fake": "Test provider"}
-# semantic status colours (used for tiny risk/status dots only; all surfaces and text come from the palette)
+# provider ids -> short labels (the daemon's PROVIDERS table is the source of truth for the long labels)
+PROVIDER_LABELS = {"claude": "Claude", "gemini": "Gemini", "openai": "OpenAI", "deepseek": "DeepSeek", "local": "Local model", "fake": "Test provider"}
+PROVIDER_ORDER = ["claude", "gemini", "openai", "deepseek", "local"]
+PROVIDER_FULL = {"claude": "Anthropic (Claude)", "gemini": "Google Gemini", "openai": "OpenAI", "deepseek": "DeepSeek", "local": "Local model"}
+PROVIDER_DEFAULTS = {"claude": ("claude-opus-5", None), "gemini": ("gemini-2.5-pro", "https://generativelanguage.googleapis.com/v1beta/openai"),
+                     "openai": ("gpt-4.1", "https://api.openai.com/v1"), "deepseek": ("deepseek-chat", "https://api.deepseek.com/v1"), "local": ("local", "http://127.0.0.1:8080/v1")}
+PROVIDER_HELP = {"claude": "Paste an API key from your Anthropic account.", "gemini": "Paste an API key from Google AI Studio.", "openai": "Paste an API key from your OpenAI account.",
+                 "deepseek": "Paste an API key from the DeepSeek platform.", "local": "Runs on this computer (llama-server or any OpenAI-compatible endpoint). No account, no key needed."}
+# semantic status colours (used for tiny risk/status dots and the check-mark animation only; every surface and text comes from the palette)
 RISK_COLORS = {"LOW": "#3FCB7E", "MEDIUM": "#6E9BFF", "HIGH": "#E0A64B", "CRITICAL": "#F0655D"}
+GREEN, AMBER, RED = "#34C759", "#FF9500", "#F0655D"
 STATUS_TEXT = {"queued": "Queued", "running": "Working", "waiting_approval": "Needs your approval", "waiting_user": "Needs your answer",
                "done": "Done", "failed": "Failed", "cancelled": "Stopped"}
+VOICE_UNAVAILABLE = "Voice is not available on this machine"
+VOICE_TEST_LINE = "Namaste, I am Fab. Tell me what to do."
 
 
 # ----------------------------------------------------------------------------- daemon API
@@ -41,7 +59,7 @@ class AgentOffline(Exception):
     pass
 
 
-def api(method, path, body=None):
+def api(method, path, body=None, timeout=API_TIMEOUT):
     """Call fabos-agentd. Returns the JSON reply ({"error":..., "http":...} on HTTP errors); raises AgentOffline when unreachable."""
     try:
         token = open(os.path.join(RUN, "token")).read().strip()
@@ -51,7 +69,7 @@ def api(method, path, body=None):
     req = urllib.request.Request("http://127.0.0.1:%s%s" % (port, path), method=method, data=json.dumps(body).encode() if body is not None else None,
                                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         try:
@@ -60,6 +78,21 @@ def api(method, path, body=None):
             return {"error": str(e), "http": e.code}
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise AgentOffline(str(e))
+
+
+class ApiWorker(QThread):
+    """One daemon call off the GUI thread (the provider check may take up to 15 s). done(result) or done({"offline": msg})."""
+    done = pyqtSignal(object)
+
+    def __init__(self, method, path, body=None, timeout=20, parent=None):
+        super().__init__(parent)
+        self.args = (method, path, body, timeout)
+
+    def run(self):
+        try:
+            self.done.emit(api(*self.args))
+        except AgentOffline as e:
+            self.done.emit({"offline": str(e), "error": "agent service offline"})
 
 
 def user_text(request):
@@ -77,9 +110,20 @@ def day_group(t):
     return "Today" if d == today else ("Yesterday" if d == today - datetime.timedelta(days=1) else "Earlier")
 
 
+def mem_total_gib():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) / (1024 * 1024)
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0.0
+
+
 # ----------------------------------------------------------------------------- icons: Material-style glyphs from inline SVG
-# 24x24 grid, 2px round strokes (Material Symbols "outlined" feel). Rendered through Qt's SVG image plugin into a QIcon
-# in the current palette colour, so icons follow the colour scheme like everything else.
+# 24x24 grid, 2px round strokes (Material Symbols "outlined" feel), all drawn for Fab OS. Rendered through Qt's SVG image
+# plugin into a QIcon in the current palette colour, so icons follow the colour scheme like everything else.
 GLYPHS = {
     "send": '<path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/>',
     "stop": '<rect x="6" y="6" width="12" height="12" rx="2.5" fill="{c}" stroke="none"/>',
@@ -104,6 +148,25 @@ GLYPHS = {
     "question": '<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
     "bell": '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
     "warning": '<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    "mic": '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/><path d="M9 21h6"/>',
+    "waveform": '<path d="M4 10v4"/><path d="M8 7v10"/><path d="M12 4v16"/><path d="M16 7v10"/><path d="M20 10v4"/>',
+    "speaker": '<path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>',
+    "thumb-up": '<path d="M7 10v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3z"/><path d="M7 10l4.5-7a2.5 2.5 0 0 1 2.4 3.1L13 10h6a2 2 0 0 1 2 2.3l-1.4 7A2 2 0 0 1 17.6 21H7"/>',
+    "thumb-down": '<path d="M17 14V3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-3z"/><path d="M17 14l-4.5 7a2.5 2.5 0 0 1-2.4-3.1L11 14H5a2 2 0 0 1-2-2.3l1.4-7A2 2 0 0 1 6.4 3H17"/>',
+    "chat": '<path d="M21 12a8 8 0 0 1-8 8H8l-5 3V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/><path d="M8 11h8"/><path d="M8 14h5"/>',
+    "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="M4.9 4.9l1.4 1.4"/><path d="M17.7 17.7l1.4 1.4"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="M4.9 19.1l1.4-1.4"/><path d="M17.7 6.3l1.4-1.4"/>',
+    "info": '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    "keyboard": '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01"/><path d="M10 10h.01"/><path d="M14 10h.01"/><path d="M18 10h.01"/><path d="M8 14h8"/>',
+    "terminal": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M12 15h5"/>',
+    "file": '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h6"/>',
+    "folder": '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+    "globe": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>',
+    "mail": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
+    "eye": '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+    "apps": '<rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/>',
+    "bulb": '<path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 1 4 12.7V17H8v-2.3A7 7 0 0 1 12 2z"/>',
+    "bolt": '<path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/>',
+    "minus": '<path d="M5 12h14"/>',
 }
 _ICON_CACHE = {}
 
@@ -115,7 +178,8 @@ def glyph_pixmap(name, color, size=20, dpr=2.0):
         c = color.name()
         body = GLYPHS[name].replace("{c}", c)
         svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 24 24" fill="none" stroke="%s" stroke-width="2" '
-               'stroke-linecap="round" stroke-linejoin="round">%s</svg>' % (px_size, px_size, c, body)).encode()
+               'stroke-linecap="round" stroke-linejoin="round" stroke-opacity="%.2f" fill-opacity="%.2f">%s</svg>'
+               % (px_size, px_size, c, color.alphaF(), color.alphaF(), body)).encode()
         img = QImage()
         if not img.loadFromData(svg, "svg"):     # no SVG plugin: draw a neutral dot so the button still has a target
             img = QImage(px_size, px_size, QImage.Format.Format_ARGB32_Premultiplied)
@@ -141,6 +205,25 @@ def glyph_icon(name, color, size=20):
     return ic
 
 
+def dot_pixmap(color, size=10, dpr=2.0):
+    """A filled circle (status dot)."""
+    key = ("dot", color.name(QColor.NameFormat.HexArgb), size, dpr)
+    if key not in _ICON_CACHE:
+        px = int(size * dpr)
+        img = QImage(px, px, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.transparent)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(color)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QRectF(1, 1, px - 2, px - 2))
+        p.end()
+        pm = QPixmap.fromImage(img)
+        pm.setDevicePixelRatio(dpr)
+        _ICON_CACHE[key] = pm
+    return _ICON_CACHE[key]
+
+
 # ----------------------------------------------------------------------------- palette-derived style
 def rgba(c, a):
     return "rgba(%d,%d,%d,%.2f)" % (c.red(), c.green(), c.blue(), a)
@@ -155,26 +238,32 @@ def build_style(pal):
     text, win, base, alt, hi, hit = (pal.color(r) for r in (QPalette.ColorRole.Text, QPalette.ColorRole.Window, QPalette.ColorRole.Base,
                                                              QPalette.ColorRole.AlternateBase, QPalette.ColorRole.Highlight, QPalette.ColorRole.HighlightedText))
     dark = is_dark(pal)
-    line = rgba(text, 0.10 if dark else 0.12)
-    hover = rgba(text, 0.07)
+    line = rgba(text, 0.12 if dark else 0.12)
+    hover = rgba(text, 0.06)
+    tint4 = rgba(text, 0.045)
+    tint8 = rgba(text, 0.08)
     card = base.name()
     muted = rgba(text, 0.62)
     return """
 QWidget { font-family: Inter, 'Noto Sans', sans-serif; font-size: 14px; color: %(text)s; }
 QMainWindow, QWidget#root { background: %(win)s; }
 QToolTip { background: %(alt)s; color: %(text)s; border: 1px solid %(line)s; border-radius: 8px; padding: 6px 10px; }
-QFrame#card { background: %(card)s; border: 1px solid %(line)s; border-radius: %(rcard)dpx; }
-QFrame#sidebar { background: %(card)s; border: 1px solid %(line)s; border-radius: %(rcard)dpx; }
+QFrame#card { background: transparent; border: none; }
+QFrame#sidebar { background: transparent; border: none; border-right: 1px solid %(line)s; }
 QFrame#header { background: transparent; border: none; }
+QFrame#hairline { background: %(line)s; border: none; max-height: 1px; min-height: 1px; }
 QLabel#title { font-size: 16px; font-weight: 600; }
 QLabel#subtitle, QLabel#muted, QLabel#groupHeader { color: %(muted)s; font-size: 12px; }
-QLabel#groupHeader { font-weight: 600; letter-spacing: 0.4px; padding: 10px 12px 4px 12px; }
-QLabel#rowTitle { font-size: 13.5px; font-weight: 500; }
-QLabel#rowSub { color: %(muted)s; font-size: 11.5px; }
-QLabel#greeting { font-size: 22px; font-weight: 600; }
+QLabel#groupHeader { font-weight: 500; letter-spacing: 0.3px; padding: 10px 12px 4px 12px; }
+QLabel#rowTitle { font-size: 14px; font-weight: 400; }
+QLabel#emptyTitle { font-size: 32px; font-weight: 600; }
+QLabel#colTitle { font-size: 18px; font-weight: 600; }
 QLabel#hint { color: %(muted)s; font-size: 13px; }
 QLabel#chipText { color: %(muted)s; font-size: 12.5px; }
 QLabel#offline { background: %(warnbg)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 8px 12px; }
+QLabel#toast { background: %(alt)s; color: %(text)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 9px 16px; font-size: 13.5px; }
+QLabel#emptyCard, QPushButton#emptyCard { background: %(tint4)s; border: none; border-radius: %(rsmall)dpx; padding: 12px 16px; font-size: 14px; text-align: left; color: %(text)s; }
+QPushButton#emptyCard:hover { background: %(tint8)s; }
 QToolButton#icon { background: transparent; border: none; border-radius: %(rctl)dpx; padding: 0; }
 QToolButton#icon:hover { background: %(hover)s; }
 QToolButton#icon:pressed { background: %(press)s; }
@@ -182,24 +271,43 @@ QToolButton#icon:checked { background: %(hisoft)s; }
 QToolButton#iconAccent { background: %(hi)s; border: none; border-radius: 18px; padding: 0; }
 QToolButton#iconAccent:hover { background: %(hihover)s; }
 QToolButton#iconAccent:disabled { background: %(hidim)s; }
+QToolButton#micBtn { background: transparent; border: 1px solid %(line)s; border-radius: 18px; padding: 0; }
+QToolButton#micBtn:hover { background: %(hover)s; }
+QToolButton#micBtn:disabled { border-color: %(tint4)s; }
 QToolButton#chip { background: %(alt)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 4px 10px 4px 8px; color: %(muted)s; font-size: 12.5px; }
 QToolButton#chip:hover { background: %(hover)s; }
 QToolButton#chip::menu-indicator { image: none; }
-QPushButton#newChat { background: %(alt)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 9px 14px; font-weight: 500; text-align: left; }
-QPushButton#newChat:hover { background: %(hover)s; }
+QToolButton#modeChip { background: transparent; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 5px 10px 5px 8px; color: %(text)s; font-size: 13px; }
+QToolButton#modeChip:hover { background: %(hover)s; }
+QToolButton#modeChip::menu-indicator { image: none; }
+QToolButton#providerChip { background: transparent; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 5px 12px 5px 8px; color: %(text)s; font-size: 13px; }
+QToolButton#providerChip:hover { background: %(hover)s; }
+QToolButton#sideItem { background: transparent; border: none; border-radius: %(rctl)dpx; padding: 0 12px; color: %(text)s; font-size: 14px; text-align: left; min-height: 48px; max-height: 48px; }
+QToolButton#sideItem:hover { background: %(hover)s; }
+QPushButton#newChatPill { background: %(hi)s; color: %(hit)s; border: none; border-radius: %(rctl)dpx; padding: 0 16px; font-weight: 600; font-size: 14px; text-align: left; min-height: 36px; max-height: 36px; }
+QPushButton#newChatPill:hover { background: %(hihover)s; }
 QPushButton#primary { background: %(hi)s; color: %(hit)s; border: none; border-radius: %(rctl)dpx; padding: 9px 18px; font-weight: 600; }
 QPushButton#primary:hover { background: %(hihover)s; }
+QPushButton#primary:disabled { background: %(hidim)s; color: %(hit)s; }
 QPushButton#ghost { background: transparent; color: %(text)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 9px 18px; }
 QPushButton#ghost:hover { background: %(hover)s; }
+QPushButton#pillFilled { background: %(hi)s; color: %(hit)s; border: none; border-radius: 18px; padding: 8px 20px; font-weight: 600; min-height: 20px; }
+QPushButton#pillFilled:hover { background: %(hihover)s; }
+QPushButton#pillOutline { background: transparent; color: %(text)s; border: 1px solid %(line)s; border-radius: 18px; padding: 8px 20px; min-height: 20px; }
+QPushButton#pillOutline:hover { background: %(hover)s; }
+QPushButton#check { background: %(alt)s; color: %(text)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 8px 16px; font-weight: 500; }
+QPushButton#check:hover { background: %(hover)s; }
+QPushButton#check:disabled { color: %(muted)s; }
 QLineEdit { background: %(alt)s; border: 1px solid %(line)s; border-radius: %(rfield)dpx; padding: 8px 12px; selection-background-color: %(hi)s; selection-color: %(hit)s; }
 QLineEdit:focus { border-color: %(hi)s; }
-QLineEdit#search { padding-left: 34px; }
+QLineEdit#search { padding-left: 34px; border-radius: %(rctl)dpx; background: %(tint4)s; }
 QFrame#composer { background: %(card)s; border: 1px solid %(line)s; border-radius: %(rpopup)dpx; }
 QFrame#composer[focused="true"] { border-color: %(hi)s; }
-QLineEdit#ask { background: transparent; border: none; font-size: 15px; padding: 8px 4px; }
+QPlainTextEdit#ask { background: transparent; border: none; font-size: 15px; padding: 2px 4px; selection-background-color: %(hi)s; selection-color: %(hit)s; }
+QPlainTextEdit#editBox { background: transparent; border: none; font-size: 15px; selection-background-color: %(hi)s; selection-color: %(hit)s; }
 QListWidget { background: transparent; border: none; outline: none; }
-QListWidget::item { border-radius: %(rctl)dpx; margin: 1px 6px; padding: 0; }
-QListWidget::item:selected { background: %(hisoft)s; }
+QListWidget::item { border-radius: %(rctl)dpx; margin: 2px 0; padding: 0; }
+QListWidget::item:selected { background: %(tint8)s; }
 QListWidget::item:hover:!selected { background: %(hover)s; }
 QListWidget::item:disabled { background: transparent; }
 QScrollArea { background: transparent; border: none; }
@@ -208,22 +316,26 @@ QScrollBar::handle:vertical { background: %(scroll)s; border-radius: 3px; min-he
 QScrollBar::handle:vertical:hover { background: %(scrollh)s; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-QFrame#userBubble { background: %(hi)s; border: 1px solid %(hi)s; border-radius: %(rcard)dpx; }
-QFrame#userBubble QLabel { color: %(hit)s; font-size: 14.5px; }
-QFrame#assistantBubble { background: %(card)s; border: 1px solid %(line)s; border-radius: %(rcard)dpx; }
+QFrame#userPill { background: %(tint8)s; border: none; border-radius: %(rpopup)dpx; }
+QFrame#userPill QLabel { font-size: 15px; }
+QFrame#editCard { background: %(tint8)s; border: none; border-radius: %(rpopup)dpx; }
+QFrame#assistantBubble { background: transparent; border: none; }
 QFrame#errorBubble { background: %(errbg)s; border: 1px solid %(line)s; border-radius: %(rcard)dpx; }
 QFrame#infoBubble { background: %(alt)s; border: 1px solid %(line)s; border-radius: %(rcard)dpx; }
 QFrame#questionBubble { background: %(hisoft)s; border: 1px solid %(line)s; border-radius: %(rcard)dpx; }
-QTextBrowser#md { background: transparent; border: none; font-size: 14.5px; selection-background-color: %(hi)s; selection-color: %(hit)s; }
-QFrame#steps { background: %(alt)s; border: 1px solid %(line)s; border-radius: %(rfield)dpx; }
-QLabel#stepLabel { font-size: 13px; }
+QTextBrowser#md { background: transparent; border: none; font-size: 15px; selection-background-color: %(hi)s; selection-color: %(hit)s; }
+QFrame#steps { background: transparent; border: none; border-left: 1px solid %(line)s; margin-left: 8px; }
+QLabel#stepTitle { font-size: 13.5px; font-weight: 500; }
+QLabel#stepTitle[done="true"] { font-weight: 400; }
+QLabel#narration { color: %(muted)s; font-size: 12.5px; font-style: italic; }
 QLabel#raw { font-family: 'JetBrains Mono', monospace; font-size: 12px; background: %(codebg)s; border-radius: 8px; padding: 6px 8px; color: %(text)s; }
 QTabWidget::pane { border: none; }
 QTabBar::tab { padding: 8px 16px; border-radius: %(rctl)dpx; margin-right: 6px; color: %(muted)s; background: transparent; }
 QTabBar::tab:selected { background: %(hisoft)s; color: %(text)s; font-weight: 600; }
-QComboBox { background: %(alt)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 6px 12px; }
-QComboBox::drop-down { border: none; width: 24px; }
-QComboBox QAbstractItemView { background: %(card)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; selection-background-color: %(hisoft)s; selection-color: %(text)s; padding: 4px; }
+QComboBox { background: %(alt)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 7px 12px; min-height: 22px; }
+QComboBox:focus { border-color: %(hi)s; }
+QComboBox::drop-down { border: none; width: 28px; }
+QComboBox QAbstractItemView { background: %(card)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; selection-background-color: %(hisoft)s; selection-color: %(text)s; padding: 4px; outline: none; }
 QMenu { background: %(card)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 6px; }
 QMenu::item { padding: 7px 26px 7px 12px; border-radius: 8px; }
 QMenu::item:selected { background: %(hisoft)s; }
@@ -232,10 +344,12 @@ QCheckBox { spacing: 8px; }
 QCheckBox::indicator { width: 18px; height: 18px; border-radius: 6px; border: 1.5px solid %(mutedline)s; background: %(alt)s; }
 QCheckBox::indicator:checked { background: %(hi)s; border-color: %(hi)s; }
 QLabel#riskBadge { border-radius: 9px; padding: 2px 8px; font-size: 11.5px; font-weight: 600; }
-""" % dict(text=text.name(), win=win.name(), card=card, alt=alt.name(), hi=hi.name(), hit=hit.name(), line=line, hover=hover, muted=muted,
+QLabel#sectionTitle { font-size: 12px; font-weight: 600; letter-spacing: 0.4px; color: %(muted)s; padding-top: 6px; }
+QLabel#checkResult { font-size: 13px; }
+""" % dict(text=text.name(), win=win.name(), card=card, alt=alt.name(), hi=hi.name(), hit=hit.name(), line=line, hover=hover, muted=muted, tint4=tint4, tint8=tint8,
            press=rgba(text, 0.12), hisoft=rgba(hi, 0.16 if dark else 0.14), hihover=hi.lighter(112).name() if dark else hi.darker(108).name(),
-           hidim=rgba(hi, 0.35), scroll=rgba(text, 0.18), scrollh=rgba(text, 0.30), errbg=rgba(QColor("#F0655D"), 0.14), warnbg=rgba(QColor("#E0A64B"), 0.16),
-           codebg=rgba(text, 0.08), mutedline=rgba(text, 0.35), rctl=R_CONTROL, rfield=R_FIELD, rcard=R_CARD, rpopup=R_POPUP)
+           hidim=rgba(hi, 0.35), scroll=rgba(text, 0.18), scrollh=rgba(text, 0.30), errbg=rgba(QColor(RED), 0.14), warnbg=rgba(QColor("#E0A64B"), 0.16),
+           codebg=rgba(text, 0.08), mutedline=rgba(text, 0.35), rctl=R_CONTROL, rfield=R_FIELD, rcard=R_CARD, rpopup=R_POPUP, rsmall=R_SMALL)
 
 
 def fade_in(widget, ms=260):
@@ -248,18 +362,58 @@ def fade_in(widget, ms=260):
     anim.setStartValue(0.0)
     anim.setEndValue(1.0)
     anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-    anim.finished.connect(lambda: widget.setGraphicsEffect(None))
+
+    def _done():
+        try:
+            widget.setGraphicsEffect(None)
+        except RuntimeError:               # the widget vanished before the fade ended (chat switched): nothing to do
+            pass
+    anim.finished.connect(_done)
     anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+
+
+def shake(widget, ms=420, amplitude=8):
+    """A horizontal shake (rejected key / failed check): QPropertyAnimation on pos, back to where the layout put it."""
+    start = widget.pos()
+    anim = QPropertyAnimation(widget, b"pos", widget)
+    anim.setDuration(ms)
+    anim.setKeyValueAt(0.0, start)
+    for i, k in enumerate((0.15, 0.3, 0.45, 0.6, 0.75, 0.9)):
+        anim.setKeyValueAt(k, start + QPoint(int(amplitude * (1 if i % 2 == 0 else -1) * (1 - k * 0.6)), 0))
+    anim.setKeyValueAt(1.0, start)
+    anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+    anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+    widget._shake_anim = anim
+    return anim
+
+
+def polish(widget):
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+
+
+def discard(widget):
+    """Remove a widget for good: hidden and out of its layout at once, deleted by Qt on the next event-loop pass. The parent
+    keeps ownership — never setParent(None) here: that hands a live C++ subtree to Python's garbage collector, which may
+    tear its wrappers down at any moment; a later palette / style-sheet pass then reaches a Python override on a wrapper
+    that is already gone, and PyQt aborts the whole app on that exception."""
+    widget.hide()
+    par = widget.parentWidget()
+    if par is not None and par.layout() is not None:
+        par.layout().removeWidget(widget)
+    widget.deleteLater()
 
 
 # ----------------------------------------------------------------------------- small widgets
 class IconButton(QToolButton):
-    """An action as an icon with a tooltip (no words). accent=True gives the round accent button (send / stop / allow)."""
+    """An action as an icon with a tooltip (no words). accent=True gives the round accent button (send / stop / allow).
+    dim=0.6 draws the icon at 60 % and 100 % on hover (the message action rows)."""
 
-    def __init__(self, glyph, tooltip, size=32, accent=False, icon_size=20, parent=None):
+    def __init__(self, glyph, tooltip, size=32, accent=False, icon_size=20, parent=None, dim=0.85, object_name=None):
         super().__init__(parent)
-        self.glyph, self.accent, self._icon_size = glyph, accent, icon_size
-        self.setObjectName("iconAccent" if accent else "icon")
+        self.glyph, self.accent, self._icon_size, self.dim = glyph, accent, icon_size, dim
+        self._hovered = False
+        self.setObjectName(object_name or ("iconAccent" if accent else "icon"))
         self.setToolTip(tooltip)
         self.setAutoRaise(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -281,13 +435,76 @@ class IconButton(QToolButton):
         col = pal.color(QPalette.ColorRole.HighlightedText) if self.accent else pal.color(QPalette.ColorRole.Text)
         if not self.accent:
             col = QColor(col)
-            col.setAlphaF(0.85)
+            col.setAlphaF(1.0 if (self._hovered or self.isChecked()) else self.dim)
         self.setIcon(glyph_icon(self.glyph, col, self._icon_size))
+
+    def enterEvent(self, e):
+        self._hovered = True
+        self.refresh_icon()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hovered = False
+        self.refresh_icon()
+        super().leaveEvent(e)
 
     def changeEvent(self, e):
         if e.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange):
             self.refresh_icon()
         super().changeEvent(e)
+
+
+class MicButton(IconButton):
+    """The composer microphone: an outlined circle; while listening an accent ring pulses outwards."""
+
+    def __init__(self, parent=None):
+        super().__init__("mic", "Speak your request", size=36, icon_size=18, parent=parent, object_name="micBtn")
+        self._pulse = 0.0
+        self.listening = False
+        self.anim = QVariantAnimation(self)
+        self.anim.setDuration(1100)
+        self.anim.setStartValue(0.0)
+        self.anim.setEndValue(1.0)
+        self.anim.setLoopCount(-1)
+        self.anim.valueChanged.connect(self._tick)
+
+    def _tick(self, v):
+        self._pulse = float(v)
+        self.update()
+
+    def set_listening(self, on):
+        self.listening = on
+        if on:
+            self.anim.start()
+        else:
+            self.anim.stop()
+            self._pulse = 0.0
+        self.set_glyph("waveform" if on else "mic", "Listening… click to stop" if on else "Speak your request")
+        self.update()
+
+    def paintEvent(self, e):
+        if self.listening:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            hi = QColor(self.palette().color(QPalette.ColorRole.Highlight))
+            r = self.rect().center()
+            for phase in (0.0, 0.5):
+                k = (self._pulse + phase) % 1.0
+                c = QColor(hi)
+                c.setAlphaF(0.55 * (1 - k))
+                pen = QPen(c)
+                pen.setWidthF(2.0)
+                p.setPen(pen)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                rad = 14 + 6 * k
+                p.drawEllipse(QPointF(r.x() + 0.5, r.y() + 0.5), rad, rad)
+            fill = QColor(hi)
+            fill.setAlphaF(0.16)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(fill)
+            p.drawEllipse(QPointF(r.x() + 0.5, r.y() + 0.5), 17.5, 17.5)
+            p.end()
+        super().paintEvent(e)
 
 
 class Switch(QCheckBox):
@@ -331,7 +548,6 @@ class Switch(QCheckBox):
         on = pal.color(QPalette.ColorRole.Highlight)
         off = QColor(pal.color(QPalette.ColorRole.Text))
         off.setAlphaF(0.28)
-        track = QColor(off)
         track = QColor(int(off.red() * (1 - self._pos) + on.red() * self._pos), int(off.green() * (1 - self._pos) + on.green() * self._pos),
                        int(off.blue() * (1 - self._pos) + on.blue() * self._pos), int(off.alpha() * (1 - self._pos) + 255 * self._pos))
         if not self.isEnabled():
@@ -389,6 +605,163 @@ class TypingIndicator(QWidget):
             r = 3.2 + 1.3 * k
             p.drawEllipse(QPointF(10 + i * 14, 12 - 2.5 * k), r, r)
         p.end()
+
+
+class ResultMark(QWidget):
+    """Animated status mark: 'busy' = a spinning arc; 'ok' = a circle that draws itself and then a check mark (green);
+    'fail' = the same circle then a cross (amber / red). The drawing progress is a Qt property animated over ~500 ms."""
+
+    def __init__(self, size=28, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.state = "idle"
+        self._progress = 0.0
+        self._spin = 0.0
+        self.color = QColor(GREEN)
+        self.anim = QPropertyAnimation(self, b"progress", self)
+        self.anim.setDuration(520)
+        self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.spinner = QTimer(self)
+        self.spinner.setInterval(30)
+        self.spinner.timeout.connect(self._tick)
+
+    def _get_progress(self):
+        return self._progress
+
+    def _set_progress(self, v):
+        self._progress = float(v)
+        self.update()
+
+    progress = pyqtProperty(float, fget=_get_progress, fset=_set_progress)
+
+    def _tick(self):
+        self._spin = (self._spin + 0.09) % (2 * math.pi)
+        self.update()
+
+    def set_state(self, state, animate=True, color=None):
+        """state: idle | busy | ok | fail | denied"""
+        if state == self.state and state in ("busy", "idle"):
+            return
+        self.state = state
+        self.color = QColor(color or {"ok": GREEN, "fail": AMBER, "denied": RED}.get(state, GREEN))
+        self.anim.stop()
+        if state == "busy":
+            self.spinner.start()
+            self._progress = 0.0
+        else:
+            self.spinner.stop()
+            if state in ("ok", "fail", "denied"):
+                if animate:
+                    self.anim.setStartValue(0.0)
+                    self.anim.setEndValue(1.0)
+                    self.anim.start()
+                else:
+                    self._progress = 1.0
+            else:
+                self._progress = 0.0
+        self.setToolTip({"ok": "Done", "fail": "Did not work", "denied": "Not allowed", "busy": "Working…"}.get(state, ""))
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        s = min(self.width(), self.height())
+        pad = 3
+        rect = QRectF(pad, pad, s - 2 * pad, s - 2 * pad)
+        pen = QPen()
+        pen.setWidthF(max(1.8, s / 13.0))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        if self.state == "busy":
+            hi = QColor(self.palette().color(QPalette.ColorRole.Highlight))
+            track = QColor(hi)
+            track.setAlphaF(0.18)
+            pen.setColor(track)
+            p.setPen(pen)
+            p.drawEllipse(rect)
+            pen.setColor(hi)
+            p.setPen(pen)
+            p.drawArc(rect, int(-math.degrees(self._spin) * 16), -110 * 16)
+        elif self.state in ("ok", "fail", "denied"):
+            k = self._progress
+            pen.setColor(self.color)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            arc = min(1.0, k / 0.62)                    # the circle draws during the first 62 % of the animation
+            p.drawArc(rect, 90 * 16, int(-360 * 16 * arc))
+            mark = max(0.0, (k - 0.55) / 0.45)          # the check / cross follows, overlapping slightly
+            if mark > 0:
+                if self.state == "ok":
+                    pts = [QPointF(rect.left() + rect.width() * 0.28, rect.top() + rect.height() * 0.53),
+                           QPointF(rect.left() + rect.width() * 0.44, rect.top() + rect.height() * 0.69),
+                           QPointF(rect.left() + rect.width() * 0.73, rect.top() + rect.height() * 0.36)]
+                    self._draw_polyline(p, pts, mark)
+                else:
+                    c = rect.center()
+                    d = rect.width() * 0.19
+                    self._draw_polyline(p, [QPointF(c.x() - d, c.y() - d), QPointF(c.x() + d, c.y() + d)], min(1.0, mark * 2))
+                    if mark > 0.5:
+                        self._draw_polyline(p, [QPointF(c.x() + d, c.y() - d), QPointF(c.x() - d, c.y() + d)], (mark - 0.5) * 2)
+        p.end()
+
+    @staticmethod
+    def _draw_polyline(p, pts, frac):
+        total = sum(math.hypot(pts[i + 1].x() - pts[i].x(), pts[i + 1].y() - pts[i].y()) for i in range(len(pts) - 1))
+        remaining = total * max(0.0, min(1.0, frac))
+        path = QPainterPath(pts[0])
+        for i in range(len(pts) - 1):
+            seg = math.hypot(pts[i + 1].x() - pts[i].x(), pts[i + 1].y() - pts[i].y())
+            if remaining >= seg:
+                path.lineTo(pts[i + 1])
+                remaining -= seg
+            else:
+                t = remaining / seg if seg else 0
+                path.lineTo(QPointF(pts[i].x() + (pts[i + 1].x() - pts[i].x()) * t, pts[i].y() + (pts[i + 1].y() - pts[i].y()) * t))
+                break
+        p.drawPath(path)
+
+
+class Toast(QLabel):
+    """A short message that fades in above the composer and fades out by itself ("I did not catch that.")."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("toast")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hide()
+        self.eff = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.eff)
+        self.eff.setOpacity(0.0)
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self._fade_out)
+        self.anim = None
+
+    def show_message(self, text, ms=2600):
+        self.setText(text)
+        self.adjustSize()
+        par = self.parentWidget()
+        if par:
+            self.move((par.width() - self.width()) // 2, par.height() - self.height() - 96)
+        self.show()
+        self.raise_()
+        self._animate(1.0)
+        self.timer.start(ms)
+
+    def _fade_out(self):
+        self._animate(0.0)
+
+    def _animate(self, to):
+        if self.anim:
+            self.anim.stop()
+        self.anim = QPropertyAnimation(self.eff, b"opacity", self)
+        self.anim.setDuration(220)
+        self.anim.setStartValue(self.eff.opacity())
+        self.anim.setEndValue(to)
+        self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        if to == 0.0:
+            self.anim.finished.connect(self.hide)
+        self.anim.start()
 
 
 class RoundedDialog(QDialog):
@@ -544,6 +917,18 @@ FRIENDLY = {"run_shell": "Ran a command", "read_file": "Read a file", "write_fil
             "open_app": "Opened an app", "type_text": "Typed into an app", "send_email": "Sent an email", "check_email": "Checked the inbox",
             "schedule_watch": "Set up a background watch", "web_fetch": "Read a web page", "notify_user": "Sent you a notification",
             "ask_user": "Asked you a question", "list_apps": "Looked up installed apps", "context": "Tidied earlier notes to fit the model's memory"}
+PENDING = {"run_shell": "run a command", "read_file": "read a file", "write_file": "write a file", "list_dir": "look inside a folder", "open_app": "open an app",
+           "type_text": "type into an app", "send_email": "send an email", "check_email": "check the inbox", "schedule_watch": "set up a background watch",
+           "web_fetch": "read a web page", "notify_user": "send you a notification", "ask_user": "ask you a question", "list_apps": "look up installed apps"}
+LIVE = {"run_shell": "Running a command", "read_file": "Reading a file", "write_file": "Writing a file", "list_dir": "Looking inside a folder", "open_app": "Opening an app",
+        "type_text": "Typing", "send_email": "Sending an email", "check_email": "Checking the inbox", "schedule_watch": "Setting up a background watch",
+        "web_fetch": "Reading a web page", "notify_user": "Sending you a notification", "ask_user": "Asking you a question", "list_apps": "Looking up installed apps",
+        "context": "Tidying earlier notes"}
+STEP_GLYPH = {"run_shell": "terminal", "type_text": "keyboard", "write_file": "file", "read_file": "file", "list_dir": "folder", "web_fetch": "globe", "send_email": "mail",
+              "check_email": "mail", "notify_user": "bell", "ask_user": "question", "schedule_watch": "eye", "list_apps": "apps", "open_app": "apps", "context": "tools"}
+APP_NAMES = {"kate": "Fab Editor", "dolphin": "Fab Files", "konsole": "Fab Terminal", "xdg-open": "the default app", "open": "the default app", "firefox": "Firefox",
+             "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos", "okular": "Fab Documents", "kcalc": "Fab Calculator",
+             "spectacle": "Fab Screenshot", "systemsettings": "Fab Settings"}
 
 
 def parse_input(raw):
@@ -554,31 +939,33 @@ def parse_input(raw):
         return {"raw": raw}
 
 
-PENDING = {"run_shell": "run a command", "read_file": "read a file", "write_file": "write a file", "list_dir": "look inside a folder", "open_app": "open an app",
-           "type_text": "type into an app", "send_email": "send an email", "check_email": "check the inbox", "schedule_watch": "set up a background watch",
-           "web_fetch": "read a web page", "notify_user": "send you a notification", "ask_user": "ask you a question", "list_apps": "look up installed apps"}
+def app_display(inp):
+    app = str(inp.get("app") or "").split("/")[-1]
+    return APP_NAMES.get(app, app or "an app")
 
 
-def friendly_label(step, pending=False):
-    """Plain-language description of a tool step. pending=True phrases it as an intention (approval dialogs)."""
+def friendly_label(step, pending=False, live=False):
+    """Plain-language description of a tool step. pending=True phrases it as an intention (approval dialogs); live=True as
+    what is happening right now (the action timeline while the step runs)."""
     name = step.get("name") or ""
     inp = parse_input(step.get("input"))
-    if pending:
-        label = PENDING.get(name, (name or "step").replace("_", " "))
+    if pending or live:
+        table = LIVE if live else PENDING
+        label = table.get(name, (name or "step").replace("_", " "))
         if name == "run_shell" and inp.get("as_root"):
-            label = "run a command as administrator"
+            label = "Running a command as administrator" if live else "run a command as administrator"
         elif name == "write_file" and inp.get("append"):
-            label = "add to a file"
+            label = "Adding to a file" if live else "add to a file"
         if name == "open_app" and inp.get("app"):
-            label = "open %s" % str(inp["app"]).split("/")[-1]
-        elif name in ("write_file", "read_file") and inp.get("path"):
+            label = ("Opening %s" if live else "open %s") % app_display(inp)
+        elif name in ("write_file", "read_file", "list_dir") and inp.get("path"):
             label += " (%s)" % os.path.basename(str(inp["path"]).rstrip("/"))
         elif name == "send_email" and inp.get("to"):
-            label = "send an email to %s" % inp["to"]
+            label = ("Sending an email to %s" if live else "send an email to %s") % inp["to"]
         elif name == "web_fetch" and inp.get("url"):
             host = urllib.parse.urlparse(str(inp["url"])).netloc
             if host:
-                label = "read a page on %s" % host
+                label = ("Reading a page on %s" if live else "read a page on %s") % host
         return label
     label = FRIENDLY.get(name, (name or "step").replace("_", " ").capitalize())
     if name == "run_shell" and inp.get("as_root"):
@@ -586,8 +973,8 @@ def friendly_label(step, pending=False):
     elif name == "write_file" and inp.get("append"):
         label = "Added to a file"
     if name == "open_app" and inp.get("app"):
-        label = "Opened %s" % str(inp["app"]).split("/")[-1]
-    elif name in ("write_file", "read_file") and inp.get("path"):
+        label = "Opened %s" % app_display(inp)
+    elif name in ("write_file", "read_file", "list_dir") and inp.get("path"):
         label += " (%s)" % os.path.basename(str(inp["path"]).rstrip("/"))
     elif name == "send_email" and inp.get("to"):
         label = "Sent an email to %s" % inp["to"]
@@ -600,11 +987,24 @@ def friendly_label(step, pending=False):
         label += " — denied"
     elif d == "expired":
         label += " — approval expired"
-    else:
-        out = step.get("output") or ""
-        if out[:12].lstrip().startswith('{"error"'):
-            label += " — failed"
+    elif step_failed(step):
+        label += " — failed"
     return label
+
+
+def step_failed(step):
+    out = step.get("output") or ""
+    return out[:12].lstrip().startswith('{"error"')
+
+
+def step_state(step):
+    """busy | ok | fail | denied for a tool step from its recorded output / decision."""
+    d = step.get("decision") or ""
+    if d in ("denied", "expired"):
+        return "denied"
+    if not (step.get("output") or "").strip():
+        return "busy"
+    return "fail" if step_failed(step) else "ok"
 
 
 def step_input_summary(name, raw):
@@ -637,6 +1037,17 @@ def step_output_summary(raw):
     return json.dumps(out)
 
 
+def step_icon(step, color, size=20):
+    """Per-tool icon: the launched app's own theme icon for open_app (falls back to the apps glyph), Material-style glyphs otherwise."""
+    name = step.get("name") or ""
+    if name == "open_app":
+        inp = parse_input(step.get("input"))
+        app = str(inp.get("app") or "").split("/")[-1]
+        if app and app not in ("xdg-open", "open") and QIcon.hasThemeIcon(app):
+            return QIcon.fromTheme(app).pixmap(size, size)
+    return glyph_pixmap(STEP_GLYPH.get(name, "tools"), color, size)
+
+
 # ----------------------------------------------------------------------------- chat pieces
 class MarkdownView(QTextBrowser):
     """Markdown rendered by Qt, height follows the content through heightForWidth (like a word-wrapping QLabel, so the
@@ -656,8 +1067,8 @@ class MarkdownView(QTextBrowser):
         self.setSizePolicy(sp)
         self.document().setDocumentMargin(0)
         self._md = ""
-        self._ideal = 200           # natural single-line width of the text: short answers get a bubble that hugs them
-        self.max_w = 640            # widest the bubble may grow (set by the conversation view from its width)
+        self._ideal = 200           # natural single-line width of the text: short answers hug their text
+        self.max_w = 640            # widest the text may grow (set by the conversation view from its width)
 
     def set_markdown(self, text):
         if text == self._md:
@@ -675,7 +1086,6 @@ class MarkdownView(QTextBrowser):
             self.max_w = max(80, w)
             self.updateGeometry()
 
-    # --- geometry: the layout asks how tall we are for a given width
     def hasHeightForWidth(self):
         return True
 
@@ -697,6 +1107,7 @@ class MarkdownView(QTextBrowser):
         return self._md
 
     def _style_code(self, doc):
+        doc = self.document()                  # always the live document (a cached handle may be stale after a re-parent)
         pal = self.palette()
         tint = QColor(pal.color(QPalette.ColorRole.Text))
         tint.setAlphaF(0.08)
@@ -738,7 +1149,7 @@ class MarkdownView(QTextBrowser):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         w = max(40, self.viewport().width())
-        if int(self.document().textWidth()) != w:       # paint at the width the layout finally gave us
+        if int(self.document().textWidth()) != w:
             self.document().setTextWidth(w)
 
     def wheelEvent(self, e):
@@ -747,18 +1158,94 @@ class MarkdownView(QTextBrowser):
     def changeEvent(self, e):
         if e.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange) and self._md:
             md, self._md = self._md, None
-            self.set_markdown(md)
-        super().changeEvent(e)
+            try:
+                self.set_markdown(md)          # re-tint code blocks for the new scheme
+            except RuntimeError:               # the document is already gone (widget being torn down): nothing to restyle;
+                self._md = md                  # an exception must never escape a Qt event handler (PyQt aborts the app)
+        try:
+            super().changeEvent(e)
+        except RuntimeError:                   # same guard for the base call (see discard())
+            pass
 
 
-class Bubble(QWidget):
-    """One message: a rounded bubble (user = accent/right, assistant = surface/left) with hover action icons underneath."""
+class GrowingTextEdit(QPlainTextEdit):
+    """The composer's text box: grows from one to six lines; Enter sends, Shift+Enter inserts a newline, Escape cancels."""
+    submitted = pyqtSignal()
+    escaped = pyqtSignal()
+    focus_changed = pyqtSignal(bool)
+
+    def __init__(self, object_name="ask", parent=None):
+        super().__init__(parent)
+        self.setObjectName(object_name)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setTabChangesFocus(True)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.document().setDocumentMargin(2)
+        self.viewport().setAutoFillBackground(False)
+        self.textChanged.connect(self._fit)
+        self.max_lines = 6
+        self._fit()
+
+    def _fit(self):
+        fm = QFontMetrics(self.font())
+        line_h = fm.lineSpacing()
+        lines = max(1, min(self.max_lines, int(math.ceil(self.document().size().height()))))
+        h = int(lines * line_h) + 10
+        if self.maximumHeight() != h:
+            self.setFixedHeight(h)
+
+    def text(self):
+        return self.toPlainText()
+
+    def setText(self, t):
+        self.setPlainText(t)
+        self.setCursorPosition(len(t))
+
+    def setCursorPosition(self, n):
+        c = self.textCursor()
+        c.setPosition(min(n, len(self.toPlainText())))
+        self.setTextCursor(c)
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.insertPlainText("\n")
+            else:
+                self.submitted.emit()
+            return
+        if e.key() == Qt.Key.Key_Escape:
+            self.escaped.emit()
+            return
+        super().keyPressEvent(e)
+
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        self.focus_changed.emit(True)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.focus_changed.emit(False)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+
+
+class Message(QWidget):
+    """One message. role 'user' = a right-aligned pill (radius 24, 8 % tint) with edit / retry on hover;
+    'assistant' = plain text on the left (no bubble) with the action row: copy · good · bad · speak · edit · retry;
+    error / info / question = a soft tinted card."""
     edit_requested = pyqtSignal()
     retry_requested = pyqtSignal()
+    speak_requested = pyqtSignal(str)
+    feedback = pyqtSignal(str)
 
     def __init__(self, role, parent=None):
         super().__init__(parent)
         self.role = role
+        self.rating = None
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -767,14 +1254,14 @@ class Bubble(QWidget):
         row.setSpacing(10)
         row.setContentsMargins(0, 0, 0, 0)
         self.frame = QFrame()
-        self.frame.setObjectName({"user": "userBubble", "assistant": "assistantBubble", "error": "errorBubble", "info": "infoBubble", "question": "questionBubble"}[role])
+        self.frame.setObjectName({"user": "userPill", "assistant": "assistantBubble", "error": "errorBubble", "info": "infoBubble", "question": "questionBubble"}[role])
         fl = QHBoxLayout(self.frame)
-        fl.setContentsMargins(SP2, 10, SP2, 10)
+        fl.setContentsMargins(*((SP3, 12, SP3, 12) if role == "user" else ((0, 4, 0, 4) if role == "assistant" else (SP2, 10, SP2, 10))))
         fl.setSpacing(10)
         self.avatar = None
         if role != "user":
             self.avatar = QLabel()
-            self.avatar.setFixedSize(20, 20)
+            self.avatar.setFixedSize(22, 22)
             self.avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
             fl.addWidget(self.avatar, 0, Qt.AlignmentFlag.AlignTop)
         if role == "user":
@@ -793,38 +1280,42 @@ class Bubble(QWidget):
             row.addStretch(1)
             row.addWidget(self.frame, 0)
         else:
-            row.addWidget(self.frame, 0)
-            row.addStretch(1)
+            row.addWidget(self.frame, 1)
         outer.addLayout(row)
-        # actions under the bubble, visible on hover only (space is kept so nothing jumps)
         self.actions = QHBoxLayout()
-        self.actions.setSpacing(0)
-        self.actions.setContentsMargins(6 if role != "user" else 0, 0, 6, 0)
+        self.actions.setSpacing(2)
+        self.actions.setContentsMargins(30 if role != "user" else 0, 0, 4, 0)
         self.action_buttons = []
+        self.buttons = {}
         if role == "user":
             self.actions.addStretch(1)
             self._add_action("edit", "Edit and resend", self.edit_requested.emit)
             self._add_action("retry", "Retry this request", self.retry_requested.emit)
         elif role == "assistant":
             self._add_action("copy", "Copy text", self.copy_text)
-            self._add_action("retry", "Retry this request", self.retry_requested.emit)
+            self._add_action("thumb-up", "Good answer", lambda: self.rate("good"))
+            self._add_action("thumb-down", "Not a good answer", lambda: self.rate("bad"))
+            self._add_action("speaker", "Read this aloud", lambda: self.speak_requested.emit(self.text()))
+            self._add_action("edit", "Edit the request that led to this", self.edit_requested.emit)
+            self._add_action("retry", "Try again", self.retry_requested.emit)
             self.actions.addStretch(1)
         outer.addLayout(self.actions)
         self._hover(False)
         self.refresh_avatar()
 
     def _add_action(self, glyph, tip, fn):
-        b = IconButton(glyph, tip, size=24, icon_size=14)
+        b = IconButton(glyph, tip, size=28, icon_size=20, dim=0.6)
         sp = b.sizePolicy()
         sp.setRetainSizeWhenHidden(True)
         b.setSizePolicy(sp)
         b.clicked.connect(fn)
         self.actions.addWidget(b)
         self.action_buttons.append(b)
+        self.buttons[glyph] = b
 
     def _hover(self, on):
         for b in self.action_buttons:
-            b.setVisible(on)
+            b.setVisible(on or (self.role == "assistant" and (b.isChecked() or b.glyph == "speaker" and b.isChecked())))
 
     def enterEvent(self, e):
         self._hover(True)
@@ -833,6 +1324,23 @@ class Bubble(QWidget):
     def leaveEvent(self, e):
         self._hover(False)
         super().leaveEvent(e)
+
+    def rate(self, rating):
+        self.rating = None if self.rating == rating else rating
+        for g in ("thumb-up", "thumb-down"):
+            b = self.buttons[g]
+            b.setCheckable(True)
+            b.setChecked(self.rating == {"thumb-up": "good", "thumb-down": "bad"}[g])
+            b.refresh_icon()
+        self.feedback.emit(self.rating or "none")
+
+    def set_speaking(self, on):
+        b = self.buttons.get("speaker")
+        if b:
+            b.setCheckable(True)
+            b.setChecked(on)
+            b.set_glyph("stop" if on else "speaker", "Stop reading" if on else "Read this aloud")
+            b.setVisible(on or self.underMouse())
 
     def refresh_avatar(self):
         if self.avatar is not None:
@@ -855,9 +1363,9 @@ class Bubble(QWidget):
         if self.role == "user":
             self.frame.setMaximumWidth(max(160, w))
         else:
-            wide = max(240, int(w * 1.2))            # the agent may use more of the row than the user's 72 %
+            wide = max(240, int(w * 1.38))            # the agent's text uses most of the row; the user's pill ~70 %
             self.frame.setMaximumWidth(wide)
-            self.md.set_max_width(wide - (SP2 * 2 + 20 + 10 + 2))
+            self.md.set_max_width(wide - (22 + 10 + 6))
 
     def copy_text(self):
         QGuiApplication.clipboard().setText(self.text())
@@ -868,8 +1376,177 @@ class Bubble(QWidget):
         super().changeEvent(e)
 
 
-class WorkedChip(QWidget):
-    """'Worked: N actions' — collapsed by default; expands to friendly labels (and raw input/output when ui.show_raw is on)."""
+Bubble = Message      # historical name
+
+
+class EditCard(QFrame):
+    """Edit-message state (design brief): the user's text inside a rounded card with Cancel (outlined) / Send (filled) pills."""
+    cancelled = pyqtSignal()
+    submitted = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("editCard")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(SP3, SP2, SP2, SP)
+        v.setSpacing(10)
+        self.editor = GrowingTextEdit("editBox")
+        self.editor.max_lines = 10
+        self.editor.submitted.connect(self._send)
+        self.editor.escaped.connect(self.cancelled.emit)
+        v.addWidget(self.editor)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addStretch(1)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("pillOutline")
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.clicked.connect(self.cancelled.emit)
+        self.send_btn = QPushButton("Send")
+        self.send_btn.setObjectName("pillFilled")
+        self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.send_btn.clicked.connect(self._send)
+        row.addWidget(self.cancel_btn)
+        row.addWidget(self.send_btn)
+        v.addLayout(row)
+
+    def _send(self):
+        t = self.editor.text().strip()
+        if t:
+            self.submitted.emit(t)
+
+    def start(self, text):
+        self.editor.setText(text)
+        self.show()
+        self.editor.setFocus()
+
+    def text(self):
+        return self.editor.text()
+
+
+class StepRow(QWidget):
+    """One row of the live action timeline: tool icon (with the connector line to the next row), title, the agent's
+    narration in italics, and a status mark (spinner → animated check / cross). Updated in place; never rebuilt."""
+
+    def __init__(self, step, show_raw, parent=None):
+        super().__init__(parent)
+        self.step = dict(step)
+        self.show_raw = show_raw
+        self.state = None
+        self.has_next = False
+        self._typed = 0
+        self._full_text = ""
+        self.typewriter = QTimer(self)
+        self.typewriter.setInterval(TYPEWRITER_MS)
+        self.typewriter.timeout.connect(self._type_tick)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 4, 0, 4)
+        h.setSpacing(12)
+        self.icon = QLabel()
+        self.icon.setFixedSize(24, 24)
+        self.icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        col.setContentsMargins(0, 2, 0, 0)
+        self.title = QLabel()
+        self.title.setObjectName("stepTitle")
+        self.title.setWordWrap(True)
+        self.title.setTextFormat(Qt.TextFormat.PlainText)
+        col.addWidget(self.title)
+        self.narration = QLabel()
+        self.narration.setObjectName("narration")
+        self.narration.setWordWrap(True)
+        self.narration.hide()
+        col.addWidget(self.narration)
+        self.raw = QLabel()
+        self.raw.setObjectName("raw")
+        self.raw.setWordWrap(True)
+        self.raw.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.raw.hide()
+        col.addWidget(self.raw)
+        h.addLayout(col, 1)
+        self.mark = ResultMark(20)
+        h.addWidget(self.mark, 0, Qt.AlignmentFlag.AlignTop)
+        self.refresh_icon()
+        self.update_step(step, show_raw, first=True)
+
+    def refresh_icon(self):
+        col = QColor(self.palette().color(QPalette.ColorRole.Text))
+        col.setAlphaF(0.85)
+        self.icon.setPixmap(step_icon(self.step, col, 20))
+
+    def update_step(self, step, show_raw, first=False):
+        changed = first or any(step.get(k) != self.step.get(k) for k in ("output", "decision", "narration", "narration_done")) or show_raw != self.show_raw
+        self.step, self.show_raw = dict(step), show_raw
+        if not changed:
+            return
+        state = step_state(step) if step.get("kind") == "tool_call" else "ok"
+        name = step.get("name") or ""
+        inp = parse_input(step.get("input"))
+        if name == "type_text" and inp.get("text"):
+            self._full_text = str(inp["text"])[:160] + ("…" if len(str(inp["text"])) > 160 else "")
+            if first and state == "busy":
+                self._typed = 0
+                self.typewriter.start()
+                self._render_typed()
+            elif not self.typewriter.isActive():
+                self._typed = len(self._full_text)
+                self._render_typed()
+        else:
+            self.title.setText(friendly_label(step, live=(state == "busy")))
+        self.title.setProperty("done", state != "busy")
+        polish(self.title)
+        line = step.get("narration_done") if state in ("ok", "fail", "denied") and step.get("narration_done") else step.get("narration")
+        self.narration.setText(line or "")
+        self.narration.setVisible(bool(line))
+        if show_raw and step.get("kind") == "tool_call":
+            raw = step_input_summary(name, step.get("input"))
+            out = step_output_summary(step.get("output"))
+            txt = raw + (("\n→ " + out) if out else "")
+            self.raw.setText(txt[:1500] + (" …" if len(txt) > 1500 else ""))
+            self.raw.show()
+        else:
+            self.raw.hide()
+        if state != self.state:
+            animate = not first or state == "busy"
+            self.mark.set_state(state, animate=animate)
+            self.state = state
+
+    def _type_tick(self):
+        self._typed += 1
+        if self._typed >= len(self._full_text):
+            self._typed = len(self._full_text)
+            self.typewriter.stop()
+        self._render_typed()
+
+    def _render_typed(self):
+        shown = self._full_text[:self._typed]
+        cursor = "▏" if self.typewriter.isActive() else ""
+        self.title.setText("Typing: “%s%s”" % (shown, cursor) if self._full_text else "Typing")
+
+    def paintEvent(self, e):
+        if self.has_next:
+            p = QPainter(self)
+            c = QColor(self.palette().color(QPalette.ColorRole.Text))
+            c.setAlphaF(0.14)
+            pen = QPen(c)
+            pen.setWidthF(2)
+            p.setPen(pen)
+            x = 12
+            p.drawLine(x, 4 + 24 + 2, x, self.height())
+            p.end()
+        super().paintEvent(e)
+
+    def changeEvent(self, e):
+        if e.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange):
+            self.refresh_icon()
+        super().changeEvent(e)
+
+
+class ActionFeed(QWidget):
+    """'Worked: N actions' — the live action timeline. Opens by itself while the task runs; rows are appended as steps
+    arrive and updated in place (spinner → check / cross, narration line), never rebuilt; collapses on request."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -890,14 +1567,15 @@ class WorkedChip(QWidget):
         lay.addLayout(head)
         self.panel = QFrame()
         self.panel.setObjectName("steps")
-        self.rows = QVBoxLayout(self.panel)
-        self.rows.setContentsMargins(SP, 10, SP, 10)
-        self.rows.setSpacing(6)
+        self.rows_layout = QVBoxLayout(self.panel)
+        self.rows_layout.setContentsMargins(SP, 6, SP, 6)
+        self.rows_layout.setSpacing(0)
         self.panel.hide()
         lay.addWidget(self.panel)
-        self.step_ids = []
+        self.rows = {}              # step id -> StepRow
+        self.order = []
         self.show_raw = False
-        self.steps = []
+        self._auto_opened = False
         self._refresh_icon()
 
     def _refresh_icon(self):
@@ -909,49 +1587,39 @@ class WorkedChip(QWidget):
         self.panel.setVisible(on)
         self._refresh_icon()
 
-    def set_steps(self, steps, show_raw):
+    def set_steps(self, steps, show_raw, live=False):
         n = len(steps)
-        text = "Worked: %d action%s" % (n, "" if n == 1 else "s")
+        text = ("Working: %d action%s" if live else "Worked: %d action%s") % (n, "" if n == 1 else "s")
         if self.button.text() != text:
             self.button.setText(text)
+        if live and not self._auto_opened:
+            self._auto_opened = True
+            self.button.setChecked(True)
+        raw_changed = show_raw != self.show_raw
+        self.show_raw = show_raw
         ids = [s["id"] for s in steps]
-        changed = ids != self.step_ids or show_raw != self.show_raw or any(a.get("output") != b.get("output") or a.get("decision") != b.get("decision") for a, b in zip(steps, self.steps))
-        self.steps, self.step_ids, self.show_raw = [dict(s) for s in steps], ids, show_raw
-        if not changed:
-            return
-        self.setUpdatesEnabled(False)
-        while self.rows.count():
-            it = self.rows.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        # append only: new steps go to the end; existing rows are updated in place; a vanished step (deleted task) is dropped
+        for sid in list(self.rows):
+            if sid not in ids:
+                w = self.rows.pop(sid)
+                self.order.remove(sid)
+                discard(w)
         for s in steps:
-            self.rows.addWidget(self._row(s, show_raw))
-        self.setUpdatesEnabled(True)
-
-    def _row(self, s, show_raw):
-        w = QWidget()
-        v = QVBoxLayout(w)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(4)
-        risk = s.get("risk") or ""
-        dot = '<span style="color:%s">●</span> ' % RISK_COLORS.get(risk, "#9AA4B2") if risk else ""
-        lab = QLabel(dot + friendly_label(s) + (' <span style="opacity:0.6;font-size:11px">· %s risk</span>' % risk.lower() if risk else ""))
-        lab.setObjectName("stepLabel")
-        lab.setTextFormat(Qt.TextFormat.RichText)
-        lab.setWordWrap(True)
-        v.addWidget(lab)
-        if show_raw and s.get("kind") == "tool_call":
-            raw = step_input_summary(s.get("name"), s.get("input"))
-            out = step_output_summary(s.get("output"))
-            txt = raw + (("\n→ " + out) if out else "")
-            if len(txt) > 1500:
-                txt = txt[:1500] + " …"
-            r = QLabel(txt)
-            r.setObjectName("raw")
-            r.setWordWrap(True)
-            r.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            v.addWidget(r)
-        return w
+            row = self.rows.get(s["id"])
+            if row is None:
+                row = StepRow(s, show_raw)
+                self.rows[s["id"]] = row
+                self.order.append(s["id"])
+                self.rows_layout.addWidget(row)
+                if live:
+                    fade_in(row, 200)
+            else:
+                row.update_step(s, show_raw)
+        for i, sid in enumerate(self.order):
+            nxt = i < len(self.order) - 1
+            if self.rows[sid].has_next != nxt:
+                self.rows[sid].has_next = nxt
+                self.rows[sid].update()
 
     def changeEvent(self, e):
         if e.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange):
@@ -959,10 +1627,18 @@ class WorkedChip(QWidget):
         super().changeEvent(e)
 
 
+WorkedChip = ActionFeed     # historical name
+
+
 class Turn(QWidget):
-    """One task of the chat: the request bubble, the folded actions chip, the agent's messages, and its live status."""
+    """One task of the chat: the request pill (or its edit card), the live action timeline, the agent's messages, status."""
     edit_requested = pyqtSignal(int, str)
+    edit_submitted = pyqtSignal(int, str)
+    edit_cancelled = pyqtSignal(int)
     retry_requested = pyqtSignal(int)
+    stop_requested = pyqtSignal(int)
+    speak_requested = pyqtSignal(str)
+    feedback = pyqtSignal(int, str)
 
     def __init__(self, task_id, parent=None):
         super().__init__(parent)
@@ -970,18 +1646,23 @@ class Turn(QWidget):
         self.task = None
         self.lay = QVBoxLayout(self)
         self.lay.setContentsMargins(0, 0, 0, 0)
-        self.lay.setSpacing(6)
-        self.user = Bubble("user")
-        self.user.edit_requested.connect(lambda: self.edit_requested.emit(self.task_id, user_text((self.task or {}).get("request"))))
+        self.lay.setSpacing(8)
+        self.user = Message("user")
+        self.user.edit_requested.connect(self.begin_edit)
         self.user.retry_requested.connect(lambda: self.retry_requested.emit(self.task_id))
         self.lay.addWidget(self.user)
-        self.chip = WorkedChip()
+        self.edit_card = EditCard()
+        self.edit_card.hide()
+        self.edit_card.cancelled.connect(self.cancel_edit)
+        self.edit_card.submitted.connect(lambda t: self.edit_submitted.emit(self.task_id, t))
+        self.lay.addWidget(self.edit_card)
+        self.chip = ActionFeed()
         self.chip.hide()
         self.lay.addWidget(self.chip)
-        self.step_widgets = {}          # step id -> Bubble
-        self.order = []                 # step ids in display order
+        self.step_widgets = {}          # step id -> Message
+        self.order = []
         self.status_row = QHBoxLayout()
-        self.status_row.setContentsMargins(6, 0, 0, 0)
+        self.status_row.setContentsMargins(30, 0, 0, 0)
         self.status_row.setSpacing(8)
         self.typing = TypingIndicator()
         self.typing.hide()
@@ -990,9 +1671,14 @@ class Turn(QWidget):
         self.status_label.setObjectName("chipText")
         self.status_label.hide()
         self.status_row.addWidget(self.status_label, 0)
+        self.stop_btn = IconButton("stop", "Stop this task", size=26, icon_size=14)
+        self.stop_btn.clicked.connect(lambda: self.stop_requested.emit(self.task_id))
+        self.stop_btn.hide()
+        self.status_row.addWidget(self.stop_btn, 0)
         self.status_row.addStretch(1)
         self.lay.addLayout(self.status_row)
         self.max_w = 520
+        self.editing = False
 
     def set_max_width(self, w):
         self.max_w = w
@@ -1000,17 +1686,32 @@ class Turn(QWidget):
         for b in self.step_widgets.values():
             b.set_max_width(w)
 
-    def _bubble(self, step, animate):
+    def begin_edit(self):
+        self.editing = True
+        self.user.hide()
+        self.edit_card.start(user_text((self.task or {}).get("request")))
+        self.edit_requested.emit(self.task_id, self.edit_card.text())
+
+    def cancel_edit(self):
+        was = self.editing
+        self.editing = False
+        self.edit_card.hide()
+        self.user.show()
+        if was:
+            self.edit_cancelled.emit(self.task_id)
+
+    def _message(self, step, animate):
         sid = step["id"]
         b = self.step_widgets.get(sid)
         if b is None:
             kind = step["kind"]
             role = {"assistant": "assistant", "final": "assistant", "error": "error", "question": "question", "answer": "user", "watch_hit": "info"}.get(kind, "info")
-            b = Bubble(role)
+            b = Message(role)
             b.set_max_width(self.max_w)
-            if role == "user":
-                b.edit_requested.connect(lambda: self.edit_requested.emit(self.task_id, user_text((self.task or {}).get("request"))))
+            b.edit_requested.connect(self.begin_edit)
             b.retry_requested.connect(lambda: self.retry_requested.emit(self.task_id))
+            b.speak_requested.connect(self.speak_requested.emit)
+            b.feedback.connect(lambda r: self.feedback.emit(self.task_id, r))
             self.step_widgets[sid] = b
             self.order.append(sid)
             self.lay.insertWidget(self.lay.count() - 1, b)      # before the status row
@@ -1028,16 +1729,17 @@ class Turn(QWidget):
             eff = QGraphicsOpacityEffect(self.user.frame)
             eff.setOpacity(0.45)
             self.user.frame.setGraphicsEffect(eff)
+        st = task.get("status")
+        live = st in ("queued", "running", "waiting_approval", "waiting_user")
         steps = task.get("steps") or []
         tools = [s for s in steps if s["kind"] in ("tool_call", "compact")]
         if tools:
-            self.chip.set_steps(tools, show_raw)
+            self.chip.set_steps(tools, show_raw, live=live)
             if self.chip.isHidden():
                 self.chip.show()
         else:
             self.chip.hide()
         texts = [s for s in steps if s["kind"] in ("assistant", "final", "error", "question", "answer", "watch_hit")]
-        # the final step repeats the last assistant text: show one bubble, not two
         shown = []
         last_text = None
         for s in texts:
@@ -1050,27 +1752,23 @@ class Turn(QWidget):
         seen = set()
         for s in shown:
             seen.add(s["id"])
-            b = self._bubble(s, animate and not first)
+            b = self._message(s, animate and not first)
             if s["kind"] == "question":
                 body = s.get("output") or s.get("input") or ""
-                pending = task.get("status") == "waiting_user"
-                b.set_text(body + ("\n\n*Answer in the box below.*" if pending else ""))
+                b.set_text(body + ("\n\n*Answer in the box below.*" if st == "waiting_user" else ""))
             elif s["kind"] == "watch_hit":
                 b.set_text("**Background watch fired** (%s)\n\n%s" % (s.get("name") or "watch", step_output_summary(s.get("output"))[:800]))
             elif s["kind"] == "error":
                 b.set_text("**Something went wrong**\n\n" + (s.get("output") or s.get("input") or ""))
-            elif s["kind"] == "answer":
-                b.set_text(s.get("output") or "")
             else:
                 b.set_text(s.get("output") or "")
         for sid in list(self.step_widgets):
             if sid not in seen:
                 w = self.step_widgets.pop(sid)
                 self.order.remove(sid)
-                w.setParent(None)
-                w.deleteLater()
-        st = task.get("status")
+                discard(w)
         self.typing.setVisible(st in ("queued", "running"))
+        self.stop_btn.setVisible(st in ("queued", "running", "waiting_approval"))
         label = {"queued": "Queued…", "waiting_approval": "Waiting for your approval", "waiting_user": "Waiting for your answer"}.get(st, "")
         if st == "cancelled":
             label = "Stopped"
@@ -1079,11 +1777,26 @@ class Turn(QWidget):
         self.status_label.setText(label)
         self.status_label.setVisible(bool(label))
 
+    def last_assistant_text(self):
+        for sid in reversed(self.order):
+            b = self.step_widgets.get(sid)
+            if b is not None and b.role == "assistant":
+                return b.text()
+        return ""
+
+    def assistant_messages(self):
+        return [self.step_widgets[s] for s in self.order if self.step_widgets[s].role == "assistant"]
+
 
 class ConversationView(QScrollArea):
     """The chat body. Updates turns in place; keeps the user's scroll position unless they were at the bottom."""
     edit_requested = pyqtSignal(int, str)
+    edit_submitted = pyqtSignal(int, str)
+    edit_cancelled = pyqtSignal(int)
     retry_requested = pyqtSignal(int)
+    stop_requested = pyqtSignal(int)
+    speak_requested = pyqtSignal(str)
+    feedback = pyqtSignal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1094,7 +1807,7 @@ class ConversationView(QScrollArea):
         self.container.setObjectName("chatBody")
         self.vl = QVBoxLayout(self.container)
         self.vl.setContentsMargins(SP2 + 8, SP2, SP2 + 8, SP2)
-        self.vl.setSpacing(SP2 + 4)
+        self.vl.setSpacing(SP3)
         self.vl.addStretch(1)
         self.setWidget(self.container)
         self.turns = {}
@@ -1123,8 +1836,7 @@ class ConversationView(QScrollArea):
     def clear(self):
         self.setUpdatesEnabled(False)
         for t in self.turns.values():
-            t.setParent(None)
-            t.deleteLater()
+            discard(t)
         self.turns = {}
         self.stick = True
         self.setUpdatesEnabled(True)
@@ -1140,15 +1852,19 @@ class ConversationView(QScrollArea):
             for tid in list(self.turns):
                 if tid not in ids:
                     w = self.turns.pop(tid)
-                    w.setParent(None)
-                    w.deleteLater()
+                    discard(w)
             for i, t in enumerate(tasks):
                 turn = self.turns.get(t["id"])
                 if turn is None:
                     turn = Turn(t["id"])
                     turn.set_max_width(self._bubble_width())
                     turn.edit_requested.connect(self.edit_requested.emit)
+                    turn.edit_submitted.connect(self.edit_submitted.emit)
+                    turn.edit_cancelled.connect(self.edit_cancelled.emit)
                     turn.retry_requested.connect(self.retry_requested.emit)
+                    turn.stop_requested.connect(self.stop_requested.emit)
+                    turn.speak_requested.connect(self.speak_requested.emit)
+                    turn.feedback.connect(self.feedback.emit)
                     self.turns[t["id"]] = turn
                     self.vl.insertWidget(i, turn)
                     if animate:
@@ -1160,7 +1876,7 @@ class ConversationView(QScrollArea):
             QTimer.singleShot(0, self.scroll_to_bottom)
 
     def _bubble_width(self):
-        return int(max(240, self.viewport().width() * 0.72))
+        return int(max(240, self.viewport().width() * 0.70))
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1169,27 +1885,25 @@ class ConversationView(QScrollArea):
             t.set_max_width(w)
 
 
+# ----------------------------------------------------------------------------- sidebar
 class ConvRow(QWidget):
-    """Sidebar row: title, subtitle, delete icon on hover."""
+    """Sidebar row (48 px, radius 12): chat glyph + title; delete icon on hover; status dot while the chat is active."""
     delete_requested = pyqtSignal(int)
 
     def __init__(self, root_id, parent=None):
         super().__init__(parent)
         self.root_id = root_id
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setFixedHeight(48)
         h = QHBoxLayout(self)
-        h.setContentsMargins(12, 8, 6, 8)
-        h.setSpacing(6)
-        v = QVBoxLayout()
-        v.setSpacing(2)
-        v.setContentsMargins(0, 0, 0, 0)
+        h.setContentsMargins(12, 0, 6, 0)
+        h.setSpacing(10)
+        self.glyph = QLabel()
+        self.glyph.setFixedSize(20, 20)
+        h.addWidget(self.glyph, 0)
         self.title = QLabel()
         self.title.setObjectName("rowTitle")
-        self.sub = QLabel()
-        self.sub.setObjectName("rowSub")
-        v.addWidget(self.title)
-        v.addWidget(self.sub)
-        h.addLayout(v, 1)
+        h.addWidget(self.title, 1)
         self.delete = IconButton("delete", "Delete this chat", size=26, icon_size=15)
         sp = self.delete.sizePolicy()
         sp.setRetainSizeWhenHidden(True)
@@ -1198,6 +1912,18 @@ class ConvRow(QWidget):
         self.delete.hide()
         h.addWidget(self.delete, 0, Qt.AlignmentFlag.AlignVCenter)
         self._full_title = ""
+        self.meta = ""
+        self.active = False
+        self.refresh_glyph()
+
+    def refresh_glyph(self):
+        pal = self.palette()
+        if self.active:
+            self.glyph.setPixmap(glyph_pixmap("bolt", pal.color(QPalette.ColorRole.Highlight), 18))
+        else:
+            col = QColor(pal.color(QPalette.ColorRole.Text))
+            col.setAlphaF(0.75)
+            self.glyph.setPixmap(glyph_pixmap("chat", col, 18))
 
     def enterEvent(self, e):
         self.delete.show()
@@ -1220,34 +1946,75 @@ class ConvRow(QWidget):
         parts = ["%d turn%s" % (n, "" if n == 1 else "s"), ts_clock(conv["updated"]), st]
         if len(live) != len(tasks):
             parts.append("edited")              # a turn was edited and resent; the old version stays in the chat, dimmed
-        self.sub.setText(" · ".join(parts))
-        self.setToolTip(title)
+        self.meta = " · ".join(parts)
+        self.setToolTip(title + "\n" + self.meta)
+        active = last["status"] in ACTIVE
+        if active != self.active:
+            self.active = active
+            self.refresh_glyph()
 
     def _elide(self):
         fm = QFontMetrics(self.title.font())
-        self.title.setText(fm.elidedText(self._full_title, Qt.TextElideMode.ElideRight, max(60, self.width() - 60)))
+        self.title.setText(fm.elidedText(self._full_title, Qt.TextElideMode.ElideRight, max(60, self.width() - 84)))
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._elide()
+
+    def changeEvent(self, e):
+        if e.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange):
+            self.refresh_glyph()
+        super().changeEvent(e)
+
+
+class SideItem(QToolButton):
+    """A 48 px row of the sidebar's bottom group: icon 20 + label, radius 12, hover fill."""
+
+    def __init__(self, glyph, label, tooltip="", parent=None):
+        super().__init__(parent)
+        self.glyph = glyph
+        self.setObjectName("sideItem")
+        self.setText(label)
+        self.setToolTip(tooltip or label)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.setIconSize(QSize(20, 20))
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(48)
+        self.refresh_icon()
+
+    def refresh_icon(self):
+        col = QColor(self.palette().color(QPalette.ColorRole.Text))
+        col.setAlphaF(0.85)
+        self.setIcon(glyph_icon(self.glyph, col, 20))
+
+    def changeEvent(self, e):
+        if e.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange):
+            self.refresh_icon()
+        super().changeEvent(e)
 
 
 class Sidebar(QFrame):
     selected = pyqtSignal(object)            # root id or None
     new_chat = pyqtSignal()
     delete_requested = pyqtSignal(int)
+    clear_all = pyqtSignal()
+    open_settings = pyqtSignal()
+    open_about = pyqtSignal()
+    open_appearance = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("sidebar")
-        self.setFixedWidth(296)
+        self.setFixedWidth(SIDEBAR_W)
         v = QVBoxLayout(self)
-        v.setContentsMargins(SP, SP, SP, SP)
-        v.setSpacing(10)
+        v.setContentsMargins(SP3, SP3, SP3, SP3)
+        v.setSpacing(SP)
         self.new_btn = QPushButton("New chat")
-        self.new_btn.setObjectName("newChat")
+        self.new_btn.setObjectName("newChatPill")
         self.new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.new_btn.setIconSize(QSize(18, 18))
+        self.new_btn.setFixedHeight(36)
         self.new_btn.clicked.connect(self.new_chat.emit)
         v.addWidget(self.new_btn)
         wrap = QWidget()
@@ -1268,6 +2035,24 @@ class Sidebar(QFrame):
         self.list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.list.currentItemChanged.connect(self._on_current)
         v.addWidget(self.list, 1)
+        hair = QFrame()
+        hair.setObjectName("hairline")
+        hair.setFixedHeight(1)
+        v.addWidget(hair)
+        bottom = QVBoxLayout()
+        bottom.setSpacing(2)
+        bottom.setContentsMargins(0, 4, 0, 0)
+        self.clear_btn = SideItem("delete", "Clear conversations", "Delete every chat and its recorded steps")
+        self.clear_btn.clicked.connect(self.clear_all.emit)
+        self.appearance_btn = SideItem("sun", "Appearance follows system", "Fab AI Controls uses the system colour scheme — change it in Fab Settings › Colours & Themes")
+        self.appearance_btn.clicked.connect(self.open_appearance.emit)
+        self.settings_btn = SideItem("settings", "Settings", "AI provider, permission mode, voice, mail")
+        self.settings_btn.clicked.connect(self.open_settings.emit)
+        self.about_btn = SideItem("info", "About Fab OS")
+        self.about_btn.clicked.connect(self.open_about.emit)
+        for b in (self.clear_btn, self.appearance_btn, self.settings_btn, self.about_btn):
+            bottom.addWidget(b)
+        v.addLayout(bottom)
         self.convs = []
         self.rows = {}          # root id -> ConvRow
         self.keys = []          # current ordered keys ("h:Today" / "c:<root>")
@@ -1275,13 +2060,16 @@ class Sidebar(QFrame):
         self.refresh_icons()
 
     def refresh_icons(self):
-        col = QColor(self.palette().color(QPalette.ColorRole.Text))
-        col.setAlphaF(0.85)
-        self.new_btn.setIcon(glyph_icon("add", col, 18))
-        muted = QColor(col)
+        pal = self.palette()
+        self.new_btn.setIcon(glyph_icon("add", pal.color(QPalette.ColorRole.HighlightedText), 18))
+        muted = QColor(pal.color(QPalette.ColorRole.Text))
         muted.setAlphaF(0.55)
         self.search_icon.setPixmap(glyph_pixmap("search", muted, 18))
         self.search_icon.move(11, (self.search.sizeHint().height() - 18) // 2 + 1)
+        for b in (self.clear_btn, self.appearance_btn, self.settings_btn, self.about_btn):
+            b.refresh_icon()
+        for r in self.rows.values():
+            r.refresh_glyph()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1358,7 +2146,7 @@ class Sidebar(QFrame):
     def _make_widget(self, it, kind, val):
         if kind == "h":
             it.setFlags(Qt.ItemFlag.NoItemFlags)
-            lab = QLabel(val.upper())
+            lab = QLabel(val)
             lab.setObjectName("groupHeader")
             it.setSizeHint(QSize(0, 30))
             self.list.setItemWidget(it, lab)
@@ -1366,7 +2154,7 @@ class Sidebar(QFrame):
             row = ConvRow(val["root"]["id"])
             row.delete_requested.connect(self.delete_requested.emit)
             it.setData(Qt.ItemDataRole.UserRole, val["root"]["id"])
-            it.setSizeHint(QSize(0, 56))
+            it.setSizeHint(QSize(0, 48))
             self.list.setItemWidget(it, row)
             self.rows[val["root"]["id"]] = row
 
@@ -1397,13 +2185,147 @@ class Sidebar(QFrame):
         super().changeEvent(e)
 
 
+# ----------------------------------------------------------------------------- voice (fabos-voice CLI, see the voice contract)
+class Voice(QObject):
+    """Thin client of the fabos-voice CLI. listen-once records after a chime and prints the transcript (exit 3 = nothing
+    heard, exit 4 = no speech-to-text backend); say TEXT speaks; status prints one JSON line. Everything runs through
+    QProcess so the UI never blocks; when the binary is missing or stt == none the UI shows the mic disabled."""
+    status_changed = pyqtSignal()
+    transcript = pyqtSignal(str)
+    nothing_heard = pyqtSignal()
+    unavailable = pyqtSignal()
+    listening_changed = pyqtSignal(bool)
+    speaking_changed = pyqtSignal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.bin = shutil.which("fabos-voice")
+        self.status = None
+        self.listen_proc = None
+        self.say_proc = None
+        self._status_proc = None
+        self.probe()
+
+    def probe(self):
+        if not self.bin:
+            self.status = {"stt": "none", "tts": "none", "mic": False, "wake": False, "listening": False}
+            self.status_changed.emit()
+            return
+        p = QProcess(self)
+        p.setProgram(self.bin)
+        p.setArguments(["status"])
+        p.finished.connect(lambda code, _st, p=p: self._probed(p, code))
+        self._status_proc = p
+        p.start()
+
+    def _probed(self, p, code):
+        try:
+            line = bytes(p.readAllStandardOutput()).decode(errors="replace").strip().splitlines()
+            self.status = json.loads(line[-1]) if line else {"stt": "none", "tts": "none"}
+        except (ValueError, IndexError):
+            self.status = {"stt": "none", "tts": "none"}
+        if code != 0 and not isinstance(self.status, dict):
+            self.status = {"stt": "none", "tts": "none"}
+        self.status_changed.emit()
+
+    def stt_available(self):
+        return bool(self.bin) and (self.status is None or (self.status or {}).get("stt", "none") != "none")
+
+    def tts_available(self):
+        return bool(self.bin) and (self.status is None or (self.status or {}).get("tts", "none") != "none")
+
+    def is_listening(self):
+        return self.listen_proc is not None
+
+    def listen(self, timeout=10):
+        if not self.stt_available():
+            self.unavailable.emit()
+            return False
+        if self.listen_proc is not None:
+            self.stop_listening()
+            return False
+        p = QProcess(self)
+        p.setProgram(self.bin)
+        p.setArguments(["listen-once", "--timeout", str(int(timeout))])
+        p.finished.connect(lambda code, _st, p=p: self._listened(p, code))
+        p.errorOccurred.connect(lambda _e, p=p: self._listened(p, 4) if p is self.listen_proc else None)
+        self.listen_proc = p
+        p.start()
+        self.listening_changed.emit(True)
+        return True
+
+    def stop_listening(self):
+        p, self.listen_proc = self.listen_proc, None
+        if p is not None:
+            p.kill()
+            self.listening_changed.emit(False)
+
+    def _listened(self, p, code):
+        if p is not self.listen_proc:
+            return
+        self.listen_proc = None
+        self.listening_changed.emit(False)
+        out = bytes(p.readAllStandardOutput()).decode(errors="replace").strip()
+        if code == 0 and out:
+            self.transcript.emit(out)
+        elif code == 3 or (code == 0 and not out):
+            self.nothing_heard.emit()
+        else:
+            if code == 4:
+                self.status = dict(self.status or {}, stt="none")
+                self.status_changed.emit()
+            self.unavailable.emit()
+
+    def is_speaking(self):
+        return self.say_proc is not None
+
+    def say(self, text):
+        if self.say_proc is not None:
+            self.stop_speaking()
+            return False
+        if not self.tts_available() or not (text or "").strip():
+            return False
+        p = QProcess(self)
+        p.setProgram(self.bin)
+        p.setArguments(["say", text[:4000]])
+        p.finished.connect(lambda code, _st, p=p: self._spoken(p, code))
+        p.errorOccurred.connect(lambda _e, p=p: self._spoken(p, 4) if p is self.say_proc else None)
+        self.say_proc = p
+        p.start()
+        self.speaking_changed.emit(True)
+        return True
+
+    def stop_speaking(self):
+        p, self.say_proc = self.say_proc, None
+        if p is not None:
+            p.kill()
+            self.speaking_changed.emit(False)
+
+    def _spoken(self, p, code):
+        if p is not self.say_proc:
+            return
+        self.say_proc = None
+        if code == 4:
+            self.status = dict(self.status or {}, tts="none")
+            self.status_changed.emit()
+        self.speaking_changed.emit(False)
+
+
 # ----------------------------------------------------------------------------- settings
 class SettingsDialog(RoundedDialog):
-    def __init__(self, parent, settings):
-        super().__init__(parent, APP_NAME + " — Settings", "", "Save", "Cancel", radius=R_POPUP, width=600)
+    """Settings: General · AI provider (ONE provider dropdown, one key field, model, endpoint for Local, a real connection
+    check with an animated result; the key is only saved after a successful check unless the user opts out) · Voice · Mail."""
+
+    def __init__(self, parent, settings, voice=None):
+        super().__init__(parent, APP_NAME + " — Settings", "", "Save", "Cancel", radius=R_POPUP, width=620)
         s = settings
         self.s = s
+        self.voice = voice
+        self.worker = None
+        self._workers = []
+        self.saved_provider = None
         tabs = QTabWidget()
+        self.tabs = tabs
         self.body.addWidget(tabs)
         # --- General
         w = QWidget()
@@ -1416,58 +2338,121 @@ class SettingsDialog(RoundedDialog):
         f.addRow("Permission mode", self.mode)
         self.max_turns = QLineEdit(str(s.get("agent.max_turns", "60")))
         f.addRow("Max steps per task", self.max_turns)
+        self.persona = QCheckBox("Warm Indian-English colleague who narrates each step")
+        self.persona.setChecked(str(s.get("ui.persona", "indian-english")).lower() not in ("off", "none", "false", "", "0"))
+        f.addRow("Persona", self.persona)
         self.show_raw = QCheckBox("Show raw responses (commands and tool output)")
         self.show_raw.setChecked(str(s.get("ui.show_raw", "false")) == "true")
         self.show_raw.toggled.connect(self._raw_toggled)
         f.addRow("", self.show_raw)
-        hint = QLabel("Off: the chat shows only friendly summaries like “Ran a command” or “Wrote a file”. On: the exact commands and their output are shown inside “Worked: N actions”.")
+        hint = QLabel("Off: the chat shows only friendly summaries like “Ran a command” or “Wrote a file”. On: the exact commands and their output are shown inside the action timeline.")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         f.addRow("", hint)
         tabs.addTab(w, "General")
-        # --- AI provider
+        # --- AI provider: one dropdown, one key field, model, endpoint (Local only), Check connection
+        w = QWidget()
+        pv = QVBoxLayout(w)
+        pv.setSpacing(10)
+        pv.setContentsMargins(0, 6, 0, 0)
+        f = QFormLayout()
+        f.setSpacing(10)
+        pv.addLayout(f)
+        self.provider = QComboBox()
+        self.prov_ids = list(PROVIDER_ORDER)
+        table = s.get("providers") or {}
+        for pid in self.prov_ids:
+            self.provider.addItem((table.get(pid) or {}).get("label") or PROVIDER_FULL[pid], pid)
+        cur = s.get("provider", "claude")
+        self.provider.setCurrentIndex(self.prov_ids.index(cur) if cur in self.prov_ids else 0)
+        f.addRow("AI provider", self.provider)
+        self.key = QLineEdit()
+        self.key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.key.setClearButtonEnabled(True)
+        key_row = QWidget()
+        kl = QHBoxLayout(key_row)
+        kl.setContentsMargins(0, 0, 0, 0)
+        kl.setSpacing(6)
+        kl.addWidget(self.key, 1)
+        self.remove_btn = IconButton("delete", "Remove the stored API key", size=32, icon_size=16)
+        self.remove_btn.clicked.connect(self._remove_key)
+        kl.addWidget(self.remove_btn, 0)
+        f.addRow("API key", key_row)
+        self.model = QLineEdit()
+        f.addRow("Model", self.model)
+        self.base_url = QLineEdit()
+        self.base_label = QLabel("Endpoint")
+        f.addRow(self.base_label, self.base_url)
+        self.help = QLabel()
+        self.help.setObjectName("muted")
+        self.help.setWordWrap(True)
+        pv.addWidget(self.help)
+        crow = QHBoxLayout()
+        crow.setSpacing(10)
+        self.check_btn = QPushButton("Check connection")
+        self.check_btn.setObjectName("check")
+        self.check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.check_btn.clicked.connect(self.check_connection)
+        crow.addWidget(self.check_btn, 0)
+        self.mark = ResultMark(28)
+        crow.addWidget(self.mark, 0)
+        self.check_result = QLabel("")
+        self.check_result.setObjectName("checkResult")
+        self.check_result.setWordWrap(True)
+        crow.addWidget(self.check_result, 1)
+        pv.addLayout(crow)
+        self.require_check = QCheckBox("Require a successful check before saving the key")
+        self.require_check.setChecked(True)
+        self.require_check.toggled.connect(self._update_save_state)
+        pv.addWidget(self.require_check)
+        note = QLabel("Keys are encrypted with systemd-creds, never displayed again, and sent only to the provider you chose. The check calls the provider's model list with your key — nothing else.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        pv.addWidget(note)
+        pv.addStretch(1)
+        tabs.addTab(w, "AI provider")
+        # per-provider edit state (typed key, model, endpoint, last check) so switching the dropdown loses nothing
+        self.state = {}
+        for pid in self.prov_ids:
+            m, u = PROVIDER_DEFAULTS[pid]
+            self.state[pid] = {"key": "", "model": s.get(pid + ".model", m), "base_url": s.get(pid + ".base_url", u or ""), "check": None, "checked_key": None,
+                               "stored": bool((s.get("secrets") or {}).get(pid + "_api_key")), "remove": False}
+        self.current_pid = None
+        self.provider.currentIndexChanged.connect(self._provider_changed)
+        self.key.textEdited.connect(self._key_edited)
+        self.model.textEdited.connect(lambda t: self._set_state("model", t))
+        self.base_url.textEdited.connect(lambda t: self._set_state("base_url", t))
+        self._provider_changed(self.provider.currentIndex())
+        # --- Voice
         w = QWidget()
         f = QFormLayout(w)
         f.setSpacing(10)
-        self.provider = QComboBox()
-        self.prov_ids = ["claude", "openai", "gemini", "local"]
-        for pid, label in (("claude", "Claude (Anthropic)"), ("openai", "OpenAI"), ("gemini", "Google Gemini"), ("local", "Local model (llama-server / OpenAI-compatible, offline)")):
-            self.provider.addItem(label, pid)
-        cur = s.get("provider", "claude")
-        self.provider.setCurrentIndex(self.prov_ids.index(cur) if cur in self.prov_ids else 0)
-        f.addRow("Active provider", self.provider)
-        self.pfields = {}
-        self.remove_keys = set()
-        defaults = {"claude": ("claude-opus-5", None), "openai": ("gpt-4.1", "https://api.openai.com/v1"), "gemini": ("gemini-2.5-pro", "https://generativelanguage.googleapis.com/v1beta/openai"),
-                    "local": ("local", "http://127.0.0.1:8080/v1")}
-        for pid in self.prov_ids:
-            model, url = defaults[pid]
-            m = QLineEdit(s.get(pid + ".model", model))
-            f.addRow("%s model" % pid.capitalize(), m)
-            u = None
-            if url:
-                u = QLineEdit(s.get(pid + ".base_url", url))
-                f.addRow("%s endpoint" % pid.capitalize(), u)
-            k = QLineEdit()
-            k.setEchoMode(QLineEdit.EchoMode.Password)
-            stored = bool((s.get("secrets") or {}).get(pid + "_api_key"))
-            k.setPlaceholderText("stored securely — paste to replace" if stored else ("optional" if pid == "local" else "API key (paste to set)"))
-            row = QWidget()
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(6)
-            rl.addWidget(k, 1)
-            rm = IconButton("delete", "Remove the stored %s API key" % pid.capitalize(), size=30, icon_size=16)
-            rm.setEnabled(stored)
-            rm.clicked.connect(lambda _c=False, pid=pid, k=k, rm=rm: self._remove_key(pid, k, rm))
-            rl.addWidget(rm, 0)
-            f.addRow("%s API key" % pid.capitalize(), row)
-            self.pfields[pid] = (m, u, k)
-        note = QLabel("Keys are encrypted with systemd-creds, never displayed again, never sent anywhere except the provider you chose. Local model = fully offline.")
-        note.setObjectName("muted")
-        note.setWordWrap(True)
-        f.addRow("", note)
-        tabs.addTab(w, "AI provider")
+        self.voice_enabled = QCheckBox("Enable voice (microphone in the chat, spoken narration)")
+        self.voice_enabled.setChecked(str(s.get("voice.enabled", "true")) == "true")
+        f.addRow("Voice", self.voice_enabled)
+        self.wake_word = QLineEdit(str(s.get("voice.wake_word", "hey fab") or "hey fab"))
+        f.addRow("Wake word", self.wake_word)
+        self.speak_replies = QCheckBox("Speak the agent's replies and step narration aloud")
+        self.speak_replies.setChecked(str(s.get("voice.speak_replies", "true")) == "true")
+        f.addRow("", self.speak_replies)
+        self.offline_only = QCheckBox("Offline only — never send audio to the cloud provider")
+        self.offline_only.setChecked(str(s.get("voice.offline_only", "false")) == "true")
+        f.addRow("", self.offline_only)
+        vrow = QHBoxLayout()
+        self.test_voice_btn = QPushButton("Test voice")
+        self.test_voice_btn.setObjectName("check")
+        self.test_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.test_voice_btn.clicked.connect(self.test_voice)
+        vrow.addWidget(self.test_voice_btn, 0)
+        self.voice_note = QLabel()
+        self.voice_note.setObjectName("muted")
+        self.voice_note.setWordWrap(True)
+        vrow.addWidget(self.voice_note, 1)
+        f.addRow("", vrow)
+        self._refresh_voice_note()
+        if voice is not None:
+            voice.status_changed.connect(self._refresh_voice_note)
+        tabs.addTab(w, "Voice")
         # --- Mail
         w = QWidget()
         f = QFormLayout(w)
@@ -1504,7 +2489,175 @@ class SettingsDialog(RoundedDialog):
         self.cancel_btn.setIconSize(QSize(18, 18))
         self.confirm_btn.clicked.disconnect()
         self.confirm_btn.clicked.connect(self.save)
+        # why Save is blocked, inline next to the buttons (the tooltip alone is easy to miss)
+        self.save_note = QLabel("", objectName="muted")
+        self.save_note.setWordWrap(True)
+        self.save_note.setVisible(False)
+        self.buttons.insertWidget(0, self.save_note, 1)
+        self._update_save_state()
 
+    # ---- provider section
+    def _set_state(self, k, v):
+        if self.current_pid:
+            self.state[self.current_pid][k] = v
+
+    def _provider_changed(self, idx):
+        pid = self.provider.itemData(idx)
+        if self.current_pid == pid:
+            return
+        self.current_pid = pid
+        st = self.state[pid]
+        self.key.blockSignals(True)
+        self.key.setText(st["key"])
+        self.key.blockSignals(False)
+        self.model.setText(st["model"])
+        self.base_url.setText(st["base_url"])
+        local = pid == "local"
+        self.base_url.setVisible(local)
+        self.base_label.setVisible(local)
+        if st["remove"]:
+            self.key.setPlaceholderText("will be removed when you save")
+        else:
+            self.key.setPlaceholderText("stored — paste to replace" if st["stored"] else ("optional" if local else "Paste your API key"))
+        self.remove_btn.setEnabled(st["stored"] and not st["remove"])
+        self.remove_btn.setVisible(not local or st["stored"])
+        table = (self.s.get("providers") or {}).get(pid) or {}
+        self.help.setText(table.get("help") or PROVIDER_HELP[pid])
+        self.check_btn.setText("Check connection" if not local else "Check the local server")
+        self._show_check(st["check"], animate=False)
+        self._update_save_state()
+
+    def _key_edited(self, text):
+        st = self.state[self.current_pid]
+        st["key"] = text
+        if st["checked_key"] != text:
+            st["check"] = None                # a different key than the one that was checked: check again
+            self._show_check(None, animate=False)
+        self._update_save_state()
+
+    def _show_check(self, res, animate=True):
+        if res is None:
+            self.mark.set_state("idle")
+            self.check_result.setText("")
+            self.check_result.setStyleSheet("")
+            return
+        if res.get("ok"):
+            self.mark.set_state("ok", animate=animate)
+            model = res.get("model") or self.model.text()
+            self.check_result.setText("Connected · %s · %d ms" % (model, int(res.get("latency_ms") or 0)))
+            self.check_result.setStyleSheet("color: %s;" % GREEN)
+        else:
+            self.mark.set_state("fail", animate=animate, color=RED if "rejected" in str(res.get("detail", "")) else AMBER)
+            detail = str(res.get("detail") or "Check failed")
+            text = "Key rejected" if "rejected" in detail else ("Cannot reach provider" if "cannot reach" in detail.lower() else detail[:1].upper() + detail[1:])
+            if "rejected" not in detail and "cannot reach" in detail.lower() and res.get("provider") == "local":
+                text = "Cannot reach the local model server"
+            self.check_result.setText(text)
+            self.check_result.setStyleSheet("color: %s;" % (RED if "rejected" in detail else AMBER))
+
+    def check_connection(self):
+        if self.worker is not None:
+            return
+        pid = self.current_pid
+        st = self.state[pid]
+        body = {"provider": pid, "model": self.model.text().strip() or None}
+        if st["key"]:
+            body["api_key"] = st["key"]              # the typed key is checked before it is saved
+        if pid == "local":
+            body["base_url"] = self.base_url.text().strip() or None
+        self.check_btn.setEnabled(False)
+        self.check_btn.setText("Checking…")
+        self.mark.set_state("busy")
+        self.check_result.setText("")
+        self.check_result.setStyleSheet("")
+        # the worker owns its lifetime (no parent, deleted once its thread has finished) so closing the dialog can never
+        # destroy a QThread that is still running; done() below waits for a check that is still in flight
+        self.worker = ApiWorker("POST", "/providers/test", body, timeout=20)
+        self.worker.done.connect(lambda res, pid=pid, key=st["key"]: self._checked(pid, key, res))
+        self.worker.finished.connect(self.worker.deleteLater)
+        self._workers.append(self.worker)
+        self.worker.start()
+
+    def done(self, r):
+        for w in list(self._workers):
+            try:
+                if w.isRunning():
+                    w.wait(5000)
+            except RuntimeError:          # already deleted
+                pass
+        self._workers = []
+        super().done(r)
+
+    def _checked(self, pid, key, res):
+        self.worker = None
+        self.check_btn.setEnabled(True)
+        self.check_btn.setText("Check connection" if pid != "local" else "Check the local server")
+        if not isinstance(res, dict):
+            res = {"ok": False, "detail": "unexpected reply"}
+        if res.get("offline"):
+            res = {"ok": False, "detail": "Cannot reach the agent service"}
+        st = self.state[pid]
+        st["check"] = res
+        st["checked_key"] = key
+        if pid == self.current_pid:
+            self._show_check(res, animate=True)
+            if not res.get("ok"):
+                shake(self.key if pid != "local" else self.base_url)
+        self._update_save_state()
+
+    def _blocked_reason(self):
+        """Why Save is disabled right now ('' when it is allowed)."""
+        if not self.require_check.isChecked():
+            return ""
+        st = self.state[self.current_pid]
+        if st["check"] is not None and not st["check"].get("ok") and (st["key"] or self.current_pid == "local" or not st["stored"] or st["checked_key"] == st["key"]):
+            return "The last connection check failed — fix the key or endpoint and check again."
+        if st["key"] and not (st["check"] and st["check"].get("ok") and st["checked_key"] == st["key"]):
+            return "Check the connection with this key first (or untick the requirement)."
+        return ""
+
+    def _update_save_state(self):
+        why = self._blocked_reason() if self.current_pid else ""
+        self.confirm_btn.setEnabled(not why)
+        self.confirm_btn.setToolTip(why or "Save settings")
+        note = getattr(self, "save_note", None)
+        if note is not None:
+            note.setText(why)
+            note.setVisible(bool(why))
+
+    def _remove_key(self):
+        pid = self.current_pid
+        if RoundedDialog.confirm(self, "Remove the %s API key?" % PROVIDER_LABELS.get(pid, pid), "The stored key is deleted from this computer. The agent cannot use %s until you paste a new key." % PROVIDER_LABELS.get(pid, pid), "Remove key"):
+            st = self.state[pid]
+            st["remove"] = True
+            st["key"] = ""
+            st["check"] = None
+            self.key.clear()
+            self.key.setPlaceholderText("will be removed when you save")
+            self.remove_btn.setEnabled(False)
+            self._show_check(None, animate=False)
+            self._update_save_state()
+
+    # ---- voice section
+    def _refresh_voice_note(self):
+        v = self.voice
+        if v is None or not v.bin:
+            self.voice_note.setText(VOICE_UNAVAILABLE + " (fabos-voice is not installed).")
+            self.test_voice_btn.setEnabled(False)
+            self.test_voice_btn.setToolTip(VOICE_UNAVAILABLE)
+            return
+        st = v.status or {}
+        parts = ["speech-to-text: %s" % st.get("stt", "…"), "text-to-speech: %s" % st.get("tts", "…"), "microphone: %s" % ("yes" if st.get("mic") else "no")]
+        self.voice_note.setText(" · ".join(parts))
+        ok = v.tts_available()
+        self.test_voice_btn.setEnabled(ok)
+        self.test_voice_btn.setToolTip("Says: “%s”" % VOICE_TEST_LINE if ok else VOICE_UNAVAILABLE)
+
+    def test_voice(self):
+        if self.voice is not None:
+            self.voice.say(VOICE_TEST_LINE)
+
+    # ---- general
     def _raw_toggled(self, on):
         if on and str(self.s.get("ui.show_raw", "false")) != "true":
             if not RoundedDialog.confirm(self, "Show raw responses?", "Chats will show the exact commands the agent runs and their full output, including file contents and anything printed by programs. Turn this on only if you want that level of detail.", "Show raw responses"):
@@ -1512,24 +2665,24 @@ class SettingsDialog(RoundedDialog):
                 self.show_raw.setChecked(False)
                 self.show_raw.blockSignals(False)
 
-    def _remove_key(self, pid, field, btn):
-        if RoundedDialog.confirm(self, "Remove the %s API key?" % pid.capitalize(), "The stored key is deleted from this computer. The agent cannot use %s until you paste a new key." % pid.capitalize(), "Remove key"):
-            self.remove_keys.add(pid)
-            field.clear()
-            field.setPlaceholderText("will be removed when you save")
-            btn.setEnabled(False)
-
     def save(self):
+        if self._blocked_reason():
+            self._update_save_state()
+            shake(self.key)
+            return
         mode = self.mode.currentData()
         if mode == "bypass" and self.s.get("mode", "auto") != "bypass":
             if not RoundedDialog.confirm(self, "Switch to Bypass mode?", "In Bypass the agent never asks before acting — including administrator commands, deleting files and sending mail. Use it only for tasks you fully trust.", "Use Bypass"):
                 return
-        body = {"mode": mode, "agent.max_turns": self.max_turns.text().strip() or "60", "provider": self.provider.currentData(),
-                "ui.show_raw": "true" if self.show_raw.isChecked() else "false"}
-        for pid, (m, u, k) in self.pfields.items():
-            body[pid + ".model"] = m.text()
-            if u is not None:
-                body[pid + ".base_url"] = u.text()
+        pid = self.current_pid
+        body = {"mode": mode, "agent.max_turns": self.max_turns.text().strip() or "60", "provider": pid,
+                "ui.show_raw": "true" if self.show_raw.isChecked() else "false", "ui.persona": "indian-english" if self.persona.isChecked() else "off",
+                "voice.enabled": "true" if self.voice_enabled.isChecked() else "false", "voice.wake_word": self.wake_word.text().strip() or "hey fab",
+                "voice.speak_replies": "true" if self.speak_replies.isChecked() else "false", "voice.offline_only": "true" if self.offline_only.isChecked() else "false"}
+        for p, st in self.state.items():
+            body[p + ".model"] = st["model"].strip() or PROVIDER_DEFAULTS[p][0]
+            if PROVIDER_DEFAULTS[p][1]:
+                body[p + ".base_url"] = st["base_url"].strip() or PROVIDER_DEFAULTS[p][1]
         for k, e in self.m.items():
             body[k] = e.text()
         try:
@@ -1537,11 +2690,11 @@ class SettingsDialog(RoundedDialog):
             if not isinstance(r, dict) or r.get("error"):
                 RoundedDialog.info(self, "Couldn't save the settings", str(r.get("error", "unknown error") if isinstance(r, dict) else r))
                 return
-            for pid in self.remove_keys:
-                api("POST", "/secrets", {"name": pid + "_api_key", "value": ""})
-            for pid, (m, u, k) in self.pfields.items():
-                if k.text():
-                    api("POST", "/secrets", {"name": pid + "_api_key", "value": k.text()})
+            for p, st in self.state.items():
+                if st["remove"]:
+                    api("POST", "/secrets", {"name": p + "_api_key", "value": ""})
+                elif st["key"]:
+                    api("POST", "/secrets", {"name": p + "_api_key", "value": st["key"]})
             if self.mail_pw.text():
                 api("POST", "/secrets", {"name": "mail_password", "value": self.mail_pw.text()})
             if self.mail_api.text():
@@ -1549,12 +2702,20 @@ class SettingsDialog(RoundedDialog):
         except AgentOffline as e:          # keep the dialog open: nothing was saved and the edits are still in the fields
             RoundedDialog.info(self, "Agent service offline", "Your changes were not saved. Start the service with:  systemctl --user start fabos-agent   and press Save again. (%s)" % str(e)[:120])
             return
+        self.saved_provider = pid
         self.accept()
 
 
 # ----------------------------------------------------------------------------- main window
+EMPTY_COLUMNS = [
+    ("bulb", "Try asking", ["Open Fab Files in Downloads", "Write a short note in Fab Editor", "Check my inbox for new mail"]),
+    ("bolt", "What I can do", ["Open and drive apps, type into them", "Read, write and organise your files, run commands", "Send and check mail, fetch the web, keep a watch"]),
+    ("shield", "Keep in mind", ["Every step is scored LOW to CRITICAL", "Ask · Auto · Bypass decide when I ask you first", "Nothing leaves this computer except your requests to the AI provider you chose"]),
+]
+
+
 class AIControls(QMainWindow):
-    def __init__(self, focus_ask=False, prefill=""):
+    def __init__(self, focus_ask=False, prefill="", task_id=None):
         super().__init__()
         self._restyle = QTimer(self)          # coalesces palette events into one deferred apply_style (see event())
         self._restyle.setSingleShot(True)
@@ -1571,21 +2732,47 @@ class AIControls(QMainWindow):
         self.status = {}
         self.offline = False
         self.approval_dialogs = {}
-        self.editing = None             # task id being edited in the composer
+        self.editing = None             # task id whose request is being edited (inline edit card)
         self.enlarged = False
         self._was_maximized = False
-        self._first_paint = True
+        self.pending_task = task_id     # --task ID: open the app on that conversation once the list is loaded
+        self.speaking_message = None
+        self.voice = Voice(self)
+        self.voice.status_changed.connect(self.update_voice_buttons)
+        self.voice.transcript.connect(self.on_transcript)
+        self.voice.nothing_heard.connect(lambda: self.toast.show_message("I did not catch that."))
+        self.voice.unavailable.connect(self.on_voice_unavailable)
+        self.voice.listening_changed.connect(self.on_listening)
+        self.voice.speaking_changed.connect(self.on_speaking)
         root = QWidget()
         root.setObjectName("root")
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(SP, 8, SP, SP)
-        outer.setSpacing(8)
-        # ---- header
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        # ---- body: sidebar + main column
+        body = QHBoxLayout()
+        body.setSpacing(0)
+        body.setContentsMargins(0, 0, 0, 0)
+        self.sidebar = Sidebar()
+        self.sidebar.selected.connect(self.select_conversation)
+        self.sidebar.new_chat.connect(self.new_chat)
+        self.sidebar.delete_requested.connect(self.delete_conversation)
+        self.sidebar.clear_all.connect(self.clear_conversations)
+        self.sidebar.open_settings.connect(self.open_settings)
+        self.sidebar.open_about.connect(self.about)
+        self.sidebar.open_appearance.connect(self.open_appearance)
+        body.addWidget(self.sidebar)
+        self.main = QFrame()
+        self.main.setObjectName("card")
+        ml = QVBoxLayout(self.main)
+        ml.setContentsMargins(SP2, 8, SP2, SP2)
+        ml.setSpacing(SP)
+        # ---- header (inside the main column: title + status, provider chip, enlarge, settings, System-Wide AI, report)
         header = QFrame()
         header.setObjectName("header")
         hl = QHBoxLayout(header)
-        hl.setContentsMargins(6, 4, 6, 4)
+        hl.setContentsMargins(6, 4, 0, 4)
         hl.setSpacing(10)
         self.app_icon = QLabel()
         self.app_icon.setFixedSize(28, 28)
@@ -1600,6 +2787,15 @@ class AIControls(QMainWindow):
         tcol.addWidget(self.subtitle)
         hl.addLayout(tcol)
         hl.addStretch(1)
+        self.provider_chip = QToolButton()
+        self.provider_chip.setObjectName("providerChip")
+        self.provider_chip.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.provider_chip.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.provider_chip.setIconSize(QSize(10, 10))
+        self.provider_chip.setText("…")
+        self.provider_chip.setToolTip("Active AI provider — click to change")
+        self.provider_chip.clicked.connect(self.open_settings)
+        hl.addWidget(self.provider_chip)
         self.enlarge_btn = IconButton("expand", "Enlarge chat (hide the sidebar, maximise)", size=36)
         self.enlarge_btn.setCheckable(True)
         self.enlarge_btn.toggled.connect(self.toggle_enlarge)
@@ -1620,57 +2816,99 @@ class AIControls(QMainWindow):
         self.report_btn = IconButton("flag", "Report a problem", size=36)
         self.report_btn.clicked.connect(self.report_problem)
         hl.addWidget(self.report_btn)
-        outer.addWidget(header)
-        # ---- body: sidebar + main card
-        body = QHBoxLayout()
-        body.setSpacing(SP)
-        self.sidebar = Sidebar()
-        self.sidebar.selected.connect(self.select_conversation)
-        self.sidebar.new_chat.connect(self.new_chat)
-        self.sidebar.delete_requested.connect(self.delete_conversation)
-        body.addWidget(self.sidebar)
-        self.main = QFrame()
-        self.main.setObjectName("card")
-        ml = QVBoxLayout(self.main)
-        ml.setContentsMargins(SP, SP, SP, SP)
-        ml.setSpacing(SP)
+        ml.addWidget(header)
         self.offline_label = QLabel()
         self.offline_label.setObjectName("offline")
         self.offline_label.setWordWrap(True)
         self.offline_label.hide()
         ml.addWidget(self.offline_label)
         self.stack = QStackedWidget()
-        # empty state
+        # ---- empty state: Fab AI mark + name + three columns of small cards
         empty = QWidget()
         el = QVBoxLayout(empty)
-        el.addStretch(1)
+        el.setContentsMargins(SP3, SP3, SP3, SP3)
+        el.addStretch(3)
+        mark_row = QHBoxLayout()
+        mark_row.setSpacing(14)
+        mark_row.addStretch(1)
         self.greeting_icon = QLabel()
+        self.greeting_icon.setFixedSize(44, 44)
         self.greeting_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        el.addWidget(self.greeting_icon)
-        g = QLabel("What should I do for you?")
-        g.setObjectName("greeting")
-        g.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        el.addWidget(g)
-        hint = QLabel("Ask in plain language — open apps, write files and code, send mail, watch for replies.\nEvery step follows your permission mode; risky ones ask first.")
-        hint.setObjectName("hint")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint.setWordWrap(True)
-        el.addWidget(hint)
-        el.addStretch(1)
+        mark_row.addWidget(self.greeting_icon)
+        g = QLabel(APP_NAME)
+        g.setObjectName("emptyTitle")
+        mark_row.addWidget(g)
+        mark_row.addStretch(1)
+        el.addLayout(mark_row)
+        el.addSpacing(40)
+        cols = QHBoxLayout()
+        cols.setSpacing(40)
+        cols.addStretch(1)
+        self.column_icons = []
+        for glyph, title, cards in EMPTY_COLUMNS:
+            col = QVBoxLayout()
+            col.setSpacing(12)
+            ic = QLabel()
+            ic.setFixedSize(24, 24)
+            ic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.column_icons.append((ic, glyph))
+            col.addWidget(ic, 0, Qt.AlignmentFlag.AlignHCenter)
+            t = QLabel(title)
+            t.setObjectName("colTitle")
+            t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            col.addWidget(t)
+            col.addSpacing(8)
+            for text in cards:
+                if title == "Try asking":
+                    c = QPushButton(text)
+                    c.setObjectName("emptyCard")
+                    c.setCursor(Qt.CursorShape.PointingHandCursor)
+                    c.clicked.connect(lambda _c=False, t=text: self.prefill(t))
+                else:
+                    c = QLabel(text)
+                    c.setObjectName("emptyCard")
+                    c.setWordWrap(True)
+                c.setFixedWidth(276)
+                c.setMinimumHeight(48)
+                col.addWidget(c)
+            col.addStretch(1)
+            cols.addLayout(col)
+        cols.addStretch(1)
+        el.addLayout(cols)
+        el.addStretch(4)
         self.stack.addWidget(empty)
         self.view = ConversationView()
         self.view.edit_requested.connect(self.start_edit)
+        self.view.edit_submitted.connect(self.submit_edit)
+        self.view.edit_cancelled.connect(self._edit_cancelled)
         self.view.retry_requested.connect(self.retry_task)
+        self.view.stop_requested.connect(self.stop_task)
+        self.view.speak_requested.connect(self.speak)
+        self.view.feedback.connect(self.send_feedback)
         self.stack.addWidget(self.view)
         ml.addWidget(self.stack, 1)
-        # composer
+        # ---- composer: two-row rounded card
         self.composer = QFrame()
         self.composer.setObjectName("composer")
         self.composer.setProperty("focused", False)
-        cl = QHBoxLayout(self.composer)
-        cl.setContentsMargins(8, 6, 8, 6)
-        cl.setSpacing(6)
-        self.mode_btn = IconButton("shield", "Permission mode", size=36)
+        cv = QVBoxLayout(self.composer)
+        cv.setContentsMargins(SP3, 14, SP2, 12)
+        cv.setSpacing(8)
+        self.ask = GrowingTextEdit("ask")
+        self.ask.setPlaceholderText("Ask me to do anything…")
+        self.ask.submitted.connect(lambda: self.submit(source="enter"))
+        self.ask.escaped.connect(self.cancel_edit)
+        self.ask.focus_changed.connect(self._ask_focus)
+        cv.addWidget(self.ask)
+        row2 = QHBoxLayout()
+        row2.setSpacing(8)
+        self.mode_btn = QToolButton()
+        self.mode_btn.setObjectName("modeChip")
+        self.mode_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mode_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.mode_btn.setIconSize(QSize(16, 16))
+        self.mode_btn.setText("Auto")
+        self.mode_btn.setToolTip("Permission mode")
         self.mode_menu = QMenu(self)
         self.mode_menu.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.mode_menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -1682,23 +2920,22 @@ class AIControls(QMainWindow):
             self.mode_menu.addAction(act)
             self.mode_actions[m] = act
         self.mode_btn.clicked.connect(lambda: self.mode_menu.exec(self.mode_btn.mapToGlobal(self.mode_btn.rect().topLeft()) - QPointF(0, self.mode_menu.sizeHint().height() + 6).toPoint()))
-        cl.addWidget(self.mode_btn)
-        self.ask = QLineEdit()
-        self.ask.setObjectName("ask")
-        self.ask.setPlaceholderText("Ask me to do anything…")
-        self.ask.returnPressed.connect(lambda: self.submit(source="enter"))
-        self.ask.installEventFilter(self)
-        cl.addWidget(self.ask, 1)
-        self.cancel_edit_btn = IconButton("close", "Cancel editing", size=32, icon_size=16)
-        self.cancel_edit_btn.clicked.connect(self.cancel_edit)
-        self.cancel_edit_btn.hide()
-        cl.addWidget(self.cancel_edit_btn)
+        row2.addWidget(self.mode_btn, 0)
+        self.hint_label = QLabel("Enter to send · Shift+Enter for a new line")
+        self.hint_label.setObjectName("chipText")
+        row2.addWidget(self.hint_label, 0)
+        row2.addStretch(1)
+        self.mic_btn = MicButton()
+        self.mic_btn.clicked.connect(self.toggle_listen)
+        row2.addWidget(self.mic_btn, 0)
         self.send_btn = IconButton("send", "Send", size=36, accent=True, icon_size=18)
         self.send_btn.clicked.connect(self.submit)
-        cl.addWidget(self.send_btn)
+        row2.addWidget(self.send_btn, 0)
+        cv.addLayout(row2)
         ml.addWidget(self.composer)
         body.addWidget(self.main, 1)
         outer.addLayout(body, 1)
+        self.toast = Toast(self.main)
         # timers
         self.list_timer = QTimer(self)
         self.list_timer.timeout.connect(self.refresh_list)
@@ -1707,11 +2944,11 @@ class AIControls(QMainWindow):
         self.thread_timer.timeout.connect(self.refresh_thread)
         self.thread_timer.start(POLL_THREAD_MS)
         self.apply_style()
+        self.update_voice_buttons()
         self.refresh_list()
         self.update_composer()
         if prefill:
-            self.ask.setText(prefill)
-            self.ask.setCursorPosition(len(prefill))
+            self.prefill(prefill)
         if focus_ask or prefill:
             self.ask.setFocus()
 
@@ -1729,9 +2966,15 @@ class AIControls(QMainWindow):
         hi = pal.color(QPalette.ColorRole.Highlight)
         self.app_icon.setPixmap(glyph_pixmap("sparkle", hi, 26))
         self.greeting_icon.setPixmap(glyph_pixmap("sparkle", hi, 40))
+        text = QColor(pal.color(QPalette.ColorRole.Text))
+        text.setAlphaF(0.85)
+        for lab, glyph in self.column_icons:
+            lab.setPixmap(glyph_pixmap(glyph, text, 24))
+        self.mode_btn.setIcon(glyph_icon("shield", text, 16))
         for b in self.findChildren(IconButton):
             b.refresh_icon()
         self.sidebar.refresh_icons()
+        self.update_header()
 
     def event(self, e):
         # The system colour scheme changed (dark <-> light): Qt delivers ApplicationPaletteChange to event() of each
@@ -1745,15 +2988,22 @@ class AIControls(QMainWindow):
             self._restyle.start()
         super().changeEvent(e)
 
-    def eventFilter(self, obj, e):
-        if obj is self.ask and e.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
-            self.composer.setProperty("focused", e.type() == QEvent.Type.FocusIn)
-            self.composer.style().unpolish(self.composer)
-            self.composer.style().polish(self.composer)
-        if obj is self.ask and e.type() == QEvent.Type.KeyPress and e.key() == Qt.Key.Key_Escape and self.editing is not None:
-            self.cancel_edit()
-            return True
-        return super().eventFilter(obj, e)
+    def closeEvent(self, e):
+        """Closing the window ends the polling and any voice process; nothing keeps running behind a closed window."""
+        for t in (self.list_timer, self.thread_timer, self._restyle):
+            t.stop()
+        self.voice.stop_listening()
+        self.voice.stop_speaking()
+        super().closeEvent(e)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.toast.isVisible():
+            self.toast.move((self.main.width() - self.toast.width()) // 2, self.main.height() - self.toast.height() - 96)
+
+    def _ask_focus(self, on):
+        self.composer.setProperty("focused", on)
+        polish(self.composer)
 
     # ---- data
     def _build_conversations(self):
@@ -1775,6 +3025,14 @@ class AIControls(QMainWindow):
             convs[rid] = {"root": by_id[rid] if rid in by_id else ts[0], "tasks": ts, "updated": max(x.get("updated") or 0 for x in ts)}
         self.convs = convs
         return sorted(convs.values(), key=lambda c: -c["updated"])
+
+    def root_of_task(self, tid):
+        t = self.by_id.get(tid)
+        seen = set()
+        while t and t.get("parent_id") in self.by_id and t["id"] not in seen:
+            seen.add(t["id"])
+            t = self.by_id[t["parent_id"]]
+        return t["id"] if t else None
 
     def latest_task(self):
         c = self.convs.get(self.current_root)
@@ -1799,6 +3057,11 @@ class AIControls(QMainWindow):
             self.sidebar.set_conversations(convs)
             if self.current_root is not None and self.current_root not in self.convs:
                 self.new_chat()
+            if self.pending_task is not None:              # --task ID: open on that conversation
+                root = self.root_of_task(self.pending_task)
+                self.pending_task = None
+                if root is not None:
+                    self.select_conversation(root)
         self.handle_approvals(pend if isinstance(pend, list) else [])
         self.update_composer()
 
@@ -1815,7 +3078,6 @@ class AIControls(QMainWindow):
                     if isinstance(d, dict) and "id" in d:
                         self.details[t["id"]] = d
                         cached = d
-                        # keep the list entry in step with the freshest status so the composer / sidebar follow immediately
                         t["status"], t["updated"] = d["status"], d["updated"]
                 if cached:
                     details.append(cached)
@@ -1833,27 +3095,39 @@ class AIControls(QMainWindow):
         if off:
             self.offline_label.setText("Can't reach the agent service. Start it with:  systemctl --user start fabos-agent   (%s)" % why[:120])
             self.subtitle.setText("Agent service offline")
+            self.provider_chip.setText("offline")
+            self.provider_chip.setIcon(QIcon(dot_pixmap(QColor(AMBER), 10)))
 
     def update_header(self):
         st = self.status
+        if not st:
+            return
         prov = PROVIDER_LABELS.get(st.get("provider"), st.get("provider") or "")
-        parts = [prov, "%s mode" % (st.get("mode") or "auto")]
-        if not st.get("provider_ready", True):
-            parts.append("provider not configured — open Settings")
+        ready = bool(st.get("provider_ready", True))
+        ai_on = bool(st.get("ai_enabled", True))
+        parts = ["%s mode" % (st.get("mode") or "auto")]
         counts = st.get("tasks") or {}
         running = sum(counts.get(k, 0) for k in ACTIVE)
         if running:
             parts.append("%d active" % running)
-        if not st.get("ai_enabled", True):
-            parts = ["System-Wide AI is off"] + parts[1:]
+        if not ai_on:
+            parts = ["System-Wide AI is off"] + parts
+        elif not ready:
+            parts.append("provider not configured — open Settings")
         self.subtitle.setText(" · ".join(p for p in parts if p))
+        # provider chip: name + green (ready) / amber (not configured) dot
+        self.provider_chip.setText("%s · %s" % (prov, "ready" if ready else "not configured"))
+        self.provider_chip.setIcon(QIcon(dot_pixmap(QColor(GREEN if ready and ai_on else AMBER), 10)))
+        self.provider_chip.setToolTip(("Active AI provider: %s (%s)" % (st.get("provider_label") or prov, st.get("provider_model") or "")) if ready
+                                      else "No API key for %s yet — click to add one" % prov)
         self.ai_switch.blockSignals(True)
-        self.ai_switch.setChecked(bool(st.get("ai_enabled", True)))
+        self.ai_switch.setChecked(ai_on)
         self.ai_switch.blockSignals(False)
         mode = st.get("mode") or "auto"
         for m, act in self.mode_actions.items():
             act.setChecked(m == mode)
-        self.mode_btn.setToolTip("Permission mode: %s" % mode)
+        self.mode_btn.setText(mode.capitalize())
+        self.mode_btn.setToolTip({"ask": "Ask — approve every risky step", "auto": "Auto — ask only for critical steps", "bypass": "Bypass — never ask"}.get(mode, mode) + "  (click to change)")
         raw = str(st.get("ui_show_raw", "")) if "ui_show_raw" in st else None
         if raw is None:
             try:
@@ -1864,15 +3138,19 @@ class AIControls(QMainWindow):
         if new_raw != self.show_raw:
             self.show_raw = new_raw
             self.refresh_thread(force=True)
+        voice_on = str((st.get("voice") or {}).get("enabled", "true")) == "true"
+        if voice_on != getattr(self, "_voice_on", True):
+            self._voice_on = voice_on
+            self.update_voice_buttons()
+        self._voice_on = voice_on
 
     def update_composer(self):
         latest = self.latest_task()
         busy = bool(latest and latest["status"] in ACTIVE)
         waiting_user = bool(latest and latest["status"] == "waiting_user")
         on = bool(self.status.get("ai_enabled", True)) and not self.offline
-        if self.editing is not None:
-            self.send_btn.set_glyph("check", "Send the edited request (replaces the old one)")
-            self.ask.setPlaceholderText("Edit your request…")
+        if self.voice.is_listening():
+            self.ask.setPlaceholderText("Listening…")
         elif busy and not waiting_user:
             self.send_btn.set_glyph("stop", "Stop this task")
             self.ask.setPlaceholderText("The agent is working… type your follow-up now, send it when it finishes")
@@ -1886,37 +3164,38 @@ class AIControls(QMainWindow):
             self.ask.setPlaceholderText("Agent service offline" if self.offline else "System-Wide AI is off — turn it on to give the agent tasks")
         self.ask.setEnabled(on)
         self.send_btn.setEnabled(on)
-        self.cancel_edit_btn.setVisible(self.editing is not None)
+        self.mic_btn.setEnabled(on and self.voice.stt_available() and getattr(self, "_voice_on", True))
+
+    def update_voice_buttons(self):
+        ok = self.voice.stt_available() and getattr(self, "_voice_on", True)
+        self.mic_btn.setEnabled(ok and not self.offline and bool(self.status.get("ai_enabled", True)))
+        self.mic_btn.setToolTip("Speak your request" if ok else (VOICE_UNAVAILABLE if not self.voice.stt_available() else "Voice is turned off in Settings › Voice"))
+        tts = self.voice.tts_available()
+        for turn in self.view.turns.values():
+            for msg in turn.assistant_messages():
+                b = msg.buttons.get("speaker")
+                if b:
+                    b.setEnabled(tts)
+                    b.setToolTip("Read this aloud" if tts else VOICE_UNAVAILABLE)
 
     # ---- actions
+    def prefill(self, text):
+        self.ask.setText(text)
+        self.ask.setFocus()
+
     def submit(self, _checked=False, source="button"):
         text = self.ask.text().strip()
         latest = self.latest_task()
         busy = bool(latest and latest["status"] in ACTIVE and latest["status"] != "waiting_user")
-        if busy and source == "enter" and self.editing is None:
-            return           # Enter while the agent works keeps the typed follow-up; only the STOP button stops the task
+        if busy and source in ("enter", "voice"):
+            # Enter or a voice transcript while the agent works keeps the follow-up in the composer; only the STOP button
+            # stops the task (a dictated sentence must never turn into a "Stop this task?" prompt or be sent early).
+            if source == "voice" and text:
+                self.toast.show_message("The agent is still working — your follow-up is kept in the box; send it when it finishes.")
+            return
         try:
-            if self.editing is not None:
-                if not text:
-                    return
-                old = self.details.get(self.editing) or self.by_id.get(self.editing) or {}
-                title = old.get("title") or ""
-                if not title.startswith(SUPERSEDED):
-                    api("PATCH", "/tasks/%d" % self.editing, {"title": (SUPERSEDED + title)[:80]})
-                # the edited version threads into the SAME chat — also when the edited turn is the chat's root — so the chat
-                # keeps its follow-ups and no look-alike duplicate appears; the old turn stays, dimmed as superseded, and
-                # the daemon leaves superseded turns out of the follow-up context
-                parent = self.current_root or old.get("parent_id") or self.editing
-                body = {"request": text, "parent_id": parent}
-                r = api("POST", "/tasks", body)
-                self.editing = None
-                self.ask.clear()
-                self._after_create(r, parent)
-                return
-            if latest and latest["status"] in ACTIVE and latest["status"] != "waiting_user":
-                if RoundedDialog.confirm(self, "Stop this task?", "The agent stops what it is doing right now. Anything already done (files written, mail sent) stays as it is.", "Stop"):
-                    api("POST", "/tasks/%d/cancel" % latest["id"])
-                    self.refresh_thread(force=True)
+            if busy:
+                self.stop_task(latest["id"])
                 return
             if not text:
                 return
@@ -1934,6 +3213,14 @@ class AIControls(QMainWindow):
             self._after_create(r, self.current_root)
         except AgentOffline as e:
             self.set_offline(True, str(e))
+
+    def stop_task(self, task_id):
+        if RoundedDialog.confirm(self, "Stop this task?", "The agent stops what it is doing right now. Anything already done (files written, mail sent) stays as it is.", "Stop"):
+            try:
+                api("POST", "/tasks/%d/cancel" % task_id)
+            except AgentOffline as e:
+                self.set_offline(True, str(e))
+            self.refresh_thread(force=True)
 
     def _after_create(self, r, parent):
         if not isinstance(r, dict) or "id" not in r:
@@ -1953,7 +3240,6 @@ class AIControls(QMainWindow):
             self.view.clear()
             self.current_root = root_id
             self.editing = None
-            self.ask.clear()
         self.sidebar.select(root_id)
         self.stack.setCurrentWidget(self.view)
         self.refresh_thread(force=True)
@@ -1968,22 +3254,56 @@ class AIControls(QMainWindow):
         self.update_composer()
         self.ask.setFocus()
 
-    def start_edit(self, task_id, text):
+    def start_edit(self, task_id, text=""):
+        """Edit a request in place: the turn shows the edit card (Cancel / Send). Only one turn is edited at a time."""
+        for tid, turn in self.view.turns.items():
+            if tid != task_id and turn.editing:
+                turn.cancel_edit()
         self.editing = task_id
-        self.ask.setText(text)
-        self.ask.setFocus()
-        self.ask.setCursorPosition(len(text))
-        self.update_composer()
+        turn = self.view.turns.get(task_id)
+        if turn is not None and not turn.editing:
+            turn.begin_edit()
 
     def cancel_edit(self):
+        if self.editing is not None:
+            turn = self.view.turns.get(self.editing)
+            if turn is not None:
+                turn.cancel_edit()
         self.editing = None
-        self.ask.clear()
-        self.update_composer()
+
+    def _edit_cancelled(self, task_id):
+        if self.editing == task_id:
+            self.editing = None
+
+    def submit_edit(self, task_id, text):
+        """The edited version threads into the SAME chat — also when the edited turn is the chat's root — so the chat keeps
+        its follow-ups and no look-alike duplicate appears; the old turn stays, dimmed as superseded, and the daemon leaves
+        superseded turns out of the follow-up context."""
+        text = (text or "").strip()
+        if not text:
+            return
+        try:
+            old = self.details.get(task_id) or self.by_id.get(task_id) or {}
+            title = old.get("title") or ""
+            if not title.startswith(SUPERSEDED):
+                api("PATCH", "/tasks/%d" % task_id, {"title": (SUPERSEDED + title)[:80]})
+            parent = self.current_root or old.get("parent_id") or task_id
+            r = api("POST", "/tasks", {"request": text, "parent_id": parent})
+            self.cancel_edit()
+            self._after_create(r, parent)
+        except AgentOffline as e:
+            self.set_offline(True, str(e))
 
     def retry_task(self, task_id):
         try:
             r = api("POST", "/tasks/%d/retry" % task_id)
             self._after_create(r, self.current_root)
+        except AgentOffline as e:
+            self.set_offline(True, str(e))
+
+    def send_feedback(self, task_id, rating):
+        try:
+            api("POST", "/tasks/%d/feedback" % task_id, {"rating": rating})
         except AgentOffline as e:
             self.set_offline(True, str(e))
 
@@ -1995,16 +3315,32 @@ class AIControls(QMainWindow):
         title = (user_text(conv["root"].get("request")) or conv["root"].get("title") or "")[:60]
         if not RoundedDialog.confirm(self, "Delete this chat?", "“%s” and its %d turn%s — including every recorded step — are removed from the history. Running tasks are stopped." % (title, n, "" if n == 1 else "s"), "Delete"):
             return
-        try:
-            for t in reversed(conv["tasks"]):
-                api("DELETE", "/tasks/%d" % t["id"])
-                self.details.pop(t["id"], None)
-        except AgentOffline as e:
-            self.set_offline(True, str(e))
-            return
+        self._delete_tasks(conv["tasks"])
         if self.current_root == root_id:
             self.new_chat()
         self.refresh_list()
+
+    def clear_conversations(self):
+        n = len(self.convs)
+        if not n:
+            return
+        if not RoundedDialog.confirm(self, "Clear all conversations?", "All %d chat%s and every recorded step are removed from the history. Running tasks are stopped. Settings and keys are kept." % (n, "" if n == 1 else "s"), "Clear all"):
+            return
+        for conv in list(self.convs.values()):
+            if not self._delete_tasks(conv["tasks"]):
+                break
+        self.new_chat()
+        self.refresh_list()
+
+    def _delete_tasks(self, tasks):
+        try:
+            for t in reversed(tasks):
+                api("DELETE", "/tasks/%d" % t["id"])
+                self.details.pop(t["id"], None)
+            return True
+        except AgentOffline as e:
+            self.set_offline(True, str(e))
+            return False
 
     def set_mode(self, mode):
         if mode == "bypass" and (self.status.get("mode") != "bypass"):
@@ -2047,9 +3383,33 @@ class AIControls(QMainWindow):
             return
         if not isinstance(s, dict) or "error" in s:
             return
-        if SettingsDialog(self, s).exec():
+        dlg = SettingsDialog(self, s, self.voice)
+        if dlg.exec():
             self.refresh_list()
             self.refresh_thread(force=True)
+            self.update_voice_buttons()
+
+    def open_appearance(self):
+        try:
+            subprocess.Popen(["systemsettings", "kcm_colors"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            RoundedDialog.info(self, "Appearance follows the system", "Fab AI Controls uses the system colour scheme (Fab Dark / Fab Light). Change it in Fab Settings › Colours & Themes.")
+
+    def about(self):
+        version = ""
+        for p in ("/etc/fabos-release", "/etc/os-release"):
+            try:
+                with open(p) as f:
+                    for line in f:
+                        if line.startswith(("VERSION=", "FABOS_VERSION=")):
+                            version = line.split("=", 1)[1].strip().strip('"')
+                            break
+            except OSError:
+                continue
+            if version:
+                break
+        RoundedDialog.info(self, "About Fab OS", "Fab OS by Patience AI%s\nfabos.patienceai.in · support@patienceai.in\n\n%s is the chat for the built-in agent: it does what you ask on this computer, "
+                           "shows every step live and asks before anything risky. Apache-2.0; the source is on the project site." % ((" · " + version) if version else "", APP_NAME))
 
     def report_problem(self):
         pre = ""
@@ -2061,6 +3421,57 @@ class AIControls(QMainWindow):
             subprocess.Popen(["fabos-feedback", "--type", "bug", "--prefill", pre])
         except OSError:
             RoundedDialog.info(self, "Fab Feedback is not installed", "Install the fabos-feedback package, or write to support@patienceai.in.")
+
+    # ---- voice
+    def toggle_listen(self):
+        if self.voice.is_listening():
+            self.voice.stop_listening()
+            return
+        if not self.voice.listen(timeout=10):
+            self.update_voice_buttons()
+
+    def on_listening(self, on):
+        self.mic_btn.set_listening(on)
+        self.update_composer()
+
+    def on_transcript(self, text):
+        self.ask.setText(text)
+        self.submit(source="voice")
+
+    def on_voice_unavailable(self):
+        self.update_voice_buttons()
+        self.toast.show_message(VOICE_UNAVAILABLE)
+
+    def speak(self, text):
+        """Speak icon on an assistant message: starts fabos-voice say; a second click (or another message) stops it."""
+        sender_turn = None
+        for turn in self.view.turns.values():
+            for msg in turn.assistant_messages():
+                if msg.text() == text and msg.underMouse():
+                    sender_turn = msg
+        if self.voice.is_speaking():
+            self.voice.stop_speaking()
+            if self.speaking_message is not None and self.speaking_message.text() == text:
+                return
+        if not self.voice.tts_available():
+            self.toast.show_message(VOICE_UNAVAILABLE)
+            return
+        self.speaking_message = sender_turn
+        if sender_turn is None:
+            for turn in self.view.turns.values():
+                for msg in turn.assistant_messages():
+                    if msg.text() == text:
+                        self.speaking_message = msg
+        self.voice.say(text)
+
+    def on_speaking(self, on):
+        if self.speaking_message is not None:
+            try:
+                self.speaking_message.set_speaking(on)
+            except RuntimeError:          # the message widget was deleted meanwhile
+                pass
+        if not on:
+            self.speaking_message = None
 
     # ---- approvals surface as rounded dialogs inside the app (in addition to the desktop notification)
     def handle_approvals(self, pending):
@@ -2087,14 +3498,24 @@ class AIControls(QMainWindow):
         self.refresh_thread(force=True)
 
 
+def _arg(name):
+    if name in sys.argv and len(sys.argv) > sys.argv.index(name) + 1:
+        return sys.argv[sys.argv.index(name) + 1]
+    return ""
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
     app.setDesktopFileName(DESKTOP_ID)
     app.setFont(QFont("Inter", 10))
-    pre = sys.argv[sys.argv.index("--prefill") + 1] if "--prefill" in sys.argv and len(sys.argv) > sys.argv.index("--prefill") + 1 else ""
-    w = AIControls(focus_ask="--ask" in sys.argv, prefill=pre)
+    task = _arg("--task")
+    try:
+        task_id = int(task) if task else None
+    except ValueError:
+        task_id = None
+    w = AIControls(focus_ask="--ask" in sys.argv, prefill=_arg("--prefill"), task_id=task_id)
     w.show()
     if "--settings" in sys.argv:
         QTimer.singleShot(300, w.open_settings)   # straight to Settings (the AI provider tab is where keys go)
