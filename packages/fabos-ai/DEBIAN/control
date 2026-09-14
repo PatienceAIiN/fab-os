@@ -4,6 +4,7 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Homepage: @HOME_URL@
 Depends: systemd, libc6, llama.cpp, llama.cpp-tools, curl, python3
 Description: @DISTRO_NAME@ AI stack — built-in offline model, intents, agents, governor, provenance, rollback
  The local-first AI service (aiosd) and CLI (aios) from the ai-native-os

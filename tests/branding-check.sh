@@ -90,7 +90,7 @@ chk "SDDM theme Author=Patience AI"             "R 'grep -q \"^Author=Patience A
 chk "Plymouth theme names Patience AI"          "R 'grep -q \"by Patience AI\" /usr/share/plymouth/themes/fabos/fabos.plymouth && grep -q ^ModuleName=script /usr/share/plymouth/themes/fabos/fabos.plymouth'"
 chk "Patience AI author in every metadata.json" "! R 'grep -L \"\\\"Name\\\": \\\"Patience AI\\\"\" /usr/share/plasma/plasmoids/in.patienceai.fabos.askbar/metadata.json /usr/share/plasma/look-and-feel/in.patienceai.fabos.desktop/metadata.json /usr/share/plasma/look-and-feel/in.patienceai.fabos.light.desktop/metadata.json /usr/share/wallpapers/FabOS/metadata.json /usr/share/plasma/desktoptheme/FabOS/metadata.json' | grep -q ."
 chk "icon theme Comment names Patience AI"      "R 'grep -q \"^Comment=.*by Patience AI\" /usr/share/icons/FabOS/index.theme'"
-chk "Homepage in every fabos package"           "! R 'for p in fabos-agent fabos-ai fabos-branding fabos-desktop fabos-desktop-meta fabos-feedback fabos-firstboot fabos-updates fabos-welcome; do dpkg -s \$p 2>/dev/null | grep -q \"^Homepage: https://fabos.patienceai.in\" || echo \$p; done' | grep -q ."
+chk "Homepage in every fabos package"           "! R 'for p in fabos-agent fabos-ai fabos-branding fabos-desktop fabos-desktop-meta fabos-feedback fabos-firstboot fabos-updates fabos-welcome fabos-voice; do dpkg -s \$p 2>/dev/null | grep -q \"^Homepage: https://fabos.patienceai.in\" || echo \$p; done' | grep -q ."
 chk "os-release vendor + URLs"                  "R 'grep -q \"^VENDOR_NAME=.Patience AI\" /usr/lib/os-release && grep -q ^HOME_URL= /usr/lib/os-release && grep -q ^SUPPORT_URL= /usr/lib/os-release && grep -q ^BUG_REPORT_URL= /usr/lib/os-release'"
 # NB: negative `grep -L` checks end the container command with `; true` so the pipeline status (pipefail) is that of the
 # outer `grep -q .` alone, whatever exit status this grep version gives -L.
@@ -153,7 +153,7 @@ chk "all 10 fabos packages at 1.0-2 in the manifest"     "[ \$(R 'grep -c -P \"^
 # licence/attribution files.
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 FORBID='ChatGPT|SnowUI|Sora|DALL.E|Upgrade plan|can make mistakes'
-OPENAI_OK='fabos_agentd\.py$|command_center\.py$|fabos_welcome\.py$|in\.patienceai\.fabos\.askbar/contents/ui/main\.qml$|(^|/)README\.md$|ATTRIBUTIONS\.md$|LICENSING\.md$|THIRD_PARTY_LICENSES/|(^|/)legal/'
+OPENAI_OK='fabos_agentd\.py$|command_center\.py$|fabos_welcome\.py$|in\.patienceai\.fabos\.askbar/contents/ui/main\.qml$|(^|/)README\.md$|ATTRIBUTIONS\.md$|LICENSING\.md$|THIRD_PARTY_LICENSES/|(^|/)legal/|/copyright$'   # copyright files carry upstream MIT notices verbatim (whisper weights)
 chk "no forbidden product names in the source tree"     "! grep -rIn -E '$FORBID' $SRC/packages $SRC/website $SRC/brand $SRC/docs | grep -q ."
 chk "no forbidden product names in the image"           "! R 'grep -rIn -E \"$FORBID\" /usr/share/fabos /usr/lib/fabos /usr/share/plasma /usr/share/applications 2>/dev/null; true' | grep -q ."
 chk "OpenAI only as a provider label (source tree)"     "! grep -rIl OpenAI $SRC/packages $SRC/website $SRC/brand $SRC/docs $SRC/README.md | grep -vE '$OPENAI_OK' | grep -q ."
