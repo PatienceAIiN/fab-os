@@ -110,7 +110,7 @@ What is tuned for small machines, and how to change it back, is in [`docs/LOW-RA
 
 ## Install Fab OS
 
-1. **Download the ISO** (about 3.8 GB — the offline AI model is inside) from [fabos.patienceai.in](https://fabos.patienceai.in).
+1. **Download the ISO** (about 3.9 GB — the offline AI model and voice are inside) from [fabos.patienceai.in](https://fabos.patienceai.in).
 2. **Write it to a USB stick** (8 GB or larger) with [Balena Etcher](https://etcher.balena.io/) — free, and the same click-and-go steps on Windows, macOS, and Linux.
 3. **Restart** and pick the USB stick from your computer's boot menu (usually F12, F2, or Esc at power-on).
 4. **Try it live** — Fab OS runs from the stick without touching your disk. When you're ready, open **Install Fab OS** on the desktop.
