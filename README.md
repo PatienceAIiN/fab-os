@@ -23,7 +23,7 @@ The difference is the **home screen**. Instead of hunting through menus, you typ
 
 ## The agent, in one screen
 
-The desktop's centrepiece is the **"Ask me to do anything…"** bar. Behind it runs a local agent daemon (`fabos-agentd`, bound to `127.0.0.1`, bearer-token authenticated) that can actually operate the machine:
+The desktop's centrepiece is the **"Ask me to do anything…"** bar. Type (or tap the mic and speak) and press **Do it**: the answer arrives **right there** — a panel unfolds beneath the bar with your request, a live feed of every action as the agent takes it (the app it opens with its own icon, the text it types appearing letter by letter, files, commands, mail), inline Allow/Deny cards when a step needs your permission, inline questions, and the result as formatted text. Stop, retry, edit the prompt, copy the result, minimise to a one-line status pill, or send a follow-up into the same conversation — no window opens unless you click "Open in Fab AI Controls". Behind it runs a local agent daemon (`fabos-agentd`, bound to `127.0.0.1`, bearer-token authenticated) that can actually operate the machine:
 
 | It can | Tools |
 |---|---|
@@ -42,7 +42,7 @@ The desktop's centrepiece is the **"Ask me to do anything…"** bar. Behind it r
 
 A single **System-Wide AI** switch turns the whole thing off. Nothing leaves your machine except the requests you give the agent, sent only to the provider you configure yourself: **Claude, OpenAI, Google Gemini, or a fully local model** (llama.cpp — offline). No telemetry, no accounts, no crash uploads.
 
-Everything the agent does is recorded and shown as a chat in **Fab AI Controls**: your requests on the right, the agent's answers on the left, and every tool step folded into a small "Worked: N actions" chip you can expand. Follow up in the same chat and the agent keeps the context; hover a message to edit, retry, or copy it; stop a running task with one click; and every risky step, delete, or mode change asks you first in a rounded confirmation dialog (approval requests show exactly what would run behind "Show details" — opened for you when the risk is high).
+Everything the agent does is recorded and shown as a chat in **Fab AI Controls** (the bar's "Open in Fab AI Controls" button, `fabos-command-center --task ID`, jumps straight to the current chat): your requests on the right, the agent's answers on the left, and every tool step folded into a small "Worked: N actions" chip you can expand. Follow up in the same chat and the agent keeps the context; hover a message to edit, retry, or copy it; stop a running task with one click; and every risky step, delete, or mode change asks you first in a rounded confirmation dialog (approval requests show exactly what would run behind "Show details" — opened for you when the risk is high).
 
 ## What's in the box
 

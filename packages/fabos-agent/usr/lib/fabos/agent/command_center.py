@@ -7,7 +7,7 @@ A ChatGPT-style desktop app on top of fabos-agentd's local HTTP API (PyQt6):
     one "Worked: N actions" chip per turn, typing indicator + fade-in while a task runs
   * bottom: rounded composer = follow-up bar of the selected chat; the send button turns into STOP while a task runs
 Everything follows the system colour scheme through QPalette; radii/spacing from the Fab OS design tokens.
-Launch: fabos-command-center [--ask] [--prefill TEXT] [--settings]   (the executable keeps its historical name)
+Launch: fabos-command-center [--ask] [--prefill TEXT] [--settings] [--task ID]   (the executable keeps its historical name)
 """
 import datetime, json, math, os, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 from PyQt6.QtCore import (Qt, QTimer, QSize, QPropertyAnimation, QVariantAnimation, QEasingCurve, QRectF, QEvent, QPointF, pyqtSignal)
@@ -2087,6 +2087,22 @@ class AIControls(QMainWindow):
         self.refresh_thread(force=True)
 
 
+def open_task_arg(w, args):
+    """--task ID: select the chat that contains task ID (follow-ups and retries hang under their root task)."""
+    tid = int(args[0]) if args and str(args[0]).isdigit() else 0
+    for _ in range(50):
+        try:
+            t = api("GET", "/tasks/%d" % tid) if tid else {}
+        except AgentOffline:
+            return
+        if not t.get("id"):
+            return
+        if not t.get("parent_id"):
+            break
+        tid = int(t["parent_id"])
+    w.select_conversation(tid)
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
@@ -2098,6 +2114,8 @@ def main():
     w.show()
     if "--settings" in sys.argv:
         QTimer.singleShot(300, w.open_settings)   # straight to Settings (the AI provider tab is where keys go)
+    if "--task" in sys.argv:                      # opened from the ask bar's inline panel: jump to that task's chat
+        QTimer.singleShot(300, lambda: open_task_arg(w, sys.argv[sys.argv.index("--task") + 1:][:1]))
     sys.exit(app.exec())
 
 
