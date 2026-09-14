@@ -3,12 +3,15 @@
 
 Starts fabos-agentd with the scripted provider in a temp dir, seeds one chat with a follow-up and a running task plus an
 older chat, then constructs the window under a Fab Dark and a Fab Light QPalette, renders each to a QPixmap and saves
-  <out>/ai-controls-dark.png  <out>/ai-controls-light.png  (+ ai-controls-{dialog,settings,approval}-{dark,light}.png)
+  <out>/ai-controls-dark.png  <out>/ai-controls-light.png  (+ ai-controls-{dialog,settings,approval,empty,edit}-{dark,light}.png,
+  provider-{dark,light}.png = the AI-provider tab after a successful connection check)
 and, on the live window, checks: a runtime colour-scheme switch restyles every surface; sidebar rows are reconciled in
-place (widgets keep their identity when another chat appears, moves or disappears); the approval dialog hides the raw
-command behind "Show details" (ui.show_raw off, low risk) and Deny reaches the daemon; an approval resolved elsewhere
-closes the dialog WITHOUT posting a decision; editing the chat's root message threads the new version into the same
-chat; Save in Settings with the daemon offline keeps the dialog open.
+place (widgets keep their identity when another chat appears, moves or disappears); the live action timeline spins for
+the running step and shows checks + narration for finished ones; the provider tab has one dropdown / key / model,
+the connection check (through a patched api) enables Save on success and blocks it after a rejected key; the approval
+dialog hides the raw command behind "Show details" (ui.show_raw off, low risk) and Deny reaches the daemon; an approval
+resolved elsewhere closes the dialog WITHOUT posting a decision; editing the chat's root message in place threads the
+new version into the same chat; --task ID opens on that chat; Save in Settings with the daemon offline keeps the dialog open.
 Exit code 0 only if every step ran without an exception. Needs PyQt6 — run it inside the image:
   podman run --rm -v $PWD:/work:Z -e QT_QPA_PLATFORM=offscreen localhost/fabos:vm python3 /work/tests/ai-controls-render.py /work/build
 """
@@ -58,7 +61,7 @@ def main():
         import command_center as cc
         from PyQt6.QtWidgets import QApplication, QDialog
         from PyQt6.QtGui import QPalette, QColor, QFont
-        from PyQt6.QtCore import QPoint, QTimer
+        from PyQt6.QtCore import QPoint, QTimer, QEvent
 
         def wait(tid, states=("done", "failed", "cancelled", "waiting_approval", "waiting_user"), timeout=40):
             for _ in range(timeout * 5):
@@ -71,6 +74,14 @@ def main():
         def spin(app, n=10):
             for _ in range(n):
                 app.processEvents()
+
+        def close_window(app, win):
+            """Tear a window down the way the event loop would (deferred delete), so no zombie widgets survive into the
+            next scheme; a leftover window with running timers is exactly what used to abort the light pass."""
+            win.close()
+            win.deleteLater()
+            app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            spin(app, 5)
 
         # --- seed: a chat with a follow-up and a running task; a second, older chat
         T0 = time.time()
@@ -141,12 +152,33 @@ def main():
             assert w.view.turns[fu].chip.isVisible() and w.view.turns[fu].chip.button.text().startswith("Worked:"), "worked chip missing"
             assert "Ran a command" in "".join(l.text() for l in w.view.turns[root].chip.panel.findChildren(cc.QLabel)), "friendly label missing"
             assert not any("uname" in l.text() for l in w.view.turns[root].chip.panel.findChildren(cc.QLabel)), "raw command leaked with ui.show_raw off"
+            # live action feed: the running task's timeline is open, its step shows a spinner + present-tense label + narration;
+            # the finished task's rows carry a check mark and the "done" narration; the header chip names the provider
+            live = w.view.turns[run].chip
+            assert live.button.text().startswith("Working:") and live.panel.isVisible() and live.button.isChecked(), (live.button.text(), live.panel.isVisible())
+            live_rows = [live.rows[s] for s in live.order]
+            assert live_rows and live_rows[-1].state == "busy" and live_rows[-1].mark.spinner.isActive(), "running step should spin"
+            assert live_rows[-1].title.text() == "Running a command", live_rows[-1].title.text()
+            assert live_rows[-1].narration.isVisible() and live_rows[-1].narration.text() == "Running a command for you.", live_rows[-1].narration.text()
+            done_rows = [w.view.turns[fu].chip.rows[s] for s in w.view.turns[fu].chip.order]
+            assert done_rows and all(r.state == "ok" for r in done_rows), [r.state for r in done_rows]
+            assert any(r.title.text().startswith("Opened Fab Editor") for r in done_rows), [r.title.text() for r in done_rows]
+            assert any(r.narration.text() == "Done, Fab Editor is open." for r in done_rows), [r.narration.text() for r in done_rows]
+            assert not any(r.raw.isVisible() for r in done_rows), "raw output shown with ui.show_raw off"
+            assert w.provider_chip.text() == "Test provider · ready", w.provider_chip.text()
+            assert not w.mic_btn.isEnabled() and w.mic_btn.toolTip() == cc.VOICE_UNAVAILABLE, "mic must be disabled without fabos-voice"
+            assert w.mode_btn.text() == "Auto", w.mode_btn.text()
+            assert w.sidebar.width() == 282 and w.sidebar.new_btn.height() == 36
+            assert w.sidebar.rows[root].height() == 48, w.sidebar.rows[root].height()
             assert w.sidebar.list.count() >= 4, "sidebar should have 2 groups + 2 chats (got %d rows)" % w.sidebar.list.count()
+            # the assistant action row: copy · good · bad · speak · edit · retry
+            first_assistant = [b for b in w.view.turns[fu].step_widgets.values() if b.role == "assistant"][0]
+            assert [b.glyph for b in first_assistant.action_buttons] == ["copy", "thumb-up", "thumb-down", "speaker", "edit", "retry"]
 
             def headers():
                 return [w.sidebar.list.itemWidget(w.sidebar.list.item(i)).text() for i in range(w.sidebar.list.count())
                         if isinstance(w.sidebar.list.itemWidget(w.sidebar.list.item(i)), cc.QLabel)]
-            assert headers() == ["TODAY", "EARLIER"], headers()
+            assert headers() == ["Today", "Earlier"], headers()
             # show the hover action icons on one user bubble and one agent bubble so they appear in the render
             w.view.turns[run].user._hover(True)
             last_assistant = [b for b in w.view.turns[fu].step_widgets.values() if b.role == "assistant"][-1]
@@ -195,13 +227,77 @@ def main():
                 blk = blk.next()
             assert mono_blocks >= 1, "code block not styled monospace"
             # the Settings dialog constructs and renders, with the raw-responses checkbox following the daemon setting
-            sd = cc.SettingsDialog(w, cc.api("GET", "/settings"))
+            sd = cc.SettingsDialog(w, cc.api("GET", "/settings"), w.voice)
             sd.show()
             spin(app)
             assert not sd.show_raw.isChecked()
             sp = sd.grab()
             assert sp.save(os.path.join(OUT, "ai-controls-settings-%s.png" % name))
             results[name + "-settings"] = (sp.width(), sp.height())
+            # --- AI provider tab: ONE dropdown (5 providers), one key field, model, endpoint only for Local, Check connection
+            sd.tabs.setCurrentIndex(1)
+            spin(app)
+            assert [sd.provider.itemData(i) for i in range(sd.provider.count())] == ["claude", "gemini", "openai", "deepseek", "local"]
+            assert sd.provider.itemText(3) == "DeepSeek" and sd.provider.itemText(0) == "Anthropic (Claude)"
+            assert not sd.base_url.isVisible(), "endpoint field must be hidden for cloud providers"
+            assert sd.model.text() == "claude-opus-5" and sd.key.echoMode() == cc.QLineEdit.EchoMode.Password
+            assert sd.confirm_btn.isEnabled(), "Save must be allowed when no new key was typed"
+            sd.provider.setCurrentIndex(4)
+            spin(app)
+            assert sd.base_url.isVisible() and sd.base_url.text() == "http://127.0.0.1:8080/v1" and sd.model.text() == "local"
+            sd.provider.setCurrentIndex(3)
+            spin(app)
+            assert sd.model.text() == "deepseek-chat" and not sd.base_url.isVisible()
+            # a typed key blocks Save until a successful check; the check runs off the GUI thread through cc.api
+            sd.key.setText("sk-typed"); sd.key.textEdited.emit("sk-typed")
+            spin(app)
+            assert not sd.confirm_btn.isEnabled(), "Save must be disabled until the typed key was checked"
+            calls = []
+
+            def fake_api(method, path, body=None, timeout=5):
+                if path == "/providers/test":
+                    calls.append(body)
+                    if body.get("api_key") == "sk-typed":
+                        return {"ok": True, "latency_ms": 312, "detail": "Connected", "models_sample": ["deepseek-chat"], "provider": body["provider"], "model": "deepseek-chat"}
+                    return {"ok": False, "detail": "key rejected", "http": 401, "latency_ms": 40, "provider": body["provider"], "model": "deepseek-chat"}
+                return real_api(method, path, body)
+            cc.api = fake_api
+            try:
+                sd.check_btn.click()
+                assert not sd.check_btn.isEnabled() and sd.mark.state == "busy", "button must be disabled and the mark spinning while checking"
+                deadline = time.time() + 5
+                while sd.worker is not None and time.time() < deadline:
+                    app.processEvents()
+                    time.sleep(0.02)
+                assert sd.worker is None, "provider check did not finish"
+                assert calls and calls[0]["provider"] == "deepseek" and calls[0]["api_key"] == "sk-typed", calls
+                assert sd.mark.state == "ok" and sd.check_result.text() == "Connected · deepseek-chat · 312 ms", (sd.mark.state, sd.check_result.text())
+                assert sd.confirm_btn.isEnabled(), "Save must be enabled after a successful check"
+                for _ in range(30):                  # let the check-mark animation draw
+                    app.processEvents()
+                    time.sleep(0.02)
+                pp = sd.grab()
+                assert pp.save(os.path.join(OUT, "provider-%s.png" % name))
+                results["provider-" + name] = (pp.width(), pp.height())
+                # a different key invalidates the check; a rejected key shakes the field, shows "Key rejected" and blocks Save
+                sd.key.setText("sk-bad"); sd.key.textEdited.emit("sk-bad")
+                assert not sd.confirm_btn.isEnabled() and sd.mark.state == "idle"
+                sd.check_btn.click()
+                deadline = time.time() + 5
+                while sd.worker is not None and time.time() < deadline:
+                    app.processEvents()
+                    time.sleep(0.02)
+                assert sd.mark.state == "fail" and sd.check_result.text() == "Key rejected", (sd.mark.state, sd.check_result.text())
+                assert not sd.confirm_btn.isEnabled() and "failed" in sd.confirm_btn.toolTip()
+                assert getattr(sd.key, "_shake_anim", None) is not None, "no shake animation on the key field"
+                sd.require_check.setChecked(False)
+                assert sd.confirm_btn.isEnabled(), "unticking the requirement must allow Save"
+                sd.require_check.setChecked(True)
+                assert not sd.confirm_btn.isEnabled()
+            finally:
+                cc.api = real_api
+            assert sd.tabs.tabText(2) == "Voice" and sd.wake_word.text() == "hey fab" and sd.speak_replies.isChecked() and not sd.offline_only.isChecked()
+            assert not sd.test_voice_btn.isEnabled() and sd.test_voice_btn.toolTip() == cc.VOICE_UNAVAILABLE   # no fabos-voice in the image
             sd.reject()
 
             # --- Save with the daemon unreachable: the dialog stays open and says so (nothing was saved)
@@ -270,7 +366,7 @@ def main():
             w.refresh_list()
             spin(app)
             assert w.sidebar.rows[root] is row_root and w.sidebar.rows[other] is row_other, "sidebar rows were rebuilt when a chat was removed"
-            assert headers() == ["TODAY", "EARLIER"] and w.sidebar.list.count() == 4, (headers(), w.sidebar.list.count())
+            assert headers() == ["Today", "Earlier"] and w.sidebar.list.count() == 4, (headers(), w.sidebar.list.count())
 
             # --- an approval resolved elsewhere (notification / CLI) closes the dialog WITHOUT posting a decision
             ask2 = cc.api("POST", "/tasks", {"request": "show me the system", "mode": "ask"})["id"]
@@ -303,7 +399,7 @@ def main():
             fu2 = cc.api("POST", "/tasks", {"request": "and the kernel version", "parent_id": other, "mode": "bypass"})["id"]
             w.refresh_list()
             spin(app)
-            assert headers() == ["TODAY"], headers()
+            assert headers() == ["Today"], headers()
             assert w.sidebar.list.item(1).data(cc.Qt.ItemDataRole.UserRole) == other and w.sidebar.list.item(2).data(cc.Qt.ItemDataRole.UserRole) == root
             assert w.sidebar.rows[root] is row_root, "the unmoved row lost its widget"
             assert w.sidebar.list.currentRow() == 2, "selection did not follow the current chat (row %d)" % w.sidebar.list.currentRow()
@@ -311,13 +407,24 @@ def main():
             cc.api("DELETE", "/tasks/%d" % fu2)
             w.refresh_list()
             spin(app)
-            assert headers() == ["TODAY", "EARLIER"] and w.sidebar.list.item(1).data(cc.Qt.ItemDataRole.UserRole) == root
+            assert headers() == ["Today", "Earlier"] and w.sidebar.list.item(1).data(cc.Qt.ItemDataRole.UserRole) == root
 
             # --- editing the ROOT message threads the new version into the same chat (no look-alike duplicate chat)
             n_convs = len(w.convs)
-            w.start_edit(root, "show me the system please")
-            assert w.send_btn.glyph == "check" and w.ask.text() == "show me the system please"
-            w.submit()
+            # the edit-message state (design brief): the request pill turns into a card with Cancel / Send pills
+            w.start_edit(root)
+            turn = w.view.turns[root]
+            spin(app)
+            assert turn.editing and turn.edit_card.isVisible() and not turn.user.isVisible(), "edit card did not replace the request pill"
+            assert turn.edit_card.text() == "show me the system", turn.edit_card.text()
+            turn.edit_card.cancel_btn.click()
+            spin(app)
+            assert not turn.editing and turn.user.isVisible() and w.editing is None, "Cancel did not restore the request pill"
+            w.start_edit(root)
+            turn.edit_card.editor.setText("show me the system please")
+            ep = turn.edit_card.grab()
+            assert ep.save(os.path.join(OUT, "ai-controls-edit-%s.png" % name))
+            turn.edit_card.send_btn.click()
             spin(app)
             assert w.current_root == root and len(w.convs) == n_convs, "editing the root spawned a new chat (convs=%r)" % sorted(w.convs)
             new_ids = [t["id"] for t in w.convs[root]["tasks"] if t["id"] not in (root, fu, run)]
@@ -325,7 +432,7 @@ def main():
             assert w.by_id[root]["title"].startswith(cc.SUPERSEDED), w.by_id[root]["title"]
             assert w.editing is None and w.ask.text() == ""
             row = w.sidebar.rows[root]
-            assert row._full_title == "show me the system" and "edited" in row.sub.text(), (row._full_title, row.sub.text())
+            assert row._full_title == "show me the system" and "edited" in row.meta, (row._full_title, row.meta)
             assert w.view.turns[root].user.frame.graphicsEffect() is not None, "superseded turn not dimmed"
             assert user_text_ok(cc, w.details.get(new_ids[0]) or cc.api("GET", "/tasks/%d" % new_ids[0]))
             # put the fixture back for the next scheme
@@ -341,9 +448,27 @@ def main():
             w.enlarge_btn.setChecked(False)
             app.processEvents()
             assert w.sidebar.isVisible()
-            w.close()
+            # empty state renders (Fab AI mark, three columns of cards) and a "Try asking" card prefills the composer
+            w.new_chat()
+            spin(app)
+            assert w.stack.currentIndex() == 0
+            ep = w.grab()
+            assert ep.save(os.path.join(OUT, "ai-controls-empty-%s.png" % name))
+            results[name + "-empty"] = (ep.width(), ep.height())
+            cards = [c for c in w.stack.widget(0).findChildren(cc.QPushButton) if c.objectName() == "emptyCard"]
+            assert len(cards) == 3
+            cards[0].click()
+            assert w.ask.text() == cards[0].text()
+            w.ask.clear()
+            close_window(app, w)
             del w
-            app.processEvents()
+            # --task ID opens the app on that task's conversation (the home-screen bar uses it)
+            w2 = cc.AIControls(task_id=fu)
+            w2.show()
+            spin(app, 20)
+            assert w2.current_root == root and w2.stack.currentWidget() is w2.view, ("--task did not open the chat", w2.current_root)
+            close_window(app, w2)
+            del w2
         cc.api("POST", "/tasks/%d/cancel" % run)
         for k, (wd, ht) in results.items():
             print("%s %dx%d" % (k, wd, ht))

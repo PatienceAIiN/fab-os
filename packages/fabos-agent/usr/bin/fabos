@@ -7,7 +7,9 @@
   fabos approvals | approve APPROVAL_ID | deny APPROVAL_ID | answer TASK_ID "text"
   fabos mode [ask|auto|bypass]      permission mode (ask: approve MEDIUM+, auto: approve CRITICAL only, bypass: never ask)
   fabos settings [KEY VALUE]         e.g. fabos settings provider openai ; fabos settings mail.smtp_host smtp.example.com
-  fabos set-key claude|openai|gemini|local|mail|mail-api   store a secret (prompted, never echoed)
+  fabos set-key claude|gemini|openai|deepseek|local|mail|mail-api   store a secret (prompted, never echoed)
+  fabos check [claude|gemini|openai|deepseek|local]   real connection check of the (given or active) AI provider
+  fabos approvals [--task ID]        pending approvals (optionally only those of one task)
   fabos watches | unwatch ID | log [--limit N] | status [--brief]
 """
 import argparse, getpass, json, os, sys, time, urllib.request, urllib.error
@@ -50,10 +52,11 @@ def main():
         sub.add_parser(c).add_argument("id", type=int)
     p = sub.add_parser("edit"); p.add_argument("id", type=int); p.add_argument("--title"); p.add_argument("--request"); p.add_argument("--mode")
     p = sub.add_parser("answer"); p.add_argument("id", type=int); p.add_argument("text", nargs="+")
-    sub.add_parser("approvals")
+    p = sub.add_parser("approvals"); p.add_argument("--task", type=int, metavar="ID")
     p = sub.add_parser("mode"); p.add_argument("value", nargs="?", choices=["ask", "auto", "bypass"])
     p = sub.add_parser("settings"); p.add_argument("key", nargs="?"); p.add_argument("value", nargs="?")
-    p = sub.add_parser("set-key"); p.add_argument("which", choices=["claude", "openai", "gemini", "local", "mail", "mail-api"]); p.add_argument("--remove", action="store_true")
+    p = sub.add_parser("set-key"); p.add_argument("which", choices=["claude", "gemini", "openai", "deepseek", "local", "mail", "mail-api"]); p.add_argument("--remove", action="store_true")
+    p = sub.add_parser("check"); p.add_argument("provider", nargs="?", choices=["claude", "gemini", "openai", "deepseek", "local"])
     sub.add_parser("watches")
     p = sub.add_parser("log"); p.add_argument("--limit", type=int, default=50)
     p = sub.add_parser("status"); p.add_argument("--brief", action="store_true")
@@ -109,7 +112,7 @@ def main():
     elif a.cmd in ("approve", "deny"):
         out = api("POST", "/approvals/%d" % a.id, {"decision": "approved" if a.cmd == "approve" else "denied"})
     elif a.cmd == "approvals":
-        out = api("GET", "/approvals/pending")
+        out = api("GET", "/approvals/pending" + ("?task_id=%d" % a.task if a.task else ""))
         if not a.json:
             for x in out: print("#%-4d task #%d %-9s %-12s %s  %s" % (x["id"], x["task_id"], x["risk"], x["tool"], x["reason"], x["input"][:120]))
             if not out: print("no pending approvals")
@@ -125,9 +128,16 @@ def main():
                     if k != "secrets": print("%-22s %s" % (k, out[k]))
                 print("secrets: " + ", ".join("%s=%s" % (k, "set" if v else "unset") for k, v in out["secrets"].items())); return
     elif a.cmd == "set-key":
-        name = {"claude": "claude_api_key", "openai": "openai_api_key", "gemini": "gemini_api_key", "local": "local_api_key", "mail": "mail_password", "mail-api": "mail_api_key"}[a.which]
+        name = {"claude": "claude_api_key", "gemini": "gemini_api_key", "openai": "openai_api_key", "deepseek": "deepseek_api_key", "local": "local_api_key", "mail": "mail_password", "mail-api": "mail_api_key"}[a.which]
         val = "" if a.remove else getpass.getpass("%s: " % name)
         out = api("POST", "/secrets", {"name": name, "value": val})
+    elif a.cmd == "check":
+        out = api("POST", "/providers/test", {"provider": a.provider} if a.provider else {})
+        if not a.json and "ok" in out:
+            print(("Connected to %s · %s · %d ms" % (out.get("provider"), out.get("model"), out.get("latency_ms", 0))) if out["ok"]
+                  else ("%s: %s" % (out.get("provider") or "provider", out.get("detail"))))
+            if out.get("models_sample"): print("models: " + ", ".join(out["models_sample"]))
+            sys.exit(0 if out["ok"] else 1)
     elif a.cmd == "watches":
         out = api("GET", "/watches")
         if not a.json:

@@ -17,7 +17,7 @@ cat > "$OUT/NOTES.md" <<MD
 # Fab OS $TAG (pre-release)
 
 Ubuntu 26.04 LTS based desktop by Patience AI with KDE Plasma 6, the Fab OS look, and the built-in Fab OS agent
-(Claude / OpenAI / Gemini / local models; ask / auto / bypass permission modes; System-Wide AI switch).
+(Anthropic Claude / Google Gemini / OpenAI / DeepSeek / local models with a real connection check; ask / auto / bypass permission modes; System-Wide AI switch).
 
 ## Download
 One file, one click: **https://fabos.patienceai.in/download/$base**  (about 2.3 GB).
