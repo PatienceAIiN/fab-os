@@ -57,6 +57,10 @@ PY
       install -Dm755 "$SRC/bin/aios"  "$dst/usr/bin/aios"
       install -Dm755 "$SRC/bin/aiosd" "$dst/usr/bin/aiosd"
       ;;
+    fabos-voice)
+      # no generated assets (the whisper tiny.en model is fetched sha256-pinned in image/Containerfile); gate the build on a compile check
+      python3 -m py_compile "$dst"/usr/lib/fabos/voice/*.py "$dst/usr/bin/fabos-voice" && find "$dst" -name __pycache__ -type d -prune -exec rm -rf {} +
+      ;;
   esac
   # --- render templates in all text files ---
   while IFS= read -r -d '' f; do

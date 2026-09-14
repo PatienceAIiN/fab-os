@@ -1,0 +1,20 @@
+Package: fabos-voice
+Version: @DISTRO_VERSION@-1
+Section: sound
+Priority: optional
+Architecture: all
+Maintainer: @VENDOR_NAME@ <fabos@patienceai.in>
+Homepage: https://fabos.patienceai.in
+Depends: python3, python3-numpy, pipewire-bin | pulseaudio-utils, pocketsphinx, pocketsphinx-en-us, whisper.cpp, espeak-ng, libnotify-bin
+Recommends: fabos-agent, sox
+Description: @DISTRO_NAME@ voice — "Hey Fab" wake word, speech-to-text, spoken narration
+ Talk to @DISTRO_NAME@. An always-on, fully offline wake-word listener
+ (pocketsphinx keyphrase spotting) waits for "Hey Fab"; what you say next is
+ transcribed offline with whisper.cpp (tiny.en model shipped in
+ /usr/share/fabos/voice) or, when you configured a cloud provider and allow
+ it, through the agent's speech endpoint. The request goes to the
+ @DISTRO_NAME@ agent and the daemon narrates every step, asks for approvals
+ by voice and speaks the reply. Ships the fabos-voice CLI (listen-once, say,
+ status, wake on|off) used by every @DISTRO_NAME@ UI, and the per-user
+ fabos-voiced service. Offline text-to-speech is espeak-ng; the human-like
+ Indian-English voice needs an OpenAI or Gemini key in Fab AI Controls.

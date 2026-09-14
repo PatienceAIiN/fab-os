@@ -80,13 +80,27 @@ RUN set -e; d=/usr/share/fabos/models; f=qwen2.5-1.5b-instruct-q4_k_m.gguf; \
  && { printf 'Qwen2.5-1.5B-Instruct (GGUF, Q4_K_M) - the built-in offline model of Fab OS\n\nCopyright 2024 Alibaba Cloud\nLicensed under the Apache License, Version 2.0 (full text below).\nModel card: https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF\n\n'; cat /usr/share/common-licenses/Apache-2.0; } > "$d/LICENSE-qwen2.5" \
  && printf 'Name: Qwen2.5-1.5B-Instruct\nVersion: 2.5 (GGUF Q4_K_M, unmodified upstream file)\nFile: %s\nBytes: 1117320736\nSHA256: %s\nLicense: Apache-2.0, Copyright 2024 Alibaba Cloud (LICENSE-qwen2.5)\nSource: %s\nModel card: https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF\nServed by: fabos-llama.socket (user unit, 127.0.0.1:8080, loads on demand, unloads after 10 idle minutes)\nManifest: /usr/share/fabos/ai-models.json   Status: fabos-local-model status\n' "$d/$f" "$h" "$u" > "$d/README" \
  && ls -la "$d"
+
+# Voice: offline wake word + speech-to-text + TTS
+# pocketsphinx keyphrase spotting ("hey fab", en-us model from pocketsphinx-en-us) + whisper.cpp with the tiny.en model fetched HERE
+# at build time and sha256-pinned (nothing is ever downloaded on the user's machine) + espeak-ng offline voice. Own layer, no
+# dependency on the pkgs stage, so a package edit never re-downloads the 77 MB model.
+RUN apt-get update && apt-get install -y whisper.cpp pocketsphinx pocketsphinx-en-us espeak-ng espeak-ng-data pipewire-bin pulseaudio-utils sox python3-numpy libnotify-bin \
+ && install -d -m 0755 /usr/share/fabos/voice \
+ && curl -fsSL --retry 3 --retry-delay 5 -o /usr/share/fabos/voice/ggml-tiny.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin \
+ && echo '921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f  /usr/share/fabos/voice/ggml-tiny.en.bin' | sha256sum -c - \
+ && chmod 0644 /usr/share/fabos/voice/ggml-tiny.en.bin \
+ && grep -q '^hey HH EY' /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict && grep -q '^fab F AE B' /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict \
+ && rm -rf /var/lib/apt/lists/*
+# (fabos-voice itself — CLI, "Hey Fab" listener, phrases — is installed with the other FabOS packages below; its postinst
+#  enables the per-user unit for every user.)
 # Low-RAM support (own layer, docs/LOW-RAM.md): compressed swap in RAM (systemd-zram-generator; fabos-desktop ships
 # /etc/systemd/zram-generator.conf) and systemd-oomd, the Ubuntu Desktop default that the minimal container base lacks.
 RUN apt-get update && apt-get install -y --no-install-recommends systemd-zram-generator systemd-oomd && rm -rf /var/lib/apt/lists/* && \
     (systemctl disable cups-browsed.service smartmontools.service motd-news.timer 2>/dev/null || true)
 # FabOS packages (identity, desktop experience, AI stack)
 COPY --from=pkgs /out/*.deb /tmp/debs/
-RUN apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-welcome_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
+RUN apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-welcome_*.deb /tmp/debs/fabos-voice_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
     && apt-get install -y sddm-theme-breeze && (apt-get purge -y budgie-sddm-theme 2>/dev/null || true) && apt-get -y autoremove --purge && rm -rf /var/lib/apt/lists/* /tmp/debs
 # System configuration
 RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/; s/^# *en_IN UTF-8/en_IN UTF-8/' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \

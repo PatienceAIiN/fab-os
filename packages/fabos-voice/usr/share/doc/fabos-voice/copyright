@@ -1,0 +1,48 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: fabos-voice
+Upstream-Contact: Patience AI <fabos@patienceai.in>
+Source: https://github.com/PatienceAIiN/fab-os
+
+Files: *
+Copyright: 2026 Patience AI and Fab OS contributors
+License: Apache-2.0
+ Licensed under the Apache License, Version 2.0 (the "License"); you may not
+ use this file except in compliance with the License. You may obtain a copy of
+ the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by
+ applicable law or agreed to in writing, software distributed under the License
+ is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ KIND, either express or implied. See the License for the specific language
+ governing permissions and limitations under the License.
+ .
+ On Debian systems the complete text of the Apache License 2.0 is in
+ /usr/share/common-licenses/Apache-2.0.
+
+Files: usr/share/fabos/voice/ggml-tiny.en.bin
+Comment: whisper.cpp "tiny.en" model (ggml format), added to /usr/share/fabos/voice at image build time from
+ https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
+ (sha256 921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f). Converted by the ggml authors from
+ the original Whisper tiny.en weights (MIT).
+Copyright: 2023-2024 The ggml authors
+           2022 OpenAI (original Whisper weights)
+License: Expat
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+Comment: Runtime components used but not shipped in this package (each keeps its own Ubuntu copyright file):
+ whisper.cpp 1.8.3 (Expat/MIT), pocketsphinx 5.0.4 and pocketsphinx-en-us (BSD-2-Clause, Carnegie Mellon
+ University), espeak-ng 1.52 (GPL-3.0-or-later), pipewire-bin / pulseaudio-utils, libnotify-bin.

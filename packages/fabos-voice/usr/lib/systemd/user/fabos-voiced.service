@@ -1,0 +1,27 @@
+[Unit]
+Description=@DISTRO_NAME@ voice — "Hey Fab" wake word and spoken narration
+Documentation=@DOCS_URL@
+# The agent's user unit is fabos-agent.service; fabos-agentd.service is listed too in case it is ever renamed.
+After=pipewire.service fabos-agent.service fabos-agentd.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/lib/fabos/voice/fabos_voiced.py
+Restart=on-failure
+RestartSec=3
+Nice=10
+# 200M is a soft cap (memory.high throttles and reclaims, it never kills) sized for what stays resident: python3 + numpy
+# ~40 MB, pw-record, pocketsphinx ~32 MB. whisper-cli with tiny.en peaks at ~175 MB, so the daemon runs each
+# transcription in its own transient scope (systemd-run --user --scope -p MemoryHigh=400M, voicelib.scope_prefix); if
+# that is unavailable it still runs, inside this cgroup, only slower.
+MemoryHigh=200M
+NoNewPrivileges=yes
+UMask=0077
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+EnvironmentFile=-/etc/fabos/voice.env
+EnvironmentFile=-%h/.config/fabos/voice.env
+# Talks only to 127.0.0.1 (fabos-agentd) and the user's PipeWire socket; the wake word never leaves the machine.
+
+[Install]
+WantedBy=default.target

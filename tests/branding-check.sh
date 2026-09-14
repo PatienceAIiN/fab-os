@@ -126,4 +126,11 @@ chk "fabos-llama.socket enabled for all users"   "R 'systemctl --global is-enabl
 chk "fabos-llama units pass systemd-analyze"     "[ -z \"\$(R 'mkdir -p /tmp/xdg && chmod 700 /tmp/xdg && XDG_RUNTIME_DIR=/tmp/xdg systemd-analyze verify --user /usr/lib/systemd/user/fabos-llama.socket /usr/lib/systemd/user/fabos-llama-proxy.service /usr/lib/systemd/user/fabos-llama.service 2>&1 || echo VERIFY-FAILED' | grep -iE 'error|fail|not found|unknown|ignoring')\" ]"
 chk "fabos-local-model status: installed + size ok" "R 'fabos-local-model status' | grep -q '\"installed\": true' && R 'fabos-local-model status' | grep -q '\"size_ok\": true'"
 chk "ai.env points at the built-in model"        "R 'grep -q ^AIOS_LLAMA_MODEL=$MODEL /etc/fabos/ai.env' && ! R 'grep -qi download /etc/fabos/ai.env'"
+
+# Voice (2026-09-14): "Hey Fab" wake word (pocketsphinx, offline), whisper.cpp tiny.en model shipped in the image, espeak-ng fallback
+chk "voice: CLI, daemon and engines installed"     "R 'test -x /usr/bin/fabos-voice && test -x /usr/lib/fabos/voice/fabos_voiced.py && test -x /usr/bin/pocketsphinx && test -x /usr/bin/whisper-cli && test -x /usr/bin/espeak-ng && test -x /usr/bin/pw-record'"
+chk "voice: fabos-voiced user unit enabled"        "R 'systemctl --global is-enabled fabos-voiced.service' | grep -q enabled"
+chk "voice: whisper tiny.en model shipped (sha256)" "R 'sha256sum /usr/share/fabos/voice/ggml-tiny.en.bin' | grep -q ^921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
+chk "voice: dictionary knows the wake phrase"      "R 'grep -q \"^hey HH EY\" /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict && grep -q \"^fab F AE B\" /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict'"
+chk "voice: status reports offline whisper.cpp"    "R 'fabos-voice status' | grep -q '\"stt\": \"whisper.cpp\"'"
 exit $fail
