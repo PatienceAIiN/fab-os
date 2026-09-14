@@ -1,6 +1,7 @@
 [Plymouth Theme]
 Name=@DISTRO_NAME@
 Description=@DISTRO_NAME@ boot animation by @VENDOR_NAME@
+Comment=Author: @VENDOR_NAME@ <support@patienceai.in>, @HOME_URL@ (Apache-2.0 / CC0-1.0)
 ModuleName=script
 
 [script]

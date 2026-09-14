@@ -2,6 +2,9 @@
 Name=@DISTRO_NAME@
 Description=@DISTRO_NAME@ greeter by @VENDOR_NAME@
 Author=@VENDOR_NAME@
+Email=support@patienceai.in
+Copyright=2026 @VENDOR_NAME@
+Website=@HOME_URL@
 License=Apache-2.0
 Type=sddm-theme
 Version=1.0

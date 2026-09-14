@@ -4,6 +4,7 @@ Section: misc
 Priority: optional
 Architecture: all
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Homepage: @HOME_URL@
 Depends: python3, python3-pyqt6, fabos-branding
 Recommends: fabos-agent
 Description: Welcome to @DISTRO_NAME@ — first-run experience

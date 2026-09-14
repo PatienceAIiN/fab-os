@@ -403,7 +403,7 @@ def build_icon_theme(out, conf, marks):
     # places/preferences names live in apps/ too; KIconLoader searches all listed dirs regardless of Context.
     # scalable/ is listed FIRST so KIconLoader picks the SVG whenever the requested size is within MinSize..MaxSize.
     dirs = ",".join(["scalable/apps"] + ["%dx%d/apps" % (s, s) for s in sizes])
-    idx = ["[Icon Theme]", "Name=FabOS", "Comment=%s icons: Google Material Symbols on Fab OS tiles; everything else from Breeze" % conf["DISTRO_NAME"],
+    idx = ["[Icon Theme]", "Name=FabOS", "Comment=%s icons by %s (%s): Google Material Symbols on Fab OS tiles; everything else from Breeze" % (conf["DISTRO_NAME"], conf["VENDOR_NAME"], conf["HOME_URL"]),
            "Inherits=breeze-dark,breeze,hicolor", "FollowsColorScheme=true", "Directories=" + dirs, "",
            "[scalable/apps]", "Size=64", "MinSize=16", "MaxSize=1024", "Type=Scalable", "Context=Applications", ""]
     for s in sizes: idx += ["[%dx%d/apps]" % (s, s), "Size=%d" % s, "Type=Fixed", "Context=Applications", ""]

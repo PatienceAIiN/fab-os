@@ -25,6 +25,12 @@ security review, and final public notices.
 
 Do not install an unreleased image on a primary computer.
 
+## System requirements
+
+2 GB of RAM (Fab OS uses compressed swap in RAM and starts background services on demand; 4 GB is recommended),
+20 GB of disk, a 64-bit processor and UEFI firmware. `docs/LOW-RAM.md` lists the low-memory defaults and how to
+change them; file-content search is off until you enable it in Fab Settings → Search.
+
 ## Device evaluation
 
 Use a spare device or replaceable test disk. Record the exact model, firmware,

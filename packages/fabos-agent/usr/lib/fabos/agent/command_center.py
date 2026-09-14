@@ -93,6 +93,7 @@ class SettingsDialog(QDialog):
         self.mail_api = QLineEdit(); self.mail_api.setEchoMode(QLineEdit.EchoMode.Password); self.mail_api.setPlaceholderText("stored" if s["secrets"].get("mail_api_key") else "Brevo API key (transport brevo)"); f.addRow("API key", self.mail_api)
         tabs.addTab(w, "Mail")
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel); bb.accepted.connect(self.save); bb.rejected.connect(self.reject); lay.addWidget(bb)
+        lay.addWidget(QLabel(APP + " by Patience AI · fabos.patienceai.in · support@patienceai.in", objectName="muted"))   # about / author line
 
     def save(self):
         body = {"mode": self.mode.currentText(), "agent.max_turns": self.max_turns.text() or "60", "provider": self.provider.currentData(),

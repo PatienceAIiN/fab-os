@@ -2,7 +2,7 @@
 Type=Application
 Name=@DISTRO_NAME@ Updates
 GenericName=Software Updates
-Comment=Check for and install @DISTRO_NAME@ and base system updates; choose Standard or Beta channel
+Comment=Check for and install @DISTRO_NAME@ updates from @VENDOR_NAME@ and base system updates; choose Standard or Beta channel
 Exec=fabos-updates
 Icon=fabos-updates
 Terminal=false

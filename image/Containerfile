@@ -68,6 +68,9 @@ RUN printf 'Types: deb\nURIs: https://packages.mozilla.org/apt\nSuites: mozilla\
 RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3-dbus python3-gi libnotify-bin wtype unattended-upgrades ubuntu-drivers-common && rm -rf /var/lib/apt/lists/*
 # Bundled applications (own layer): LibreOffice with KDE integration, VLC, KWeather, extra Plasma widgets (weather, etc.)
 RUN apt-get update && apt-get install -y libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-kf6 libreoffice-style-breeze hunspell-en-us vlc kweather plasma-widgets-addons && rm -rf /var/lib/apt/lists/*
+# Low-RAM support (own layer, docs/LOW-RAM.md): compressed swap in RAM (systemd-zram-generator; fabos-desktop ships
+# /etc/systemd/zram-generator.conf) and systemd-oomd, the Ubuntu Desktop default that the minimal container base lacks.
+RUN apt-get update && apt-get install -y --no-install-recommends systemd-zram-generator systemd-oomd && rm -rf /var/lib/apt/lists/*
 # FabOS packages (identity, desktop experience, AI stack)
 COPY --from=pkgs /out/*.deb /tmp/debs/
 RUN apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-welcome_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
@@ -76,7 +79,7 @@ RUN apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update && apt-get
 RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/; s/^# *en_IN UTF-8/en_IN UTF-8/' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     ln -sf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime && echo Asia/Kolkata > /etc/timezone && \
     printf 'LABEL=fabos-root  /         ext4  defaults,discard  0 1\nLABEL=FABOS-ESP   /boot/efi vfat  umask=0077        0 1\n' > /etc/fstab && mkdir -p /boot/efi && \
-    systemctl enable NetworkManager systemd-resolved systemd-timesyncd sddm fabos-feedback.socket && \
+    systemctl enable NetworkManager systemd-resolved systemd-timesyncd sddm fabos-feedback.socket systemd-oomd.service && \
     truncate -s0 /etc/machine-id && rm -f /var/lib/dbus/machine-id && \
     flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
 # Ship the official archive in the OS, not the build mirror

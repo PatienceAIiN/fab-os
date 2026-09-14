@@ -8,6 +8,7 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QCheckBox, QPlainTextEdit, QMessageBox)
 
 HELPER = "/usr/lib/fabos/updates/helper.sh"
+ABOUT = "Fab OS by Patience AI · fabos.patienceai.in · support@patienceai.in"
 STYLE = """
 QWidget { font-family: Inter, 'Noto Sans', sans-serif; font-size: 14px; }
 QLineEdit, QPlainTextEdit, QComboBox, QTextBrowser, QListWidget, QTableWidget { background: palette(base); border: 1px solid palette(mid); border-radius: 10px; padding: 6px 10px; selection-background-color: palette(highlight); }
@@ -79,6 +80,9 @@ class Updates(QWidget):
         b.addWidget(self.check_btn)
         b.addWidget(self.install_btn)
         b.addStretch(1)
+        about = QLabel(ABOUT, objectName="muted")
+        about.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        b.addWidget(about)
         v.addLayout(b)
         self.proc = None
         if autocheck:

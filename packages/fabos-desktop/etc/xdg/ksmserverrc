@@ -1,0 +1,5 @@
+# @DISTRO_NAME@ low-RAM defaults (docs/LOW-RAM.md): log in to an empty desktop instead of reopening every
+# application from the previous session (which puts a 2 GB machine straight into swap before it is usable).
+# Change in Fab Settings > Session > Desktop Session ("When logging in").
+[General]
+loginMode=emptySession

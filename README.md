@@ -66,6 +66,19 @@ Design docs live in [`docs/design/`](docs/design/). Decisions are recorded as AD
 
 ---
 
+## Minimum requirements
+
+| | Minimum | Notes |
+|---|---|---|
+| Memory | **2 GB RAM** | Fab OS ships compressed swap in RAM (zram, half of RAM) and keeps background services on demand, so 2 GB runs the full desktop with every effect on. 4 GB recommended for large documents and many browser tabs. |
+| Disk | **20 GB** | The installed system is about 7 GB; the rest is for updates, Flatpaks and your files. |
+| Processor / firmware | **64-bit (x86-64), UEFI** | Secure Boot works (Ubuntu's signed kernel and shim). Legacy BIOS is not supported. |
+| Graphics | any GPU with a Mesa or vendor driver | Wayland-only desktop. |
+
+What is tuned for small machines, and how to change it back, is in [`docs/LOW-RAM.md`](docs/LOW-RAM.md).
+
+---
+
 ## Install Fab OS
 
 1. **Download the ISO** (about 2.3 GB) from [fabos.patienceai.in](https://fabos.patienceai.in).

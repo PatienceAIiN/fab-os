@@ -17,6 +17,7 @@ texts are in `THIRD_PARTY_LICENSES/` (index: `THIRD_PARTY_LICENSES/README.md`) a
 | PackageKit (apt backend) | freedesktop.org | GPL-2.0-or-later | PackageKit authors | Yes: the origin display label, length-preserving byte patch (legal/PATCHED-BINARIES.md) | keep notices (kept); offer source (kept); document modification (done) |
 | GRUB 2 (signed), shim-signed, casper (ISO profile) | GNU / Red Hat / Ubuntu | GPL-3.0-or-later (GRUB), BSD-2-Clause (shim), GPL-2.0-or-later (casper) | respective authors | No | keep notices; offer source |
 | llama.cpp | github.com/ggml-org/llama.cpp | MIT (THIRD_PARTY_LICENSES/MIT.txt) | 2023-2026 The ggml authors | No | keep notice |
+| systemd-zram-generator (swap on zram, docs/LOW-RAM.md) | github.com/systemd/zram-generator | MIT (THIRD_PARTY_LICENSES/MIT.txt) | zram-generator contributors | No; Fab OS ships its own `/etc/systemd/zram-generator.conf` | keep notice |
 | Inter typeface | rsms.me/inter | SIL OFL 1.1 (also offered under Apache-2.0 upstream) | 2016-2023 The Inter Project Authors | No | keep OFL notice; do not sell the font alone |
 | JetBrains Mono | jetbrains.com/mono | SIL OFL 1.1 | 2020 JetBrains s.r.o. | No | as above |
 | Noto Sans | Google | SIL OFL 1.1 | Google | No | as above |

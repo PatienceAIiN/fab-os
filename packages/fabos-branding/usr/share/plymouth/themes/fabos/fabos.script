@@ -1,4 +1,4 @@
-// Fab OS boot splash — original artwork, Apache-2.0 / CC0-1.0.
+// Fab OS boot splash — original artwork by Patience AI <support@patienceai.in>, https://fabos.patienceai.in/ — Apache-2.0 / CC0-1.0.
 //
 // Everything on screen is sized from the display, never in fixed pixels: the spinner frames ship at 256 px and are
 // scaled ONCE at load to 12 % of the screen height (130 px at 1080p, 173 px at 1440p, 259 px at 4K), the wordmark
