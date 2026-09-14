@@ -49,8 +49,9 @@ support contact, and applicable legal basis.
 
 Shipped defaults: the firewall is on (ufw — incoming connections denied, outgoing allowed, no SSH server in the
 image), AppArmor is on, full-disk encryption is pre-selected in the installer, updates are signed (Ubuntu's keys and
-the Fab OS Archive key), nothing is downloaded on first use, there is no telemetry, and the built-in agent stays off
-until a provider key is added and asks before risky steps.
+the Fab OS Archive key), Fab OS never downloads anything on first use (models, voices, fonts and icons are shipped
+inside the ISO release), there is no telemetry, and the built-in agent stays off until a provider key is added and asks
+before risky steps.
 
 ## Licensing
 

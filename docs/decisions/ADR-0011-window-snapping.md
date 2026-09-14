@@ -52,4 +52,4 @@ two natively; the third does not exist upstream.
 
 - On machines whose compositor cannot load OpenGL effects, Snap Assist silently does nothing (Window View is absent);
   edge tiling keeps working.
-- The behaviour lives in one 150-line script and one kwinrc key; removing it is `fabos-snap-assistEnabled=false`.
+- The behaviour lives in one ~170-line script and one kwinrc key; removing it is `fabos-snap-assistEnabled=false`.

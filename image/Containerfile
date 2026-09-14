@@ -97,7 +97,11 @@ RUN (userdel -r ubuntu 2>/dev/null || true) && rm -f /etc/update-motd.d/60-unmin
 RUN if [ "$PROFILE" = vm ]; then \
       apt-get update && apt-get install -y --no-install-recommends openssh-server && rm -rf /var/lib/apt/lists/* && \
       useradd -m -s /bin/bash -G sudo,adm,video,audio,render,plugdev,netdev fabos && echo 'fabos:fabos' | chpasswd && \
-      ufw allow 22/tcp && systemctl enable serial-getty@ttyS0 fabos-selftest ssh ; fi   # vm only: SSH for the QEMU harness (hostfwd 2222->22) through the firewall
+      sed -i 's/^ENABLED=yes$/ENABLED=no/' /etc/ufw/ufw.conf && ufw allow 22/tcp && sed -i 's/^ENABLED=no$/ENABLED=yes/' /etc/ufw/ufw.conf && grep -q '^ENABLED=yes$' /etc/ufw/ufw.conf && \
+      grep -q '^-A ufw-user-input -p tcp --dport 22 -j ACCEPT' /etc/ufw/user.rules && systemctl enable serial-getty@ttyS0 fabos-selftest ssh ; fi
+# ^ vm only: SSH for the QEMU harness (hostfwd 2222->22) through the firewall. `ufw allow` refuses to write rules while
+#   ENABLED=yes and netfilter is unreachable (initcaps() is a hard error, exit 1), so the flag is lowered for the one rule
+#   write and raised again; the grep proves the rule landed. The iso profile adds no rules (branding-check asserts zero).
 RUN if [ "$PROFILE" = iso ]; then \
       install -d /etc/skel/Desktop && cp /usr/share/applications/fabos-install.desktop /etc/skel/Desktop/ && chmod +x /etc/skel/Desktop/fabos-install.desktop && \
       useradd -m -s /bin/bash -G sudo,adm,video,audio,render,plugdev,netdev,lpadmin fabos && passwd -d fabos && \

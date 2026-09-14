@@ -151,7 +151,7 @@ Fab OS keeps two update streams, both automatic and both signed:
 - **Secure Boot** works: Ubuntu's signed kernel and shim, unmodified.
 - **Firewall on** from the first boot: ufw denies incoming and allows outgoing connections, with no extra rules; the shipped image has no SSH server. `sudo ufw status` shows it, `sudo ufw allow <port>` opens a port.
 - **Full-disk encryption** (LUKS2) is pre-selected in the installer.
-- **Signed updates only**: Ubuntu's archive keys and the Fab OS Archive key. Nothing is downloaded on first use — every model, voice, font and icon ships in the ISO.
+- **Signed updates only**: Ubuntu's archive keys and the Fab OS Archive key. Fab OS never downloads anything on first use: models, voices, fonts and icons are shipped inside the ISO release.
 - **No telemetry**, no analytics, no accounts ([legal/PRIVACY.md](legal/PRIVACY.md)).
 - **The agent is gated by permissions**: it runs as you, stays off until you add a provider key, asks before risky steps, and reaches root only through a single-use, policy-checked path ([SECURITY.md](SECURITY.md)).
 
