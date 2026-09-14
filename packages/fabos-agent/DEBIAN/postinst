@@ -3,8 +3,24 @@ set -e
 case "$1" in configure)
   # Start the agent for every user's session (System-Wide AI stays opt-in per provider key; this only runs the local service)
   systemctl --global enable fabos-agent.service 2>/dev/null || true
-  chmod 0440 /etc/sudoers.d/fabos-agent 2>/dev/null || true
-  chmod 0755 /usr/lib/fabos/agent/rootexec 2>/dev/null || true
+  # 1.0-3 and earlier shipped /etc/sudoers.d/fabos-agent (%sudo NOPASSWD rootexec). Root now goes through pkexec + polkit
+  # (in.patienceai.fabos.rootexec, the user's own password); the old rule must not survive an upgrade (ADR-0017).
+  rm -f /etc/sudoers.d/fabos-agent
+  chmod 0755 /usr/lib/fabos/agent/rootexec /usr/lib/fabos/agent/fabos_agentd.py 2>/dev/null || true
+  # sudo hardening defaults ship with this package; sudoers.d files must be 0440 root:root and parse
+  if [ -f /etc/sudoers.d/fabos-hardening ]; then
+    chown root:root /etc/sudoers.d/fabos-hardening && chmod 0440 /etc/sudoers.d/fabos-hardening
+    visudo -cqf /etc/sudoers.d/fabos-hardening || { echo "fabos-agent: /etc/sudoers.d/fabos-hardening does not parse; removing it" >&2; rm -f /etc/sudoers.d/fabos-hardening; }
+  fi
+  # /etc/fabos: root-owned, world-readable (policy.json is read by every user's daemon); never group/world-writable
+  install -d -m 0755 -o root -g root /etc/fabos
+  chmod 0644 /etc/fabos/policy.json 2>/dev/null || true
+  # root audit log directory (rootexec appends; readable by adm)
+  install -d -m 0750 -o root -g adm /var/log/fabos
+  # AppArmor: load the agent profile now when AppArmor is running (at boot apparmor.service loads everything in /etc/apparmor.d)
+  if command -v apparmor_parser >/dev/null 2>&1 && [ -d /sys/kernel/security/apparmor ] && [ -f /etc/apparmor.d/fabos-agentd ]; then
+    apparmor_parser -r -T -W /etc/apparmor.d/fabos-agentd 2>/dev/null || true
+  fi
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q || true
   # Ubuntu's python3-anthropic pulls httpx; nothing else to do. Data lives in ~/.local/share/fabos/agent.db per user.
 ;; esac

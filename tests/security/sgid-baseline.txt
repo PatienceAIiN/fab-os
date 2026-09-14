@@ -1,0 +1,6 @@
+# Fab OS privileged-file baseline: setgid files (Ubuntu stock set, measured 2026-09-15 on localhost/fabos:vm and :iso).
+/usr/bin/chage
+/usr/bin/expiry
+/usr/bin/ssh-agent
+/usr/sbin/pam_extrausers_chkpwd
+/usr/sbin/unix_chkpwd

@@ -1,0 +1,11 @@
+{
+  "_comment": "Fab OS administrator policy. Copy to /etc/fabos/policy.json (root:root 0644). Absent file = no restriction. Every key is optional; unknown keys are reported in `fabos policy`. Reload with `systemctl --user kill -s HUP fabos-agent` (per user) or `fabos policy --reload`; a reboot or relogin also reloads. See docs/ENTERPRISE.md.",
+  "mode_max": "auto",
+  "providers_allowed": ["local", "claude"],
+  "cloud_allowed": true,
+  "tools_denied": ["send_email"],
+  "hosts_allowed": ["api.anthropic.com", "127.0.0.1", "*.example.com"],
+  "audit_export_dir": "/var/lib/fabos/audit",
+  "require_password_for_root": true,
+  "sandbox_network": true
+}

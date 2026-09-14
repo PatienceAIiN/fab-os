@@ -1,0 +1,14 @@
+# @DISTRO_NAME@ power defaults (docs/ENTERPRISE.md, ADR-0017). Users change them in Fab Settings > Power Management; the
+# per-user ~/.config/powerdevilrc overrides this file. Key names verified in the image's libpowerdevilcore.so.6.6.6
+# (UTF-16 literals: LidAction, AutoSuspendAction, AutoSuspendIdleTimeoutSec, TurnOffDisplayIdleTimeoutSec, profile groups
+# AC / Battery / LowBattery, section SuspendAndShutdown). LidAction=1 = sleep when the lid is closed (PowerDevil's
+# PowerButtonAction::SuspendSession), the upstream default restated so it is asserted; on wake the screen is locked by
+# kscreenlocker's LockOnResume=true (/etc/xdg/kscreenlockerrc [Daemon]), which is how "lock on lid close" is realised.
+[AC][SuspendAndShutdown]
+LidAction=1
+
+[Battery][SuspendAndShutdown]
+LidAction=1
+
+[LowBattery][SuspendAndShutdown]
+LidAction=1

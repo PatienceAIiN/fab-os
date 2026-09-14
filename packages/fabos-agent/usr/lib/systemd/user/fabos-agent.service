@@ -5,13 +5,31 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /usr/lib/fabos/agent/fabos_agentd.py
+# The script is executed directly (not `python3 script.py`) so the AppArmor profile fabos-agentd, attached to this path,
+# applies at exec time without a change_onexec (ADR-0017). Complain mode today; see /etc/apparmor.d/fabos-agentd.
+ExecStart=/usr/lib/fabos/agent/fabos_agentd.py
 Restart=on-failure
 RestartSec=2
 EnvironmentFile=-/etc/fabos/agent.env
 EnvironmentFile=-%h/.config/fabos/agent.env
-# The agent must act as the user in their session (open apps, type, run commands), so it is
-# deliberately NOT sandboxed here; authority is bounded by the deterministic policy + approvals.
+# Hardening that a user unit can carry without breaking the agent's job:
+#  - no core dumps of a process that holds decrypted provider keys and the audit key in memory
+#  - bounded memory (soft: memory.high throttles and reclaims, never kills) and task count for the daemon plus every
+#    unsandboxed child it runs
+LimitCORE=0
+MemoryHigh=75%
+TasksMax=512
+# Deliberately NOT set (each would break the agent's job):
+#  - NoNewPrivileges= and every seccomp option that implies it (RestrictAddressFamilies, RestrictRealtime, LockPersonality,
+#    SystemCallFilter, ...): the approved root path is `pkexec rootexec` and pkexec is setuid-root; under no_new_privs it
+#    exits with "pkexec must be setuid root" and every root step fails. Verified in the systemd.exec(5) text shipped in
+#    the image: those options imply NoNewPrivileges=yes for non-root services.
+#  - ProtectSystem=/ProtectHome=/PrivateTmp=: mount namespaces in a user unit need unprivileged user namespaces, which
+#    Ubuntu restricts (kernel.apparmor_restrict_unprivileged_userns=1); the unit would fail with status NAMESPACE.
+#    Tool isolation lives in the daemon instead: run_shell runs inside bubblewrap, whose own AppArmor profile grants it
+#    user namespaces (fabos_agentd.py sandbox_argv).
+#  - The agent must act as the user in their session (open apps, type, run commands), so authority is bounded by the
+#    deterministic policy + approvals + the administrator's /etc/fabos/policy.json, not by a mount sandbox here.
 
 [Install]
 WantedBy=default.target

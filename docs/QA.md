@@ -535,3 +535,22 @@ runs above; none of the numbers above moved because no image has been built from
   `/opt/brave.com/brave/brave` (`brave` from Ubuntu, `brave-browser-stable` from Brave's postinst) load without
   `apparmor.service` errors and Brave's sandbox starts; the VM self-test now prints `NO_WALLET=…`, `APPARMOR_BRAVE=<loaded>:errors=<n>`
   and `SUID_COUNT=<n>:brave_sandbox=root:4755` for exactly this.
+
+### Enterprise security track (2026-09-15, sources only — no image rebuilt yet; ADR-0017)
+
+- **Root path changed:** `sudo -n` + `/etc/sudoers.d/fabos-agent` (NOPASSWD) → `pkexec /usr/lib/fabos/agent/rootexec` under the
+  polkit action `in.patienceai.fabos.rootexec` (`no` / `no` / `auth_admin_keep`). The sudoers file is gone from the package;
+  `postinst`/`postrm` remove it on upgrade. `rootexec` now also checks the record id and the command's sha256.
+- **New controls in the tree:** bubblewrap sandbox for `run_shell`, hard-denied secret/token paths, `/etc/fabos/policy.json`
+  loader with clamps, HMAC-chained activity log + `fabos audit verify|export`, `/etc/sysctl.d/70-fabos-hardening.conf`, AppArmor
+  profiles `fabos-voiced` + `fabos-llama` (enforce) and `fabos-agentd` (complain), `avahi-daemon` disabled, `sudoers.d/fabos-hardening`,
+  10-minute idle lock + lid sleeps, hardened `fabos-agent.service`, `scripts/sbom.py`, `tests/security-check.sh` + baselines.
+- **`tests/agent-test.py`: 45 → 70 tests** (SecurityUnits, PolicyDaemon, Daemon.test_20-24; `test_11b` now documents both
+  background-process behaviours). **`tests/branding-check.sh`: 164 → 169 checks** (five security checks appended).
+- **Run against the round-3 `vm` image (built before these sources):** `tests/security-check.sh vm` — the numbers are in the
+  track report; every FAIL there is a control that exists only in the rebuilt image (profiles, sysctl file, polkit action,
+  sudoers changes, unit changes, avahi, lock-screen keys, `/var/log/fabos`) and is expected until the next build.
+- **To verify in the next VM boot (not yet run):** an `as_root` step shows the polkit dialog and runs after the password (and is
+  refused without it, in bypass too); `journalctl -k | grep 'profile="fabos-'` stays empty through `tests/voice-vm.sh` and a
+  local-model task (enforced profiles complete); `bwrap` works in the session (`fabos status` says `"sandbox": "bwrap"`);
+  `sysctl net.core.bpf_jit_harden` reads 2; the screen locks after 10 idle minutes.

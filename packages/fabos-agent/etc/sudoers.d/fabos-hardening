@@ -1,0 +1,9 @@
+# @DISTRO_NAME@ sudo hardening (docs/ENTERPRISE.md, ADR-0017). No NOPASSWD rules: the @DISTRO_NAME@ agent reaches root through
+# pkexec + polkit (in.patienceai.fabos.rootexec), never through sudo.
+# passwd_timeout: a password prompt that is not answered within one minute fails (default 5 minutes).
+Defaults passwd_timeout=1
+# use_pty: run every sudo command in its own pseudo-terminal so a background process cannot inject keystrokes into the
+# administrator's terminal (TIOCSTI) after sudo returns.
+Defaults use_pty
+# logfile: every sudo command line (user, tty, cwd, command) in a root-only log in addition to the journal (authpriv).
+Defaults logfile="/var/log/sudo.log"

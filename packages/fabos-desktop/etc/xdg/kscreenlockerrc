@@ -2,3 +2,13 @@
 Image=/usr/share/wallpapers/FabOS/
 # 2 = Image.PreserveAspectCrop: the best-matching render (images/ or images_dark/, up to 3840x2160) is cropped to the screen, never stretched
 FillMode=2
+
+# Idle lock (docs/ENTERPRISE.md, ADR-0017). Key names verified in the image's libKScreenLocker.so.6.6.5 (UTF-16 literals in section
+# [Daemon]: Autolock, Timeout, LockGrace, LockOnResume). Timeout is in minutes, LockGrace in seconds. LockOnResume locks the
+# screen when the machine wakes from sleep, which the lid close triggers (/etc/xdg/powerdevilrc LidAction=1) — so a closed lid
+# means a locked session. Users change these in Fab Settings > Screen Locking; ~/.config/kscreenlockerrc overrides this file.
+[Daemon]
+Autolock=true
+Timeout=10
+LockGrace=5
+LockOnResume=true

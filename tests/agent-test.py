@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
 """End-to-end test of fabos-agentd with the scripted provider (no network, no GUI).
 Runs the daemon from packages/, drives it through the CLI + HTTP API, checks policy, approvals, CRUD, watches."""
-import base64, http.client, imaplib, io, json, os, shutil, smtplib, socket, sqlite3, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, unittest, wave
+import base64, hashlib, http.client, imaplib, importlib.machinery, importlib.util, io, json, os, shutil, signal, smtplib, socket, sqlite3, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, unittest, wave
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DAEMON = os.path.join(ROOT, "packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py")
 CLI = os.path.join(ROOT, "packages/fabos-agent/usr/bin/fabos")
+ROOTEXEC = os.path.join(ROOT, "packages/fabos-agent/usr/lib/fabos/agent/rootexec")
+os.environ.setdefault("FABOS_POLICY_FILE", os.path.join(tempfile.gettempdir(), "fabos-test-no-policy-%d.json" % os.getpid()))   # never the developer's /etc/fabos/policy.json
 sys.path.insert(0, os.path.dirname(DAEMON))
 import fabos_agentd as fa  # noqa: E402
+
+
+def load_rootexec():
+    loader = importlib.machinery.SourceFileLoader("fabos_rootexec", ROOTEXEC)
+    spec = importlib.util.spec_from_loader("fabos_rootexec", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    mod.AUDIT = False
+    return mod
 
 
 class Classify(unittest.TestCase):
@@ -932,16 +943,23 @@ class Daemon(unittest.TestCase):
             time.sleep(0.2)
         self.assertNotEqual(subprocess.run(["pgrep", "-f", "^sleep 45$"], capture_output=True).returncode, 0, "shell child survived the cancel")
 
-    def test_11b_background_process_survives_step_completion(self):
+    def test_11b_background_process_and_step_completion(self):
         """A step that leaves a background process running must finish as soon as bash exits (not hang on the inherited
-        stdout until timeout and then kill the process tree). Cancelling the task still kills the survivor."""
+        stdout until timeout). What happens to the background process depends on the sandbox (ADR-0017): inside bubblewrap
+        the command has its own PID namespace, so everything it started ends with the step (a server is started with
+        open_app instead); without bubblewrap the process lives on and cancelling the task still kills it."""
         t0 = time.time(); r = self.cli("do", "--mode", "bypass", "background server please"); tid = r["id"]
         t = self.wait(tid, states=("done", "failed"), timeout=30)
         self.assertEqual(t["status"], "done", t); self.assertLess(time.time() - t0, 25, "step hung on the background child's stdout")
         steps = [s for s in t["steps"] if s["kind"] == "tool_call"]
         self.assertTrue(steps and "started-bg" in (steps[0].get("output") or ""), steps)
-        self.assertEqual(subprocess.run(["pgrep", "-f", "^sleep 37$"], capture_output=True).returncode, 0, "background process was killed with the step")
-        subprocess.run(["pkill", "-f", "^sleep 37$"])
+        out = json.loads(steps[0]["output"]); self.assertIn(out["sandbox"], ("bwrap", "none")); self.assertEqual(out["sandbox"], self.cli("status")["sandbox"])
+        time.sleep(0.5)
+        alive = subprocess.run(["pgrep", "-f", "^sleep 37$"], capture_output=True).returncode == 0
+        if out["sandbox"] == "bwrap":
+            self.assertFalse(alive, "a process started inside the sandbox outlived its step (PID namespace not torn down)")
+        else:
+            self.assertTrue(alive, "background process was killed with the step"); subprocess.run(["pkill", "-f", "^sleep 37$"])
 
     def test_12_followup_threads_into_the_chat_with_parent_context(self):
         # Fab AI Controls' follow-up bar: POST /tasks with parent_id threads the new task under the chat's root and the
@@ -1090,6 +1108,396 @@ class Daemon(unittest.TestCase):
         self.assertEqual(self.cli("settings", "mail.provider", ""), {"ok": True})
         r = subprocess.run([sys.executable, CLI, "mail-check"], env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr); self.assertTrue(r.stdout.startswith("Mail check failed"), r.stdout)   # no account: exit 1 with the reason
+
+    # ---- security (ADR-0017)
+    def test_20_status_reports_policy_root_path_and_sandbox(self):
+        st = self.cli("status")
+        self.assertEqual(st["root_path"], "polkit"); self.assertIn(st["sandbox"], ("bwrap", "none"))
+        self.assertFalse(st["policy"]["managed"]); self.assertEqual(st["policy"]["mode_max"], "bypass"); self.assertTrue(st["policy"]["require_password_for_root"])
+        self.assertEqual(st["mode"], st["mode_setting"])
+        self.assertFalse(self.cli("policy")["managed"])
+
+    def test_21_sandbox_hides_ssh_keys_and_marks_the_step(self):
+        """'cat ~/.ssh/id_rsa' inside the sandbox sees an empty ~/.ssh (tmpfs); the step records sandbox=bwrap. Without bubblewrap
+        the step says sandbox=none and the test is skipped (the fallback is the pre-ADR-0017 behaviour)."""
+        ssh = os.path.join(self.env["HOME"], ".ssh"); os.makedirs(ssh, exist_ok=True)
+        with open(os.path.join(ssh, "id_rsa"), "w") as f:
+            f.write("TOPSECRET-KEY-MATERIAL\n")
+        r = self.cli("do", "--mode", "bypass", "read my ssh key"); t = self.wait(r["id"])
+        self.assertEqual(t["status"], "done", t)
+        step = [s for s in t["steps"] if s["name"] == "run_shell"][0]; out = json.loads(step["output"])
+        self.assertEqual(step["risk"], "CRITICAL")                                     # ~/.ssh is CRITICAL whatever happens next
+        if out.get("sandbox") != "bwrap":
+            self.assertEqual(out.get("sandbox"), "none"); self.skipTest("bubblewrap cannot create namespaces here; fallback path recorded sandbox=none")
+        self.assertNotIn("TOPSECRET", json.dumps(t["steps"]))
+        self.assertIn("No such file", out["stderr"])                                     # cat fails: ~/.ssh is an empty tmpfs inside
+        self.assertNotIn("id_rsa", out["stdout"])                                        # and the listing of ~/.ssh shows nothing
+        self.assertTrue(os.path.exists(os.path.join(ssh, "id_rsa")))                    # and the real file is untouched
+
+    def test_22_echo_hi_works_inside_the_sandbox(self):
+        r = self.cli("do", "--mode", "bypass", "please say hi"); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        out = json.loads([s for s in t["steps"] if s["name"] == "run_shell"][0]["output"])
+        self.assertEqual((out["exit_code"], out["stdout"].strip()), (0, "hi")); self.assertEqual(out["sandbox"], self.cli("status")["sandbox"])
+
+    def test_23_agent_token_and_secrets_are_refused_even_in_bypass(self):
+        # read_file on the API token: approved (bypass) yet refused by the hard stop; the token never reaches the model or history
+        tok = open(os.path.join(self.tmp, "fabos-agent/token")).read().strip()
+        r = self.cli("do", "--mode", "bypass", "read the agent token"); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        step = [s for s in t["steps"] if s["name"] == "read_file"][0]; out = json.loads(step["output"])
+        self.assertIn("refused", out["error"]); self.assertNotIn(tok, json.dumps(t["steps"]))
+        r = self.cli("do", "--mode", "bypass", "list the agent secrets"); t = self.wait(r["id"])
+        self.assertIn("refused", json.loads([s for s in t["steps"] if s["name"] == "list_dir"][0]["output"])["error"])
+
+    def test_24_audit_chain_verifies_through_the_cli(self):
+        v = self.cli("audit", "verify"); self.assertTrue(v["ok"], v); self.assertGreater(v["signed"], 5); self.assertEqual(v["unsigned"], 0); self.assertTrue(v["head"])
+        r = subprocess.run([sys.executable, CLI, "audit", "verify"], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stdout); self.assertTrue(r.stdout.startswith("Audit chain OK"), r.stdout)
+        out_dir = os.path.join(self.tmp, "export"); os.makedirs(out_dir)
+        e = self.cli("audit", "export", "--since", "24h", "--out", out_dir); self.assertGreater(e["rows"], 5); self.assertTrue(e["verify"]["ok"])
+        lines = open(e["path"]).read().splitlines(); head = json.loads(lines[0])
+        self.assertEqual(head["type"], "fabos-audit-export"); self.assertTrue(head["chain_ok"]); self.assertEqual(len(lines) - 1, e["rows"])
+        self.assertTrue(all("hmac" in json.loads(l) for l in lines[1:]))
+        self.assertEqual(self.cli("audit", "export", "--out", os.path.join(self.tmp, "does-not-exist")).get("http"), 409)
+
+
+class SecurityUnits(unittest.TestCase):
+    """In-process checks of the enterprise controls (ADR-0017): policy clamps, HMAC audit chain, pkexec argv + authz record,
+    rootexec's own checks, protected paths, sandbox argv."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="fabos-sec-")
+        self.pol = os.path.join(self.tmp, "policy.json")
+        self.saved = (fa.POLICY, fa.CONF_DIR, fa.RUN_DIR, fa.DATA_DIR)
+        fa.POLICY = fa.Policy(self.pol)
+
+    def tearDown(self):
+        fa.POLICY, fa.CONF_DIR, fa.RUN_DIR, fa.DATA_DIR = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def policy(self, **d):
+        with open(self.pol, "w") as f:
+            json.dump(d, f)
+        self.assertTrue(fa.POLICY.load()); return fa.POLICY
+
+    def test_policy_absent_means_unrestricted(self):
+        p = fa.POLICY; self.assertFalse(p.managed); self.assertEqual(p.mode_max(), "bypass")
+        for m in ("ask", "auto", "bypass"):
+            self.assertEqual(p.clamp_mode(m), m)
+        self.assertTrue(all(p.provider_allowed(k) for k in ("claude", "openai", "gemini", "deepseek", "local", "fake")))
+        self.assertTrue(p.host_allowed("anything.example.net")); self.assertFalse(p.tool_denied("send_email")); self.assertTrue(p.require_password_for_root())
+        self.assertEqual(p.prompt_line(), "")
+
+    def test_policy_mode_max_clamps(self):
+        p = self.policy(mode_max="auto")
+        self.assertEqual([p.clamp_mode(m) for m in ("ask", "auto", "bypass", "garbage")], ["ask", "auto", "auto", "auto"])
+        p = self.policy(mode_max="ask")
+        self.assertEqual([p.clamp_mode(m) for m in ("ask", "auto", "bypass")], ["ask", "ask", "ask"])
+        st = fa.Store(os.path.join(self.tmp, "a.db")); st.set_setting("mode", "bypass")
+        a = fa.Agent.__new__(fa.Agent); a.store = st
+        self.assertEqual(a.mode(), "ask"); self.assertEqual(a.mode({"mode": "bypass"}), "ask")
+        self.assertTrue(a.needs_approval("MEDIUM", a.mode({"mode": "bypass"})))         # a user's "bypass" no longer skips approvals
+        self.assertIn("limited to ask", p.prompt_line()); self.assertIn("managed by an organisation", fa.build_system_prompt(st, "ask", []))
+
+    def test_policy_providers_and_cloud(self):
+        p = self.policy(providers_allowed=["local", "claude"])
+        self.assertTrue(p.provider_allowed("claude") and p.provider_allowed("local") and p.provider_allowed("fake"))
+        self.assertFalse(p.provider_allowed("openai") or p.provider_allowed("gemini") or p.provider_allowed("deepseek"))
+        st = fa.Store(os.path.join(self.tmp, "b.db")); st.set_setting("provider", "openai")
+        a = fa.Agent.__new__(fa.Agent); a.store = st
+        with self.assertRaises(RuntimeError) as cm:
+            a.provider()
+        self.assertIn(fa.MANAGED_MSG, str(cm.exception)); self.assertIn("allowed: local, claude", str(cm.exception))
+        r = fa.test_provider(st, "openai", api_key="k"); self.assertFalse(r["ok"]); self.assertIn(fa.MANAGED_MSG, r["detail"])
+        p = self.policy(cloud_allowed=False)
+        self.assertTrue(p.provider_allowed("local")); self.assertFalse(p.provider_allowed("claude")); self.assertFalse(p.provider_allowed("openai"))
+        st.set_setting("provider", "openai"); fa.CONF_DIR = os.path.join(self.tmp, "conf"); fa.set_secret("openai_api_key", "sk-x")
+        self.assertIn("cloud speech is not allowed", fa.speech_transcribe(st, base64.b64encode(fa.pcm_to_wav(b"\x00\x01" * 100)).decode())["detail"])
+        self.assertIn("cloud AI providers are disabled", p.prompt_line())
+
+    def test_policy_tools_denied(self):
+        p = self.policy(tools_denied=["send_email", "web_fetch"])
+        self.assertTrue(p.tool_denied("send_email")); self.assertFalse(p.tool_denied("run_shell"))
+        st = fa.Store(os.path.join(self.tmp, "c.db")); a = fa.Agent(st)
+        self.assertEqual({t["name"] for t in fa.TOOLS} - {t["name"] for t in a.tools_for_model()}, {"send_email", "web_fetch"})
+        tid = st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES(?,?,?,?,?)", "t", "x", "running", 1, 1).lastrowid
+        sid, ok, risk, reason = a._gate(tid, {"mode": "bypass"}, "send_email", {"to": "a@b.c", "subject": "s", "body": "b"})
+        self.assertFalse(ok); self.assertIn(fa.MANAGED_MSG, reason); self.assertEqual(st.one("SELECT decision FROM steps WHERE id=?", sid)["decision"], "denied-by-policy")
+        self.assertTrue(any(r["kind"] == "tool_denied" for r in st.all("SELECT kind FROM activity")))
+        self.assertIn("these tools are not available: send_email, web_fetch", p.prompt_line())
+
+    def test_policy_hosts_allowed(self):
+        p = self.policy(hosts_allowed=["example.com", "*.corp.internal", "127.0.0.1"])
+        self.assertTrue(p.host_allowed("example.com") and p.host_allowed("mail.example.com") and p.host_allowed("a.corp.internal") and p.host_allowed("127.0.0.1"))
+        self.assertFalse(p.host_allowed("corp.internal") or p.host_allowed("evil-example.com") or p.host_allowed("example.com.evil") or p.host_allowed(""))
+        st = fa.Store(os.path.join(self.tmp, "d.db")); tools = fa.Tools(st, fa.Agent(st))
+        out, err = tools.run(1, "web_fetch", {"url": "https://fabos.patienceai.in/"})
+        self.assertTrue(err); self.assertIn(fa.MANAGED_MSG, out["error"]); self.assertIn("fabos.patienceai.in", out["error"]); self.assertIn("Allowed hosts: example.com", out["error"])
+        with self.assertRaises(RuntimeError):
+            fa.smtp_connect({"smtp_host": "smtp.gmail.com", "smtp_port": 587, "smtp_security": "starttls"}, 5)
+        st.set_setting("provider", "claude"); fa.CONF_DIR = os.path.join(self.tmp, "conf"); fa.set_secret("claude_api_key", "k")
+        a = fa.Agent.__new__(fa.Agent); a.store = st
+        with self.assertRaises(RuntimeError) as cm:
+            a.provider()
+        self.assertIn("api.anthropic.com", str(cm.exception))
+        self.policy(hosts_allowed=["api.anthropic.com"]); self.assertEqual(a.provider().name, "claude")
+
+    def test_policy_malformed_is_reported_and_fails_open(self):
+        with open(self.pol, "w") as f:
+            f.write("{not json")
+        self.assertFalse(fa.POLICY.load()); self.assertFalse(fa.POLICY.managed); self.assertIn("JSONDecodeError", fa.POLICY.error)
+        self.assertEqual(fa.POLICY.clamp_mode("bypass"), "bypass")
+        p = self.policy(mode_max="sometimes", bogus=1, tools_denied="send_email")          # wrong types are ignored, unknown keys listed
+        self.assertEqual(p.mode_max(), "bypass"); self.assertIn("mode_max", p.error); self.assertEqual(p.unknown, ["bogus"]); self.assertFalse(p.tool_denied("send_email"))
+        s = p.status(); self.assertEqual(s["path"], self.pol); self.assertIn("require_password_for_root", s)
+
+    def test_require_password_for_root_controls_the_fallback(self):
+        real = fa.shutil.which
+        try:
+            fa.shutil.which = lambda x: None                                              # pkexec missing
+            self.assertEqual(fa.root_argv("abc")[0], "pkexec")                            # default: still pkexec (which then fails loudly)
+            self.policy(require_password_for_root=False)
+            self.assertEqual(fa.root_argv("abc"), ["sudo", "-n", fa.ROOTEXEC, "abc"])     # only the administrator's own rule can allow this
+            fa.shutil.which = lambda x: "/usr/bin/" + x
+            self.assertEqual(fa.root_argv("abc"), ["pkexec", fa.ROOTEXEC, "abc"])         # pkexec present: always pkexec
+        finally:
+            fa.shutil.which = real
+
+    def test_audit_chain_verify_and_tamper(self):
+        st = fa.Store(os.path.join(self.tmp, "audit.db"), audit_key=b"k" * 32)
+        for i in range(6):
+            st.activity("user", "test", i, "row %d" % i)
+        v = st.audit_verify(); self.assertTrue(v["ok"]); self.assertEqual((v["rows"], v["signed"], v["unsigned"]), (6, 6, 0)); self.assertEqual(len(v["head"]), 64)
+        st2 = fa.Store(os.path.join(self.tmp, "audit.db"), audit_key=b"k" * 32); self.assertTrue(st2.audit_verify()["ok"])   # a second opener with the key agrees
+        st.db.execute("UPDATE activity SET detail='row 3 (edited)' WHERE id=4"); st.db.commit()
+        v = st.audit_verify(); self.assertFalse(v["ok"]); self.assertEqual(v["first_bad"], 4)
+        st.db.execute("UPDATE activity SET detail='row 3' WHERE id=4"); st.db.commit(); self.assertTrue(st.audit_verify()["ok"])
+        st.db.execute("DELETE FROM activity WHERE id=2"); st.db.commit()                    # a removed row breaks the link of its successor
+        v = st.audit_verify(); self.assertFalse(v["ok"]); self.assertEqual(v["first_bad"], 3)
+        self.assertFalse(fa.Store(os.path.join(self.tmp, "audit.db"), audit_key=b"wrong").audit_verify()["ok"])   # the key matters
+        # legacy rows (no hmac) before the chain are tolerated; one after the chain began is a hole
+        st = fa.Store(os.path.join(self.tmp, "legacy.db"), audit_key=b"z")
+        st.db.execute("INSERT INTO activity(ts,actor,kind,task_id,detail) VALUES(1,'x','old',NULL,'pre-chain')"); st.db.commit()
+        st.activity("user", "new", None, "chained"); v = st.audit_verify(); self.assertTrue(v["ok"]); self.assertEqual((v["signed"], v["unsigned"]), (1, 1))
+        st.db.execute("INSERT INTO activity(ts,actor,kind,task_id,detail) VALUES(2,'x','forged',NULL,'unsigned after chain')"); st.db.commit()
+        v = st.audit_verify(); self.assertFalse(v["ok"]); self.assertEqual(v["first_bad"], 3)
+
+    def test_audit_export_writes_jsonl_with_chain_head(self):
+        fa.DATA_DIR = os.path.join(self.tmp, "data"); st = fa.Store(os.path.join(fa.DATA_DIR, "agent.db"), audit_key=b"k")
+        for i in range(3):
+            st.activity("agent", "kind%d" % i, None, "d%d" % i)
+        r = st.audit_export(since=0)                                                        # default dir: DATA_DIR/audit (created)
+        self.assertTrue(r["path"].startswith(os.path.join(fa.DATA_DIR, "audit"))); self.assertEqual(r["rows"], 3); self.assertEqual(oct(os.stat(r["path"]).st_mode & 0o777), "0o640")
+        lines = [json.loads(l) for l in open(r["path"])]
+        self.assertEqual(lines[0]["chain_head"], r["verify"]["head"]); self.assertEqual([l["kind"] for l in lines[1:]], ["kind0", "kind1", "kind2"])
+        self.policy(audit_export_dir=os.path.join(self.tmp, "missing"))
+        with self.assertRaises(RuntimeError):
+            st.audit_export()
+        d = os.path.join(self.tmp, "org"); os.makedirs(d); self.policy(audit_export_dir=d)
+        self.assertTrue(st.audit_export(since=time.time() - 60)["path"].startswith(d))
+        self.assertEqual(fa.parse_since("24h") < time.time() - 86000, True); self.assertEqual(fa.parse_since(None), 0.0); self.assertEqual(fa.parse_since("1700000000"), 1700000000.0)
+        with self.assertRaises(ValueError):
+            fa.parse_since("yesterday-ish")
+
+    def test_protected_paths(self):
+        fa.CONF_DIR = os.path.join(self.tmp, "cfg", "fabos", "agent"); fa.RUN_DIR = os.path.join(self.tmp, "run", "fabos-agent")
+        os.makedirs(os.path.join(fa.CONF_DIR, "secrets")); os.makedirs(fa.RUN_DIR)
+        with open(os.path.join(fa.RUN_DIR, "token"), "w") as f:
+            f.write("t")
+        link = os.path.join(self.tmp, "innocent.txt"); os.symlink(os.path.join(fa.RUN_DIR, "token"), link)
+        for p in (os.path.join(fa.CONF_DIR, "secrets"), os.path.join(fa.CONF_DIR, "secrets", "claude_api_key.cred"), fa.RUN_DIR, os.path.join(fa.RUN_DIR, "token"),
+                  os.path.join(fa.RUN_DIR, "authz", "x.json"), link):
+            self.assertTrue(fa.protected_path(p), p)
+        for p in (os.path.join(fa.CONF_DIR, "agent.env"), os.path.join(self.tmp, "notes.txt"), "/etc/hostname", "~/Documents/x.txt"):
+            self.assertFalse(fa.protected_path(p), p)
+        st = fa.Store(os.path.join(self.tmp, "e.db")); tools = fa.Tools(st, fa.Agent(st))
+        for name, inp in (("read_file", {"path": link}), ("write_file", {"path": os.path.join(fa.CONF_DIR, "secrets", "new.cred"), "content": "x"}), ("list_dir", {"path": fa.RUN_DIR})):
+            out, err = tools.run(1, name, inp); self.assertTrue(err, name); self.assertIn("refused", out["error"])
+        self.assertFalse(os.path.exists(os.path.join(fa.CONF_DIR, "secrets", "new.cred")))
+
+    def test_pkexec_argv_and_authz_record(self):
+        """run_as_root writes a private one-time record and calls exactly `pkexec /usr/lib/fabos/agent/rootexec <id>`."""
+        fa.RUN_DIR = os.path.join(self.tmp, "run", "fabos-agent"); os.makedirs(fa.RUN_DIR)
+        st = fa.Store(os.path.join(self.tmp, "f.db")); tools = fa.Tools(st, fa.Agent(st))
+        seen = {}
+        real_run, real_which = fa.subprocess.run, fa.shutil.which
+
+        def fake_run(argv, **kw):
+            seen["argv"] = argv; seen["stdin"] = kw.get("stdin")
+            rec_path = os.path.join(fa.RUN_DIR, "authz", argv[-1] + ".json")
+            seen["mode"] = oct(os.stat(rec_path).st_mode & 0o777); seen["dir_mode"] = oct(os.stat(os.path.dirname(rec_path)).st_mode & 0o777)
+            seen["rec"] = json.load(open(rec_path))
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"exit_code": 0, "stdout": "uid=0(root)\n", "stderr": ""}), stderr="")
+        fa.subprocess.run = fake_run; fa.shutil.which = lambda x: "/usr/bin/" + x
+        try:
+            out = tools.run_as_root(7, "apt-get install -y htop", "/home/x", 120)
+        finally:
+            fa.subprocess.run, fa.shutil.which = real_run, real_which
+        self.assertEqual(seen["argv"], ["pkexec", "/usr/lib/fabos/agent/rootexec", seen["rec"]["id"]]); self.assertEqual(seen["stdin"], subprocess.DEVNULL)
+        self.assertEqual(seen["mode"], "0o600"); self.assertEqual(seen["dir_mode"], "0o700")
+        self.assertEqual(seen["rec"]["command"], "apt-get install -y htop"); self.assertEqual(seen["rec"]["command_sha256"], hashlib.sha256(b"apt-get install -y htop").hexdigest())
+        self.assertEqual((seen["rec"]["task_id"], seen["rec"]["cwd"], seen["rec"]["uid"]), (7, "/home/x", os.getuid()))
+        self.assertEqual(out["exit_code"], 0); self.assertFalse(os.listdir(os.path.join(fa.RUN_DIR, "authz")))            # consumed
+        kinds = [r["kind"] for r in st.all("SELECT kind FROM activity ORDER BY id")]; self.assertEqual(kinds[-2:], ["root_exec_requested", "root_exec"])
+        # refusals are mapped to clear messages and logged
+        for code, want in ((126, "dismissed the password dialog"), (127, "not authorised")):
+            fa.subprocess.run = lambda argv, **kw: subprocess.CompletedProcess(argv, code, stdout="", stderr="Error executing command as another user: Not authorized")
+            try:
+                out = tools.run_as_root(7, "id", "/", 10)
+            finally:
+                fa.subprocess.run = real_run
+            self.assertIn(want, out["error"])
+        self.assertEqual(st.all("SELECT kind FROM activity ORDER BY id")[-1]["kind"], "root_exec_refused")
+        self.assertIn("password", fa.narration_for("run_shell", {"command": "apt install x", "as_root": True}))
+
+    def test_rootexec_checks(self):
+        rx = load_rootexec()
+        base = os.path.join(self.tmp, "run"); uid = os.getuid(); d = os.path.join(base, str(uid), "fabos-agent", "authz"); os.makedirs(d, mode=0o700)
+        env = {"PKEXEC_UID": str(uid)}
+
+        def record(aid, **over):
+            cmd = over.pop("command", "echo root-ok")
+            rec = {"id": aid, "command": cmd, "command_sha256": hashlib.sha256(cmd.encode()).hexdigest(), "cwd": "/", "timeout_s": 10, "task_id": 1, "uid": uid}
+            rec.update(over)
+            p = os.path.join(d, aid + ".json")
+            with open(p, "w") as f:
+                json.dump(rec, f)
+            os.chmod(p, 0o600); return p
+
+        def run(argv, environ=env, **kw):
+            buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+            try:
+                rc = rx.main(argv, environ, run_base=base, euid=kw.pop("euid", 0), **kw)
+            finally:
+                sys.stdout = old
+            return rc, json.loads(buf.getvalue().strip().splitlines()[-1])
+        rc, out = run(["rootexec", "nosuchid"]); self.assertEqual(rc, 2); self.assertIn("no authorization record", out["error"])
+        rc, out = run(["rootexec", "../etc"]); self.assertEqual(rc, 2); self.assertIn("usage", out["error"])
+        rc, out = run(["rootexec", "abc"], {}); self.assertIn("pkexec", out["error"])                                         # no PKEXEC_UID
+        record("abc"); rc, out = run(["rootexec", "abc"], euid=1000); self.assertIn("pkexec", out["error"]); self.assertTrue(os.path.exists(os.path.join(d, "abc.json")))
+        rc, out = run(["rootexec", "abc"]); self.assertEqual(rc, 0); self.assertEqual(out["exit_code"], 0); self.assertEqual(out["stdout"].strip(), "root-ok")
+        self.assertFalse(os.path.exists(os.path.join(d, "abc.json")))                                                          # single use
+        rc, out = run(["rootexec", "abc"]); self.assertEqual(rc, 2)                                                            # replay refused
+        record("swap", id="other"); rc, out = run(["rootexec", "swap"]); self.assertIn("does not belong", out["error"])
+        record("tam", command_sha256=hashlib.sha256(b"echo approved").hexdigest()); rc, out = run(["rootexec", "tam"]); self.assertIn("differs from what was approved", out["error"])
+        p = record("old"); os.utime(p, (time.time() - 700, time.time() - 700)); rc, out = run(["rootexec", "old"]); self.assertIn("expired", out["error"]); self.assertFalse(os.path.exists(p))
+        p = record("loose"); os.chmod(p, 0o644); rc, out = run(["rootexec", "loose"]); self.assertIn("not owned by caller or not private", out["error"])
+        record("real"); os.symlink(os.path.join(d, "real.json"), os.path.join(d, "lnk.json")); rc, out = run(["rootexec", "lnk"]); self.assertIn("not owned by caller or not private", out["error"])
+        record("who", uid=uid + 1); rc, out = run(["rootexec", "who"]); self.assertIn("another user", out["error"])
+        rc, out = run(["rootexec", "x"], {"PKEXEC_UID": "0"}); self.assertIn("root already", out["error"])
+        os.chmod(d, 0o755); record("dirloose"); rc, out = run(["rootexec", "dirloose"]); self.assertIn("private (0700)", out["error"]); os.chmod(d, 0o700)
+        self.assertNotIn("SUDO_UID", open(ROOTEXEC).read().split("def caller_uid")[0])                                          # sudo is the documented fallback only
+        self.assertIn("in.patienceai.fabos.rootexec", open(ROOTEXEC).read())
+
+    def test_sandbox_argv_shape(self):
+        fa.RUN_DIR = os.path.join(self.tmp, "run", "fabos-agent"); fa.CONF_DIR = os.path.join(self.tmp, "cfg", "fabos", "agent"); fa.DATA_DIR = os.path.join(self.tmp, "data")
+        for d in (fa.RUN_DIR, fa.CONF_DIR, fa.DATA_DIR):
+            os.makedirs(d)
+        a = fa.sandbox_argv(self.tmp)
+        self.assertEqual(a[:7], ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc"])
+        self.assertIn("--unshare-pid", a); self.assertIn("--die-with-parent", a); self.assertNotIn("--unshare-net", a)
+        self.assertEqual(a[a.index("--tmpfs", a.index("--tmpfs") ) + 1], os.path.dirname(fa.CONF_DIR)) if a.count("--tmpfs") == 1 else None
+        tmpfs = [a[i + 1] for i, x in enumerate(a) if x == "--tmpfs"]; ro = [a[i + 1] for i, x in enumerate(a) if x == "--ro-bind"]
+        self.assertIn(os.path.dirname(fa.CONF_DIR), tmpfs); self.assertIn(fa.RUN_DIR, tmpfs); self.assertIn(fa.DATA_DIR, ro)
+        self.assertEqual(a[a.index("--chdir") + 1], self.tmp)
+        self.assertIn("--unshare-net", fa.sandbox_argv(self.tmp, network=False))
+        self.assertIn(os.path.expanduser("~/.ssh"), fa.sandbox_hidden()); self.assertIn(os.path.expanduser("~/.gnupg"), fa.sandbox_hidden())
+        os.environ["FABOS_AGENT_SANDBOX"] = "0"
+        try:
+            self.assertFalse(fa.sandbox_available())
+        finally:
+            del os.environ["FABOS_AGENT_SANDBOX"]
+
+
+class PolicyDaemon(unittest.TestCase):
+    """A second daemon started under an administrator policy: mode_max=auto, providers local+fake only, send_email denied,
+    hosts limited. Every clamp is checked over the real API/CLI, then the policy is changed and reloaded with SIGHUP."""
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="fabos-policy-test-")
+        cls.pol = os.path.join(cls.tmp, "policy.json")
+        with open(cls.pol, "w") as f:
+            json.dump({"mode_max": "auto", "providers_allowed": ["local"], "tools_denied": ["send_email"], "hosts_allowed": ["example.com"],
+                       "audit_export_dir": os.path.join(cls.tmp, "audit-out"), "require_password_for_root": True}, f)
+        os.makedirs(os.path.join(cls.tmp, "audit-out"))
+        env = dict(os.environ, XDG_RUNTIME_DIR=cls.tmp, FABOS_AGENT_DATA=os.path.join(cls.tmp, "data"), XDG_CONFIG_HOME=os.path.join(cls.tmp, "cfg"),
+                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT="18791", HOME=os.path.join(cls.tmp, "home"), PATH="/usr/bin:/bin", FABOS_POLICY_FILE=cls.pol, FABOS_AGENT_SANDBOX="0")
+        os.makedirs(env["HOME"]); cls.env = env
+        cls.proc = subprocess.Popen([sys.executable, DAEMON], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for _ in range(50):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:18791/health", timeout=1); break
+            except Exception: time.sleep(0.2)
+        else: raise RuntimeError("daemon did not start: " + cls.proc.stdout.read())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate(); cls.proc.wait(5); shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def cli(self, *args):
+        r = subprocess.run([sys.executable, CLI, "--json"] + list(args), env=self.env, capture_output=True, text=True, timeout=30)
+        out = json.loads(r.stdout) if r.stdout.strip().startswith(("{", "[")) else r.stdout
+        refused = isinstance(out, dict) and int(out.get("http") or 0) >= 400
+        self.assertEqual(r.returncode, 1 if refused else 0, r.stdout + r.stderr)
+        return out
+
+    def wait(self, tid, states=("done", "failed", "cancelled", "waiting_approval", "waiting_user"), timeout=30):
+        for _ in range(timeout * 5):
+            t = self.cli("show", str(tid))
+            if t["status"] in states: return t
+            time.sleep(0.2)
+        self.fail("task %d stuck in %s" % (tid, t["status"]))
+
+    def test_01_status_shows_managed_policy(self):
+        st = self.cli("status"); p = st["policy"]
+        self.assertTrue(p["managed"]); self.assertEqual(p["mode_max"], "auto"); self.assertEqual(p["providers_allowed"], ["local"]); self.assertEqual(p["tools_denied"], ["send_email"])
+        self.assertEqual(p["hosts_allowed"], ["example.com"]); self.assertEqual(p["path"], self.pol); self.assertEqual(st["sandbox"], "none")   # FABOS_AGENT_SANDBOX=0 here
+        r = subprocess.run([sys.executable, CLI, "status", "--brief"], env=self.env, capture_output=True, text=True, timeout=30); self.assertIn("Managed by your organisation", r.stdout)
+        r = subprocess.run([sys.executable, CLI, "policy"], env=self.env, capture_output=True, text=True, timeout=30); self.assertIn("Managed by your organisation: yes", r.stdout); self.assertIn("mode_max                   auto", r.stdout)
+
+    def test_02_mode_is_clamped_everywhere(self):
+        rep = self.cli("mode", "bypass"); self.assertEqual(rep["http"], 403); self.assertIn("limited to auto", rep["error"])
+        self.assertEqual(self.cli("mode", "auto"), {"ok": True}); self.assertEqual(self.cli("status")["mode"], "auto")
+        rep = self.cli("do", "--mode", "bypass", "show me the system"); self.assertEqual(rep["http"], 403); self.assertIn(fa.MANAGED_MSG, rep["error"])
+        # a stored "bypass" from before the policy existed is applied as auto: CRITICAL still needs approval
+        con = sqlite3.connect(os.path.join(self.env["FABOS_AGENT_DATA"], "agent.db")); con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mode','bypass')"); con.commit(); con.close()
+        st = self.cli("status"); self.assertEqual((st["mode"], st["mode_setting"]), ("auto", "bypass"))
+        r = self.cli("do", "do something privileged"); t = self.wait(r["id"], ("waiting_approval", "done", "failed")); self.assertEqual(t["status"], "waiting_approval", t)
+        self.cli("deny", str(self.cli("approvals")[0]["id"])); self.wait(r["id"], ("done", "failed"))
+        self.cli("mode", "auto")
+
+    def test_03_provider_is_clamped(self):
+        rep = self.cli("settings", "provider", "claude"); self.assertEqual(rep["http"], 403); self.assertIn("allowed: local", rep["error"])
+        self.assertEqual(self.cli("settings", "provider", "local"), {"ok": True})
+        r = subprocess.run([sys.executable, CLI, "--json", "check", "openai"], env=self.env, capture_output=True, text=True, timeout=40)
+        out = json.loads(r.stdout); self.assertFalse(out["ok"]); self.assertIn(fa.MANAGED_MSG, out["detail"])
+
+    def test_04_denied_tool_is_refused_and_recorded(self):
+        r = self.cli("do", "--mode", "auto", "write a hi note and send it to friend@example.com"); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        step = [s for s in t["steps"] if s["name"] == "send_email"][0]
+        self.assertEqual(step["decision"], "denied-by-policy"); self.assertIn(fa.MANAGED_MSG, step["output"]); self.assertEqual(step["narration_done"], "Sorry, that did not work: your organisation does not allow it.")
+        self.assertTrue(any(e["kind"] == "tool_denied" for e in self.cli("log")))
+        self.assertIn("these tools are not available: send_email", fa.Policy(self.pol).prompt_line())   # and the model is told so in its system prompt
+
+    def test_05_web_fetch_host_is_refused_with_a_clear_message(self):
+        r = self.cli("do", "--mode", "auto", "fetch https://fabos.patienceai.in/docs/"); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        out = json.loads([s for s in t["steps"] if s["name"] == "web_fetch"][0]["output"])
+        self.assertIn(fa.MANAGED_MSG, out["error"]); self.assertIn("web_fetch may not reach fabos.patienceai.in", out["error"]); self.assertIn("Allowed hosts: example.com", out["error"])
+
+    def test_06_audit_export_goes_to_the_policy_dir(self):
+        e = self.cli("audit", "export", "--since", "1h"); self.assertTrue(e["path"].startswith(os.path.join(self.tmp, "audit-out"))); self.assertGreater(e["rows"], 0); self.assertTrue(e["verify"]["ok"])
+
+    def test_07_sighup_reloads_the_policy(self):
+        with open(self.pol, "w") as f:
+            json.dump({"mode_max": "bypass", "providers_allowed": []}, f)
+        os.kill(self.proc.pid, signal.SIGHUP)
+        for _ in range(50):
+            p = self.cli("policy")
+            if p["mode_max"] == "bypass": break
+            time.sleep(0.1)
+        self.assertEqual(p["mode_max"], "bypass"); self.assertEqual(p["providers_allowed"], []); self.assertTrue(p["managed"])
+        self.assertEqual(self.cli("settings", "provider", "claude"), {"ok": True}); self.cli("settings", "provider", "local")
+        self.assertTrue(any(e["kind"] == "policy_reload" and "SIGHUP" in (e["detail"] or "") for e in self.cli("log")))
+        os.remove(self.pol); self.assertFalse(self.cli("policy", "--reload")["managed"])          # absent file = unrestricted again
 
 
 if __name__ == "__main__":

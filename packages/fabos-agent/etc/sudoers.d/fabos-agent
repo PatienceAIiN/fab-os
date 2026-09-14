@@ -1,5 +1,0 @@
-# Fab OS agent: members of the sudo group may run the audited root executor without a password.
-# rootexec executes only commands that fabos-agentd authorized after the deterministic policy and the user's
-# mode/approval allowed the CRITICAL step (one-time record, owned by the caller, 10-minute validity).
-# See /usr/lib/fabos/agent/rootexec, legal/PATCHED-BINARIES.md is unrelated; design in docs/decisions/ADR-0005.
-%sudo ALL=(root) NOPASSWD: /usr/lib/fabos/agent/rootexec

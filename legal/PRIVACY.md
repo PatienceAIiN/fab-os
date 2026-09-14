@@ -49,3 +49,16 @@
 - Applicable law: Digital Personal Data Protection Act 2023 (India) and GDPR
   where users are in the EU. Because nothing is collected, no consent flow is
   required for the OS itself.
+- Audit log (ADR-0017). The agent keeps an activity log on this computer only
+  (`~/.local/share/fabos/agent.db`): which tasks ran, which steps were approved,
+  denied or refused, setting changes, the names (never the values) of secrets
+  that were set, root requests and their exit codes, and policy reloads. Commands
+  are cut to 300 characters and tool outputs are not stored there; keys, passwords
+  and mail bodies never appear. Each row is sealed with an HMAC chain so that later
+  edits are detectable (`fabos audit verify`). Nothing in it leaves the machine
+  unless the user, or an organisation that manages the computer through
+  `/etc/fabos/policy.json`, exports it with `fabos audit export` into a directory
+  the organisation collects. A separate root-only log (`/var/log/fabos/rootexec.log`)
+  records every request to run a step as administrator; it stays on the machine too.
+  On a managed computer the administrator's policy is visible to the user at any time
+  (`fabos policy`, "Managed by your organisation" in Fab AI Controls).

@@ -31,6 +31,8 @@ texts are in `THIRD_PARTY_LICENSES/` (index: `THIRD_PARTY_LICENSES/README.md`) a
 | Python 3, PyQt6 | python.org, Riverbank | PSF-2.0 / GPL-3.0 | respective authors | No | Fab OS apps using PyQt6 are Apache-2.0 source distributed alongside; GPL applies to the combined binary distribution of PyQt6 |
 | anthropic Python SDK | Anthropic | MIT (THIRD_PARTY_LICENSES/MIT.txt) | 2023 Anthropic, PBC | No | keep notice |
 | ai-native-os agent stack (aios, aiosd) | Patience AI | Apache-2.0 | Patience AI | Fab OS packaging | — |
+| bubblewrap 0.11.1 (`bwrap`, the agent's `run_shell` sandbox) | github.com/containers/bubblewrap | LGPL-2.0-or-later (THIRD_PARTY_LICENSES/LGPL-2.0.txt; Debian copyright file of bubblewrap 0.11.1-1ubuntu0.1: `LGPL-2+`) | 2016 Alexander Larsson, 2021 Simon McVittie, 2022 Collabora Ltd. | No (Ubuntu package; run as a separate process by fabos-agentd) | keep notices; offer source (legal/SOURCE-OFFER.md) |
+| polkit 127 (`polkitd`, `pkexec` — the agent's root path, ADR-0017) | gitlab.freedesktop.org/polkit/polkit | LGPL-2.0-or-later (THIRD_PARTY_LICENSES/LGPL-2.0.txt; Debian copyright files of polkitd/pkexec 127-2ubuntu1: `LGPL-2.0+`, parts Expat) | David Zeuthen, Red Hat Inc. and the polkit authors (per the Debian copyright file) | No (Ubuntu packages); Fab OS ships its own action files `in.patienceai.fabos.rootexec.policy` and `in.patienceai.fabos.updates.policy` | keep notices; offer source |
 
 Fab OS-created material (Apache-2.0; artwork additionally CC0-1.0): brand assets (identity icon, avatar, lockups),
 Plymouth/SDDM/KSplash themes, FabOS Plasma theme, FabOS icon tiles, wallpapers, 3D logo, packaging, build scripts,
