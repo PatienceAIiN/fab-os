@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+      http://www.kde.org/standards/kcfg/1.0/kcfg.xsd" >
+  <kcfgfile name=""/>
+  <!-- The open conversation survives a desktop re-layout (plasmashell restart, screen change): the applet remembers
+       which task its panel shows and, when it is created again while that task is still active, reopens the panel. -->
+  <group name="General">
+    <entry name="rootTaskId" type="Int">
+      <label>Root task of the conversation open in the panel (0 = none).</label>
+      <default>0</default>
+    </entry>
+    <entry name="taskId" type="Int">
+      <label>Task the panel is following right now (a follow-up or retry of the root; 0 = none).</label>
+      <default>0</default>
+    </entry>
+  </group>
+</kcfg>

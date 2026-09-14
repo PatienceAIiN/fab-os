@@ -251,3 +251,31 @@ function voiceInfo(exitCode, stdout) {
     var stt = String(j.stt || "none")
     return { available: exitCode === 0 && stt !== "none", stt: stt, tts: String(j.tts || "none"), mic: !!j.mic }
 }
+
+function lastLine(s) {
+    var lines = String(s || "").split("\n"), i
+    for (i = lines.length - 1; i >= 0; i--) { var l = lines[i].trim(); if (l.length) return l }
+    return ""
+}
+function clip(s, max) { s = String(s); return s.length > max ? s.slice(0, max - 1) + "\u2026" : s }
+
+// Why the mic button is dimmed after `fabos-voice status` ("" = voice is ready). The status is cached for 30 s only:
+// a microphone can be plugged in later, so the bar asks again when the mic is hovered or clicked.
+function voiceReason(exitCode, info) {
+    if (exitCode === 127) return "Voice is not installed on this machine"
+    if (exitCode !== 0) return "Voice is not available right now"
+    if (!info.mic) return "No microphone found \u2014 plug one in and tap the mic again"
+    if (info.stt === "none") return "Speech recognition is not available on this machine"
+    return ""
+}
+
+// `fabos-voice listen-once` did not return text: the status-line message, taken from the CLI's own last stderr line
+// (exit 4 = no microphone / no speech-to-text, and the CLI says which; 3 = nothing heard; 127 = binary missing).
+// Never silent: every failure produces a sentence.
+function voiceFailure(exitCode, stdout, stderr) {
+    var last = lastLine(stderr)
+    if (exitCode === 127 || /fabos-voice: (command )?not found/.test(last)) return "Voice is not installed on this machine (fabos-voice is missing)"
+    if (exitCode === 3 || (exitCode === 0 && !String(stdout || "").trim().length)) return "I did not catch that. Tap the mic and try again."
+    if (exitCode === 4) return last.length ? clip(last, 160) : "Voice is not available on this machine"
+    return last.length ? clip("Voice did not work just now \u2014 " + last, 160) : "Voice did not work just now. Tap the mic to try again."
+}

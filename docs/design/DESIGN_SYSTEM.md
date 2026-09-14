@@ -78,19 +78,30 @@ text with an action row) with Fab OS tokens.
   orbits at 1.2 s and pulses, listening pulses at 0.9 s with a red dot, done flashes one expanding ring, error / not
   configured tints amber via `neutralTextColor`; every loop stops after 30 s idle; static frame `brand/logo/fabos-ai-mark.svg`).
   Middle: the field (pill, `alternateBackgroundColor`, accent border on focus). Right: the round **mic** button (20 px
-  glyph, 60 % → 100 % on hover; records only on click through `fabos-voice listen-once --timeout 10`; disabled with the
-  tooltip "Voice is not available on this machine" when `fabos-voice status` reports no speech backend or the binary is
-  missing; the transcript is typed into the field at ~25 ms/char and submitted) and the accent **Do it** pill (reads
-  "Send" while a conversation is open).
-- **Response panel**: a `PlasmaCore.Dialog` (type AppletPopup, FabOS Plasma dialog background, radius 24) anchored
-  below the card (`visualParent` = card, location TopEdge) at the card's width. It grows downward — height animates
-  from 0 to its content (280 ms OutCubic) while the content fades in; content growth animates at 260 ms, capped at
-  62 % of the screen height. Header: status line left, icon controls right with tooltips (Stop · Retry · Edit prompt ·
-  Copy result · Minimize · Open in Fab AI Controls = `fabos-command-center --task ID`). Minimize collapses it to a
-  one-line status pill that reopens on click; Edit prompt puts the request back into the bar and closes the panel — the
-  next Do it starts a fresh task even inside the 300 ms shrink (it cancels the close and re-opens the panel). Dismissing
-  the panel forgets the task in the bar (the mark returns to idle; the task itself carries on in the daemon and the
-  status line counts it).
+  glyph, 60 % → 100 % on hover; records only on click through `fabos-voice listen-once --timeout 10`; dimmed — never
+  dead — with a tooltip naming the reason when `fabos-voice status` reports no microphone or no speech backend or the
+  binary is missing; that status is cached for **30 s only** (a microphone can be plugged in later), so hovering the
+  mic or focusing the field asks again; a tap always tries. While recording the status line under the field shows a
+  red dot + "Listening…" and the mark pulses red. When the CLI exits non-zero — or prints nothing — its own last
+  stderr line ("No microphone found on this computer.", "Speech recognition is not available: no offline model and
+  no cloud provider key.", "I did not catch that…", "Voice is not installed on this machine" for a missing binary) is
+  shown in the status line for 6 s; a failed tap is never a silent no-op. The transcript is typed into the field at
+  ~25 ms/char and submitted) and the accent **Do it** pill (reads "Send" while a conversation is open).
+- **Response panel**: an `Item` **inside the applet** — there is no `PlasmaCore.Dialog` (no separate popup window) on
+  the desktop. It sits flush under the card: `y = card.y + card.height + 8`, the card's x and width, radius 24 like
+  the card so the pair reads as one stack, `Kirigami.Theme.backgroundColor` @ 96 % with the 12 % hairline. Because
+  the applet lives in the **desktop layer**, the panel is always behind every application window (the editor the
+  agent opens covers it, it never paints over another app) and is back the moment those windows are minimised or
+  closed. It grows downward — height animates from 0 to its content (280 ms OutCubic) while the content fades in;
+  content growth animates at 260 ms, capped at the strip's remaining height (the conversation scrolls inside).
+  Header: status line left, icon controls right with tooltips (Stop · Retry · Edit prompt · Copy result · Minimize ·
+  Open in Fab AI Controls = `fabos-command-center --task ID`). Minimize collapses it to a one-line status pill under
+  the card (still inside the applet) that reopens on click; **Escape** in the bar and a **click on the mark** fold and
+  unfold it too. Edit prompt puts the request back into the bar and closes the panel — the next Do it starts a fresh
+  task even inside the 300 ms shrink (it cancels the close and re-opens the panel). Dismissing the panel forgets the
+  task in the bar (the mark returns to idle; the task itself carries on in the daemon and the status line counts it).
+  Only when the plasmoid sits in a **panel** (compact form) is a `PlasmaCore.Dialog` created — a popup is the only
+  place the conversation can go there — and the same conversation item moves into it.
 - **Conversation** (`ConvoDelegate.qml`): user request as a right-aligned pill (radius 20, tinted, ≤ 72 % wide);
   assistant text plain (Inter 15/1.25) rendered from Markdown-lite (bold, italics, inline code, links, lists,
   headings) with fenced code as monospace cards (JetBrains Mono 13 on a text-colour @ 8 % tint, radius 12) and an
@@ -115,9 +126,17 @@ text with an action row) with Fab OS tokens.
 - **Follow-ups**: with the panel open, typing and pressing Send posts a new task with `parent_id` = the root task and
   appends it to the same conversation. Retry of a follow-up keeps the root; retry of the root re-roots the chat (the
   daemon copies `parent_id`, which is null for a root).
-- **Layout**: the applet is a full-width transparent strip (150 px) placed by the look-and-feel layout script; the
-  card centres on the physical screen width. In a panel (compact) the same code collapses to one row and the
-  response panel opens from the panel edge.
-- **Checks**: `node tests/askbar-js-test.js` (pure helpers) and `tests/askbar-qml-test.sh` (loads the applet headless
-  with `plasmawindowed` inside the image, drives the state machine with daemon-shaped JSON, renders
-  `build/askbar-{bar,panel,feed}.png`).
+- **Layout**: the applet is a tall, full-width transparent strip placed by the look-and-feel layout script from 24 %
+  of the screen height down to the dock (`sh * 0.66` tall); the card sits at the strip's top and centres on the
+  physical screen width, the panel unfolds in the space below it. `Plasmoid.backgroundHints` is NoBackground and the
+  transparent rest of the strip has **no pointer handler** — a right-click there is the desktop's, not the applet's.
+  The open conversation is remembered in `Plasmoid.configuration` (`rootTaskId`, `taskId`; cleared on dismiss) and,
+  after a desktop re-layout, the applet asks `GET /tasks/{id}` on load and reopens the panel while the task is still
+  active. In a panel (compact) the same code collapses to one row and the response panel opens as a popup from the
+  panel edge.
+- **Checks**: `node tests/askbar-js-test.js` (pure helpers, incl. the voice-failure messages) and
+  `tests/askbar-qml-test.sh` (loads the applet headless with `plasmawindowed` inside the image, drives the state
+  machine with daemon-shaped JSON, asserts the panel's geometry under the card, its growth and fold animation, that no
+  `PlasmaCore.Dialog` exists on the desktop, that no MouseArea lies outside card/panel, runs a real
+  `fabos-voice listen-once` for the mic feedback, exercises the remembered conversation and the compact popup, and
+  renders `build/askbar-{bar,panel,feed}.png` — bar = the whole strip with the card + panel stack).

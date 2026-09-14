@@ -3,12 +3,14 @@ import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
 
 // Round icon button: monochrome glyph at 60 % opacity, 100 % on hover, soft hover disc, tooltip.
-// `active` (not `enabled`) gates clicks so the tooltip still explains a disabled control.
+// `active` (not `enabled`) gates clicks so the tooltip still explains a disabled control; `dim` draws the glyph faint
+// while keeping clicks (the mic: dimmed when no voice backend is known, but a tap still tries and explains).
 Item {
     id: b
     property string icon: ""
     property string tip: ""
     property bool active: true
+    property bool dim: false
     property bool danger: false
     property bool positive: false
     property int size: 30
@@ -31,7 +33,7 @@ Item {
         width: b.iconSize; height: b.iconSize
         source: b.icon
         isMask: true; color: b.glyphColor
-        opacity: !b.active ? 0.3 : (ma.containsMouse ? 1.0 : 0.6)
+        opacity: !b.active || b.dim ? 0.3 : (ma.containsMouse ? 1.0 : 0.6)
         Behavior on opacity { NumberAnimation { duration: 160 } }
     }
     MouseArea {

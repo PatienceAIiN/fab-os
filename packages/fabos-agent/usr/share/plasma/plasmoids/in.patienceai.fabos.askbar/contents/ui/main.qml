@@ -9,11 +9,15 @@ import org.kde.kirigami as Kirigami
 import "agent.js" as Agent
 
 // "Ask me to do anything…" — the Fab OS agent's front door on the home screen.
-// On the desktop the applet is a full-width transparent strip and this card centres itself from the real screen
-// width, so it is centred on every monitor size. In a panel it collapses to one compact row.
-// Answers arrive INLINE: "Do it" creates the task and opens a response panel (a PlasmaCore.Dialog anchored to the
-// card, growing downward) with the request, a live feed of what the agent does, approvals, questions and the
-// result. Nothing else opens; "Open in Fab AI Controls" is an explicit click.
+// On the desktop the applet is a tall, full-width transparent strip in the DESKTOP LAYER (the look-and-feel layout
+// places it from 24 % of the screen height down to the dock). The card sits at the strip's top and centres itself from
+// the real screen width; the response panel is an Item INSIDE the applet that unfolds directly under the card (8 px gap,
+// both radius 24, the card's width, scrollable, never taller than the strip). Because it belongs to the desktop
+// containment it is always BEHIND application windows and is back the moment they are minimised or closed — it never
+// floats over another app. Only in a panel (compact form) is a PlasmaCore.Dialog created for the panel, because a
+// popup is the only option there.
+// Answers arrive INLINE: "Do it" creates the task and the panel shows the request, a live feed of what the agent does,
+// approvals, questions and the result. Nothing else opens; "Open in Fab AI Controls" is an explicit click.
 PlasmoidItem {
     id: root
     Kirigami.Theme.colorSet: Kirigami.Theme.Window
@@ -21,6 +25,8 @@ PlasmoidItem {
     preferredRepresentation: fullRepresentation
     Layout.preferredWidth: Kirigami.Units.gridUnit * 34
     Layout.minimumWidth: Kirigami.Units.gridUnit * 22
+    // on a desktop (Planar) the applet wants room for the panel to unfold; a panel keeps its own thickness
+    Layout.preferredHeight: Plasmoid.formFactor === PlasmaCore.Types.Planar ? Kirigami.Units.gridUnit * 40 : -1
     Layout.fillHeight: true
     readonly property bool compact: height < Kirigami.Units.gridUnit * 3.4
     readonly property bool onDesktop: !compact
@@ -61,11 +67,13 @@ PlasmoidItem {
     property string toast: ""
     readonly property bool taskActive: Agent.isActive(taskStatus)
 
-    // ---- voice
+    // ---- voice (fabos-voice status is cached for 30 s only: a microphone can be plugged in later)
     property bool voiceChecked: false
     property bool voiceAvailable: false
+    property string voiceReason: ""           // why the mic is dimmed ("" = ready)
+    property real voiceStatusAt: 0            // Date.now() of the last `fabos-voice status`
     property bool listening: false
-    property string voiceHint: ""
+    property string voiceHint: ""             // status-line message after a failed listen (6 s)
     property string typeBuffer: ""
     property real typeReveal: 0
 
@@ -78,7 +86,10 @@ PlasmoidItem {
 
     readonly property color hairline: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.12)
     readonly property color codeBg: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.08)
-    readonly property int maxPanelHeight: Math.min(640, Math.max(240, Math.round(Screen.height * 0.62) - 150))
+    // the panel sits 8 px under the card and may use the rest of the strip (minus an 8 px foot) — never more
+    readonly property int panelGap: 8
+    readonly property int maxPanelHeight: onDesktop ? Math.max(120, root.height - (card.y + card.height + panelGap) - 8)
+                                                    : Math.min(640, Math.max(240, Math.round(Screen.height * 0.62) - 150))
 
     function shellQuote(s) { return Agent.shellQuote(s) }
     function wake() { root.markAwake = true; sleepTimer.restart() }
@@ -86,7 +97,9 @@ PlasmoidItem {
     onTaskActiveChanged: { wake(); if (!taskActive && taskId > 0) { trailingPoll1.restart(); trailingPoll2.restart() } }
     onSendingChanged: wake()
     onListeningChanged: wake()
-    onPanelModeChanged: { wake(); if (panelMode === "min" || panelMode === "open") { closeTimer.stop(); root.closing = false; root.openProgress = 1 } }
+    onPanelModeChanged: { wake(); if (panelMode === "min" || panelMode === "open") { closeTimer.stop(); root.closing = false; root.openProgress = 1 } root.saveTask() }
+    onRootTaskIdChanged: saveTask()
+    onTaskIdChanged: saveTask()
 
     Timer { id: sleepTimer; interval: 30000; onTriggered: if (!root.taskActive && !root.sending && !root.listening) root.markAwake = false; else restart() }
     Timer { id: hintTimer; interval: 6000; onTriggered: root.voiceHint = "" }
@@ -109,7 +122,7 @@ PlasmoidItem {
             var tag = Agent.parseTag(source)
             if (!tag.kind.length) return
             var code = parseInt(data["exit code"]); if (isNaN(code)) code = 0
-            root.handle(tag.kind, tag.ref, code, String(data["stdout"] || ""))
+            root.handle(tag.kind, tag.ref, code, String(data["stdout"] || ""), String(data["stderr"] || ""))
         }
     }
     function run(kind, ref, cmd) { root.serial++; exec.connectSource(Agent.tagged(kind, ref, root.serial, cmd)) }
@@ -124,19 +137,24 @@ PlasmoidItem {
     }
     function pollSoon() { if (pollTimer.running) pollTimer.restart() }
 
-    function handle(kind, ref, code, out) {
+    function handle(kind, ref, code, out, err) {
         var j = Agent.parseJson(out)
         switch (kind) {
         case "status": root.onStatus(j); break
         case "settings": if (j) root.showRaw = String(j["ui.show_raw"] || "") === "true"; break
         case "create": case "follow": root.onCreated(kind === "follow", code, j); break
         case "poll": if (ref === root.taskId && j && j.id === root.taskId) root.ingest(j); break
+        case "restore": root.onRestore(ref, j); break
         case "cancel": if (ref === root.taskId && j && j.status === "cancelled") root.taskStatus = "cancelled"; break
         case "retry": if (j && j.id) { if (!j.parent_id) root.rootTaskId = j.id; root.switchTask(j.id, "Trying again…") } break
         case "approve": if (j && j.ok === false) root.note("That request had already been decided."); root.pollSoon(); break
         case "answer": root.pollSoon(); break
-        case "voicestatus": { var v = Agent.voiceInfo(code, out); root.voiceChecked = true; root.voiceAvailable = v.available; break }
-        case "listen": root.onListened(code, out); break
+        case "voicestatus": {
+            var v = Agent.voiceInfo(code, out)
+            root.voiceChecked = true; root.voiceAvailable = v.available; root.voiceReason = Agent.voiceReason(code, v); root.voiceStatusAt = Date.now()
+            break
+        }
+        case "listen": root.onListened(code, out, err || ""); break
         }
     }
 
@@ -241,6 +259,33 @@ PlasmoidItem {
         root.openProgress = 1
     }
     function closePanel() { if (root.panelMode === "closed" || root.closing) return; root.closing = true; root.openProgress = 0; closeTimer.restart() }
+    // Escape in the bar and a click on the mark fold the panel to the status pill (and unfold it again)
+    function toggleCollapse() {
+        if (root.panelMode === "open") root.panelMode = "min"
+        else if (root.panelMode === "min") root.panelMode = "open"
+        else field.forceActiveFocus()
+    }
+
+    // ---------------------------------------------------------------- remembered conversation (survives a desktop re-layout)
+    function savedTask() { var c = Plasmoid.configuration; return { root: parseInt(c.rootTaskId) || 0, task: parseInt(c.taskId) || 0 } }
+    function saveTask() {
+        var open = root.panelMode !== "closed" && !root.closing
+        Plasmoid.configuration.rootTaskId = open ? root.rootTaskId : 0
+        Plasmoid.configuration.taskId = open ? root.taskId : 0
+    }
+    // GET /tasks/{saved} on load: still active -> rebuild the request row and reopen the panel; finished or gone -> forget it
+    function onRestore(id, j) {
+        if (root.panelMode !== "closed") return
+        if (!j || j.id !== id || !Agent.isActive(String(j.status || ""))) { root.saveTask(); return }
+        var saved = root.savedTask()
+        root.resetConversation()
+        root.rootTaskId = saved.root > 0 ? saved.root : (j.parent_id ? j.parent_id : j.id)
+        root.taskRequest = String(j.request || "")
+        if (root.taskRequest.length) convo.append(root.row({ kind: "user", key: "u" + j.id, text: root.taskRequest, status: "request" }))
+        root.switchTask(j.id, "")
+        root.openPanel()
+        root.ingest(j)
+    }
 
     // ---------------------------------------------------------------- task JSON -> conversation rows (append-only, no rebuild)
     function row(o) {
@@ -362,19 +407,30 @@ PlasmoidItem {
     }
 
     // ---------------------------------------------------------------- voice input (fabos-voice; never records without the click)
-    Component.onCompleted: { root.run("voicestatus", 0, "fabos-voice status 2>/dev/null"); sleepTimer.start() }
-    function startListening() {
-        if (!root.voiceAvailable || root.listening || root.sending) return
-        root.wake(); root.listening = true; root.voiceHint = ""
-        root.run("listen", 0, "fabos-voice listen-once --timeout 10 2>/dev/null")
+    Component.onCompleted: {
+        root.refreshVoice(true); sleepTimer.start()
+        var saved = root.savedTask()
+        if (saved.task > 0) root.api("restore", saved.task, "GET", "/tasks/" + saved.task)
     }
-    function onListened(code, out) {
+    // `fabos-voice status` is asked again when the last answer is older than 30 s (or when forced after a failure)
+    function refreshVoice(force) {
+        if (!force && Date.now() - root.voiceStatusAt < 30000) return
+        root.voiceStatusAt = Date.now()
+        root.run("voicestatus", 0, "fabos-voice status")
+    }
+    // a tap always tries — even when the last status said "no voice" — and the CLI's own reason lands in the status line
+    function startListening() {
+        if (root.listening || root.sending) return
+        root.wake(); root.listening = true; root.voiceHint = ""
+        root.run("listen", 0, "fabos-voice listen-once --timeout 10")
+    }
+    function onListened(code, out, err) {
         root.listening = false
         var t = out.trim()
         if (code === 0 && t.length) { root.typeInto(t); return }
-        if (code === 4 || code === 127) { root.voiceAvailable = false; root.voiceHint = "Voice is not available on this machine"; hintTimer.restart(); return }
-        root.voiceHint = code === 3 || code === 0 ? "I did not catch that. Tap the mic and try again." : "Voice did not work just now. Tap the mic to try again."
+        root.voiceHint = Agent.voiceFailure(code, out, err)
         hintTimer.restart()
+        root.refreshVoice(true)
     }
     function typeInto(t) { root.typeBuffer = t; typeAnim.stop(); typeAnim.to = t.length; typeAnim.duration = Math.min(2500, 25 * t.length); typeAnim.start() }
     NumberAnimation { id: typeAnim; target: root; property: "typeReveal"; from: 0; to: 1; duration: 500; onFinished: root.submit() }
@@ -383,15 +439,16 @@ PlasmoidItem {
     ListModel { id: convo }
     TextEdit { id: copyHelper; visible: false; width: 1; height: 1 }
 
-    // ================================================================ the bar
+    // ================================================================ the bar (top of the strip)
+    // Nothing outside `card` and `panel` handles pointer events: the transparent rest of the strip belongs to the desktop.
     Item {
         id: card
         // position of this applet inside the desktop view → lets the card centre on the physical screen
         readonly property real appletScreenX: { var p = root.mapToItem(null, 0, 0); return root.width + Screen.width > 0 ? p.x : 0 }
         width: root.onDesktop ? Math.min(760, Math.round(Screen.width * 0.6), Math.max(320, root.width)) : root.width
-        height: root.onDesktop ? Math.min(root.height, Kirigami.Units.gridUnit * 6.2) : root.height
+        height: root.onDesktop ? Math.round(Math.min(root.height, Kirigami.Units.gridUnit * 6.2)) : root.height   // whole px: the panel's top edge under it stays crisp
         x: root.onDesktop ? Math.max(0, Math.round((Screen.width - width) / 2 - appletScreenX)) : 0
-        y: root.onDesktop ? Math.round((root.height - height) / 2) : 0
+        y: 0
 
         Rectangle {   // Material-expressive surface: large radius, tinted, hairline border
             anchors.fill: parent
@@ -414,19 +471,20 @@ PlasmoidItem {
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignVCenter
                 spacing: Kirigami.Units.smallSpacing * 2
-                AiMark {   // original animated Fab OS AI mark (state folded into its motion and tint)
+                AiMark {   // original animated Fab OS AI mark (state folded into its motion and tint); click folds / unfolds the panel
                     id: mark
                     Layout.preferredWidth: root.compact ? 22 : 32
                     Layout.preferredHeight: Layout.preferredWidth
                     markState: root.markState
                     awake: root.markAwake
                     showDot: !root.configured || !root.daemonUp
+                    MouseArea { anchors.fill: parent; cursorShape: root.panelMode !== "closed" ? Qt.PointingHandCursor : Qt.ArrowCursor; onClicked: root.toggleCollapse() }
                 }
                 QQC2.TextField {
                     id: field
                     Layout.fillWidth: true
                     Layout.preferredHeight: root.compact ? Math.max(Kirigami.Units.gridUnit * 1.6, root.height - Kirigami.Units.smallSpacing * 2) : Kirigami.Units.gridUnit * 2.4
-                    placeholderText: root.listening ? "Listening… speak now" : (root.voiceHint.length ? root.voiceHint : "Ask me to do anything…")
+                    placeholderText: root.listening ? "Listening… speak now" : "Ask me to do anything…"
                     font.family: "Inter"; font.pixelSize: 16; color: Kirigami.Theme.textColor; placeholderTextColor: Kirigami.Theme.disabledTextColor
                     leftPadding: 16; rightPadding: 16; verticalAlignment: TextInput.AlignVCenter
                     background: Rectangle {
@@ -435,17 +493,20 @@ PlasmoidItem {
                         Behavior on border.color { ColorAnimation { duration: 180 } }
                     }
                     onAccepted: root.submit()
-                    onActiveFocusChanged: if (activeFocus) { root.wake(); if (root.voiceHint.length) root.voiceHint = "" }
+                    Keys.onEscapePressed: (event) => { if (root.panelMode === "open") { root.panelMode = "min"; event.accepted = true } else event.accepted = false }
+                    onActiveFocusChanged: if (activeFocus) { root.wake(); root.refreshVoice(false); if (root.voiceHint.length) root.voiceHint = "" }
                 }
-                IconButton {   // microphone: records only on click; disabled with an explanation when no speech backend exists
+                IconButton {   // microphone: records only on click; dimmed (never dead) when no speech backend / mic is known
                     id: micButton
                     icon: "audio-input-microphone"
                     size: root.compact ? Math.max(22, field.height - 4) : 36
                     iconSize: root.compact ? 16 : 20
-                    active: root.voiceAvailable && !root.listening && !root.sending
+                    active: !root.listening && !root.sending
+                    dim: root.voiceChecked && root.voiceReason.length > 0 && !root.listening
                     danger: root.listening
-                    tip: !root.voiceAvailable ? "Voice is not available on this machine" : (root.listening ? "Listening… speak now" : "Speak your request")
+                    tip: root.listening ? "Listening… speak now" : (root.voiceChecked && root.voiceReason.length ? root.voiceReason + " — tap to try anyway" : "Speak your request")
                     onClicked: root.startListening()
+                    HoverHandler { onHoveredChanged: if (hovered) root.refreshVoice(false) }
                     Rectangle {   // soft accent ring while listening
                         anchors.fill: parent; radius: width / 2; color: "transparent"
                         border.color: Kirigami.Theme.negativeTextColor; border.width: 1.5
@@ -471,17 +532,36 @@ PlasmoidItem {
                     MouseArea { id: goArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.submit() }
                 }
             }
-            Text {
-                id: statusText
+            RowLayout {   // status line: red dot + "Listening…" while the mic is open, a voice failure for 6 s, else the daemon status
+                id: statusRow
                 Layout.fillWidth: true
                 Layout.leftMargin: (root.compact ? 22 : 32) + Kirigami.Units.smallSpacing * 2
-                visible: !root.compact && root.showStatus && root.status.length > 0
-                text: root.status
-                wrapMode: Text.WordWrap; maximumLineCount: 2
-                color: root.configured && root.aiEnabled && root.daemonUp ? Kirigami.Theme.disabledTextColor : Kirigami.Theme.neutralTextColor
-                font.family: "Inter"; font.pixelSize: 12; elide: Text.ElideRight
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                            onClicked: root.openControls(root.configured && root.aiEnabled ? "" : "--settings" + (field.text.trim().length ? " --prefill " + root.shellQuote(field.text.trim()) : "")) }
+                visible: !root.compact && (root.listening || root.voiceHint.length > 0 || (root.showStatus && root.status.length > 0))
+                spacing: 6
+                Rectangle {
+                    id: recDot
+                    visible: root.listening
+                    Layout.preferredWidth: 8; Layout.preferredHeight: 8
+                    radius: 4
+                    color: Kirigami.Theme.negativeTextColor
+                    SequentialAnimation on opacity {
+                        running: root.listening; loops: Animation.Infinite
+                        onRunningChanged: if (!running) recDot.opacity = 1
+                        NumberAnimation { from: 1.0; to: 0.35; duration: 450 }
+                        NumberAnimation { to: 1.0; duration: 450 }
+                    }
+                }
+                Text {
+                    id: statusText
+                    Layout.fillWidth: true
+                    text: root.listening ? "Listening…" : (root.voiceHint.length ? root.voiceHint : root.status)
+                    wrapMode: Text.WordWrap; maximumLineCount: 2
+                    color: root.listening ? Kirigami.Theme.negativeTextColor
+                         : (root.voiceHint.length || !(root.configured && root.aiEnabled && root.daemonUp) ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.disabledTextColor)
+                    font.family: "Inter"; font.pixelSize: 12; elide: Text.ElideRight
+                    MouseArea { anchors.fill: parent; enabled: !root.listening && !root.voiceHint.length; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.openControls(root.configured && root.aiEnabled ? "" : "--settings" + (field.text.trim().length ? " --prefill " + root.shellQuote(field.text.trim()) : "")) }
+                }
             }
         }
         QQC2.ToolTip.visible: root.compact && root.showStatus && root.status.length > 0 && hoverHandler.hovered
@@ -491,34 +571,44 @@ PlasmoidItem {
                     onClicked: root.openControls("") }
     }
 
-    // ================================================================ inline response panel (grows downward from the bar)
-    PlasmaCore.Dialog {
+    // ================================================================ response panel: an Item in the applet, flush under the card
+    // Desktop layer, so every application window is above it and it is back when they are minimised or closed.
+    Item {
         id: panel
-        visualParent: card
-        location: root.onDesktop ? PlasmaCore.Types.TopEdge : Plasmoid.location
-        type: PlasmaCore.Dialog.AppletPopup
-        hideOnWindowDeactivate: false
-        backgroundHints: PlasmaCore.Dialog.StandardBackground
-        visible: root.panelMode !== "closed"
+        x: card.x
+        y: card.y + card.height + root.panelGap
+        width: card.width
+        height: root.onDesktop ? Math.max(0, Math.round(panelHeight * root.openProgress)) : 0
+        visible: root.onDesktop && root.panelMode !== "closed" && height > 0
+        clip: true
 
+        // content height: header + list (+ typing footer) capped by the strip; the one-line pill when minimised
         readonly property real contentTarget: root.panelMode === "min" ? minPill.implicitHeight
-                                            : Math.min(root.maxPanelHeight, panelHeader.implicitHeight + 10 + list.contentHeight + 4)
+                                            : Math.min(root.maxPanelHeight, panelHeader.implicitHeight + 6 + list.contentHeight + 16)
         property real panelHeight: contentTarget
         Behavior on panelHeight { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
 
-        mainItem: Item {
+        Rectangle {   // same radius as the card so the pair reads as one stack
+            anchors.fill: parent
+            radius: 24
+            color: Kirigami.Theme.backgroundColor
+            opacity: 0.96
+            border.color: root.hairline; border.width: 1
+        }
+
+        // The conversation itself. One instance: it lives here on the desktop and moves into the popup in a panel.
+        Item {
             id: panelMain
+            parent: popupLoader.item ? popupLoader.item.mainItem : panel
+            anchors.fill: parent
             Kirigami.Theme.colorSet: Kirigami.Theme.Window
             Kirigami.Theme.inherit: false
-            width: root.onDesktop ? Math.max(320, card.width - panel.margins.left - panel.margins.right) : Math.min(560, Math.round(Screen.width * 0.5))
-            height: Math.max(8, Math.round(panel.panelHeight * root.openProgress))
-            clip: true
 
             // ---- expanded conversation
             Item {
                 id: panelBody
                 anchors.fill: parent
-                anchors.margins: 4
+                anchors.margins: 8
                 visible: opacity > 0
                 opacity: root.panelMode === "open" ? root.openProgress : 0
                 Behavior on opacity { NumberAnimation { duration: 200 } }
@@ -548,7 +638,7 @@ PlasmoidItem {
                     id: list
                     anchors.left: parent.left; anchors.right: parent.right
                     anchors.top: panelHeader.bottom; anchors.topMargin: 6; anchors.bottom: parent.bottom
-                    anchors.leftMargin: 8; anchors.rightMargin: 8
+                    anchors.leftMargin: 4; anchors.rightMargin: 4
                     clip: true
                     spacing: 0
                     boundsBehavior: Flickable.StopAtBounds
@@ -583,7 +673,7 @@ PlasmoidItem {
                 }
             }
 
-            // ---- minimized: one-line status pill (click to reopen)
+            // ---- minimized: one-line status pill under the card (click to reopen)
             Item {
                 id: minPill
                 anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -592,7 +682,7 @@ PlasmoidItem {
                 opacity: root.panelMode === "min" ? 1 : 0
                 Behavior on opacity { NumberAnimation { duration: 200 } }
                 RowLayout {
-                    anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 4
+                    anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 8
                     spacing: 8
                     Spinner { visible: root.taskActive; running: root.panelMode === "min"; Layout.preferredWidth: 14; Layout.preferredHeight: 14 }
                     Kirigami.Icon { visible: !root.taskActive && root.taskStatus === "done"; source: "checkmark"; isMask: true; color: Kirigami.Theme.positiveTextColor; Layout.preferredWidth: 16; Layout.preferredHeight: 16 }
@@ -607,6 +697,26 @@ PlasmoidItem {
                     IconButton { icon: "window-close"; tip: "Dismiss"; size: 28; iconSize: 16; onClicked: root.closePanel() }
                 }
                 MouseArea { anchors.fill: parent; z: -1; cursorShape: Qt.PointingHandCursor; onClicked: root.panelMode = "open" }
+            }
+        }
+    }
+
+    // ================================================================ compact form only (the applet sits in a panel): a popup
+    // is the only place the conversation can go, so a PlasmaCore.Dialog exists ONLY then — never on the desktop.
+    Loader {
+        id: popupLoader
+        active: root.compact
+        sourceComponent: PlasmaCore.Dialog {
+            visualParent: card
+            location: Plasmoid.location
+            type: PlasmaCore.Dialog.AppletPopup
+            hideOnWindowDeactivate: false
+            backgroundHints: PlasmaCore.Dialog.StandardBackground
+            visible: root.panelMode !== "closed"
+            mainItem: Item {
+                width: Math.min(560, Math.round(Screen.width * 0.5))
+                height: Math.max(8, Math.round(panel.panelHeight * root.openProgress))
+                clip: true
             }
         }
     }
