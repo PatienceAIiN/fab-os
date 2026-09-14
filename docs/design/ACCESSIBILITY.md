@@ -11,5 +11,5 @@ Fab OS specifics:
   `#6E9BFF` on ink ≈ 7.4:1. Fab Light `#1B1F27` on `#F6F7F9` ≈ 15:1. Minimum target 4.5:1 for text.
 - Touch: controls are at least 32 px; the dock and ask bar accept touch.
 
-Open items (tracked in UI_UX_AUDIT.md): a full keyboard-only walkthrough of every Fab OS app, screen-reader
+Open items (tracked in GitHub issues): a full keyboard-only walkthrough of every Fab OS app, screen-reader
 labelling audit of the ask bar plasmoid, and a formal contrast audit of the icon tiles' glyphs.

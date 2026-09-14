@@ -28,4 +28,3 @@ __pycache__/
 # website / community server
 website/node_modules/
 # design intake exports (pulled from Figma, not redistributable by default)
-design/tina/export/

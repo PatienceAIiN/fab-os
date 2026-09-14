@@ -1,6 +1,6 @@
 # Fab OS design system
 
-Source of truth: `fab-ui/design-system/tokens/tokens.json`. Consumers:
+Source of truth: `brand/brand.conf` and the generators in `brand/gen/`. Consumers:
 
 | Surface | How tokens reach it |
 |---------|---------------------|
@@ -16,6 +16,6 @@ Rules: no hard-coded colours in Fab OS code (palette or Kirigami.Theme only); on
 animations from the motion tokens and disabled under Reduce Motion; every state (loading/empty/error/disabled)
 must be visible and truthful.
 
-Components in use (UI_COMPONENT_CATALOG.md lists them): Plasma/Kirigami controls for the shell, Qt Widgets
+Components in use: Plasma/Kirigami controls for the shell, Qt Widgets
 (Breeze) for Fab OS apps. A Fab-authored widget kit is a later phase; until then consistency comes from the
 shared scheme, fonts, radii and icon language.

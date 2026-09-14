@@ -1,133 +1,169 @@
+<div align="center">
+
 # Fab OS
 
-**A Linux desktop by Patience AI, based on Ubuntu 26.04 LTS, with a KDE Plasma 6 desktop and a built-in
-agent.**
+**An agentic desktop operating system by [Patience AI](https://patienceai.in).**
+Ubuntu underneath, so everything Linux already works. A built-in agent on top, so the computer does the work.
 
-Fab OS is Ubuntu underneath: every Ubuntu package, command and security update works unchanged. On top of
-it Fab OS adds its own identity, a Plasma 6 desktop set up and themed by Patience AI, and a set of Fab OS
-applications: an autonomous agent, Fab OS Updates, Fab Feedback, a first-run Welcome wizard and first-boot
-provisioning. Everything Patience AI wrote is Apache-2.0; upstream packages keep their own licences.
+[Download](https://fabos.patienceai.in) · [Website](https://fabos.patienceai.in) · [Report a bug](https://github.com/PatienceAIiN/fab-os/issues) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
-**Status: pre-release.** No public image has been published yet. The repository builds a test VM image and a
-live/installer ISO; both are under test. Do not install unreleased images on a computer you rely on.
+Ubuntu 26.04 LTS base · KDE Plasma 6 (Wayland) · Inter type · Material-expressive look · Apache-2.0
 
-Website: <https://fabos.patienceai.in> · Source: <https://github.com/PatienceAIiN/fab-os> ·
-Contact: info@patienceai.in
+</div>
 
-## What is in it
+---
 
-| Area | What ships | Where |
-|------|------------|-------|
-| Base | Ubuntu 26.04 LTS packages from the Ubuntu archive, unmodified Ubuntu kernel and shim (Secure Boot works on the ISO), systemd-boot (VM) or GRUB (ISO), Plymouth boot animation with the Fab OS mark | `image/Containerfile`, ADR-0001, ADR-0002 |
-| Identity | `ID=fabos`, `ID_LIKE="ubuntu debian"`, Fab OS os-release / lsb-release / issue / legal / MOTD via `dpkg-divert` (Ubuntu's files are kept alongside), GRUB title, icons | `packages/fabos-branding`, `brand/brand.conf`, ADR-0003 |
-| Desktop | KDE Plasma 6 on Wayland; Fab OS look-and-feel (dark and light), FabOS Plasma theme, Fab Dark / Fab Light colour schemes, FabOS icon theme (Google Material Symbols glyphs on Fab OS tiles, Breeze fallback), Inter UI font and JetBrains Mono, wallpapers, SDDM greeter and KSplash themes, top bar with tray indicators, dock, desktop ask bar; Material-expressive design tokens (tinted surfaces, larger radii, accent picker) | `packages/fabos-desktop`, `fab-ui/design-system/tokens/tokens.json`, `DESIGN_SYSTEM.md`, ADR-0004 |
-| Bundled apps | Dolphin, Konsole, Kate, Discover (Flatpak backend, Flathub), Gwenview, Okular, Ark, Spectacle, KCalc, System Monitor, KInfoCenter, KWallet; shown in the launcher as Fab Files, Fab Terminal, Fab Editor, Fab Software, Fab Wallet and so on; Firefox from Mozilla's own apt repository | `FAB_OS_BRANDING.md`, ADR-0008, ADR-0009 |
-| Agent | `fabos-agentd` per-user service with a local HTTP API; ask bar on the desktop, **Fab OS Command Center** (`Meta+Space`), KRunner plugin, file-manager action, `fabos` CLI. Providers: Claude (Anthropic SDK), OpenAI, Google Gemini, or a local OpenAI-compatible server such as `llama-server`. Permission modes **ask / auto / bypass** over a deterministic risk policy (LOW / MEDIUM / HIGH / CRITICAL); root only through an audited single-use path; a **System-Wide AI** switch turns the agent off entirely; history in SQLite | `packages/fabos-agent`, ADR-0005, `SECURITY.md` |
-| Local AI | `llama.cpp` (`llama-cli`) and the `aios`/`aiosd` services from the `ai-native-os` repository; no model is shipped | `packages/fabos-ai` |
-| Updates | **Fab OS Updates**: check and install, **Standard** (`loom`) or **Beta** (`loom-beta`) channel, automatic updates on by default (unattended-upgrades for Patience AI and Ubuntu security origins), daily check with a notification | `packages/fabos-updates`, ADR-0006 |
-| Feedback | **Fab Feedback**: "Send feedback to Patience AI" dialog and CLI; a root-only, socket-activated relay holds the mail credentials and sends via the Brevo API or SMTP to info@patienceai.in (nothing is sent unless the user submits the form) | `packages/fabos-feedback` |
-| First run | **Welcome to Fab OS** wizard (appearance, privacy, AI on/off, quick links); `fabos-firstboot` installs updates, drivers, firmware, codecs and Flathub in the background after installation | `packages/fabos-welcome`, `packages/fabos-firstboot`, ADR-0007 |
-| Meta | `fabos-desktop-meta` installs all of the above on a stock Ubuntu 26.04 | `packages/fabos-desktop-meta` |
+## What Fab OS is
 
-## Download
+Fab OS is a complete desktop OS built on Ubuntu 26.04 LTS. It looks and feels like its own product — its own boot splash, greeter, theme, icons, and app names — but every Ubuntu command, package, `.deb`, Flatpak, and Docker workflow keeps working exactly as it does on Ubuntu. Ubuntu security updates still flow from Ubuntu; Fab OS features and branding updates flow from Patience AI's own signed repository.
 
-- **ISO: see GitHub Releases** (none published yet).
-- Website and documentation: <https://fabos.patienceai.in>.
-- Fab OS apt repository (for Fab OS itself and for stock Ubuntu 26.04): the address, key and
-  `fabos-desktop-meta` instructions are printed on the repository index page generated by
-  `scripts/publish-apt.sh`.
+The difference is the **home screen**. Instead of hunting through menus, you type what you want into one bar — *"open the editor, write the release notes, and email them to the team"* — and the built-in agent does it, at the level of the real operating system, with your permission.
 
-The VM profile built by this repository has autologin and the password `fabos`; it is a test image and is
-never distributed.
+> **Status: public pre-release (v1.0).** Solid to try and build; expect rough edges and please report them.
 
-## How Fab OS differs from Ubuntu
+## The agent, in one screen
 
-- **Identity**: the running system identifies as Fab OS (`/etc/os-release`, greeter, About, boot). Ubuntu's
-  identity files are diverted, not deleted, and `UBUNTU_CODENAME` stays so PPAs and distro tooling work.
-- **Desktop**: KDE Plasma 6 (Wayland) instead of GNOME, with Fab OS themes, fonts and icons.
-- **Upstream product names in the UI**: English sessions use a generated `en@fabos` translation catalog
-  (Fab Terminal, Fab Files, Fab Editor, ...); a small number of display strings that no catalog reaches are
-  byte-patched length-preservingly with the original kept beside the patched file. Copyright notices, About
-  dialogs, package names and every functional identifier are untouched. Full disclosure and restore
-  instructions: `legal/PATCHED-BINARIES.md`.
-- **No snap**: `snapd` is not installed and pinned out; Flatpak + Discover provide sandboxed apps. Firefox is
-  Mozilla's own `.deb` from `packages.mozilla.org` (key fingerprint pinned).
-- **No telemetry**: `ubuntu-report`, `apport` auto-upload, `whoopsie`, `popularity-contest`, `motd-news`
-  and `ubuntu-pro-client` are not installed (`legal/PRIVACY.md`).
-- **Two update sources**: Ubuntu packages from Ubuntu, Fab OS packages from the signed Patience AI apt
-  repository with Standard and Beta channels.
-- **Built-in agent and local AI stack** as described above; cloud providers stay off until the user adds a
-  key.
-- **Installer**: Calamares with Fab OS branding on a casper live ISO (UEFI only); LUKS offered.
+The desktop's centrepiece is the **"Ask me to do anything…"** bar. Behind it runs a local agent daemon (`fabos-agentd`, bound to `127.0.0.1`, bearer-token authenticated) that can actually operate the machine:
 
-## Building
+| It can | Tools |
+|---|---|
+| Run commands, as you or (with approval) as root | `run_shell` |
+| Read, write, and list files | `read_file` · `write_file` · `list_dir` |
+| Open and drive apps, type into them | `open_app` · `type_text` · `list_apps` |
+| Send and check mail | `send_email` · `check_email` |
+| Fetch the web, watch for things to happen | `web_fetch` · `schedule_watch` |
+| Ask you a question, notify you | `ask_user` · `notify_user` |
 
-Prerequisites, commands and repository rules are in `CONTRIBUTING.md`. In short, on a laptop with rootless
-podman, QEMU and OVMF:
+**You stay in control.** Every action is scored by a deterministic risk classifier (LOW → CRITICAL) and gated by a permission mode:
+
+- **Ask** — approve each risky step.
+- **Auto** — the agent proceeds, pausing only for high-risk actions.
+- **Bypass** — full autonomy, for when you trust the task.
+
+A single **System-Wide AI** switch turns the whole thing off. Nothing leaves your machine except the requests you give the agent, sent only to the provider you configure yourself: **Claude, OpenAI, Google Gemini, or a fully local model** (llama.cpp — offline). No telemetry, no accounts, no crash uploads.
+
+Everything the agent does is recorded — a full history with create/read/update/delete in the **Fab Command Center** — so you can see, retry, cancel, or delete any task.
+
+## What's in the box
+
+- **Apps you already know:** Firefox (Mozilla's own build), LibreOffice, VLC, plus the Fab suite — Fab Files, Fab Terminal, Fab Editor, Fab Software, Fab Photos, Fab Documents, Fab Calculator, Fab Screenshot, Fab Monitor, Fab System Info, Weather.
+- **Fab Command Center** — the agent's history, approvals, and settings.
+- **Fab Updates** — one place for updates, with Standard and Beta channels.
+- **Fab Feedback** — send a bug or idea straight to the team.
+- **Welcome to Fab OS** — a first-run wizard for appearance, privacy, and connecting an AI provider.
+
+## Design
+
+| Piece | What |
+|---|---|
+| Desktop | KDE Plasma 6 on Wayland; Fab OS look-and-feel in dark and light, following the system colour scheme everywhere |
+| Type | Inter for UI, JetBrains Mono for code |
+| Icons | Google Material Symbols on Fab OS tiles for system apps; third-party apps keep their own icons |
+| Motion | Rounded, animated surfaces; Overview and edge-tiling for multitasking; multi-monitor extend/duplicate |
+| Identity | Original Fab OS mark, wallpapers, and boot splash, rendered from source at every resolution up to 4K |
+
+Design docs live in [`docs/design/`](docs/design/). Decisions are recorded as ADRs in [`docs/decisions/`](docs/decisions/).
+
+---
+
+## Install Fab OS
+
+1. **Download the ISO** (about 2.3 GB) from [fabos.patienceai.in](https://fabos.patienceai.in).
+2. **Write it to a USB stick** (8 GB or larger) with [Balena Etcher](https://etcher.balena.io/) — free, and the same click-and-go steps on Windows, macOS, and Linux.
+3. **Restart** and pick the USB stick from your computer's boot menu (usually F12, F2, or Esc at power-on).
+4. **Try it live** — Fab OS runs from the stick without touching your disk. When you're ready, open **Install Fab OS** on the desktop.
+5. **Verify the download** (optional): `sha256sum -c fabos-1.0-desktop-amd64.iso.sha256`.
+
+After first login, connect an AI provider in **Fab Command Center → Settings** to turn the agent on. It stays off until you do.
+
+---
+
+## Build it yourself
+
+Fab OS builds with rootless `podman` — no root, no host contamination. The build is a multi-stage container image exported to a bootable disk.
+
+**Prerequisites** (Ubuntu/Fedora host): `podman`, `qemu-system-x86_64`, `ovmf`, `python3` with Pillow, and about 20 GB free disk.
 
 ```bash
-scripts/stage-ai-binaries.sh                 # aios/aiosd from ../ai-native-os (or builds them) -> build/bin
-scripts/build-rootfs.sh vm                   # podman build -> build/fabos-root-vm.ext4 (MIRROR=... for a local mirror)
-scripts/make-disk.sh vm && scripts/boot-vm.sh
-scripts/build-rootfs.sh iso && scripts/build-iso.sh    # live/installer ISO
-scripts/publish-apt.sh --no-deploy --channel beta      # build .debs and a signed apt repository (key in build/secrets)
+git clone https://github.com/PatienceAIiN/fab-os.git
+cd fab-os
+
+# 1. Build the root filesystem (VM profile) and export it to ext4
+MIRROR=http://archive.ubuntu.com/ubuntu scripts/build-rootfs.sh vm
+
+# 2. Assemble a bootable GPT disk (UEFI, systemd-boot)
+scripts/make-disk.sh vm
+
+# 3. Boot it in QEMU/KVM (add --headless for no window, --heads 2 for dual display)
+scripts/boot-vm.sh
 ```
 
-Every heavy command runs under `tools/rg`, a resource guard that caps RAM and CPU so the host stays usable.
-CI (`.github/workflows/build.yml`) builds the packages and the signed repository on every push to `main`
-(Beta) and on `v*` tags (Standard); the full image build is a manual workflow.
+Set `MIRROR` to a fast Ubuntu mirror near you; it affects downloads only — the shipped OS always points at the official archive.
 
-## How it is tested
+### Build the installer ISO
 
-- `tests/boot-test.sh` boots the VM headless and checks the serial self-test markers (identity, SDDM,
-  Plasma, agent, memory and boot time).
-- `tests/branding-check.sh vm` runs static checks against the built image: identity fields, no Canonical
-  artwork packages, no snap, Plymouth/SDDM/look-and-feel installed, copyright files retained, source offer
-  shipped, `en@fabos` catalogs present, Discover and Konsole never byte-patched, and more.
-- `tests/agent-test.py` drives `fabos-agentd` end to end with a scripted provider (policy classes, modes,
-  approvals, CRUD, watches; no network). `tests/agent-live-test.py` evaluates a real model and needs an
-  API key.
-- `tests/feedback-test.py` exercises the feedback relay with a fake mail endpoint.
-- `tests/ui-tour.sh` is the **screenshot tour**: it boots the VM, drives the desktop with keystrokes and
-  captures frames (`build/screenshots/tour-*.png`) of the desktop, launcher, settings, terminal, Software,
-  Files, Command Center, Updates, Feedback and About in dark and light mode for visual review.
-- `tests/iso-boot-test.sh` boots the live ISO headless.
+```bash
+scripts/build-rootfs.sh iso      # casper live rootfs + Calamares installer
+scripts/build-iso.sh             # -> build/fabos-1.0-desktop-amd64.iso
+tests/iso-boot-test.sh           # headless live-boot smoke test
+```
+
+### Test it
+
+```bash
+tests/branding-check.sh vm       # 60+ static checks: identity, no Canonical/KDE names, legal files present
+tests/ui-tour.sh                 # boots headless, drives the UI, captures screenshots to build/screenshots/
+python3 tests/agent-test.py      # agent unit tests (offline, FakeProvider)
+```
+
+The build is designed to be **cache-friendly and honest**: `build-rootfs.sh` refuses to export a stale image if a build step fails, and never re-downloads the desktop layer unless you change it.
+
+---
+
+## How updates work
+
+Fab OS keeps two update streams, both automatic and both signed:
+
+- **Ubuntu** security and package updates come from the Ubuntu archive, unchanged.
+- **Fab OS** feature, AI, and branding updates come from Patience AI's signed repository at `https://fabos.patienceai.in/apt` (suites `loom` for Standard, `loom-beta` for Beta).
+
+`apt`, `flatpak`, and everything else you know work normally.
+
+---
+
+## Legal & licensing
+
+Fab OS is free and open source. **Own code is Apache-2.0** ([LICENSE](LICENSE), [NOTICE](NOTICE)). Upstream components keep their own licences, preserved and documented:
+
+- **[LICENSING.md](LICENSING.md)** — how the pieces fit together.
+- **[ATTRIBUTIONS.md](ATTRIBUTIONS.md)** and **[THIRD_PARTY_LICENSES/](THIRD_PARTY_LICENSES/)** — every third-party component and its licence text.
+- **[legal/](legal/)** — trademark notes, the Ubuntu-derivative compliance record, the GPL source offer, the privacy statement, the list of length-preserving string patches, and the open-source release checklist.
+
+Trademark note: **Ubuntu** is a trademark of Canonical Ltd.; **KDE** and **Plasma** are trademarks of KDE e.V.; **Firefox** is a trademark of the Mozilla Foundation (Fab OS ships Mozilla's own unmodified build). Fab OS is an independent project and is **not endorsed by** any of them. All Ubuntu/Canonical and KDE trademarks and logos are removed from the product surface; the underlying free software and its copyright notices are unchanged.
+
+No telemetry, no analytics, no accounts. See [legal/PRIVACY.md](legal/PRIVACY.md) and [SECURITY.md](SECURITY.md).
+
+---
 
 ## Repository layout
 
-| Path | What |
-|------|------|
-| `brand/` | `brand.conf` (single source of identity), logo SVGs, `gen/make_assets.py` (icons, Plymouth frames, wallpapers, SDDM/KSplash art, 3D logo, icon theme, Plasma theme) |
-| `packages/` | the Debian packages listed above and `build-debs.sh` |
-| `image/` | `Containerfile` (profiles `vm` and `iso`) and overlays |
-| `scripts/` | build, disk, boot, ISO, apt publishing, source offer |
-| `tests/` | boot, branding, agent, feedback, UI tour, ISO tests |
-| `legal/` | trademarks, Ubuntu-derivative compliance, source offer, patched-binaries disclosure, artwork, privacy, open-source release checklist |
-| `docs/decisions/` | ADR-0001 to ADR-0009 |
-| `website/`, `community/`, `deploy/` | static website, community/newsletter API server, server configuration |
-| `THIRD_PARTY_LICENSES/` | verbatim licence texts (index in its `README.md`) |
+```
+brand/       identity: brand.conf + generators for icons, wallpapers, splash, themes
+image/       the OS recipe (Containerfile) and per-profile overlays (vm, iso)
+packages/    the Fab OS .deb sources (agent, desktop, branding, updates, feedback, welcome, ai)
+scripts/     build, disk, QEMU, ISO, apt-publish, and release tooling
+tests/       branding, UI-tour, agent, and boot tests
+docs/        design docs and architecture decision records (ADRs)
+legal/       licensing, trademark, privacy, and compliance records
+website/     fabos.patienceai.in
+```
 
-## Legal
+## Contributing
 
-- Fab OS's own code, packaging, artwork and documentation: **Apache License 2.0** (`LICENSE`, `NOTICE`);
-  artwork additionally **CC0-1.0** (`legal/ARTWORK.md`). Derived colour schemes stay LGPL-3.0-or-later.
-- Ubuntu, KDE, Mozilla and all other packages on an image keep their own licences; the component list is
-  `ATTRIBUTIONS.md`, licence texts are in `THIRD_PARTY_LICENSES/`, and every installed package's notice is
-  in `/usr/share/doc/<package>/copyright`.
-- Written offer for corresponding source: `legal/SOURCE-OFFER.md` (`scripts/source-offer.sh` records the
-  package manifest and source URIs per image).
-- Modifications to upstream display strings: `legal/PATCHED-BINARIES.md`.
-- Pre-release legal review: `legal/OPEN-SOURCE-RELEASE-CHECKLIST.md`, `legal/UBUNTU-DERIVATIVE-COMPLIANCE.md`.
-- Privacy: `legal/PRIVACY.md`. Security: `SECURITY.md`. Conduct: `CODE_OF_CONDUCT.md`.
+Issues and pull requests are welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? See [SECURITY.md](SECURITY.md).
 
-**Trademarks.** Ubuntu is a trademark of Canonical Ltd.; KDE and Plasma are trademarks of KDE e.V.; Firefox
-is a trademark of the Mozilla Foundation. Fab OS is an independent project by Patience AI and is not
-endorsed by or affiliated with Canonical, KDE e.V. or Mozilla; upstream names appear only to identify the
-software. "Fab OS" and the Fab OS mark identify software published by Patience AI; Patience AI does not claim
-a registered trademark in them (`legal/TRADEMARKS.md`, `legal/TRADEMARK-SEARCH.md`).
+<div align="center">
 
-## More documentation
+**Fab OS** · by Patience AI · [fabos.patienceai.in](https://fabos.patienceai.in)
 
-`FAB_OS_BRANDING.md`, `DESIGN_SYSTEM.md`, `MOTION_GUIDELINES.md`, `ACCESSIBILITY.md`,
-`UI_COMPONENT_CATALOG.md`, `UI_UX_AUDIT.md`, `UI_REVAMP_CHANGELOG.md`, `LICENSING.md`, `docs/PUBLIC-GUIDE.md`
-and the ADRs in `docs/decisions/`.
+</div>

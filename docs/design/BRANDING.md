@@ -17,7 +17,7 @@ Command Center, Updates, Feedback, launcher start button, ask bar. Ordinary appl
 System Settings pages carry no logo — the interface should feel like an OS, not an advertisement.
 
 **Colour:** ink `#0E1116`, surfaces `#161B22`/`#1E242D`, text `#E6EAF0`, accent `#6E9BFF` (dark) / `#3B6EF5` (light).
-Tokens: `fab-ui/design-system/tokens/tokens.json`. Colour schemes: Fab Dark, Fab Light (generated at install).
+Tokens are defined in the FabOS colour schemes and Plasma theme. Colour schemes: Fab Dark, Fab Light (generated at install).
 
 **Typography:** Inter (UI), JetBrains Mono (code/terminal). Sizes and weights in the tokens file.
 

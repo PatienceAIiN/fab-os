@@ -73,7 +73,7 @@ change or have the right to submit it under Apache-2.0. Use a real name; a no-re
 ## Pull requests
 
 Fill in `.github/PULL_REQUEST_TEMPLATE.md`. Keep PRs focused, describe what you verified and how (which
-tests, which screenshots), and update `UI_REVAMP_CHANGELOG.md` for user-visible changes and `legal/` if the
+tests, which screenshots), and update `legal/` if the
 set of modified upstream packages or third-party components changes.
 
 ## Conduct

@@ -1,6 +1,6 @@
 # Fab OS motion
 
-Tokens (`fab-ui/design-system/tokens/tokens.json` → motion): instant 0 ms · fast 120 ms · normal 200 ms ·
+Motion tokens: instant 0 ms · fast 120 ms · normal 200 ms ·
 slow 320 ms · emphasis 480 ms; easings standard / emphasized / accelerate / decelerate.
 
 Applied: KWin effects enabled centrally (`/etc/xdg/kwinrc`): magic lamp (minimise), scale (open/close), fade,

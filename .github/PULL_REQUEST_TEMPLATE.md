@@ -19,5 +19,4 @@ One or two sentences. Link the issue if there is one.
 - [ ] No third-party trademarks or artwork added; attribution untouched
 - [ ] `legal/` updated if the set of modified upstream packages or third-party components changed
 - [ ] ADR added or updated for architectural changes (`docs/decisions/`)
-- [ ] `UI_REVAMP_CHANGELOG.md` updated for user-visible changes
 - [ ] No secrets, credentials or personal data in the diff
