@@ -343,6 +343,9 @@ def fetch_material(symbol, cache_dir):
     """Download one Material Symbols (Rounded, 48px) SVG from Google's repo; cached; returns path data list or None."""
     import urllib.request
     os.makedirs(cache_dir, exist_ok=True); p = os.path.join(cache_dir, symbol + ".svg")
+    seed = os.path.join(os.path.dirname(os.path.abspath(__file__)), "material-cache", symbol + ".svg")   # vendored (Apache-2.0) so builds work offline
+    if not os.path.exists(p) and os.path.exists(seed):
+        import shutil; shutil.copy(seed, p)
     if not os.path.exists(p):
         url = "https://raw.githubusercontent.com/google/material-design-icons/master/symbols/web/%s/materialsymbolsrounded/%s_48px.svg" % (symbol, symbol)
         try:
