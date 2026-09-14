@@ -88,7 +88,7 @@ Turn it off with `fabos-voice wake off` (setting `voice.enabled`; the Voice page
 | Type | Inter for UI, JetBrains Mono for code |
 | Icons | Google Material Symbols on Fab OS tiles for system apps; third-party apps keep their own icons |
 | Motion | Rounded, animated surfaces; Overview and edge-tiling for multitasking; multi-monitor extend/duplicate |
-| Windows | Drag a window to a side edge for a half, to a corner for a quarter, to the top to maximise. Hold **Shift** while dragging to drop it into a tile layout (**Meta+T** edits the layouts, **Meta+Arrows** quick-tile from the keyboard). After a window snaps to one half, **Snap Assist** shows the other open windows so you can pick one for the remaining half ([ADR-0011](docs/decisions/ADR-0013-window-snapping.md)) |
+| Windows | Drag a window to a side edge for a half, to a corner for a quarter, to the top to maximise. Hold **Shift** while dragging to drop it into a tile layout (**Meta+T** edits the layouts, **Meta+Arrows** quick-tile from the keyboard). After a window snaps to one half, **Snap Assist** shows the other open windows so you can pick one for the remaining half ([ADR-0013](docs/decisions/ADR-0013-window-snapping.md)) |
 | Identity | Original Fab OS mark, wallpapers, and boot splash, rendered from source at every resolution up to 4K |
 
 Design docs live in [`docs/design/`](docs/design/). Decisions are recorded as ADRs in [`docs/decisions/`](docs/decisions/).

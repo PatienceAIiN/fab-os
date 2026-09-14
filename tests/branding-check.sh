@@ -138,7 +138,7 @@ chk "voice: whisper tiny.en model shipped (sha256)" "R 'sha256sum /usr/share/fab
 chk "voice: dictionary knows the wake phrase"      "R 'grep -q \"^hey HH EY\" /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict && grep -q \"^fab F AE B\" /usr/share/pocketsphinx/model/en-us/cmudict-en-us.dict'"
 chk "voice: status reports offline whisper.cpp"    "R 'fabos-voice status' | grep -q '\"stt\": \"whisper.cpp\"'"
 
-# Firewall on by default, window snapping + Snap Assist, package revision (2026-09-14; ADR-0011, brand.conf PKG_REVISION)
+# Firewall on by default, window snapping + Snap Assist, package revision (2026-09-14; ADR-0013, brand.conf PKG_REVISION)
 chk "ufw on: ENABLED=yes, unit enabled, deny in / allow out" "R 'grep -q ^ENABLED=yes$ /etc/ufw/ufw.conf && systemctl is-enabled ufw | grep -q ^enabled && grep -q ^DEFAULT_INPUT_POLICY=.DROP /etc/default/ufw && grep -q ^DEFAULT_OUTPUT_POLICY=.ACCEPT /etc/default/ufw'"
 chk "iso profile: no SSH server, no ufw rules"           "[ \"$PROFILE\" != iso ] || ! R 'dpkg -s openssh-server 2>/dev/null | grep ^Package; grep -c \"^-A ufw-user-input\" /etc/ufw/user.rules' | grep -qE '^Package|^[1-9]'"
 chk "vm profile: exactly one ufw rule (22/tcp), v4 + v6" "[ \"$PROFILE\" != vm ] || R 'test \$(grep -c \"^-A ufw-user-input\" /etc/ufw/user.rules) -eq 1 && grep -q \"^-A ufw-user-input -p tcp --dport 22 -j ACCEPT\" /etc/ufw/user.rules && test \$(grep -c \"^-A ufw6-user-input\" /etc/ufw/user6.rules) -eq 1'"
