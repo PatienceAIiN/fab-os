@@ -64,3 +64,60 @@ switch restyles every surface, sidebar rows keep their identity while chats appe
 spins for the running step and shows checks + narration for finished ones, the provider check enables / blocks Save,
 the approval dialog's details toggle and Deny, a stale approval closing without a POST, in-place editing of the root
 message staying in its chat, `--task ID` opening on that chat, and an offline Save keeping Settings open.
+
+## Ask bar (home screen)
+
+The bar is the agent's front door and answers **inline** — nothing else opens unless the user clicks
+"Open in Fab AI Controls". Source: `packages/fabos-agent/usr/share/plasma/plasmoids/in.patienceai.fabos.askbar/`
+(`main.qml` state machine + `agent.js` pure helpers, `ConvoDelegate.qml`, `AiMark.qml`, `IconButton.qml`, `Spinner.qml`,
+`TypingDots.qml`). Layout follows the chat brief in `CHAT-UI-BRIEF.md` (composer card; user pill right, assistant plain
+text with an action row) with Fab OS tokens.
+
+- **Composer** (the card): radius 24, `Kirigami.Theme.backgroundColor` @ 92 % with a 12 % hairline. Left: the animated
+  **Fab AI mark** (`AiMark.qml`, drawn in QML — orb, ring of three arcs, breathing glow; idle breathes over 4 s, working
+  orbits at 1.2 s and pulses, listening pulses at 0.9 s with a red dot, done flashes one expanding ring, error / not
+  configured tints amber via `neutralTextColor`; every loop stops after 30 s idle; static frame `brand/logo/fabos-ai-mark.svg`).
+  Middle: the field (pill, `alternateBackgroundColor`, accent border on focus). Right: the round **mic** button (20 px
+  glyph, 60 % → 100 % on hover; records only on click through `fabos-voice listen-once --timeout 10`; disabled with the
+  tooltip "Voice is not available on this machine" when `fabos-voice status` reports no speech backend or the binary is
+  missing; the transcript is typed into the field at ~25 ms/char and submitted) and the accent **Do it** pill (reads
+  "Send" while a conversation is open).
+- **Response panel**: a `PlasmaCore.Dialog` (type AppletPopup, FabOS Plasma dialog background, radius 24) anchored
+  below the card (`visualParent` = card, location TopEdge) at the card's width. It grows downward — height animates
+  from 0 to its content (280 ms OutCubic) while the content fades in; content growth animates at 260 ms, capped at
+  62 % of the screen height. Header: status line left, icon controls right with tooltips (Stop · Retry · Edit prompt ·
+  Copy result · Minimize · Open in Fab AI Controls = `fabos-command-center --task ID`). Minimize collapses it to a
+  one-line status pill that reopens on click; Edit prompt puts the request back into the bar and closes the panel — the
+  next Do it starts a fresh task even inside the 300 ms shrink (it cancels the close and re-opens the panel). Dismissing
+  the panel forgets the task in the bar (the mark returns to idle; the task itself carries on in the daemon and the
+  status line counts it).
+- **Conversation** (`ConvoDelegate.qml`): user request as a right-aligned pill (radius 20, tinted, ≤ 72 % wide);
+  assistant text plain (Inter 15/1.25) rendered from Markdown-lite (bold, italics, inline code, links, lists,
+  headings) with fenced code as monospace cards (JetBrains Mono 13 on a text-colour @ 8 % tint, radius 12) and an
+  action row (Copy · Try again · Open) under the final answer; new rows fade in and rise 12 px (260 ms). Typing
+  indicator: three pulsing dots while the task is queued / running / waiting.
+- **Live action feed**: one card per tool step (radius 14) appended the moment the daemon inserts the step row, with
+  the app's own icon for `open_app` (scale-in), a keyboard glyph and a typewriter reveal (~25 ms/char) for `type_text`,
+  terminal / file / globe / mail / bell / question / eye glyphs for the other tools; friendly labels only (raw commands
+  and paths appear only when the daemon setting `ui.show_raw` is true); each step's `narration` (when the daemon
+  provides one) in italics under the title; spinner while running, green check when done, amber cross on error / denied; the current step carries an
+  accent border. When the task ends its steps fold once into a "Worked: N actions" chip that expands on click (a later
+  poll or a later task finishing never re-folds a group the user opened). Approvals render inline with the risk level and Allow / Deny icon buttons
+  (`POST /approvals/{id}`); questions render an inline answer field (`POST /tasks/{id}/answer`; the answer is shown at
+  once as a user pill and bound to the daemon's `answer` step — whose text is in `input` — when the next poll returns it,
+  so it is never duplicated; answers given elsewhere appear from that step).
+- **Polling**: `GET /tasks/{id}` every 1.5 s through the executable DataSource (curl; port from
+  `$XDG_RUNTIME_DIR/fabos-agent/port`; the bearer token is handed to curl as one config line on stdin — `printf … | curl
+  -K -`, the shell's builtin printf — so it is never on a command line / in `/proc/*/cmdline`), only while the panel is
+  open and the task is active, plus two trailing polls after it stops; rows are appended and updated in place, never
+  rebuilt. `curl` is a declared dependency of `fabos-agent`. `GET /status` every 4 s drives the mark and the
+  status line; `GET /settings` is read when the panel opens (`ui.show_raw`).
+- **Follow-ups**: with the panel open, typing and pressing Send posts a new task with `parent_id` = the root task and
+  appends it to the same conversation. Retry of a follow-up keeps the root; retry of the root re-roots the chat (the
+  daemon copies `parent_id`, which is null for a root).
+- **Layout**: the applet is a full-width transparent strip (150 px) placed by the look-and-feel layout script; the
+  card centres on the physical screen width. In a panel (compact) the same code collapses to one row and the
+  response panel opens from the panel edge.
+- **Checks**: `node tests/askbar-js-test.js` (pure helpers) and `tests/askbar-qml-test.sh` (loads the applet headless
+  with `plasmawindowed` inside the image, drives the state machine with daemon-shaped JSON, renders
+  `build/askbar-{bar,panel,feed}.png`).
