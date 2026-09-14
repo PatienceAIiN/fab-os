@@ -2,6 +2,9 @@ MIT (Expat) License — applies to these components shipped on Fab OS images:
 
 - llama.cpp: Copyright 2023-2026 The ggml authors (https://github.com/ggml-org/llama.cpp),
   Ubuntu package llama.cpp.
+- whisper.cpp: Copyright (c) 2023-2026 The ggml authors (https://github.com/ggml-org/whisper.cpp), Ubuntu package whisper.cpp.
+- Whisper `tiny.en` model weights (ggml-tiny.en.bin, shipped in /usr/share/fabos/voice): Copyright (c) 2022 OpenAI
+  (https://github.com/openai/whisper) — this notice must be retained with the weights.
 - anthropic Python SDK: Copyright 2023 Anthropic, PBC (https://github.com/anthropics/anthropic-sdk-python),
   Ubuntu package python3-anthropic.
 
