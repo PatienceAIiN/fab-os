@@ -17,7 +17,7 @@ podman run --rm -i "$TAG" bash -c '
   sed -i "s/^Types: deb$/Types: deb deb-src/" /etc/apt/sources.list.d/ubuntu.sources
   apt-get update -qq >/dev/null 2>&1 || apt-get update 2>&1 | grep -E "^(E:|Err)" | head -3 >&2; cd /tmp
   xargs -n 1 apt-get source --print-uris -qq 2>/dev/null | grep -oE "^.?https?://[^ ]+ [^ ]+ [0-9]+ [A-Za-z0-9]+:[0-9a-f]+" | sed -E "s/^.?(https?:)/\\1/; s/'"'"' / /" ' < build/srcpkgs.txt | sort -u > "$OUT/source-uris.txt" || true
-# coverage: requested source packages that got no URI (own fabos-* packages = this repo; Mozilla-repo Firefox; versions superseded in the archive)
+# coverage: requested source packages that got no URI (own fabos-* packages = this repo; Brave-repo brave-browser/brave-keyring; versions superseded in the archive)
 awk '{print $2}' "$OUT/source-uris.txt" | sed -E 's/_[^_]+$//' | sort -u > build/resolved-src.txt
 awk -F= 'NR==FNR{r[$1]=1; next} !($1 in r)' build/resolved-src.txt build/srcpkgs.txt > "$OUT/unresolved-sources.txt"
 [ -s "$OUT/source-uris.txt" ] || echo "WARNING: no source URIs resolved — check deb-src availability / network" >&2

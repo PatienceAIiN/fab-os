@@ -119,7 +119,7 @@ bottom-right hot corner does the same (`kwinrc [ElectricBorders] BottomRight=Sho
 
 **Names for bundled applications** (launcher, dock, search): Fab Files, Fab Terminal, Fab Editor, Fab Software,
 Fab Photos, Fab Documents, Fab Calculator, Fab Archives, Fab Screenshot, Fab System Info, Fab Monitor, Fab Search,
-Fab Settings, Fab Wallet, Fab AI Controls, Fab Updates, Fab Feedback, Welcome to Fab OS. These are display names
+Fab Settings, Fab AI Controls, Fab Updates, Fab Feedback, Welcome to Fab OS (no wallet application: ADR-0015). These are display names
 set through desktop-entry overrides; the programs remain the upstream projects credited in ATTRIBUTIONS.md.
 
 **Author metadata.** Every artefact Fab OS ships names its author: `Patience AI <support@patienceai.in>` and
@@ -131,7 +131,7 @@ has no Author key, so `Description`/`Comment` carry it), in the FabOS icon theme
 in Welcome, Fab Updates, Fab Feedback and the Command Center settings. `tests/branding-check.sh` checks the shipped copies.
 
 **What is never rebranded:** copyright and licence notices, in-app About dialogs of upstream programs, package and
-binary names, D-Bus names, configuration keys, and Canonical/KDE/Mozilla trademarks used for identification.
+binary names, D-Bus names, configuration keys, and Canonical/KDE/Brave trademarks used for identification.
 
 **Old names:** "Fabric OS" and "ai-native-os" are retired; the only remaining references are historical
 (legal/TRADEMARK-SEARCH.md, ADRs) and the server hostname fabricos.patienceai.in.

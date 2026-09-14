@@ -46,14 +46,16 @@ chk "sddm enabled"                        "R 'systemctl is-enabled sddm' | grep 
 chk "FabOS Plasma theme installed"        "R 'test -f /usr/share/plasma/desktoptheme/FabOS/metadata.json && test -f /usr/share/plasma/desktoptheme/FabOS/dialogs/background.svg'"
 chk "FabOS icon theme has Settings icons"  "R 'test -e /usr/share/icons/FabOS/48x48/apps/preferences-system-network.png'"
 chk "Fab OS session entry (no Plasma name)" "R 'grep -q ^Name=Fab\ OS /usr/local/share/wayland-sessions/fabos.desktop && grep -q SessionDir=/usr/local/share/wayland-sessions /etc/sddm.conf.d/zz-fabos.conf'"
-chk "wallet KCM says Fab Wallet (binary)"   "R 'grep -c \"Fab Wallet\" /usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/systemsettings_qwidgets/kcm_kwallet5.so' | grep -qv ^0"
-chk "Fab Wallet override present"          "R 'grep -q ^Name=Fab\ Wallet /usr/local/share/applications/org.kde.kwalletmanager.desktop'"
+# 2026-09-15 (ADR-0015): the two wallet checks below used to assert the Fab Wallet KCM binary and menu override; the wallet is
+# now removed, so they assert the opposite (rewritten in place — the old expectation is the defect).
+chk "no wallet: kwalletmanager + its KCM absent"  "! R 'dpkg -s kwalletmanager 2>/dev/null' >/dev/null && ! R 'test -f /usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/systemsettings_qwidgets/kcm_kwallet5.so'"
+chk "no wallet: no wallet menu entry or override" "[ -z \"\$(R 'ls /usr/share/applications/org.kde.kwalletmanager.desktop /usr/local/share/applications/org.kde.kwalletmanager.desktop 2>/dev/null')\" ]"
 chk "no visible KDE names in launcher"     "! R 'grep -lE \"^Name=.*KDE\" /usr/share/applications/*.desktop | while read f; do b=\$(basename \$f); test -f /usr/local/share/applications/\$b || echo \$b; done' | grep -q ."
 chk "updates app + polkit + timer"         "R 'test -x /usr/bin/fabos-updates && test -f /usr/share/polkit-1/actions/in.patienceai.fabos.updates.policy && systemctl is-enabled fabos-update-check.timer' | grep -q enabled"
 chk "unattended-upgrades allows Fab OS"    "R 'grep -q \"Patience AI:loom\" /etc/apt/apt.conf.d/52fabos-unattended'"
 chk "KRunner agent plugin registered"      "R 'test -f /usr/share/krunner/dbusplugins/fabos-runner.desktop && test -f /usr/share/dbus-1/services/in.patienceai.fabos.runner.service'"
 chk "file-manager Ask Fab OS action"       "R 'test -f /usr/share/kio/servicemenus/fabos-ask.desktop'"
-chk "firefox from Mozilla (not snap shim)"  "R 'dpkg -s firefox' | grep -q 'Maintainer: Mozilla'"
+chk "browser: firefox absent, brave-browser from Brave" "! R 'dpkg -s firefox 2>/dev/null' >/dev/null && R 'dpkg -s brave-browser' | grep -q '^Maintainer: Brave Software'"   # 2026-09-15 (ADR-0016): was the Firefox/Mozilla check
 chk "first-boot provisioning shipped"      "R 'test -x /usr/lib/fabos/firstboot.sh && systemctl is-enabled fabos-firstboot.service 2>/dev/null | grep -qE \"enabled|masked\"'"
 chk "en@fabos catalogs generated"          "R 'test -s /usr/local/share/locale/en@fabos/LC_MESSAGES/konsole.mo && test -s /usr/local/share/locale/en@fabos/LC_MESSAGES/dolphin.mo'"
 chk "session prefers en@fabos"              "R 'test -f /etc/xdg/plasma-workspace/env/50-fabos-language.sh'"
@@ -159,4 +161,32 @@ chk "no forbidden product names in the image"           "! R 'grep -rIn -E \"$FO
 chk "OpenAI only as a provider label (source tree)"     "! grep -rIl OpenAI $SRC/packages $SRC/website $SRC/brand $SRC/docs $SRC/README.md | grep -vE '$OPENAI_OK' | grep -q ."
 chk "OpenAI only as a provider label (image)"           "! R 'grep -rIl OpenAI /usr/share/fabos /usr/lib/fabos /usr/share/plasma /usr/share/applications 2>/dev/null; true' | grep -vE '$OPENAI_OK' | grep -q ."
 chk "no files named after those products"              "! find $SRC/packages $SRC/website \( -iname '*chatgpt*' -o -iname '*openai*' -o -iname '*snowui*' \) | grep -q ."
+
+# No wallet, rounded window corners, Brave Browser, security posture (2026-09-15; ADR-0015, ADR-0016). The wallet, PAM,
+# Brave and mimeapps items only pass on an image built from this Containerfile (the round-3 image still has Firefox + the wallet).
+chk "kwalletrc: Enabled=false, Launch Manager=false, no Auto Allow" "R 'grep -q ^Enabled=false$ /etc/xdg/kwalletrc && grep -q \"^Launch Manager=false\" /etc/xdg/kwalletrc' && [ -z \"\$(R 'grep -i \"Auto Allow\" /etc/xdg/kwalletrc')\" ]"
+chk "kwalletmanager pinned out (ksshaskpass/libqt6keychain1 Recommend it)" "R 'grep -q kwalletmanager /etc/apt/preferences.d/00-fabos-blocklist'"
+chk "pam_kwallet removed from the SDDM PAM stack"        "[ -z \"\$(R 'grep pam_kwallet /etc/pam.d/sddm')\" ]"
+chk "decoration: corner notches transparent (L-shaped shadow paths + desc)" "R 'grep -q notch /usr/share/aurorae/themes/FabOS/decoration.svg && grep -q \"d=\\\"M0 0H48V28H28V48H0Z\\\"\" /usr/share/aurorae/themes/FabOS/decoration.svg && grep -q \"d=\\\"M56 0H104V48H76V28H56Z\\\"\" /usr/share/aurorae/themes/FabOS/decoration.svg'"
+chk "decoration: corner shadows tapered by a luminance mask (taperTL/TR, not mask-*)" "R 'grep -q \"mask=\\\"url(#taperTL)\\\"\" /usr/share/aurorae/themes/FabOS/decoration.svg && grep -q \"mask=\\\"url(#taperTRi)\\\"\" /usr/share/aurorae/themes/FabOS/decoration.svg'"
+chk "decoration: no mask-* elements (Aurorae uses them for blur only)" "[ -z \"\$(R 'grep -o \"id=\\\"mask-\" /usr/share/aurorae/themes/FabOS/decoration.svg')\" ]"
+chk "decoration: buttons keep 3 px rounded strokes"     "R 'grep -q \"stroke-width=\\\"3\\\"\" /usr/share/aurorae/themes/FabOS/close.svg && grep -q \"stroke-width=\\\"3\\\"\" /usr/share/aurorae/themes/FabOS/maximize.svg && grep -q stroke-linecap=.round /usr/share/aurorae/themes/FabOS/minimize.svg'"
+chk "no world-writable files/dirs under /usr/lib/fabos, /usr/share/fabos" "[ -z \"\$(R 'find /usr/lib/fabos /usr/share/fabos -xdev \( -type f -o -type d \) -perm -0002')\" ]"
+# Privileged files: the image's FULL setuid / setgid / file-capability lists must be subsets of these allowlists — Ubuntu's stock set as
+# measured on the 2026-09-14 vm + iso images (`find / -xdev -perm -4000 -type f`, `-perm -2000`, `getcap -r /`) plus the ONE non-stock
+# entry, Brave's setuid sandbox helper (SECURITY.md, ADR-0016). Any new entry anywhere in the image fails; a missing one does not
+# (the vm profile has no newgrp/mount.cifs, the round-3 image has no Brave). Extend the lists only with a SECURITY.md entry.
+SUID_OK='^(/usr/bin/(chfn|chsh|fusermount3|gpasswd|mount|newgrp|ntfs-3g|passwd|pkexec|su|sudo\.ws|umount)|/usr/lib/dbus-1\.0/dbus-daemon-launch-helper|/usr/lib/openssh/ssh-keysign|/usr/sbin/mount\.cifs|/opt/brave\.com/brave/chrome-sandbox)$'
+SGID_OK='^(/usr/bin/(chage|expiry|ssh-agent)|/usr/sbin/(pam_extrausers_chkpwd|unix_chkpwd))$'
+CAPS_OK='^(/usr/bin/kwin_wayland cap_sys_nice=ep|/usr/bin/ping cap_net_raw=ep|/usr/lib/x86_64-linux-gnu/gstreamer1\.0/gstreamer-1\.0/gst-ptp-helper cap_net_bind_service,cap_net_admin,cap_sys_nice=ep|/usr/lib/x86_64-linux-gnu/libexec/ksysguard/ksgrd_network_helper cap_net_raw=ep|/usr/lib/x86_64-linux-gnu/libexec/org_kde_powerdevil cap_wake_alarm=ep)$'
+chk "setuid files: Ubuntu stock set + Brave chrome-sandbox only" "[ -z \"\$(R 'find / -xdev -perm -4000 -type f 2>/dev/null' | grep -vE '$SUID_OK')\" ]"
+chk "setgid files: Ubuntu stock set only"                       "[ -z \"\$(R 'find / -xdev -perm -2000 -type f 2>/dev/null' | grep -vE '$SGID_OK')\" ]"
+chk "file capabilities: Ubuntu stock set only"                  "[ -z \"\$(R 'getcap -r / 2>/dev/null' | grep -vE '$CAPS_OK')\" ]"
+chk "no Fab OS file is setuid/setgid or carries a capability"   "[ -z \"\$(R 'find /usr/lib/fabos /usr/share/fabos /usr/bin/fabos* /usr/bin/aios -xdev \( -perm -4000 -o -perm -2000 \) -type f 2>/dev/null; getcap -r /usr/lib/fabos /usr/share/fabos 2>/dev/null')\" ]"
+chk "brave: chrome-sandbox is root:4755 (Chromium sandbox fallback); no cron daemon" "R 'stat -c %U:%a /opt/brave.com/brave/chrome-sandbox' | grep -q ^root:4755$ && ! R 'dpkg -s cron 2>/dev/null; dpkg -s anacron 2>/dev/null' | grep -q ^Package"
+chk "browser: Mozilla source, pin and keyring gone"      "[ -z \"\$(R 'ls /etc/apt/sources.list.d/mozilla.sources /etc/apt/preferences.d/mozilla /usr/share/keyrings/packages.mozilla.org.gpg 2>/dev/null')\" ]"
+chk "browser: Brave .sources (documented name, Signed-By keyring present)" "R 'grep -q ^URIs:.*brave-browser-apt-release.s3.brave.com /etc/apt/sources.list.d/brave-browser-release.sources && grep -q ^Signed-By:./usr/share/keyrings/brave-browser-archive-keyring.gpg /etc/apt/sources.list.d/brave-browser-release.sources && test -s /usr/share/keyrings/brave-browser-archive-keyring.gpg'"
+chk "browser: Brave key not in trusted.gpg.d; no Google source; cron re-add off" "[ -z \"\$(R 'ls /etc/apt/trusted.gpg.d/ | grep -i brave; grep -rl dl.google.com /etc/apt/sources.list.d/ 2>/dev/null')\" ] && R 'grep -q ^repo_add_once=.false /etc/default/brave-browser'"
+chk "browser: Brave is the default (mimeapps.list)"      "R 'grep -q ^x-scheme-handler/https=brave-browser.desktop /etc/xdg/mimeapps.list && grep -q ^x-scheme-handler/http=brave-browser.desktop /etc/xdg/mimeapps.list && grep -q ^text/html=brave-browser.desktop /etc/xdg/mimeapps.list && test -f /usr/share/applications/brave-browser.desktop'"
+chk "browser: firefox pinned out; no firefox desktop file" "R 'grep -q firefox /etc/apt/preferences.d/00-fabos-blocklist' && [ -z \"\$(R 'ls /usr/share/applications/firefox.desktop 2>/dev/null')\" ]"
 exit $fail

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Fab OS: display names of the bundled system apps as shown by Fab Software. AppStream "merge" components only
-     replace the listed fields; the upstream metainfo files stay untouched (see ATTRIBUTIONS.md). -->
+     replace the listed fields; the upstream metainfo files stay untouched (see ATTRIBUTIONS.md).
+     No wallet entry: kwalletmanager is not shipped and is pinned out (ADR-0015), so Fab Software must not offer a "Fab Wallet". -->
 <components version="1.0" origin="fabos">
   <component type="desktop-application" merge="replace"><id>org.kde.konsole</id><name>Fab Terminal</name><summary>Terminal</summary></component>
   <component type="desktop-application" merge="replace"><id>org.kde.dolphin</id><name>Fab Files</name><summary>File manager</summary></component>
@@ -13,7 +14,6 @@
   <component type="desktop-application" merge="replace"><id>org.kde.spectacle</id><name>Fab Screenshot</name><summary>Screenshot capture</summary></component>
   <component type="desktop-application" merge="replace"><id>org.kde.kinfocenter</id><name>Fab System Info</name><summary>System information</summary></component>
   <component type="desktop-application" merge="replace"><id>org.kde.plasma-systemmonitor</id><name>Fab Monitor</name><summary>System monitor</summary></component>
-  <component type="desktop-application" merge="replace"><id>org.kde.kwalletmanager5</id><name>Fab Wallet</name><summary>Password wallet</summary></component>
   <component type="desktop-application" merge="replace"><id>org.kde.systemsettings</id><name>Fab Settings</name><summary>System settings</summary></component>
   <component type="desktop-application" merge="replace"><id>org.kde.elisa</id><name>Fab Music</name><summary>Music player</summary></component>
   <component type="desktop-application" merge="replace"><id>org.kde.haruna</id><name>Fab Videos</name><summary>Media player</summary></component>

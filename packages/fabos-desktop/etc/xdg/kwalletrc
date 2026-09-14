@@ -1,11 +1,11 @@
+# KWallet is switched OFF in Fab OS (docs/decisions/ADR-0015-no-wallet.md): no wallet prompts, no wallet application.
+# The keys below are the ones the binaries in the image actually read (checked 2026-09-15: kwalletd6 reads Enabled,
+# Close When Idle, Idle Timeout, Launch Manager; libKF6Wallet reads Enabled, Default Wallet, Local Wallet, Use One Wallet).
+# With Enabled=false, KWallet::Wallet::isEnabled() is false for every KDE application: plasma-nm then stores Wi-Fi / VPN
+# secrets system-wide in NetworkManager (root-only files under /etc/NetworkManager/system-connections), and the Fab OS
+# agent keeps its provider keys and mail password in systemd-creds. To use KWallet after all: set Enabled=true in
+# ~/.config/kwalletrc and install kwalletmanager.
 [Wallet]
-Enabled=true
-Default Wallet=FabWallet
-Local Wallet=FabWallet
-First Use=false
-Prompt on Open=false
+Enabled=false
 Close When Idle=false
-Use One Wallet=true
-
-[Auto Allow]
-FabWallet=kded6,kwalletmanager5,fabos-agentd,NetworkManager,KDE Daemon
+Launch Manager=false

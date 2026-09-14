@@ -25,7 +25,7 @@ Write it to an 8 GB+ USB stick with [Balena Etcher](https://etcher.balena.io/), 
 Try it live, then double-click **Install Fab OS** on the desktop. Verify with \`sha256sum -c $base.sha256\`.
 
 ## What is inside
-See MANIFEST.txt (every package and version). Bundled: Firefox (Mozilla build), LibreOffice, VLC, KWeather, Fab Terminal,
+See MANIFEST.txt (every package and version). Bundled: Brave Browser (Brave's official build), LibreOffice, VLC, KWeather, Fab Terminal,
 Fab Files, Fab Editor, Fab Software, Fab Photos, Fab Documents, Fab AI Controls, Fab Updates, Fab Feedback.
 
 ## Legal
