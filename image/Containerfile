@@ -71,7 +71,7 @@ RUN apt-get update && apt-get install -y libreoffice-writer libreoffice-calc lib
 # Low-RAM support (own layer, docs/LOW-RAM.md): compressed swap in RAM (systemd-zram-generator; fabos-desktop ships
 # /etc/systemd/zram-generator.conf) and systemd-oomd, the Ubuntu Desktop default that the minimal container base lacks.
 RUN apt-get update && apt-get install -y --no-install-recommends systemd-zram-generator systemd-oomd && rm -rf /var/lib/apt/lists/* && \
-    systemctl disable cups-browsed.service smartmontools.service motd-news.timer 2>/dev/null; systemctl preset cups-browsed.service smartmontools.service motd-news.timer 2>/dev/null; true
+    (systemctl disable cups-browsed.service smartmontools.service motd-news.timer 2>/dev/null || true)
 # FabOS packages (identity, desktop experience, AI stack)
 COPY --from=pkgs /out/*.deb /tmp/debs/
 RUN apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-welcome_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
