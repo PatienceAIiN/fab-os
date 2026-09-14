@@ -423,6 +423,10 @@ MONO_MAP = {
     ("media-playback-stop", "media-playback-stopped"): ("stop", "actions"),
     ("media-skip-forward",): ("skip_next", "actions"),
     ("media-skip-backward",): ("skip_previous", "actions"),
+    # power-profile chooser in the battery popup (org.kde.plasma.battery asks for battery-profile-*-symbolic)
+    ("battery-profile-balanced",): ("balance", "status"),
+    ("battery-profile-performance",): ("speed", "status"),
+    ("battery-profile-powersave",): ("energy_savings_leaf", "status"),
 }
 # Battery, Breeze naming: battery-000 … battery-100 in steps of 10, -charging, and the -profile-* badge variants
 # Plasma 6 requests when a power profile is active (same glyph here). level -> (discharging glyph, charging glyph)

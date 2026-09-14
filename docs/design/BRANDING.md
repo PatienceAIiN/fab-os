@@ -44,8 +44,8 @@ gradients do not band on 8-bit panels. Sizes measured on a generator run of 2026
 | App tiles (icon theme) | `icon-theme/scalable/apps/*.svg` + `<s>x<s>/apps/*.png` | scalable + 16…512 | `/usr/share/icons/FabOS/` | SVG first, PNG for exact sizes |
 | 3D mark | `3d/fabos-mark.glb`, `.obj` | mesh | `/usr/share/fabos/3d/` | — |
 
-| Window frame (Aurorae theme) | `brand/gen/aurorae_theme.py` → `packages/fabos-desktop/usr/share/aurorae/themes/FabOS/{decoration,minimize,maximize,restore,close}.svg` (committed) | vector; buttons 28 px, title bar 36 px, shadow padding 28 px | `/usr/share/aurorae/themes/FabOS/` + `FabOSLight/` (rc + metadata; SVGs are symlinks to FabOS) | KSvg FrameSvg, scales with the decoration button-size factor and the output scale |
-| Status / tray icons (monochrome) | `icon-theme/scalable/{status,devices,actions,places}/*.svg` (60 glyph files + 336 alias symlinks = 396 names) | 22-unit viewBox, no PNGs | `/usr/share/icons/FabOS/scalable/<context>/` | SVG only, so KIconLoader can recolour it at any size |
+| Window frame (Aurorae theme) | `brand/gen/aurorae_theme.py` → `packages/fabos-desktop/usr/share/aurorae/themes/FabOS/{decoration,minimize,maximize,restore,close}.svg` (generated offline, committed; the image build does not run the generator) | vector; buttons 28 px, title bar 36 px, shadow padding 28 px | `/usr/share/aurorae/themes/FabOS/` + `FabOSLight/` (rc + metadata.desktop; SVGs are symlinks to FabOS) | Aurorae v2 (`org.kde.kwin.aurorae.v2`) through KSvg FrameSvg; scales with the decoration button-size factor and the output scale |
+| Status / tray icons (monochrome) | `icon-theme/scalable/{status,devices,actions,places}/*.svg` (63 glyph files + 339 alias symlinks = 402 names) | 22-unit viewBox, no PNGs | `/usr/share/icons/FabOS/scalable/<context>/` | SVG only, so KIconLoader can recolour it at any size |
 
 Icon theme `index.theme`: `[Icon Theme]` keeps `FollowsColorScheme=true`; `Directories=` lists the monochrome
 `scalable/status, scalable/devices, scalable/actions, scalable/places` (Size 22, MinSize 8, MaxSize 512), then
@@ -63,18 +63,36 @@ Icon theme `index.theme`: `[Icon Theme]` keeps `FollowsColorScheme=true`; `Direc
 | Tooltips | **14** | Plasma theme `widgets/tooltip.svg` (`RADIUS["tooltip"]`) |
 | Controls (buttons, fields) in Fab OS apps | **12** (fields 14) | design tokens used by the Command Center / Welcome / ask-bar QML; the Breeze widget style keeps its own radius for Qt Widgets |
 
-**Window frame.** KWin uses the Aurorae SVG decoration engine (`kwinrc [org.kde.kdecoration2] library=org.kde.kwin.aurorae`,
-`theme=__aurorae__svg__FabOS`, `BorderSize=None`, `BorderSizeAuto=false`, buttons `M | IAX`: window icon left; minimize,
-maximize/restore, close right). The buttons are our own glyphs, 3 px rounded strokes in a 28 px box inside a 36 px bar:
-minimize = thick bar, maximize = rounded square, restore = two offset rounded squares, close = rounded X. Hover puts a
-disc behind the glyph — accent (`ColorScheme-Highlight`) for minimize/maximize/restore, red (`ColorScheme-NegativeText`)
-with a white X for close; pressed is a stronger disc; inactive windows dim the glyphs. The title-bar fill is
-`ColorScheme-HeaderBackground`, the shadow is gradient-only (QtSvg has no filters) in a 28 px padding. Every fill is a
-KSvg `current-color-scheme` class, so the frame follows the **system** colour scheme (Fab Dark or Fab Light) live. The one
-value Aurorae cannot take from the scheme is the caption colour (`<theme>rc [General] ActiveTextColor` is a fixed colour),
-so there are two theme directories that differ only in their rc: `FabOS` (light caption, chosen by the dark
-look-and-feel) and `FabOSLight` (dark caption, chosen by the light look-and-feel); the SVGs are shared through symlinks.
-Switching the look-and-feel switches the caption colour; switching only the colour scheme keeps the previous caption colour.
+**Window frame.** KWin renders the Fab OS Aurorae SVG theme through the **Aurorae v2 engine**
+(`kwinrc [org.kde.kdecoration2] library=org.kde.kwin.aurorae.v2`, `theme=__aurorae__svg__FabOS`, `BorderSize=None`,
+`BorderSizeAuto=false`, buttons `M | IAX`: window icon left; minimize, maximize/restore, close right; `fabos-desktop`
+depends on `kwin-style-aurorae`). Why v2 (ADR-0010): kwin-style-aurorae 6.6 ships two plugins. v1
+(`org.kde.kwin.aurorae`, QML) lists only KPackage QML decorations in Settings > Window Decorations — an SVG theme
+selected through it renders but is invisible there, shows no current selection, and once a user picks another
+decoration there is no UI path back. v2 (C++ over KSvg) lists every `/usr/share/aurorae/themes/<dir>/metadata.desktop`
+by its `Name=`, so **"Fab OS" and "Fab OS Light" appear in the KCM and can be re-selected**; the same list is printed
+by `kwin-applywindowdecoration --list-themes` (verified in the image). KWin 6.6 itself rewrites
+`library=org.kde.kwin.aurorae` + `__aurorae__svg__*` to v2 on start, so the frame would render either way; we store v2
+so the KCM's current-selection lookup matches from the first login. The SVGs are generated offline by
+`brand/gen/aurorae_theme.py` and committed; after editing the generator, re-run
+`python3 brand/gen/aurorae_theme.py --out packages/fabos-desktop/usr/share/aurorae/themes`.
+
+The buttons are our own glyphs, 3 px rounded strokes in a 28 px box inside a 36 px bar: minimize = thick bar,
+maximize = rounded square, restore = two offset rounded squares, close = rounded X. Hover puts a disc behind the glyph —
+accent (`ColorScheme-Highlight`) for minimize/maximize/restore, red (`ColorScheme-NegativeText`) with a white X for
+close; pressed is a stronger disc; inactive windows dim the glyphs. The title-bar fill is `ColorScheme-HeaderBackground`,
+the shadow is gradient-only (QtSvg has no filters) in a 28 px padding. Every fill is a KSvg `current-color-scheme`
+class, so the frame follows the **system** colour scheme (Fab Dark or Fab Light) live.
+
+**Caption colour — known limitation.** The one value Aurorae cannot take from the scheme is the caption colour:
+`<theme>rc [General] ActiveTextColor` / `InactiveTextColor` are fixed colours (v2 reads them as plain `QColor`s; there
+is no `[WM] activeForeground` lookup). Hence two theme directories that differ only in their rc: `FabOS` (light caption,
+chosen by the dark look-and-feel) and `FabOSLight` (dark caption, chosen by the light look-and-feel); the SVGs are
+shared through symlinks. **Switch schemes from Settings > Appearance > Global Theme** (Fab OS / Fab OS Light): the
+look-and-feel switches the frame together with the colours. Changing only Settings > Colours keeps the previous
+caption colour (a light caption on a light header) until the frame is switched — pick "Fab OS Light" (or "Fab OS") in
+Settings > Window Decorations, or run `kwin-applywindowdecoration __aurorae__svg__FabOSLight` (writes kwinrc and
+signals KWin to reload), or `plasma-apply-lookandfeel -a in.patienceai.fabos.light.desktop`.
 
 **Status and tray icons.** The top bar shows only FabOS monochrome glyphs: `brand/gen/make_assets.py` `MONO_MAP` renders
 Material Symbols (Rounded) without a tile into `scalable/status|devices|actions|places/`, each path carrying
@@ -83,7 +101,8 @@ to the panel text colour of the active scheme (the mechanism Breeze uses). Names
 `network-wireless-signal-*` and plasma-nm `network-wireless-connected-NN` / `network-wireless-NN(-locked)` families,
 `network-wireless-{disconnected,off,acquiring,hotspot}`, `network-wired(-activated/-unavailable/-disconnected)`,
 `network-vpn`, `audio-volume-{high,medium,low,muted}`, `audio-input-microphone(-muted)`, `battery-000…100`
-(+ `-charging`, + `-profile-*`), `battery-{missing,full-charged,caution,low,empty,good,full}`, `bluetooth` /
+(+ `-charging`, + `-profile-*`), `battery-{missing,full-charged,caution,low,empty,good,full}`, the power-profile chooser
+`battery-profile-{balanced,performance,powersave}`, `bluetooth` /
 `preferences-system-bluetooth(-activated/-inactive)`, `notifications(-disabled)`, display and keyboard brightness,
 `input-keyboard`, `user-desktop`, `view-grid`, the tray expander `arrow-{up,down,left,right}`, `plasma-vault`,
 `kdeconnect(-tray)`, `printer`, `media-playback-{start,pause,stop}`, `media-skip-{forward,backward}`, plus a `-symbolic`

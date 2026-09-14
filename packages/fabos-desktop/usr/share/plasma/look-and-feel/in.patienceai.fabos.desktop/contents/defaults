@@ -24,7 +24,7 @@ cursorTheme=breeze_cursors
 
 # Fab OS Aurorae frame with the light caption (dark scheme); the light look-and-feel picks FabOSLight.
 [kwinrc][org.kde.kdecoration2]
-library=org.kde.kwin.aurorae
+library=org.kde.kwin.aurorae.v2
 theme=__aurorae__svg__FabOS
 
 [kwinrc][WindowSwitcher]

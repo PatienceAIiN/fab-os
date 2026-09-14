@@ -1,5 +1,7 @@
 # Window frame: the Fab OS Aurorae (SVG) decoration — radius-20 title bar, bold 3 px buttons, colours from the
-# system scheme through KSvg. `FabOS` carries a light caption for dark schemes; the light look-and-feel selects
+# system scheme through KSvg. Rendered by the Aurorae v2 engine (org.kde.kwin.aurorae.v2, kwin-style-aurorae 6.6):
+# unlike v1 it lists SVG themes (by their metadata.desktop) in Settings > Window Decorations, so the frame can be
+# re-selected there. `FabOS` carries a light caption for dark schemes; the light look-and-feel selects
 # `__aurorae__svg__FabOSLight`. BorderSizeAuto=false makes KWin honour BorderSize=None instead of the plugin's default.
 # Buttons: window icon on the left; minimize / maximize / close on the right (A = app menu, shown only when an app has one).
 [org.kde.kdecoration2]
@@ -7,7 +9,7 @@ BorderSize=None
 BorderSizeAuto=false
 ButtonsOnLeft=M
 ButtonsOnRight=IAX
-library=org.kde.kwin.aurorae
+library=org.kde.kwin.aurorae.v2
 theme=__aurorae__svg__FabOS
 
 [Plugins]

@@ -51,7 +51,7 @@ ARG MIRROR
 RUN sed -i "s|http://archive.ubuntu.com/ubuntu|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources
 # Desktop (Plasma 6, Wayland) + apps. Recommends on so Plasma pulls what it needs; blocklist keeps snap/Pro out.
 RUN apt-get update && apt-get install -y \
-      plasma-desktop plasma-workspace kwin-wayland sddm plasma-nm plasma-pa pipewire wireplumber pipewire-pulse \
+      plasma-desktop plasma-workspace kwin-wayland kwin-style-aurorae sddm plasma-nm plasma-pa pipewire wireplumber pipewire-pulse \
       konsole dolphin kate ark kde-spectacle plasma-systemmonitor kinfocenter plasma-discover plasma-discover-backend-flatpak flatpak \
       xdg-desktop-portal-kde kscreen powerdevil bluedevil breeze breeze-icon-theme breeze-gtk-theme kde-config-gtk-style \
       fonts-inter fonts-jetbrains-mono fonts-noto-core kwalletmanager okular gwenview kcalc \

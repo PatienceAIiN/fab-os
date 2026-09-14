@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
-"""Generate the Fab OS window decoration: an Aurorae (KWin SVG decoration engine) theme.
+"""Generate the Fab OS window decoration: an Aurorae SVG theme, rendered by KWin's Aurorae **v2** engine.
+
+Plasma 6.6 ships two Aurorae plugins in kwin-style-aurorae: `org.kde.kwin.aurorae` (v1, QML; its ThemeProvider only
+lists KPackage QML decorations, so an SVG theme never shows up in System Settings) and `org.kde.kwin.aurorae.v2`
+(C++/QPainter over KSvg; its DecorationThemeProvider enumerates every `aurorae/themes/<dir>/metadata.desktop` and
+lists the theme as `__aurorae__svg__<dir>` under that file's `Name=`). Fab OS selects v2 (kwinrc
+`library=org.kde.kwin.aurorae.v2`), so "Fab OS" and "Fab OS Light" are visible and re-selectable in
+Settings > Window Decorations; the generated `metadata.desktop` is what makes them appear (ADR-0010).
 
 Aurorae draws the frame and the buttons through KSvg FrameSvg, so every SVG here follows the SYSTEM colour scheme:
 the fills use the KSvg `current-color-scheme` stylesheet classes (`ColorScheme-HeaderBackground` for the title bar,
 `ColorScheme-Text` for glyphs, `ColorScheme-Highlight` for hover, `ColorScheme-NegativeText` for the close hover)
 and KSvg rewrites that stylesheet from the active KColorScheme at render time. The one thing Aurorae cannot take
-from the scheme is the caption colour (`[General] ActiveTextColor` in `<theme>rc` is a fixed colour), so two theme
-directories are produced: `FabOS` (light caption, selected by the dark look-and-feel) and `FabOSLight` (dark
+from the scheme is the caption colour (`[General] ActiveTextColor` in `<theme>rc` is a fixed QColor in v2's
+DecorationTheme; there is no [WM] lookup), so two theme directories are produced: `FabOS` (light caption, selected by the dark look-and-feel) and `FabOSLight` (dark
 caption, selected by the light look-and-feel). The light variant only carries its rc + metadata; its SVGs are
-symlinks to the dark variant's files.
+symlinks to the dark variant's files. Both are listed in Settings > Window Decorations, which is the way back if a
+user changes only the colour scheme and gets the wrong caption colour.
+
+The output is generated offline and COMMITTED (packages/fabos-desktop/usr/share/aurorae/themes); the image build does
+not run this script. After editing, re-run:  python3 brand/gen/aurorae_theme.py --out packages/fabos-desktop/usr/share/aurorae/themes
 
 Geometry (1x, Aurorae scales with the button-size factor):
   radius 20 on the two top corners, title bar 36 px, buttons 28 px in a 36 px bar, 3 px glyph strokes,
@@ -161,6 +172,8 @@ def rc(active_text, inactive_text):
 
 
 def metadata(name, comment):
+    """metadata.desktop: Aurorae v2's DecorationThemeProvider requires the file and shows `Name=` in the decoration KCM
+    (kwin-applywindowdecoration also uses it to recognise a theme directory); the other keys are informational."""
     return "\n".join([
         "[Desktop Entry]", "Name=%s" % name, "Comment=%s" % comment,
         "X-KDE-PluginInfo-Author=@VENDOR_NAME@", "X-KDE-PluginInfo-Email=support@patienceai.in",

@@ -21,7 +21,10 @@ resembles Canonical, KDE, Apple, Microsoft or any other party's artwork.
   them to identify a product.
 - The window decoration (`/usr/share/aurorae/themes/FabOS`, `FabOSLight`: frame and
   minimize / maximize / restore / close glyphs drawn by `brand/gen/aurorae_theme.py`)
-  is original Fab OS artwork under the same terms. The monochrome status/tray icons
+  is original Fab OS artwork under the same terms. Those SVGs are generated offline and committed
+  (the image build does not run the generator; after editing it, re-run
+  `python3 brand/gen/aurorae_theme.py --out packages/fabos-desktop/usr/share/aurorae/themes`).
+  The monochrome status/tray icons
   in `/usr/share/icons/FabOS/scalable/{status,devices,actions,places}` are, like the
   app tiles, Google Material Symbols (Apache-2.0, see ATTRIBUTIONS.md) rendered by
   `make_assets.py`; they carry KDE's `current-color-scheme` stylesheet so the desktop
