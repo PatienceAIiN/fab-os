@@ -65,10 +65,21 @@ Secrets and the browser (2026-09-15, ADR-0015 / ADR-0016): KWallet is disabled s
 stack, so no wallet daemon runs and no wallet prompt appears. Wi-Fi/VPN secrets are therefore held by NetworkManager
 in root-only files under `/etc/NetworkManager/system-connections/`; the agent's keys stay in `systemd-creds`. Brave
 Browser is Brave's unmodified official build from Brave's own signed apt repository (keyring fingerprint-checked at
-build time, key scoped to that source only, never in `/etc/apt/trusted.gpg.d/`); its sandbox runs under Ubuntu's
-AppArmor `brave` profile. Brave's packaging still contains Chromium's "re-add the vendor repository" cron script with
-Google's constants in it; Fab OS ships `/etc/default/brave-browser` with `repo_add_once="false"` and installs no
-`cron`, so it never runs, and the build fails if any source other than Ubuntu's and Brave's appears. Every daemon Fab
-OS adds binds 127.0.0.1 or a unix socket, runs as the user and carries a `MemoryHigh` limit; the image's SUID/SGID set
-and file capabilities are Ubuntu's stock set (no Fab OS binary is setuid), and `tests/branding-check.sh` asserts that
-nothing under `/usr/lib/fabos` or `/usr/share/fabos` is world-writable.
+build time, key scoped to that source only, never in `/etc/apt/trusted.gpg.d/`). Brave's packaging is Chromium's
+installer template with Google's repository constants still inside it, but both scripts that contain that code stop
+before reaching it: the postinst `exit 0`s immediately before `install_key` (brave/brave-browser#54299) and the daily
+cron script `exit 0`s at its line 23, before it even defines `DEFAULTS_FILE` (brave/brave-browser#1084) — checked in
+`brave-browser 1.95.101`. No Google source or key is ever added; the `/etc/default/brave-browser` Fab OS ships
+(`repo_add_once="false"`) is belt-and-braces for a future package that re-enables the template, the image has no cron
+daemon, and the build fails if any source other than Ubuntu's and Brave's appears.
+
+Setuid, setgid and file capabilities: the image carries Ubuntu's stock set plus **exactly one non-stock setuid-root
+file, `/opt/brave.com/brave/chrome-sandbox`** — Chromium's setuid sandbox helper (15 224 bytes, mode 4755, shipped
+unmodified in Brave's package). Brave's sandbox normally uses unprivileged user namespaces under an AppArmor profile
+that grants `userns` (Ubuntu's `/etc/apparmor.d/brave`; Brave's postinst also installs its own `brave-browser-stable`
+profile for the same binary — both `flags=(unconfined)`, both parse with `apparmor_parser` 5.0.2); the setuid helper is
+Chromium's fallback when user namespaces are unavailable. No Fab OS binary is setuid or setgid or carries a capability;
+every daemon Fab OS adds binds 127.0.0.1 or a unix socket, runs as the user and carries a `MemoryHigh` limit.
+`tests/branding-check.sh` compares the full `find / -xdev -perm -4000`, `-perm -2000` and `getcap -r /` lists of the
+built image against explicit allowlists (any new entry fails; the lists are the 2026-09-14 `vm`/`iso` images' stock set
+plus the Brave helper), and asserts that nothing under `/usr/lib/fabos` or `/usr/share/fabos` is world-writable.

@@ -39,7 +39,10 @@ own password store, and NetworkManager can hold Wi-Fi secrets itself.
 1. **No wallet application.** `kwalletmanager` leaves the apps layer of `image/Containerfile`, is pinned to `-1` in
    `00-fabos-blocklist` (so `ksshaskpass`/`libqt6keychain1` cannot pull it back) and leaves `fabos-desktop-meta`'s
    Recommends. Its menu entry ("Fab Wallet") disappears with it; `/etc/xdg/autostart/pam_kwallet_init.desktop` stays
-   (it belongs to `libpam-kwallet-common` and exits at once without a PAM-provided socket).
+   (it belongs to `libpam-kwallet-common` and exits at once without a PAM-provided socket). The AppStream merge component
+   that renamed `org.kde.kwalletmanager5` to "Fab Wallet" is dropped from `fabos-names.xml` (Fab Software would otherwise
+   list an installable "Fab Wallet" whose install the pin then refuses), the icon-theme mapping for `kwalletmanager` stays
+   (harmless if a user installs it), and the VM self-test's `FAB_WALLET` marker becomes `NO_WALLET=<manager>:<Enabled>:kwalletd6=<count>`.
 2. **Wallet disabled system-wide.** `/etc/xdg/kwalletrc` is now `[Wallet] Enabled=false`, `Close When Idle=false`,
    `Launch Manager=false` — only keys the binaries read; the `FabWallet` default wallet and `[Auto Allow]` list are gone.
 3. **No wallet daemon at login.** The image build deletes both `pam_kwallet5.so` lines from `/etc/pam.d/sddm` (they are
@@ -50,7 +53,8 @@ own password store, and NetworkManager can hold Wi-Fi secrets itself.
    `libKF6Wallet`/`kwalletd6` error dialogs, so the name could still surface on a system where a user re-enables the wallet.
 6. `tests/branding-check.sh` asserts: kwalletmanager absent and pinned, `Enabled=false` with no `Auto Allow`, no wallet
    desktop file or override, `pam_kwallet` gone from `/etc/pam.d/sddm`. (The three earlier checks that asserted the Fab
-   Wallet KCM/override/Firefox were rewritten in place, since their old expectation is now the defect.)
+   Wallet KCM/override/Firefox were rewritten in place, since their old expectation is now the defect — the file is otherwise
+   append-only; `docs/QA.md` "Changes after this record" lists the three by name and the new count.)
 
 ## Consequences
 - No wallet prompt at first login or when joining Wi-Fi. Wi-Fi/VPN secrets live in NetworkManager's root-only files,

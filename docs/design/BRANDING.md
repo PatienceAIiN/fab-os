@@ -119,7 +119,7 @@ bottom-right hot corner does the same (`kwinrc [ElectricBorders] BottomRight=Sho
 
 **Names for bundled applications** (launcher, dock, search): Fab Files, Fab Terminal, Fab Editor, Fab Software,
 Fab Photos, Fab Documents, Fab Calculator, Fab Archives, Fab Screenshot, Fab System Info, Fab Monitor, Fab Search,
-Fab Settings, Fab Wallet, Fab AI Controls, Fab Updates, Fab Feedback, Welcome to Fab OS. These are display names
+Fab Settings, Fab AI Controls, Fab Updates, Fab Feedback, Welcome to Fab OS (no wallet application: ADR-0015). These are display names
 set through desktop-entry overrides; the programs remain the upstream projects credited in ATTRIBUTIONS.md.
 
 **Author metadata.** Every artefact Fab OS ships names its author: `Patience AI <support@patienceai.in>` and

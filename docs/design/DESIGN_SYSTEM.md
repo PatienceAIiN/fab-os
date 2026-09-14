@@ -20,7 +20,7 @@ must be visible and truthful.
 
 Source: `brand/gen/aurorae_theme.py` → `/usr/share/aurorae/themes/FabOS` (+ `FabOSLight`), rendered by KWin's Aurorae v2
 engine (ADR-0012). Geometry at 1x: title bar 36, **radius 20 on the two top corners**, square bottom corners, no side or
-bottom borders (`BorderSize=None`), 28 px shadow padding (gradients only), 28 px buttons with 3 px rounded-cap strokes.
+bottom borders (`BorderSize=None`), 28 px shadow padding (gradients plus one luminance `<mask>` per top corner; no SVG filters), 28 px buttons with 3 px rounded-cap strokes.
 Colours: `ColorScheme-HeaderBackground` for the bar, `ColorScheme-Text` for glyphs, `ColorScheme-Highlight` on hover,
 `ColorScheme-NegativeText` for the close hover — all rewritten from the active scheme by KSvg, so the same SVGs serve Fab
 Dark and Fab Light; only the caption colour is per variant.
@@ -32,12 +32,18 @@ the box corner (the *notch*) are therefore shown exactly as the SVG draws them. 
 first release put the corner shadow gradient there (19-38 % black) and every window looked square-cornered. Rules:
 
 - Corner shadows are L-shaped paths that stop at the window box; nothing is drawn in the notch.
+- Each top-corner shadow is multiplied by a luminance `<mask>` (radial: black at the box corner, white from 0.9 R outwards),
+  so it fades out along the two notch edges instead of ending in a hard step (a faint square "ghost" corner) and is at full
+  strength where the arc meets the straight edge. Measured through KSvg: 0.06 just above the notch vs 0.37 above the top
+  edge. QtSvg renders `<mask>` since 6.7 (the image has 6.10); SVG filters are still not used. Mask ids are `taper*`/`tp*`,
+  never `mask-*`.
 - No `mask-*` elements: in Aurorae they only feed KWin's blur region (`setBlurRegion`), never the window shape, and blur
   behind an opaque title bar is wasted GPU work.
 - No opaque overlays over the client area to fake a radius; the client's own top edge sits under the title bar.
 - Buttons stay 3 px / rounded caps; hover discs radius 13 in a 28 px box; close hover uses the negative colour.
 - After editing the generator: `python3 brand/gen/aurorae_theme.py --out packages/fabos-desktop/usr/share/aurorae/themes`,
-  then `tests/decoration-render-test.sh` (notch alpha must be 0, header alpha 1) and commit the SVGs.
+  then `tests/decoration-render-test.sh` (notch alpha 0, header alpha 1, corner taper below 40 % of the edge shadow, full
+  strength where the arc starts) and commit the SVGs.
 
 ## Voice states (fabos-voice)
 

@@ -23,7 +23,7 @@ not run this script. After editing, re-run:  python3 brand/gen/aurorae_theme.py 
 
 Geometry (1x, Aurorae scales with the button-size factor):
   radius 20 on the two top corners, title bar 36 px, buttons 28 px in a 36 px bar, 3 px glyph strokes,
-  shadow padding 28 px on every side (gradients only: QtSvg has no filters), side/bottom borders 0 (BorderSize=None).
+  shadow padding 28 px on every side (gradients plus one luminance <mask> per top corner; no SVG filters), side/bottom borders 0 (BorderSize=None).
 
 FrameSvg layout of decoration.svg: the corner elements are painted into (leftWidth x topHeight) rectangles where
 leftWidth is the width of the `-left` element and topHeight the height of the `-top` element, so the rounded
@@ -38,7 +38,12 @@ Why the corner NOTCHES are transparent (2026-09-15; ISO 1.0 rev 2 showed square 
   is shown exactly as drawn here. The first version filled the notch with the corner shadow gradient (19-38 % black,
   measured through KSvg by tests/decoration-render-test.sh), which reads as a dark square corner on any wallpaper.
   The corner shadow is therefore an L-shaped path that stops at the window box and the notch is left fully transparent,
-  as Breeze does. `mask-*` elements are deliberately absent: in Aurorae they only define KWin's blur region
+  as Breeze does. Because KWin never draws shadow inside the box, the shadow left outside would end in a hard step along
+  the two notch edges (a faint square "ghost" corner); each corner's L path is therefore multiplied by a luminance <mask>
+  (radial: black at the window-box corner, white from 0.9 R outwards), so the shadow fades out along those edges and is at
+  full strength where the arcs meet the straight edges. Measured through KSvg in the image (tests/decoration-render-test.sh):
+  0.06 just above the notch vs 0.37 above the top edge, active frame; QtSvg renders <mask> since 6.7, the image has 6.10.
+  `mask-*` elements are deliberately absent: in Aurorae they only define KWin's blur region
   (`updateBlur()` -> `setBlurRegion`; v1 aurorae.qml `decorationMask` -> `updateBlur`), never the window shape, and a
   blur region behind an opaque title bar would only cost GPU time.
 
@@ -82,6 +87,15 @@ def gradients(s, a):
     rad("shTR", BW - LW, LW, LW, R / float(LW))
     rad("shBL", P, TOPH + 8, P, 0)                  # bottom corners are square: centred on the window corner
     rad("shBR", BW - P, TOPH + 8, P, 0)
+    # Corner taper: a luminance mask (black at the window-box corner, white from 0.9 R outwards, in the L path's own user
+    # space) multiplies the top-corner shadow, so it fades to nothing along the two notch edges instead of ending in a hard
+    # step where the transparent notch begins. Ids start with "taper"/"tp", never "mask-" (that prefix is Aurorae's blur region).
+    for tag, cx, x0 in (("TL", P, 0), ("TR", BW - P, BW - LW)):
+        g.append('<radialGradient id="tp%s%s" gradientUnits="userSpaceOnUse" cx="%d" cy="%d" r="%d">'
+                 '<stop offset="0" stop-color="#000"/><stop offset="0.9" stop-color="#fff"/><stop offset="1" stop-color="#fff"/></radialGradient>'
+                 '<mask id="taper%s%s" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="%d" y="0" width="%d" height="%d">'
+                 '<rect x="%d" y="0" width="%d" height="%d" fill="url(#tp%s%s)"/></mask>'
+                 % (tag, s, cx, P, R, tag, s, x0, LW, LW, x0, LW, LW, tag, s))
     return "".join(g)
 
 
@@ -93,13 +107,13 @@ def frame_block(prefix, s, dx):
     e = {}
     # Corner shadow as an L-shaped path that stops at the window's bounding box: the notch between the arc and the box
     # corner stays fully transparent (Aurorae shows it as drawn; a shadow there reads as a square corner, see docstring).
-    e["topleft"] = ('<path d="M0 0H%dV%dH%dV%dH0Z" fill="url(#shTL%s)"/>' % (LW, P, P, LW, s) +
+    e["topleft"] = ('<path d="M0 0H%dV%dH%dV%dH0Z" fill="url(#shTL%s)" mask="url(#taperTL%s)"/>' % (LW, P, P, LW, s, s) +
                     '<rect x="0" y="%d" width="%d" height="%d" fill="url(#shL%s)"/>' % (LW, P, TOPH - LW, s) +
                     '<path d="M%d %d V%d A%d %d 0 0 1 %d %d V%d Z" %s/>' % (P, TOPH, LW, R, R, LW, P, TOPH, hb))
     e["top"] = ('<rect x="%d" y="0" width="8" height="%d" fill="url(#shT%s)"/>' % (LW, P, s) +
                 '<rect x="%d" y="%d" width="8" height="%d" %s/>' % (LW, P, TH, hb))
     x0 = BW - LW                                    # left edge of the right column
-    e["topright"] = ('<path d="M%d 0H%dV%dH%dV%dH%dZ" fill="url(#shTR%s)"/>' % (x0, BW, LW, BW - P, P, x0, s) +
+    e["topright"] = ('<path d="M%d 0H%dV%dH%dV%dH%dZ" fill="url(#shTR%s)" mask="url(#taperTR%s)"/>' % (x0, BW, LW, BW - P, P, x0, s, s) +
                      '<rect x="%d" y="%d" width="%d" height="%d" fill="url(#shR%s)"/>' % (BW - P, LW, P, TOPH - LW, s) +
                      '<path d="M%d %d A%d %d 0 0 1 %d %d V%d H%d Z" %s/>' % (x0, P, R, R, x0 + R, LW, TOPH, x0, hb))
     e["left"] = ('<rect x="0" y="%d" width="%d" height="8" %s/>' % (TOPH, LW, keep) +
@@ -129,7 +143,8 @@ def decoration_svg():
     desc = ('<desc>Fab OS window frame for the Aurorae v2 engine. The corner notches inside the window box are transparent on '
             'purpose: Aurorae paints this frame offset by the padding into the decoration rect, so anything drawn there shows '
             'as a square corner. No mask-* elements: in Aurorae they only set the blur region, never the window shape '
-            '(brand/gen/aurorae_theme.py).</desc>')
+            '(brand/gen/aurorae_theme.py). The top-corner shadows are multiplied by a luminance mask (ids taper*/tp*) so they fade '
+            'out along the notch edges instead of ending in a hard step.</desc>')
     return ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">%s<defs>%s</defs>%s</svg>\n'
             % (w, BHT, w, BHT, desc, defs, blocks))
 

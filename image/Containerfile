@@ -68,18 +68,21 @@ RUN sed -i "s|http://security.ubuntu.com/ubuntu|${MIRROR}|g" /etc/apt/sources.li
 # Ubuntu's firefox package is a snap shim and is pinned out above. The source file is Brave's documented deb822 file under its
 # documented name: brave-keyring's postinst (2026-09-15, 1.20) looks for exactly /etc/apt/sources.list.d/brave-browser-release.sources
 # with this Signed-By line and then keeps the key scoped to this source instead of symlinking it into /etc/apt/trusted.gpg.d.
-# /etc/default/brave-browser: Brave's daily cron script (/opt/brave.com/brave/cron/brave-browser, Chromium's installer template with
-# Google's repository constants left in; the postinst itself exits before that code, brave/brave-browser#54299) re-adds a Chrome
-# source only when repo_add_once/repo_reenable_on_distupgrade are "true" — both are pinned to "false" here. The build fails if
-# anything but the Ubuntu and Brave sources exists afterwards or the desktop file is missing. Brave updates keep flowing from this
-# repository through the normal apt update path (README "How updates work").
+# /etc/default/brave-browser: Brave's postinst and its daily cron script are Chromium's installer template with Google's repository
+# constants left in, but BOTH exit before that code runs (postinst: brave/brave-browser#54299; cron script: #1084, `exit 0` at its
+# line 23 — checked in 1.95.101), so the repo_add_once/repo_reenable_on_distupgrade="false" written here is belt-and-braces only, and
+# the image has no cron daemon anyway (asserted). The build fails if anything but the Ubuntu and Brave sources exists afterwards or the
+# desktop file is missing. Brave's chrome-sandbox (Chromium's setuid sandbox fallback) is the ONE setuid-root file the image adds to
+# Ubuntu's stock set: asserted root:4755 here, allowlisted by path in tests/branding-check.sh, recorded in SECURITY.md / ADR-0016.
+# Brave updates keep flowing from this repository through the normal apt update path (README "How updates work").
 COPY --from=pkgs /src/keyrings/brave-browser-archive-keyring.gpg /usr/share/keyrings/brave-browser-archive-keyring.gpg
 RUN printf 'Types: deb\nURIs: https://brave-browser-apt-release.s3.brave.com\nSuites: stable\nComponents: main\nArchitectures: amd64 arm64\nSigned-By: /usr/share/keyrings/brave-browser-archive-keyring.gpg\n' > /etc/apt/sources.list.d/brave-browser-release.sources \
  && printf 'repo_add_once="false"\nrepo_reenable_on_distupgrade="false"\n' > /etc/default/brave-browser \
  && apt-get update && apt-get install -y brave-browser && rm -rf /var/lib/apt/lists/* \
  && test -f /usr/share/applications/brave-browser.desktop && test -s /usr/share/keyrings/brave-browser-archive-keyring.gpg \
  && test "$(ls /etc/apt/sources.list.d | grep -v -E '^(ubuntu|brave-browser-release)\.sources$' | wc -l)" = 0 \
- && ! grep -rq dl.google.com /etc/apt/sources.list.d/ && ! dpkg -s firefox >/dev/null 2>&1
+ && ! grep -rq dl.google.com /etc/apt/sources.list.d/ && ! dpkg -s firefox >/dev/null 2>&1 \
+ && test "$(stat -c %U:%a /opt/brave.com/brave/chrome-sandbox)" = root:4755 && ! dpkg -s cron >/dev/null 2>&1 && ! dpkg -s anacron >/dev/null 2>&1
 # Agent runtime deps (separate layer so the big desktop layer above stays cached)
 RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3-dbus python3-gi libnotify-bin wtype unattended-upgrades ubuntu-drivers-common && rm -rf /var/lib/apt/lists/*
 # Bundled applications (own layer): LibreOffice with KDE integration, VLC, KWeather, extra Plasma widgets (weather, etc.)

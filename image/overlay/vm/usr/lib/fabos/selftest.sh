@@ -30,7 +30,11 @@ import sys,json; t=json.load(sys.stdin); o=[s for s in t['steps'] if s['name']==
   echo "FEEDBACK_SOCKET=$(systemctl is-active fabos-feedback.socket)"
   echo "UPDATE_TIMER=$(systemctl is-active fabos-update-check.timer)"
   echo "SESSION_NAME=$(grep ^Name= /usr/local/share/wayland-sessions/fabos.desktop | cut -d= -f2)"
-  echo "FAB_WALLET=$([ -f /usr/local/share/applications/org.kde.kwalletmanager.desktop ] && grep -c 'Name=Fab Wallet' /usr/local/share/applications/org.kde.kwalletmanager.desktop || echo 0)"
+  # ADR-0015 (no wallet): manager absent, kwalletrc Enabled=false, no kwalletd6 after the desktop user's login
+  echo "NO_WALLET=$(dpkg -s kwalletmanager >/dev/null 2>&1 && echo kwalletmanager-INSTALLED || echo no-manager):$(grep -q '^Enabled=false' /etc/xdg/kwalletrc && echo disabled || echo ENABLED):kwalletd6=$(pgrep -c kwalletd6)"
+  # ADR-0016: Ubuntu's `brave` and Brave's `brave-browser-stable` profiles both attach to /opt/brave.com/brave/brave — count what loaded, and apparmor.service errors
+  echo "APPARMOR_BRAVE=$(aa-status 2>/dev/null | grep -cE '^ +(brave|brave-browser-stable)$'):errors=$(journalctl -b -u apparmor.service -p err --no-pager -q 2>/dev/null | wc -l)"
+  echo "SUID_COUNT=$(find / -xdev -perm -4000 -type f 2>/dev/null | wc -l):brave_sandbox=$(stat -c %U:%a /opt/brave.com/brave/chrome-sandbox 2>/dev/null || echo absent)"
   echo "PLASMA_THEME=$(runuser -u $U -- kreadconfig6 --file plasmarc --group Theme --key name 2>/dev/null || grep -A1 '^\[Theme\]' /etc/xdg/plasmarc | tail -1)"
   echo "ICON_THEME=$(grep -A2 '^\[Icons\]' /etc/xdg/kdeglobals | grep Theme | cut -d= -f2)"
   echo "RUNNER_DBUS=$([ -f /usr/share/dbus-1/services/in.patienceai.fabos.runner.service ] && echo present || echo missing)"

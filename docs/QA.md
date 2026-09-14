@@ -504,3 +504,34 @@ worth an issue on its own.
 | apt channel | `loom` and `loom-beta` list all 10 fabos packages at 1.0-2; update-channel test PASS (1.0-1 disk → 1.0-2) |
 | GitHub release | `v1.0.1` (pre-release) with `fabos-1.0-desktop-amd64.iso.sha256`, `MANIFEST.txt`, `NOTES.md`; ISO itself is distributed from the website (GitHub asset limit) |
 | Repository | `main` pushed; secret scan (tree + history) PASS before the push |
+
+## Changes after this record (2026-09-15, sources only — no image rebuilt yet)
+
+The `windows-wallet-security` track (ADR-0015 no wallet, ADR-0016 Brave, rounded top corners) changed the sources after the
+runs above; none of the numbers above moved because no image has been built from these sources. What the next run must expect:
+
+- **`tests/branding-check.sh`: 129 → 147 checks.** Three existing checks were rewritten in place because their old expectation
+  is now the defect (the file is otherwise append-only): `wallet KCM says Fab Wallet (binary)` → `no wallet: kwalletmanager + its
+  KCM absent`; `Fab Wallet override present` → `no wallet: no wallet menu entry or override`; `firefox from Mozilla (not snap
+  shim)` → `browser: firefox absent, brave-browser from Brave`. Eighteen checks were appended: kwalletrc keys, kwalletmanager
+  pin, `pam_kwallet` gone from SDDM, decoration notch/taper/no-`mask-*`/button strokes, no world-writable Fab OS files, the
+  setuid / setgid / file-capability **allowlists** (the image's full lists must be subsets of Ubuntu's stock set as measured on
+  the 2026-09-14 `vm` and `iso` images plus one entry, Brave's `/opt/brave.com/brave/chrome-sandbox`), no setuid/setgid/capability
+  on any Fab OS file, `chrome-sandbox` root:4755 + no cron daemon, and the Brave source / keyring / mimeapps / no-Mozilla /
+  firefox-pinned checks. Run on 2026-09-15 against the 2026-09-14 images: **iso 133 PASS / 14 FAIL, vm 132 PASS / 15 FAIL.**
+  The 14 shared failures are the wallet, PAM, decoration-notch/taper and Brave checks, which fail **by design** there (they
+  describe the rebuilt image); the privileged-file allowlists pass on both. The vm image's 15th failure is the already-recorded
+  `Homepage in every fabos package` (that image predates the `fabos-ai` control fix noted in section 4; the iso image and the
+  source tree have `Homepage` in all ten packages).
+- **Window decoration:** `tests/decoration-render-test.sh` (KSvg render inside the image, pixel probes) passes on the new
+  theme — notch alpha 0.00, title bar 1.00, edge shadow 0.37/0.19 (active/inactive), corner shadow tapered to 0.06/0.04 just
+  above the notch and 0.01/0.00 at the box corner — and fails on the 1.0-2 theme (notch 0.24-0.34, no taper). A KWin session
+  screenshot of the corners has **not** been taken (needs the next VM boot).
+- **Privileged files, measured 2026-09-14 images:** setuid `vm` 13 / `iso` 15 (`iso` adds `newgrp`, `mount.cifs`), setgid 5,
+  file capabilities 5 — all Ubuntu stock. The rebuilt image adds exactly one setuid file, Brave's `chrome-sandbox`
+  (`-rwsr-xr-x root/root 15224` in `brave-browser_1.95.101_amd64.deb`, sha256 `7c41a558…c73cc` as listed in Brave's Packages index).
+- **To verify in the next VM boot (not yet run):** rounded top corners in a real KWin session; no wallet prompt at login or
+  when joining Wi-Fi, PSK stored root-only under `/etc/NetworkManager/system-connections/`; both AppArmor profiles for
+  `/opt/brave.com/brave/brave` (`brave` from Ubuntu, `brave-browser-stable` from Brave's postinst) load without
+  `apparmor.service` errors and Brave's sandbox starts; the VM self-test now prints `NO_WALLET=…`, `APPARMOR_BRAVE=<loaded>:errors=<n>`
+  and `SUID_COUNT=<n>:brave_sandbox=root:4755` for exactly this.
