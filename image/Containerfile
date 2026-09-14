@@ -70,7 +70,7 @@ RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3
 RUN apt-get update && apt-get install -y libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-kf6 libreoffice-style-breeze hunspell-en-us vlc kweather plasma-widgets-addons && rm -rf /var/lib/apt/lists/*
 # FabOS packages (identity, desktop experience, AI stack)
 COPY --from=pkgs /out/*.deb /tmp/debs/
-RUN apt-get update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-welcome_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
+RUN apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-welcome_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
     && apt-get install -y sddm-theme-breeze && (apt-get purge -y budgie-sddm-theme 2>/dev/null || true) && apt-get -y autoremove --purge && rm -rf /var/lib/apt/lists/* /tmp/debs
 # System configuration
 RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/; s/^# *en_IN UTF-8/en_IN UTF-8/' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
@@ -97,7 +97,7 @@ RUN if [ "$PROFILE" = iso ]; then \
       systemctl enable fabos-live-selftest serial-getty@ttyS0; fi
 # Pre-fetch the archive index and the AppStream catalogue so Fab Software lists applications on the very first boot
 # (official archive; tolerated failure — the daily apt timer and PackageKit refresh it later anyway).
-RUN (apt-get update || true) && (appstreamcli refresh --force || true) && du -sh /var/lib/swcatalog /var/cache/swcatalog 2>/dev/null; rm -rf /var/lib/apt/lists/*   # keep the AppStream catalogue (~45 MB), drop the 175 MB package lists (PackageKit refreshes them on first use)
+RUN (apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update || true) && (appstreamcli refresh --force || true) && du -sh /var/lib/swcatalog /var/cache/swcatalog 2>/dev/null; rm -rf /var/lib/apt/lists/*   # keep the AppStream catalogue (~45 MB), drop the 175 MB package lists (PackageKit refreshes them on first use)
 # Make sure the initramfs contains our Plymouth theme and the VM's drm driver, then record the kernel we ship.
 RUN if [ "$PROFILE" = iso ]; then install -d /etc/calamares/branding/fabos && cp /usr/share/pixmaps/fabos.png /etc/calamares/branding/fabos/logo.png && cp /usr/share/pixmaps/fabos-logo-dark.png /etc/calamares/branding/fabos/wordmark.png \
  && cp /usr/share/wallpapers/FabOS/contents/images/1920x1080.png /etc/calamares/branding/fabos/slide.png && install -d /etc/skel/Desktop && cp /usr/share/applications/fabos-install.desktop /etc/skel/Desktop/ && chmod +x /etc/skel/Desktop/fabos-install.desktop; fi
