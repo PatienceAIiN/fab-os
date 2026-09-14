@@ -3,11 +3,12 @@
 # The web docroot is root-owned, so this stages the file in the operator's home on the server and prints the ONE
 # command to move it into place. GitHub gets only the checksum + manifest + notes (a single-file ISO exceeds GitHub's
 # 2 GiB asset limit, which is user-hostile to reassemble).
-#   scripts/publish-iso.sh [--iso build/fabos-1.0-desktop-amd64.iso] [--server APT_DEPLOY_TARGET] [--key ~/.ssh/google_compute_engine]
+#   scripts/publish-iso.sh [--iso build/fabos-1.0-desktop-amd64.iso] [--server user@host] [--key ~/.ssh/id_ed25519]
 set -euo pipefail; HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"
-ISO=$(ls build/fabos-*-desktop-amd64.iso 2>/dev/null | head -1); SERVER=APT_DEPLOY_TARGET; KEY=$HOME/.ssh/google_compute_engine
+ISO=$(ls build/fabos-*-desktop-amd64.iso 2>/dev/null | head -1); SERVER=${FABOS_DEPLOY_HOST:-}; KEY=${FABOS_DEPLOY_KEY:-$HOME/.ssh/id_ed25519}
 while [ $# -gt 0 ]; do case $1 in --iso) ISO=$2; shift;; --server) SERVER=$2; shift;; --key) KEY=$2; shift;; esac; shift; done
 [ -f "$ISO" ] || { echo "no ISO at $ISO"; exit 1; }
+[ -n "$SERVER" ] || { echo "set the target with --server user@host (or FABOS_DEPLOY_HOST)"; exit 1; }
 base=$(basename "$ISO")
 echo "== checksum"; (cd "$(dirname "$ISO")" && sha256sum "$base") | tee "build/$base.sha256"
 echo "== upload to $SERVER:~/fab-os-download/ ($(du -h "$ISO" | cut -f1))"
