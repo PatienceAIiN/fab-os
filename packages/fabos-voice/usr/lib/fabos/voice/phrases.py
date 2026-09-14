@@ -52,6 +52,32 @@ WAKE_ON = "Okay, I am listening for 'Hey Fab'."
 WAKE_OFF = "Okay, I will stop listening for 'Hey Fab'. You can turn it back on any time."
 WAKE_UNSURE = "I thought I heard 'Hey Fab', but I am not sure. Say it once more if you need me."
 
+# --------------------------------------------------------------------------- why the microphone or the speaker is not usable
+# (fabos-voice status "mic_reason" / "tts_reason", listen-once's stderr, fabos-voice doctor)
+NO_AUDIO_SESSION = "No audio session: PipeWire is not running for this user, so nothing can record or play."
+NO_SESSION_ALSA_ONLY = "No audio session; using the sound card directly (one program at a time)."
+NO_SOURCE = "No microphone in the audio session: there is no input device to record from."
+SOURCE_IS_MONITOR = "The default input is a monitor of the speakers, not a microphone."
+NO_SINK = "No output device in the audio session: there is nothing to play sound through."
+NO_RECORDER = "No recorder is installed (pw-record, parec or arecord)."
+MIC_MUTED = "The microphone is muted. Unmute it in the volume applet and try again."
+MIC_VOLUME_ZERO = "The microphone volume is at zero. Raise it in the volume applet and try again."
+MIC_SILENT = "The microphone is muted or silent: it sent only zeros. Check the input device and its level in the volume applet."
+SAY_TEST = "Namaste, this is the Fab OS voice. If you can hear this clearly, speech is working."
+DOCTOR_TTS_LINE = "Fab voice check."
+DOCTOR_HINTS = {
+    "audio-session": "Log in to the desktop (PipeWire starts with your session), or run: systemctl --user start pipewire pipewire-pulse wireplumber",
+    "default-source": "Plug in or enable a microphone and pick it as the input device in the volume applet (or: pactl set-default-source NAME)",
+    "capture": "Check the input device and its level in the volume applet; unmute with: pactl set-source-mute @DEFAULT_SOURCE@ 0",
+    "speech-to-text": "whisper.cpp and ggml-tiny.en.bin ship in /usr/share/fabos/voice with Fab OS; if it says low memory, close some apps (it needs about 600 MB free)",
+    "wake-word": "Install pocketsphinx and pocketsphinx-en-us; a custom voice.wake_word must use words from the shipped dictionary",
+    "default-sink": "Pick an output device in the volume applet (or: pactl set-default-sink NAME)",
+    "text-to-speech": "espeak-ng and pipewire-bin (pw-play) ship with Fab OS; check the output device and its volume in the volume applet",
+    "agent": "Start the Fab agent: systemctl --user start fabos-agent (Hey Fab tasks and the cloud voice need it)",
+    "listener": "Turn the wake word on: fabos-voice wake on (starts fabos-voiced.service)",
+    "settings": "Start the Fab agent to read and change voice.* settings: fabos settings voice.enabled true",
+}
+
 # --------------------------------------------------------------------------- display names for system apps
 # The agent launches programs by their command name; the user hears the Fab OS product name instead.
 APP_NAMES = {

@@ -61,6 +61,13 @@ shows the same states. Text always accompanies the glyph; nothing is colour-only
 | Needs you | task `waiting_approval` / `waiting_user` | the existing approval card / question row, focused | "This needs your permission: … Shall I go ahead?" then a 6 s listen; only a short, answer-shaped yes/no counts (a sentence that merely contains "fine" does not), an as-root or CRITICAL step needs a clear "yes"; unclear → "Okay, I will wait for you to decide on screen." |
 | Busy, still listening | `wake` true while a task is followed | mic glyph muted; the running task's row | "Hey Fab" cuts in: "stop" cancels the task, another request starts a new one, silence → "No problem, carrying on with the task." |
 | Off | `wake` false and setting `voice.enabled` false | mic button normal (push-to-talk still works); Voice toggle off in Fab AI Controls | none |
+| Muted / silent microphone | `mic` true with a non-empty `mic_reason`; `listen-once` exit 3 with "The microphone is muted or silent…" on stderr (the first second of the stream was exactly zero) | mic button enabled; the reason shown as the inline note under the composer / next to "microphone: yes" in Settings › Voice; never a bare "nothing heard" | none — no chime replay, no retry loop |
+| No audio session | `mic` false, `tts` `none`, `mic_reason` / `tts_reason` = "No audio session: PipeWire is not running…"; `listen-once` and `say` exit 4 | mic and Speak disabled; the reason as the tooltip and inline note, with "Run `fabos-voice doctor`" as the action | none |
+| Queued | another Fab process holds `speaking` (Speak button vs `fabos-voiced`) | the speaker glyph of the waiting message stays in its idle state until its turn | the new utterance starts only after the current one ends (machine-wide lock, at most 20 s wait); two utterances never overlap and no sentence of a task is spoken twice |
+
+Rules shared by every voice surface: text explains every disabled control (`*_reason` from `fabos-voice status`, never
+a generic "unavailable" when a reason exists); "Run `fabos-voice doctor`" is the single troubleshooting action offered
+in copy; the wake listener is paused (fed nothing) while anything speaks, so no surface needs its own echo guard.
 
 Components in use: Plasma/Kirigami controls for the shell, Qt Widgets
 (Breeze) for Fab OS apps. A Fab-authored widget kit is a later phase; until then consistency comes from the
