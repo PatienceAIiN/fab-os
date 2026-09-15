@@ -1589,6 +1589,19 @@ def plan_sanity(request, plan):
     model regularly plans the open_app and forgets the typing."""
     notes = []
     low = " ".join((request or "").lower().split())
+    # A step that repeats an earlier step's goal word for word does nothing new (measured: "copy the folder A to B" planned as
+    # run_shell and again as save_result, which then wrote 0 bytes into the copied folder three times and failed a task whose
+    # work was done). The first occurrence stays, later repeats go; never empties the plan.
+    seen, keep = set(), []
+    for i, s in enumerate(plan):
+        key = " ".join(s["goal"].lower().split()).rstrip(".!")
+        if key in seen:
+            notes.append("dropped step %d [%s]: it repeats an earlier step's goal (%s)" % (i + 1, s["tool"], s["goal"][:80]))
+            continue
+        seen.add(key)
+        keep.append(s)
+    if keep and len(keep) < len(plan):
+        plan[:] = keep
     tools = [s["tool"] for s in plan]
     if re.search(r"\btyp(e|es|ed|ing)\b", low) and "open_app" in tools and "type_text" not in tools and len(plan) < PLAN_MAX_STEPS:
         i = tools.index("open_app")
@@ -1982,6 +1995,16 @@ class FakeProvider:
             return [("open_app", "open the terminal", {"app": "sleep", "args": ["8"]}, {"app": "sleep", "args": ["8"]})]
         if "stepwise: save nothing" in low:
             return [("save_result", "save the previous output to /tmp/x (there is none)", {"path": "/tmp/fabos-save-nothing.txt"}, None)]
+        m = re.search(r"stepwise: save empty (\S+)", low)
+        if m:                                                                       # the previous command printed nothing: nothing to save
+            return [("run_shell", "copy the folder (prints nothing)", {"command": "true"}, None),
+                    ("save_result", "save the previous output to %s" % m.group(1), {"path": m.group(1)}, {"path": m.group(1)})]
+        m = re.search(r"stepwise: save into folder (\S+)", low)
+        if m:                                                                       # the path is a directory
+            return [("run_shell", "print x", {"command": "echo x"}, None),
+                    ("save_result", "save the previous output to the folder %s" % m.group(1), {"path": m.group(1)}, {"path": m.group(1)})]
+        if "stepwise: duplicate step" in low:
+            return [("run_shell", "copy the folder a to b", {"command": "echo copied"}, None)]
         if "stepwise: broken json" in low:
             return [("run_shell", "print pong", {"_raw": "{\"command\": \"echo | . | . | . |"}, {"command": "echo pong"})]
         if "stepwise: no tool" in low:
@@ -2039,6 +2062,8 @@ class FakeProvider:
             if "invented api plan first" in req.lower() and self.calls["plan"] == 1:               # the measured habit: an API for local files
                 return json.dumps({"steps": [{"tool": "run_shell", "goal": "web_fetch 'https://example.com/api/grand_total'"}, {"tool": "save_result", "goal": "save the API answer"}]})
             steps = [{"tool": t, "goal": g} for t, g, _i, _r in self.fake_plan(req)]
+            if "duplicate step" in req.lower():                                                   # the model's habit: the same goal planned twice
+                steps = steps + [{"tool": "save_result", "goal": steps[0]["goal"].upper() + "."}]
             if "count files in" in req.lower() and "do not create" in req.lower():   # the model's habit: an answer-only task planned as run_shell + save_result, no reply
                 steps = [steps[0], {"tool": "save_result", "goal": "save the count to /tmp/count.txt"}]
             return json.dumps({"steps": steps})
@@ -2620,8 +2645,18 @@ class Agent:
                     continue
                 t_start = time.time()
                 if c["name"] == "save_result":
+                    # Deterministic guards before any write: no earlier output, an EMPTY earlier output (a cp/mv that printed nothing —
+                    # measured: 0 bytes written into the copied folder, three times), or a path that is a folder.
+                    save_to = os.path.expanduser(str(c["input"].get("path") or ""))
                     if not last_output:
                         error = "save_result needs an earlier tool call with output; nothing to save yet — run the command first"
+                    elif not last_output["raw"].strip():
+                        error = "%s printed nothing, so there is nothing to save yet; if the step's work is already done, no file needs writing — otherwise run a command that prints the value first" % last_output["from"]
+                    elif os.path.isdir(save_to):
+                        error = "%s is a folder, not a file; save_result needs a file path" % save_to
+                    else:
+                        error = None
+                    if error:
                         self.store.step(tid, "verify", "save_result", step["goal"][:300], "failed: " + error)
                         continue
                     c = {"id": c["id"], "name": "write_file", "input": {"path": str(c["input"].get("path") or ""), "content": last_output["raw"]}}

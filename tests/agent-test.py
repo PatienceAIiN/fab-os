@@ -1339,6 +1339,35 @@ class Daemon(unittest.TestCase):
         self.assertIn("named in this step does not exist afterwards", ver[0]["output"]); self.assertIn("call save_result", ver[0]["output"])
         self.assertTrue(any(v["name"] == "save_result" and "writing the output of step 1 (run_shell) (3 chars)" in v["output"] for v in ver), ver)
 
+    def test_33h_stepwise_save_result_of_an_empty_output_never_writes(self):
+        """The previous command printed nothing (a cp): save_result has nothing to copy, so no file is written and the step fails
+        with the reason — instead of 0 bytes landing at the path (measured on the copy-a-folder task)."""
+        path = os.path.join(self.env["HOME"], "sw", "empty-save.txt")
+        t = self.stepwise("stepwise: save empty %s" % path)
+        self.assertEqual(t["status"], "failed", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell"])                     # no write_file ever ran
+        self.assertFalse(os.path.exists(path))
+        sv = self.kinds(t, "verify", "save_result"); self.assertEqual(len(sv), 1 + fa.STEP_RETRIES)
+        self.assertIn("step 1 (run_shell) printed nothing, so there is nothing to save yet", sv[0]["output"]); self.assertIn("printed nothing", t["error"])
+
+    def test_33i_stepwise_save_result_into_a_folder_is_refused(self):
+        d = os.path.join(self.env["HOME"], "sw-folder"); os.makedirs(d, exist_ok=True)
+        t = self.stepwise("stepwise: save into folder %s" % d)
+        self.assertEqual(t["status"], "failed", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell"])
+        self.assertIn("%s is a folder, not a file" % d, self.kinds(t, "verify", "save_result")[0]["output"]); self.assertTrue(os.path.isdir(d))
+
+    def test_33j_stepwise_duplicate_plan_step_is_dropped(self):
+        """The planner repeats a goal (measured: 'copy the folder' as run_shell, then again as save_result): the repeat is dropped
+        before execution, recorded as a plan note, and the task finishes after the one real step."""
+        t = self.stepwise("stepwise: duplicate step")
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell"])
+        notes = [v["output"] for v in self.kinds(t, "verify", "plan")]
+        self.assertTrue(any(n.startswith("dropped step 2 [save_result]: it repeats an earlier step's goal") for n in notes), notes)
+        plan = [s for s in self.kinds(t, "assistant") if s["output"].startswith("Plan:")]
+        self.assertEqual(len(plan), 1); self.assertNotIn("2. [", plan[0]["output"])
+
     def test_33_status_reports_driver_and_network(self):
         st = self.cli("status"); self.assertEqual(st["driver"], "freeform")                        # the fake provider defaults to the cloud loop
         self.assertEqual(set(st["network"]), {"online", "target", "checked", "age_s"})
@@ -1397,6 +1426,12 @@ class StepwiseUnits(unittest.TestCase):
         self.assertEqual(fa.plan_sanity("Copy the folder /tmp/a to ~/b (file types unchanged)", plan), []); self.assertEqual(len(plan), 1)   # no open_app, no typing
         plan = [{"tool": "open_app", "goal": "open konsole"}]
         self.assertEqual(fa.plan_sanity("Open the Fab Terminal and leave it open", plan), []); self.assertEqual(len(plan), 1)
+        # a repeated goal (case, spacing and a final full stop aside) is dropped, the first occurrence stays, the plan is never emptied
+        plan = [{"tool": "run_shell", "goal": "copy the folder /tmp/a to ~/b"}, {"tool": "save_result", "goal": "Copy the  folder /tmp/a to ~/b."}, {"tool": "reply", "goal": "say done"}]
+        notes = fa.plan_sanity("Copy the folder /tmp/a to ~/b", plan)
+        self.assertEqual([s["tool"] for s in plan], ["run_shell", "reply"]); self.assertEqual(len(notes), 1); self.assertIn("repeats an earlier step's goal", notes[0])
+        plan = [{"tool": "run_shell", "goal": "count"}, {"tool": "run_shell", "goal": "count"}]
+        self.assertEqual(len(fa.plan_sanity("count twice", plan)), 1); self.assertEqual(len(plan), 1)
 
     def test_expected_app_and_the_request_regexes(self):
         self.assertEqual(fa.expected_app("Open the Fab Terminal application so a terminal window is running"), "konsole")

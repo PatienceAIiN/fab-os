@@ -98,7 +98,7 @@ cores> --parallel 1 --cache-ram 256 --cache-reuse 256 --temp 0.2 --top-p 0.9 --r
 | Configuration | Peak RSS (`VmHWM`) | When |
 |---|---|---|
 | repacking on (≥ 6 GiB machines), 6 threads | **2.03–2.06 GB** | after the capability probe (json_schema plan, forced tool call, 200-token generation) |
-| `--no-repack` (the 4 GB machine), free-form loop | **1.86 GB** | after the full L1+L2 ladder (BEFORE run, HEAD daemon) |
+| `--no-repack` (the 4 GB machine), free-form loop | **1.85 GB** | after the full L1+L2 ladder (BEFORE run, the daemon of the pushed main) |
 | `--no-repack`, stepwise driver | **1.53–1.65 GB** | after the L1+L2 ladder with the new driver (shorter prompts touch fewer KV cells) |
 
 All of it stays under the unit's `MemoryHigh=2200M` / `MemoryMax=3G` (ADR-0011); 8192 tokens of context cost 224 MiB of
@@ -120,7 +120,9 @@ model: multi-command shell pipelines and tabular arithmetic still fail more ofte
 results, and run-to-run variance at temperature 0.2 is real (the same task can pass one run and fail the next). For hard
 tasks a cloud provider is one dropdown away. Rerun: `tests/local-driver-image.sh --label after --extra-args --no-repack`
 (this tree) and `--label before --agent-src build/baseline --llama-start build/baseline/llama-start.sh` after extracting
-the HEAD files there.
+the previous daemon and wrapper there (`git show <rev>:packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py >
+build/baseline/fabos_agentd.py`, same for `packages/fabos-ai/usr/lib/fabos/ai/llama-start.sh`); then
+`python3 tests/local-driver-table.py build/local-driver-before.json build/local-driver-after.json` renders the table.
 
 ## Minimum requirements
 
