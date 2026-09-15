@@ -138,6 +138,12 @@ handler (median < 150 ms) and a repaint check of Fab AI Controls while a task st
 4. **Try it live** — Fab OS runs from the stick without touching your disk. When you're ready, open **Install Fab OS** on the desktop.
 5. **Verify the download** (optional): `sha256sum -c fabos-1.0-desktop-amd64.iso.sha256`.
 
+The installer asks six things: language, location, keyboard, where to install, your name and password, and a summary you confirm. It needs no internet connection at any point — everything comes from the stick — and takes about ten to fifteen minutes.
+
+**Where to install.** *Erase disk* is preselected, and so is **encryption**: the installer creates an EFI system partition, a small unencrypted `/boot` (2 GB, holding the kernel and start-up files — the same layout Ubuntu's own installer uses) and one encrypted LUKS2 volume for everything else. You choose the passphrase in the two boxes on that page. **You will be asked for this passphrase at every boot**, before the login screen; there is no way to recover a forgotten one, so pick something you will remember and, if you like, write it down somewhere safe. Untick *Encrypt system* if you would rather have no passphrase (the system then starts straight to the login screen). *Replace a partition*, *Install alongside* and *Manual partitioning* remain available. The firmware boot entry is registered as `ubuntu` (Ubuntu's Secure-Boot-signed GRUB requires that directory name — [docs/decisions/ADR-0021](docs/decisions/ADR-0021-installer-boot-layout.md)); the boot menu entry itself says *Fab OS*.
+
+**After the installation**, the live medium's user, its passwordless sudo rule and autologin are removed, automatic security updates and the Fab OS update channel are enabled, and on the first boot with a network connection `fabos-firstboot` fetches pending updates, free drivers and firmware in the background (nothing blocks login; without a network it simply retries on the next boot). Every step of this is replayed offline by `tests/calamares-jobs-test.sh` and run end to end in a virtual machine by `tests/install-vm.sh` — see [docs/INSTALL-TEST.md](docs/INSTALL-TEST.md).
+
 After first login, open **Fab AI Controls → Settings** and pick **Local model** to use the built-in offline model (no account needed; 4 GB RAM), or connect a cloud provider with your own key. The agent does nothing until you choose.
 
 ---
@@ -180,6 +186,8 @@ tests/ui-tour.sh                 # boots headless, drives the UI, captures scree
 python3 tests/agent-test.py      # agent unit tests (offline, FakeProvider)
 tests/local-driver-image.sh --label after --extra-args --no-repack   # the built-in model on the ladder's L1/L2 tasks + 4 held-out tasks inside the image (real model, ~12 min)
 python3 tests/voice-test.py      # voice: VAD, phrases, CLI contract, daemon follow-loop; wake word + whisper when the engines are present
+tests/calamares-jobs-test.sh     # installer: every Calamares job replayed offline inside the ISO image (podman, no network; ~3 min)
+tests/install-vm.sh both         # installer: full automated install (encrypted + plain) in QEMU, then boot of the installed disk (~20 min each)
 ```
 
 The build is designed to be **cache-friendly and honest**: `build-rootfs.sh` refuses to export a stale image if a build step fails, and never re-downloads the desktop layer unless you change it.
@@ -203,7 +211,7 @@ Fab OS keeps two update streams, both automatic and both signed:
 - **AppArmor** on, with Ubuntu's profiles unchanged.
 - **Secure Boot** works: Ubuntu's signed kernel and shim, unmodified.
 - **Firewall on** from the first boot: ufw denies incoming and allows outgoing connections, with no extra rules; the shipped image has no SSH server. `sudo ufw status` shows it, `sudo ufw allow <port>` opens a port.
-- **Full-disk encryption** (LUKS2) is pre-selected in the installer.
+- **Full-disk encryption** (LUKS2, argon2id) is pre-selected in the installer; the passphrase is asked at every boot. The kernel and initramfs live on a small unencrypted `/boot` partition (Ubuntu's own layout — its Secure-Boot-signed GRUB cannot open argon2id LUKS2 volumes), everything else is inside the encrypted volume ([ADR-0021](docs/decisions/ADR-0021-installer-boot-layout.md)).
 - **Signed updates only**: Ubuntu's archive keys and the Fab OS Archive key. Fab OS never downloads anything on first use: models, voices, fonts and icons are shipped inside the ISO release.
 - **No telemetry**, no analytics, no accounts ([legal/PRIVACY.md](legal/PRIVACY.md)).
 - **The agent is gated by permissions**: it runs as you, stays off until you add a provider key, asks before risky steps, and reaches root only through a single-use, policy-checked path ([SECURITY.md](SECURITY.md)).

@@ -8,6 +8,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/fabos/firstboot.sh
+# Test hook, harmless elsewhere: tests/install-vm.sh waits for this line on the QEMU serial port after an automated
+# install (an installed system that reaches its first boot and finishes firstboot.sh prints it; no serial port = no-op).
+ExecStartPost=/bin/sh -c "echo FABOS_INSTALLED_OK >/dev/ttyS0 2>/dev/null || true"
 Nice=15
 IOSchedulingClass=idle
 TimeoutStartSec=2h
