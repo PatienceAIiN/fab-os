@@ -19,7 +19,8 @@ must be visible and truthful.
 ## Windows (frame)
 
 Source: `brand/gen/aurorae_theme.py` → `/usr/share/aurorae/themes/FabOS` (+ `FabOSLight`), rendered by KWin's Aurorae v2
-engine (ADR-0012). Geometry at 1x: title bar 36, **radius 20 on the two top corners**, square bottom corners, no side or
+engine (ADR-0012). Geometry at 1x: title bar 36, **radius 14 on the two top corners** (the same circle as the KWin corner
+effect below, ADR-0019; it was 20 until 2026-09-15), square bottom corners in the frame itself, no side or
 bottom borders (`BorderSize=None`), 28 px shadow padding (gradients plus one luminance `<mask>` per top corner; no SVG filters), 28 px buttons with 3 px rounded-cap strokes.
 Colours: `ColorScheme-HeaderBackground` for the bar, `ColorScheme-Text` for glyphs, `ColorScheme-Highlight` on hover,
 `ColorScheme-NegativeText` for the close hover — all rewritten from the active scheme by KSvg, so the same SVGs serve Fab
@@ -44,6 +45,35 @@ first release put the corner shadow gradient there (19-38 % black) and every win
 - After editing the generator: `python3 brand/gen/aurorae_theme.py --out packages/fabos-desktop/usr/share/aurorae/themes`,
   then `tests/decoration-render-test.sh` (notch alpha 0, header alpha 1, corner taper below 40 % of the edge shadow, full
   strength where the arc starts) and commit the SVGs.
+
+## Windows (four rounded corners — the KWin effect)
+
+A decoration can only shape what it draws: the title bar. The client's own bottom corners stayed square, and on the owner's
+device the top ones read as sharp too. Since 2026-09-15 (ADR-0019) the **compositor** rounds every window: the
+KDE-Rounded-Corners KWin effect (GPL-3.0, upstream id `kwin4_effect_shapecorners`), compiled from its v0.10.0 release
+inside the image against the exact KWin (`image/rounded-corners-build.sh` → package `fabos-rounded-corners`), enabled and
+configured in `/etc/xdg/kwinrc` (`[Plugins] kwin4_effect_shapecornersEnabled=true`, group `[Round-Corners]`; every key is
+from the effect's `src/kcm/options.kcfg`).
+
+- **Radius 14, circular** (`Size=14`, `InactiveCornerRadius=14`, `UseSquircleShape=false`) — the "field" step of the radius
+  scale (docs/design/BRANDING.md). The effect masks the whole frame, decoration included, so the visible corner is the
+  intersection of its arc and the Aurorae arc: both must be the same circle, hence `R = 14` in `aurorae_theme.py` and no
+  squircle. Plasma popups, panels, menus, tooltips and notifications are other window types and keep their radius 24.
+- **Where it applies:** normal windows and dialogs (`IncludeNormalWindows`, `IncludeDialogs`), light and dark alike (the
+  mask is geometry; colours are the window's own). **Square** when maximised, full-screen or snapped/tiled
+  (`DisableRound{Maximize,FullScreen,Tile}=true`): those windows abut the screen edge or each other.
+- **Outline:** one 1 px hairline in `QPalette::WindowText` at 22 % active / 14 % inactive (`ActiveOutlineUsePalette=true`,
+  `ActiveOutlinePalette=0`, `ActiveOutlineAlpha=56`; inactive 36) — dark on Fab Light, light on Fab Dark. Second and outer
+  outlines off.
+- **Shadow:** the Aurorae shadow is kept (`UseNativeDecorationShadows=true`; the shader bends it around the arc).
+  `ShadowSize=24` / `InactiveShadowSize=16` only apply if a user turns native shadows off in the effect's settings page.
+- **Motion:** `AnimationDuration=160` (the effect's own active/inactive fade; it does not read `AnimationDurationFactor`).
+- **Requirement:** OpenGL compositing (`Effect::supported()`); under KWin's QPainter fallback the frame's own radius-14
+  top corners remain. The effect also writes `breezerc [Common] OutlineIntensity=OutlineOff, RoundedCorners=false,
+  OutlineEnabled=false` while loaded (upstream behaviour for Breeze users; Fab OS uses Aurorae, so it is inert here).
+- **Tests:** `tests/branding-check.sh` (plugin, KCM, shaders, package, kwinrc keys, radius 14 in the frame, no build tools
+  left); `tests/corners-vm.sh` (in the VM over SSH: `loadedEffects` lists the effect; Fab Editor placed at a known geometry,
+  `spectacle -b -n -f -o`, the four corner pixels vs 14 px inside, in Fab Dark and Fab Light).
 
 ## Voice states (fabos-voice)
 

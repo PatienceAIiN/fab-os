@@ -21,7 +21,17 @@ more than the cost of physically performing the distribution.
 3. You can also fetch them yourself from the recorded URIs
    (`archive.ubuntu.com` / `snapshot.ubuntu.com`) or run
    `scripts/source-offer.sh --download` against the image.
-4. Source for Fab OS's own packages is this repository and the
+4. **Components that are not Ubuntu archive packages** (so `scripts/source-offer.sh`
+   does not list them) — their corresponding source is the pinned upstream file
+   the image build downloads and verifies:
+   - `fabos-rounded-corners` (KDE-Rounded-Corners v0.10.0, GPL-3.0; ADR-0019):
+     the unmodified release tarball
+     `https://github.com/matinlotfali/KDE-Rounded-Corners/archive/refs/tags/v0.10.0.tar.gz`,
+     sha256 `f3f03d96e17ae4b7dcee6347a01c75de6f90ed19e070e98ae8bf2dd71ae276db`, built by `image/rounded-corners-build.sh`
+     (cmake, Release, no patches). The same URL and hash are in
+     `/usr/share/doc/fabos-rounded-corners/copyright` on the installed system.
+     For each release we mirror this tarball next to the Ubuntu sources (step 2).
+5. Source for Fab OS's own packages is this repository and the
    `ai-native-os` repository (Apache-2.0). The modifications Fab OS applies
    to upstream display strings are themselves scripts distributed in source
    form (`/usr/lib/fabos/rebrand-catalogs`, `rebrand-binaries`,

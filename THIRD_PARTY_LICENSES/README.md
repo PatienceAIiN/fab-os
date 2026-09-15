@@ -8,7 +8,7 @@ own notice is in `/usr/share/doc/<package>/copyright` (never excluded from Fab O
 |------|---------|--------------------|
 | `Apache-2.0.txt` | Apache License 2.0 | Google Material Symbols glyphs (FabOS icon theme); Inter (dual OFL-1.1 / Apache-2.0); also Fab OS's own code |
 | `GPL-2.0.txt` | GNU GPL v2 | Linux kernel; KDE applications and Plasma components licensed GPL-2.0-or-later; SDDM; Plymouth; casper; PackageKit |
-| `GPL-3.0.txt` | GNU GPL v3 | Calamares (GPL-3.0-or-later); PyQt6; GRUB; eSpeak NG (GPL-3.0-or-later, offline voice of fabos-voice) |
+| `GPL-3.0.txt` | GNU GPL v3 | Calamares (GPL-3.0-or-later); PyQt6; GRUB; eSpeak NG (GPL-3.0-or-later, offline voice of fabos-voice); KDE-Rounded-Corners (GPL-3.0, the `fabos-rounded-corners` KWin effect built from source in the image) |
 | `LGPL-2.0.txt` | GNU Library GPL v2 | bubblewrap (LGPL-2.0-or-later, the agent's shell sandbox); polkit / pkexec (LGPL-2.0-or-later, the agent's root path) |
 | `LGPL-2.1.txt` | GNU LGPL v2.1 | KDE Frameworks, KWallet and other LGPL-2.1-or-later libraries; systemd |
 | `LGPL-3.0.txt` | GNU LGPL v3 | KDE Breeze icon theme, Breeze style and colour schemes (basis of Fab Dark / Fab Light, which stay LGPL-3.0-or-later) |

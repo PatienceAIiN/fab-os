@@ -1,6 +1,7 @@
 # ADR-0012: Window frame as an Aurorae SVG theme, rendered by the Aurorae v2 engine
 
-**Status:** accepted (2026-09-14) · complements ADR-0004 (Plasma 6 on Wayland)
+**Status:** accepted (2026-09-14) · complements ADR-0004 (Plasma 6 on Wayland) · amended by ADR-0019 (2026-09-15: the
+frame's top radius is 14, the same circle as the KWin corner effect that now rounds all four corners of every window)
 
 ## Context
 Fab OS needs its own window frame: radius-20 title bar, bold 3 px minimize / maximize / restore / close glyphs, surfaces
