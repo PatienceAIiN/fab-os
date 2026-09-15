@@ -8,7 +8,8 @@
   fabos mode [ask|auto|bypass]      permission mode (ask: approve MEDIUM+, auto: approve CRITICAL only, bypass: never ask)
   fabos settings [KEY VALUE]         e.g. fabos settings provider openai ; fabos settings mail.provider gmail ; fabos settings mail.address me@gmail.com
                                      (an empty VALUE unsets a key: fabos settings mail.provider '' infers the provider from the address again)
-  fabos set-key claude|gemini|openai|deepseek|local|mail   store a secret (prompted, never echoed; mail = the app password)
+  fabos set-key claude|gemini|openai|deepseek|local|ollama|mail   store a secret (prompted, never echoed; mail = the app password;
+                                     ollama = only for a reverse-proxied remote Ollama that wants a bearer — the local one needs none)
   fabos check [claude|gemini|openai|deepseek|local|ollama]   real connection check of the (given or active) AI provider
   fabos ollama status|models|install [--yes]   Ollama (ADR-0022; not bundled): status = installed/running/models/the model the agent
                                      would use; models = what `ollama list` knows, largest first; install = print the official installer
@@ -67,7 +68,7 @@ def main():
     p = sub.add_parser("approvals"); p.add_argument("--task", type=int, metavar="ID")
     p = sub.add_parser("mode"); p.add_argument("value", nargs="?", choices=["ask", "auto", "bypass"])
     p = sub.add_parser("settings"); p.add_argument("key", nargs="?"); p.add_argument("value", nargs="?")
-    p = sub.add_parser("set-key"); p.add_argument("which", choices=["claude", "gemini", "openai", "deepseek", "local", "mail"]); p.add_argument("--remove", action="store_true")
+    p = sub.add_parser("set-key"); p.add_argument("which", choices=["claude", "gemini", "openai", "deepseek", "local", "ollama", "mail"]); p.add_argument("--remove", action="store_true")
     p = sub.add_parser("check"); p.add_argument("provider", nargs="?", choices=["claude", "gemini", "openai", "deepseek", "local", "ollama"])
     p = sub.add_parser("ollama"); p.add_argument("action", choices=["status", "models", "install"]); p.add_argument("--yes", action="store_true", help="install: really run the official installer (as root, through polkit: you will be asked for your password)")
     p.add_argument("--force", action="store_true", help="install: run the installer even when ollama is already present (it upgrades)")
@@ -146,7 +147,7 @@ def main():
                     if k != "secrets": print("%-22s %s" % (k, out[k]))
                 print("secrets: " + ", ".join("%s=%s" % (k, "set" if v else "unset") for k, v in out["secrets"].items())); return
     elif a.cmd == "set-key":
-        name = {"claude": "claude_api_key", "gemini": "gemini_api_key", "openai": "openai_api_key", "deepseek": "deepseek_api_key", "local": "local_api_key", "mail": "mail_password"}[a.which]
+        name = {"claude": "claude_api_key", "gemini": "gemini_api_key", "openai": "openai_api_key", "deepseek": "deepseek_api_key", "local": "local_api_key", "ollama": "ollama_api_key", "mail": "mail_password"}[a.which]
         val = "" if a.remove else getpass.getpass("%s: " % name)
         out = api("POST", "/secrets", {"name": name, "value": val})
     elif a.cmd == "check":
@@ -174,11 +175,20 @@ def main():
                 if out.get("error"): print("  " + out["error"])
                 sys.exit(0 if out["running"] else 1)
         else:
-            print("Ollama is not part of Fab OS (its installer downloads about 1 GB). The official command:\n\n    %s\n" % "curl -fsSL https://ollama.com/install.sh | sh")
-            if not a.yes:
-                print("Run `fabos ollama install --yes` to run it now as administrator (the system asks for your password), or run the command yourself."); return
-            print("Running it as administrator now — the system will ask for your password. This can take several minutes...")
-            out = api("POST", "/providers/ollama/install", {"confirm": True, "force": bool(a.force)}, timeout=1900)
+            cmd = "curl -fsSL https://ollama.com/install.sh | sh"
+            if not a.json:
+                print("Ollama is not part of Fab OS (its installer downloads about 1 GB). The official command:\n\n    %s\n" % cmd)
+            if not a.yes:                                             # nothing runs without --yes: the command is only shown (JSON: returned)
+                if a.json:
+                    out = {"ok": False, "ran": False, "command": cmd, "detail": "pass --yes to run the official installer as administrator"}
+                else:
+                    print("Run `fabos ollama install --yes` to run it now as administrator (the system asks for your password), or run the command yourself."); return
+            else:
+                if not a.json:
+                    print("Running it as administrator now — the system will ask for your password. This can take several minutes...")
+                out = api("POST", "/providers/ollama/install", {"confirm": True, "force": bool(a.force)}, timeout=1900)
+            if not a.json and "ok" not in out:                       # 403: the administrator's policy (hosts_allowed / cloud_allowed) refused the download
+                sys.exit(out.get("error") or "the installer was refused")
             if not a.json and "ok" in out:
                 if out.get("already_installed"): print(out["detail"]); return
                 print(("Installed: %s" % ("ollama is now available" if out.get("installed") else "the installer finished but `ollama` is not on PATH yet")) if out["ok"]

@@ -34,7 +34,7 @@ common way people already run them, as a provider "for large and small models". 
 ## Decision
 
 **1. `PROVIDERS["ollama"]`** — label *"Ollama (on this computer)"*, chat-completions base `http://127.0.0.1:11434/v1` (the same `/v1`
-API shape llama-server speaks), **no key** (`no_key`; the optional `ollama_api_key` secret exists only for a reverse-proxied remote
+API shape llama-server speaks), **no key** (`no_key`; the optional `ollama_api_key` secret — `fabos set-key ollama` — exists only for a reverse-proxied remote
 Ollama), the same provider class the built-in `local` model uses. It appears in the Settings dropdown because the dropdown reads the table. Ollama's own API sits one level
 up (`ollama_native_base()`): `GET /api/tags` for the model list, `POST /api/show` for a model's capabilities and size.
 
@@ -76,7 +76,10 @@ parameter_b}]` (largest first; 30 s cache; `?refresh=1`; 503 with the reason whe
 apart from *"cannot reach Ollama"*. `POST /providers/ollama/install {"confirm": true}` runs the **official installer** — `curl -fsSL
 https://ollama.com/install.sh | sh` — as root through the polkit path of ADR-0017 (`Tools.run_as_root`: a single-use authorisation
 record, `pkexec rootexec`, the user's own password in the system dialog), never silently, and records `ollama_install_requested` /
-`_done` / `_failed` in the audit log. **CLI:** `fabos ollama status | models | install [--yes] [--force]` — `install` without `--yes`
+`_done` / `_failed` in the audit log. On a managed computer (ADR-0017 policy.json) the installer — a root download from
+`ollama.com` — goes through the same gate as every other outbound endpoint: `POLICY.require_host("ollama.com")` against
+`hosts_allowed`, and nothing is downloaded at all when `cloud_allowed` is false; the daemon answers 403 *"Managed by your
+organisation …"* and records `ollama_install_refused`. **CLI:** `fabos ollama status | models | install [--yes] [--force]` — `install` without `--yes`
 only prints the command; `fabos check ollama`; `fabos settings provider ollama`, `fabos settings ollama.model llama3.1:8b`.
 `/status` for the Ollama provider reports `provider_ready: true` (no key), the effective model from the cache (never a network
 call on a poll) and the driver.

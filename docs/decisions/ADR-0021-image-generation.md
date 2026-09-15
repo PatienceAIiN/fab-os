@@ -63,15 +63,25 @@ so UIs and the ladder can tell in advance whether a picture can be made.
 **4. Files.** Every image goes to **`~/Pictures/Fab OS/<yyyy-mm-dd>-<slug>-<n>.png`** (the folder is created; the slug is the
 prompt lower-cased, non-alphanumerics to `-`, at most 40 chars; a name already taken gets `-2`, `-3`… — nothing is ever
 overwritten; a non-PNG answer keeps its real extension). Width and height are read from the PNG's own IHDR, not from the request.
-The activity log records `image_generated` with provider, model, size and path — never the prompt, never the key.
+The activity log records `image_generated` with provider, model, size and the path — whose **file name is derived from the first 40
+characters of the prompt** (the slug above), so that much of the prompt is in the log; the prompt itself and the key never are.
 
 **5. The model is told.** The free-form SYSTEM_PROMPT gets one rule: an image/picture/logo/poster/wallpaper/icon request →
 `generate_image`, tell the user the returned path, and when the tool says the provider cannot draw, say exactly that and stop —
 never paint with shell tools. The stepwise driver (ADR-0020): `generate_image` is in `STEP_TOOLS`, the planner's tool list and the
 executor prompt (one worked example, `draw a blue circle -> generate_image {"prompt": "a blue circle"}`); `plan_sanity()` turns
-an image request (`IMAGE_RE`: a drawing verb, or make/create/design together with an image noun; "open the picture folder",
-"take a screenshot", "copy the image files" are not image requests) whose plan has no `generate_image` step into one — drawing
-commands and files are dropped, a `generate_image` step is put first, the plan is never emptied. `step_check` passes the step only
+an image request (`IMAGE_RE`: a drawing verb, or generate/make/create/design/render/produce whose **direct object** is an image noun —
+the verb, an optional "me", an article or count, at most three plain modifier words, then the noun; no free gap, so "create a folder
+named pictures", "make a list of the images", "give me the number of pictures", "generate a report of the photos", "create an
+icon-sized thumbnail" are not image requests (a review of 2026-09-16 found the earlier 40-character gap matched all of them and put
+a `generate_image` step in front of the user's real task); "open the picture folder", "take a screenshot", "copy the image files",
+"make the logo bigger" are not either) whose plan has no `generate_image` step into one — drawing commands and files are dropped,
+a `generate_image` step is put first, the plan is never emptied. Belt and braces: `plan_sanity(request, plan, images_ready)` gets
+`image_capability(store).ready`; with **no image provider configured** the step is only put in when the plan itself tries to draw
+(the model and the word list agree), otherwise the plan is left as planned and a note says so — a word-list misfire cannot sink an
+unrelated task. And when a `generate_image` step fails on **configuration** (no provider, no key, `images.provider` naming a missing
+key, a rejected key, a managed-policy refusal — `image_config_error`) the driver ends the task with that sentence at once instead
+of spending its `STEP_RETRIES` on a failure the model cannot change. `step_check` passes the step only
 when the returned file exists; `render_result` shows the model *"image saved to <path> (WxH, made by <provider>)"*, which is what
 the reply step quotes back. The executor prompt was re-measured with the model's own tokenizer after these additions: **849 tokens
 / 3 104 chars** in the harness (`tests/local-driver-image.sh`, 2026-09-16), under the 900-token budget of ADR-0020.
@@ -106,6 +116,10 @@ Recorded in legal/PRIVACY.md.
   render `output.path` as a thumbnail with an "Open in Fab Photos" (gwenview) action — the data is already in the step record.
 - No image editing, variations or upscaling: one tool, one job. Cost is the provider's own; the agent never loops on it (n ≤ 4).
 - `IMAGE_RE` is a word list, not language understanding: "I want a poster for the fest" is an image request, "make an image viewer"
-  is not; the free-form models decide for themselves, the regex only repairs the small model's plans.
+  is not; the free-form models decide for themselves, the regex only repairs the small model's plans. Its unit test keeps a list of
+  ordinary file tasks that must NOT match (folders, lists, counts, reports, thumbnails, backups named after pictures) — add to it
+  before widening the pattern.
+- `/status.images` and `GET /settings` only ask whether a key **exists** (`has_secret`, a stat); the key is decrypted once per
+  picture in `generate_images`. The ask bar polls `/status` every 2–8 s, so the probe must never spawn `systemd-creds`.
 - The model identifier `dall-e-3` appears only as the API string the fallback sends; Fab OS's own words for it are "the provider's
   older image model", per the naming rule in tests/branding-check.sh (vendor names only as provider labels, in allowlisted files).

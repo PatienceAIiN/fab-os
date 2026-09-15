@@ -1476,6 +1476,19 @@ class Daemon(unittest.TestCase):
         r = subprocess.run([sys.executable, os.path.join(ROOT, "tests/ladder/checks.py"), "l2g"], env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr); self.assertIn("is a 256x256 PNG", r.stdout)
 
+    def test_35b_stepwise_image_task_without_a_provider_fails_once_with_the_setting_to_change(self):
+        """images.provider names a key that is not stored: the generate_image step fails on configuration, which no retry can change — the
+        task ends after ONE attempt with the tool's own sentence, not after STEP_RETRIES identical tries (reviewed 2026-09-16)."""
+        self.cli("settings", "images.provider", "openai")
+        try:
+            self.assertFalse(self.cli("status")["images"]["ready"])
+            t = self.stepwise("stepwise: draw a red square", mode="auto")
+        finally:
+            self.cli("settings", "images.provider", "")
+        self.assertEqual(t["status"], "failed", t); self.assertEqual(len(self.kinds(t, "tool_call")), 1, t)
+        self.assertEqual(t["error"], "images.provider is openai but no OpenAI key is stored: add it in Settings")
+        self.assertTrue(any("not retried" in s["output"] for s in self.kinds(t, "verify", "generate_image")), t)
+
     def test_36_ollama_cli_never_installs_silently(self):
         """`fabos ollama install` prints the official command and runs nothing without --yes; `fabos ollama status` reports without a traceback
         whether or not an Ollama is running on this machine."""
@@ -1486,6 +1499,7 @@ class Daemon(unittest.TestCase):
         r = subprocess.run([sys.executable, CLI, "ollama", "status"], env=self.env, capture_output=True, text=True, timeout=40)
         self.assertIn("Ollama:", r.stdout); self.assertIn("RAM", r.stdout); self.assertEqual(r.returncode, 0 if st["running"] else 1)
         s = self.cli("settings"); self.assertEqual(s["providers"]["ollama"]["label"], "Ollama (on this computer)"); self.assertEqual(s["ollama.model"], ""); self.assertEqual(s["images.provider"], "")
+        self.assertEqual(self.cli("set-key", "ollama", "--remove"), {"ok": True, "removed": True})       # set-key knows the ollama_api_key the PROVIDERS table declares
 
 
 class StepwiseUnits(unittest.TestCase):
@@ -1639,6 +1653,8 @@ class StepwiseUnits(unittest.TestCase):
         # one sentence that lists its steps with dashes / "then" gets room for them (measured on the held-out h-f, 2026-09-16: 3 steps squeezed the index step out)
         self.assertEqual(fa.plan_max_steps("Create the folder ~/Ladder/pack, write two files inside it — a.txt containing apple and b.txt containing banana — then list the names into ~/Ladder/pack/index.txt, one per line."), 5)
         self.assertEqual(fa.plan_max_steps("Make ~/a; then make ~/b; then make ~/c; then make ~/d; finally list them"), fa.PLAN_MAX_STEPS)
+        # a semicolon is a sentence break, counted once (reviewed 2026-09-16: it was also a clause break, so two clauses got room for 6 steps)
+        self.assertEqual(fa.plan_max_steps("Make ~/a; then make ~/b"), 5); self.assertEqual(fa.plan_max_steps("Copy a to b; list them."), 4)
         web = [{"tool": "run_shell", "goal": "web_fetch 'https://example.com/api/grand_total'"}, {"tool": "save_result", "goal": "save the api answer"}]
         self.assertIn("every step uses the web", fa.plan_reject_reason("Add the amount column of /tmp/a.csv and /tmp/b.csv into ~/total.txt", web))
         self.assertIsNone(fa.plan_reject_reason("Fetch https://example.com/api and save it", web))                                    # the task names a URL
@@ -1970,6 +1986,15 @@ class Images(unittest.TestCase):
         # automatic choice: a Claude user with an OpenAI key stored draws through OpenAI; images.provider=gemini without a Gemini key names the missing key
         self.st.set_setting("provider", "claude"); fa.set_secret("openai_api_key", "sk")
         self.assertEqual(fa.image_provider(self.st)[0], "openai"); self.assertTrue(fa.image_capability(self.st)["ready"]); self.assertIn("cannot generate images; using the OpenAI key", fa.image_capability(self.st)["detail"])
+        real_get, reads = fa.get_secret, []
+        fa.get_secret = lambda name: reads.append(name) or None                  # the key exists on disk but cannot be decrypted right now
+        try:
+            self.assertTrue(fa.image_capability(self.st)["ready"]); self.assertEqual(reads, [])        # /status polls this: a stat (has_secret), never systemd-creds
+            with self.assertRaises(RuntimeError) as cm:
+                self.tools.t_generate_image(1, {"prompt": "a cat"})
+            self.assertIn("could not be read", str(cm.exception)); self.assertEqual(reads, ["openai_api_key"]); self.assertIsNotNone(fa.image_config_error({"error": "RuntimeError: " + str(cm.exception)}))
+        finally:
+            fa.get_secret = real_get
         self.st.set_setting("images.provider", "gemini")
         with self.assertRaises(RuntimeError) as cm:
             self.tools.t_generate_image(1, {"prompt": "a cat"})
@@ -2001,6 +2026,19 @@ class Images(unittest.TestCase):
             self.tools.t_generate_image(1, {"prompt": "x"})
         self.assertIn("cannot reach the local image endpoint", str(cm.exception))
 
+    def test_save_images_moves_on_when_the_name_is_taken(self):
+        folder = self.folder(); os.makedirs(folder); day = time.strftime("%Y-%m-%d")
+        for n in ("-1.png", "-1-2.png"):
+            with open(os.path.join(folder, day + "-a-cat" + n), "wb") as f:
+                f.write(b"taken")
+        out = fa.save_images([tiny_png(), tiny_png()], "a cat", (2, 3))
+        self.assertTrue(out[0]["path"].endswith(day + "-a-cat-1-3.png"), out); self.assertTrue(out[1]["path"].endswith(day + "-a-cat-2.png"), out)
+        for n in ("-1.png", "-1-2.png"):
+            with open(os.path.join(folder, day + "-a-cat" + n), "rb") as f:
+                self.assertEqual(f.read(), b"taken")
+        with open(out[0]["path"], "rb") as f:
+            self.assertEqual(fa.png_size(f.read()), (2, 3))
+
     def test_image_helpers_and_the_tool_contract(self):
         self.assertEqual(fa.classify("generate_image", {"prompt": "x"}), ("MEDIUM", "creates an image file"))
         self.assertEqual(fa.narration_for("generate_image", {}), "Generating the image now."); self.assertEqual(fa.narration_done_for("generate_image", {}, {}), "Done, the image is saved in Pictures.")
@@ -2010,10 +2048,37 @@ class Images(unittest.TestCase):
         self.assertEqual(fa.image_size("1536x1024"), (1536, 1024)); self.assertEqual(fa.image_size("nonsense"), (1024, 1024)); self.assertEqual(fa.image_size("10x10"), (1024, 1024)); self.assertEqual(fa.image_size("512 X 768"), (512, 768))
         self.assertEqual(fa.image_slug("Draw a Cat!! on the moon"), "draw-a-cat-on-the-moon"); self.assertEqual(fa.image_slug("!!!"), "image"); self.assertLessEqual(len(fa.image_slug("word " * 30)), 40)
         self.assertEqual(fa.png_size(tiny_png(5, 7)), (5, 7)); self.assertIsNone(fa.png_size(b"\xff\xd8\xffJFIF")); self.assertEqual(fa.image_ext(b"\xff\xd8\xff\xe0"), ".jpg"); self.assertEqual(fa.image_ext(tiny_png()), ".png")
-        for t in ("draw a cat", "Draw a simple picture of a blue circle and tell me where you saved it", "make me a logo for my bakery", "generate a wallpaper of mountains", "create a picture of a dog", "I want a poster for the fest"):
+        for t in ("draw a cat", "Draw a simple picture of a blue circle and tell me where you saved it", "make me a logo for my bakery", "generate a wallpaper of mountains", "create a picture of a dog", "I want a poster for the fest",
+                  "make a cute cat picture", "I need a new wallpaper", "generate 3 pictures of cats", "create icons for the app", "design a banner for the fest", "render an illustration of a fox",
+                  "Generate a 1920x1080 mountain wallpaper", "sketch a bicycle", "make a picture of the folder icon"):
             self.assertTrue(fa.IMAGE_RE.search(t.lower()), t)
-        for t in ("open the picture folder", "take a screenshot", "copy the image files to ~/x", "draw up a plan", "count the images in ~/Pictures", "write a note saying hi", "make an image viewer", "change my wallpaper to ~/Pictures/x.jpg"):
+        # ordinary file tasks that name pictures must NOT match (reviewed 2026-09-16: the old 40-character gap between verb and noun matched the
+        # first eight and the stepwise plan got a generate_image step in front of the user's real task)
+        for t in ("create a folder named pictures in my home", "make a list of the images in ~/Pictures into ~/list.txt", "create a folder called icons under ~/Documents",
+                  "make a folder for my posters", "generate a report of the photos taken this month", "give me the number of pictures in ~/Pictures",
+                  "produce a list of the images in the folder", "create an icon-sized thumbnail of ~/a.png", "make a backup of my pictures", "give me the pictures in ~/Pictures",
+                  "create a copy of the logo file", "make the logo bigger",
+                  "open the picture folder", "take a screenshot", "copy the image files to ~/x", "draw up a plan", "count the images in ~/Pictures", "write a note saying hi", "make an image viewer", "change my wallpaper to ~/Pictures/x.jpg"):
             self.assertFalse(fa.IMAGE_RE.search(t.lower()), t)
+        for req in ("create a folder named pictures in my home", "Make a list of the images in ~/Pictures into ~/list.txt"):     # and plan_sanity leaves their plans alone
+            plan = [{"tool": "run_shell", "goal": "mkdir -p ~/pictures"}, {"tool": "reply", "goal": "say so"}]
+            self.assertEqual(fa.plan_sanity(req, plan), []); self.assertEqual([x["tool"] for x in plan], ["run_shell", "reply"])
+        # no image provider configured (images_ready=False): a generate_image step goes in only when the plan itself draws — then it fails once
+        # with the friendly error instead of painting with shell tools; a plan that does not draw is left as planned, with a note
+        plan = [{"tool": "run_shell", "goal": "convert -size 100x100 xc:blue ~/circle.png"}]
+        notes = fa.plan_sanity("draw a blue circle", plan, images_ready=False)
+        self.assertEqual([x["tool"] for x in plan], ["generate_image"]); self.assertTrue(any("no image provider is configured" in n for n in notes), notes)
+        plan = [{"tool": "reply", "goal": "explain that I cannot draw"}]
+        notes = fa.plan_sanity("draw a blue circle", plan, images_ready=False)
+        self.assertEqual([x["tool"] for x in plan], ["reply"]); self.assertEqual(len(notes), 1); self.assertIn("left as planned", notes[0])
+        plan = [{"tool": "reply", "goal": "explain"}]
+        fa.plan_sanity("draw a blue circle", plan, images_ready=True); self.assertEqual([x["tool"] for x in plan], ["generate_image", "reply"])
+        # a configuration failure of the tool (no provider / no key / rejected key) is what the driver stops on; a provider outage is not
+        self.assertEqual(fa.image_config_error({"error": "RuntimeError: " + fa.IMAGE_NO_PROVIDER}), fa.IMAGE_NO_PROVIDER)
+        self.assertEqual(fa.image_config_error({"error": "RuntimeError: images.provider is gemini but no Gemini key is stored: add it in Settings"}), "images.provider is gemini but no Gemini key is stored: add it in Settings")
+        self.assertEqual(fa.image_config_error({"error": "ImageHTTPError: the OpenAI image API rejected the key (HTTP 401): bad key"}), "the OpenAI image API rejected the key (HTTP 401): bad key")
+        self.assertTrue(fa.image_config_error({"error": "RuntimeError: %s: the OpenAI image API may not reach api.openai.com. Allowed hosts: x." % fa.MANAGED_MSG}).startswith(fa.MANAGED_MSG))
+        self.assertIsNone(fa.image_config_error({"error": "ImageHTTPError: the OpenAI image API error HTTP 500: busy"})); self.assertIsNone(fa.image_config_error({"path": "/x"})); self.assertIsNone(fa.image_config_error(None))
         # the stepwise pieces: plan_sanity turns a drawing command into a generate_image step, step_check wants the file, render_result names it
         plan = [{"tool": "run_shell", "goal": "draw a blue circle with ImageMagick convert into ~/circle.png"}, {"tool": "reply", "goal": "say where it is"}]
         notes = fa.plan_sanity("Draw a simple picture of a blue circle and tell me where you saved it", plan)
@@ -2185,6 +2250,20 @@ class Ollama(unittest.TestCase):
                 shutil.which = real_which
             self.assertEqual(st, 200); self.assertTrue(r["ok"], r); self.assertEqual(ran, [(fa.OLLAMA_INSTALL_CMD, fa.OLLAMA_INSTALL_TIMEOUT)])
             kinds = [e["kind"] for e in self.st.all("SELECT kind FROM activity ORDER BY id")]; self.assertIn("ollama_install_requested", kinds); self.assertIn("ollama_install_done", kinds)
+            # a managed computer: hosts_allowed without ollama.com, or cloud_allowed=false, refuses the root download (403, nothing runs, audited);
+            # hosts_allowed that lists ollama.com lets it through
+            del ran[:]; old_policy = fa.POLICY.data
+            try:
+                for data in ({"hosts_allowed": ["example.com"]}, {"cloud_allowed": False}):
+                    fa.POLICY.data = data
+                    st, r = call("POST", "/providers/ollama/install", {"confirm": True, "force": True}); self.assertEqual(st, 403, r)
+                    self.assertTrue(r["error"].startswith(fa.MANAGED_MSG), r); self.assertFalse(r["ok"]); self.assertEqual(r["command"], fa.OLLAMA_INSTALL_CMD)
+                self.assertEqual(ran, [])
+                fa.POLICY.data = {"hosts_allowed": ["ollama.com", "example.com"]}
+                st, r = call("POST", "/providers/ollama/install", {"confirm": True, "force": True}); self.assertEqual(st, 200, r); self.assertEqual(len(ran), 1)
+            finally:
+                fa.POLICY.data = old_policy
+            kinds = [e["kind"] for e in self.st.all("SELECT kind FROM activity ORDER BY id")]; self.assertEqual(kinds.count("ollama_install_refused"), 2)
         finally:
             srv.shutdown(); srv.server_close()
 
@@ -2586,6 +2665,14 @@ class PolicyDaemon(unittest.TestCase):
         r = self.cli("do", "--mode", "auto", "fetch https://fabos.patienceai.in/docs/"); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
         out = json.loads([s for s in t["steps"] if s["name"] == "web_fetch"][0]["output"])
         self.assertIn(fa.MANAGED_MSG, out["error"]); self.assertIn("web_fetch may not reach fabos.patienceai.in", out["error"]); self.assertIn("Allowed hosts: example.com", out["error"])
+
+    def test_05b_ollama_installer_is_refused_by_the_host_policy(self):
+        """The installer is a root download from ollama.com: hosts_allowed=[example.com] refuses it over the API (403, audited, nothing runs)
+        and `fabos ollama install --yes` exits 1 with the policy's own sentence."""
+        r = self.cli("ollama", "install", "--yes", "--force"); self.assertEqual(r.get("http"), 403, r); self.assertIn(fa.MANAGED_MSG, r["error"]); self.assertIn("ollama.com", r["error"])
+        h = subprocess.run([sys.executable, CLI, "ollama", "install", "--yes", "--force"], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(h.returncode, 1, h.stdout + h.stderr); self.assertIn(fa.MANAGED_MSG, h.stderr); self.assertIn("Allowed hosts: example.com", h.stderr)
+        kinds = [e["kind"] for e in self.cli("log")]; self.assertIn("ollama_install_refused", kinds); self.assertNotIn("ollama_install_requested", kinds)
 
     def test_06_audit_export_goes_to_the_policy_dir(self):
         e = self.cli("audit", "export", "--since", "1h"); self.assertTrue(e["path"].startswith(os.path.join(self.tmp, "audit-out"))); self.assertGreater(e["rows"], 0); self.assertTrue(e["verify"]["ok"])

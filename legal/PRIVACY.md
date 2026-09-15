@@ -26,7 +26,9 @@
   that provider differs from the chat provider, the step's result names it
   and `/status` says so in advance. The picture is written to
   `~/Pictures/Fab OS/` on this computer and is never uploaded anywhere; the
-  activity log records provider, model, size and path, never the prompt.
+  activity log records provider, model, size and the file path — whose name
+  is derived from the first 40 characters of the prompt — but not the prompt
+  itself.
   Providers without an image API (Claude, DeepSeek, the built-in model) send
   nothing: the agent says that it cannot draw.
 - Ollama (ADR-0022) is the user's own installation, never bundled or

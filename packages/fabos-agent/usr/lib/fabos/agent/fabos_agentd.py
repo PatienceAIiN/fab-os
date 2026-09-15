@@ -1410,12 +1410,12 @@ FINISH_SYSTEM = ("You write the closing message of the {app} agent to the user: 
                  "and where the outputs are. Only facts from the step results below; never invent, never add offers or questions.")
 
 
-PLAN_CLAUSE_RE = re.compile(r"\s[—–]\s|;|,?\s(then|after that|afterwards|finally)\s", re.I)
+PLAN_CLAUSE_RE = re.compile(r"\s[—–]\s|,?\s(then|after that|afterwards|finally)\s", re.I)     # ';' is a sentence break below, not counted twice
 
 
 def plan_max_steps(request):
-    """How many steps a plan for this request may have: two more than the request has sentences plus its explicit clause breaks (an
-    em dash, a semicolon, "then", "finally"), at least 3, at most PLAN_MAX_STEPS — enforced through the JSON schema, so a one-line
+    """How many steps a plan for this request may have: two more than the request has sentences (split at . ! ? ;) plus its explicit
+    clause breaks (an em dash, "then", "finally"), at least 3, at most PLAN_MAX_STEPS — enforced through the JSON schema, so a one-line
     task cannot come back as a seven-step story (measured), while a one-sentence task that lists four things is not squeezed into three."""
     text = " ".join((request or "").split())
     n = len([s for s in re.split(r"[.!?;]+\s", text) if s.strip()])
@@ -1615,10 +1615,21 @@ OPEN_WORDS_RE = re.compile(r"\b(open|opens|typ(e|es|ed|ing)|window|editor|termin
 COMPOSE_RE = re.compile(r"\b(write|writes|writing|compose|composes|composing|draft|drafts|drafting|pen|jot down)\b(?:(?!\binto\b)[^.;]){0,60}?"
                         r"\b(note|notes|letter|letters|mail|e-?mail|message|memo|document|essay|poem|story|paragraph|summary|report|reply|body|code|script|program)\b")
 SAVE_VERBATIM_RE = re.compile(r"\b(unchanged|exactly as|as[- ]is|verbatim|without (any )?changes?|what (it|you) (got|returned|fetched)|the (json|text|body|output) you get)\b")
-# An image request (ADR-0021): a drawing verb, or a make/create verb together with an image noun. "Take a screenshot" and "open the
-# picture" are not requests to generate one; "make an image of", "a picture of", "draw", "wallpaper" are.
-IMAGE_RE = re.compile(r"\b(draw|sketch|paint|illustrate)\b(?!\s+(up|out)\b)|\b(generate|make|create|design|render|produce|give me|i (want|need))\b[^.;]{0,40}?\b(an? |the |some |\d+ )?(image|images|picture|pictures|photo|photos|drawing|drawings|logo|logos|poster|posters|wallpaper|wallpapers|illustration|illustrations|icon|icons|banner|artwork|sticker)s?\b(?!\s+(file|files|folder|viewer|of the (folder|directory)))"
-                      r"|\b(a|an|the) (picture|image|drawing|illustration|photo) of\b")
+# An image request (ADR-0021): a drawing verb, or a make/create verb whose DIRECT OBJECT is an image noun — the verb, an optional
+# "me", an optional article or count, at most three plain modifier words ("a cute cat picture", "a 1920x1080 wallpaper"), then the
+# noun. No free gap between verb and noun (reviewed 2026-09-16: "create a folder named pictures", "make a list of the images",
+# "give me the number of pictures", "generate a report of the photos" all matched and the stepwise plan got a generate_image step
+# in front of the user's real task). A modifier that names a container or a measure (folder, list, number, count, report, thumbnail,
+# copy, backup, "of", "in", "for") ends the match; so does a noun used as a compound ("icon-sized"), followed by file/folder/viewer/
+# named/called/from/under/inside, by a location ("the pictures in ~/Pictures"), or by an edit adjective ("make the logo bigger").
+# "Take a screenshot" and "open the picture folder" are not requests to generate one; "make an image of", "a picture of", "draw" are.
+IMAGE_NOUN_RE = r"(image|picture|photo|drawing|logo|poster|wallpaper|illustration|icon|banner|artwork|sticker)"
+IMAGE_RE = re.compile(r"\b(draw|sketch|paint|illustrate)\b(?!\s+(up|out)\b)"
+                      r"|\b(generate|make|create|design|render|produce|give me|i (want|need))\b\s+(me\s+)?(an?\s+|the\s+|some\s+|\d+\s+)?"
+                      r"(?:(?!\b(folders?|lists?|numbers?|counts?|reports?|thumbnails?|copy|copies|backups?|viewers?|of|in|for|from|to|into|named|called)\b)[\w-]+\s+){0,3}"
+                      + IMAGE_NOUN_RE + r"s?\b(?!-)(?!\s+(files?|folders?|viewers?|named|called|from|under|inside|in\s+(~|/|(the\s+folder|my)\b)"
+                      r"|bigger|smaller|larger|wider|taller|transparent|brighter|darker|sharper|blurr\w*|gr[ae]yscale|round\b))"
+                      r"|\b(a|an|the) (picture|image|drawing|illustration|photo) of\b", re.I)
 # The desktop's brand names -> the executable open_app must start. When the task names exactly one of them, an open_app step
 # that starts something else is a failed step (measured: "Open the Fab Terminal" opened dolphin).
 APP_NAMES = {"konsole": ("fab terminal", "terminal", "konsole"), "kate": ("fab editor", "text editor", "kate"),
@@ -1739,10 +1750,11 @@ def plan_reject_reason(request, plan):
     return None
 
 
-def plan_sanity(request, plan):
+def plan_sanity(request, plan, images_ready=True):
     """Deterministic repairs of a parsed plan from the product rules, returned as notes. Show your work (owner's rule): when the
     user asks to TYPE something and the plan opens an application, a type_text step must follow the open_app step — the small
-    model regularly plans the open_app and forgets the typing."""
+    model regularly plans the open_app and forgets the typing. images_ready: image_capability(store)["ready"] — with no image
+    provider configured a generate_image step is only put in when the plan itself tries to draw (see the image block)."""
     notes = []
     low = " ".join((request or "").lower().split())
     # A step that repeats an earlier step's goal word for word does nothing new (measured: "copy the folder A to B" planned as
@@ -1808,17 +1820,23 @@ def plan_sanity(request, plan):
                 notes.append("step %d saves the fetched text with save_result instead of retyping it: the task says to keep it unchanged" % (i + 1))
     # An image request is ONE generate_image step (ADR-0021): the small model plans `convert`/`python3 -c PIL` drawings instead, or a
     # write_file of an SVG. Such steps go; a generate_image step is put first when the plan has none. Never empties the plan.
+    # When no image provider is configured (images_ready=False) the step is only put in when the plan itself tries to draw — the
+    # model and the word list then agree it is an image, and the step fails once with the friendly "add a key" error instead of
+    # painting with shell tools; a plan without a drawing step is left alone, so a word-list misfire cannot sink an unrelated task.
     if IMAGE_RE.search(low):
         tools = [s["tool"] for s in plan]
         if "generate_image" not in tools:
             drawing = [s for s in plan if s["tool"] in ("run_shell", "write_file", "save_result", "open_app", "type_text")
                        and re.search(r"\b(draw|paint|render|convert|magick|pil|pillow|svg|png|jpe?g|image|picture|circle|logo|poster|wallpaper|icon|canvas)\b", s["goal"].lower())]
-            keep = [s for s in plan if s not in drawing]
-            if drawing:
-                notes.append("dropped %d step(s) that would draw with commands or files: an image is made with generate_image" % len(drawing))
-            keep.insert(0, {"tool": "generate_image", "goal": "generate the image the user described: %s" % " ".join(request.split())[:160]})
-            plan[:] = keep[:PLAN_MAX_STEPS]
-            notes.append("added a generate_image step first: the task asks for an image")
+            if drawing or images_ready:
+                keep = [s for s in plan if s not in drawing]
+                if drawing:
+                    notes.append("dropped %d step(s) that would draw with commands or files: an image is made with generate_image" % len(drawing))
+                keep.insert(0, {"tool": "generate_image", "goal": "generate the image the user described: %s" % " ".join(request.split())[:160]})
+                plan[:] = keep[:PLAN_MAX_STEPS]
+                notes.append("added a generate_image step first: the task asks for an image%s" % ("" if images_ready else " (no image provider is configured: the step will say what to add)"))
+            else:
+                notes.append("the task reads like an image request but no image provider is configured and the plan does not draw: left as planned")
     # The task asks for an answer (a count, a question, "end your reply with ...") and the plan never replies: add the reply step.
     if ANSWER_RE.search(low) and "reply" not in [s["tool"] for s in plan] and len(plan) < PLAN_MAX_STEPS:
         plan.append({"tool": "reply", "goal": "answer the user in exactly the form the task asks, using the results above"})
@@ -2898,7 +2916,7 @@ class Agent:
             if plan and plan_reject_reason(request, plan):
                 why, plan = plan_reject_reason(request, plan), None
             if plan:
-                for note in plan_sanity(request, plan):
+                for note in plan_sanity(request, plan, image_capability(self.store)["ready"]):
                     self.store.step(tid, "verify", "plan", "", note)
                 self.store.step(tid, "assistant", prov.name, "", "Plan:\n" + "\n".join("%d. [%s] %s" % (i + 1, s["tool"], s["goal"]) for i, s in enumerate(plan)))
                 return plan
@@ -3020,6 +3038,12 @@ class Agent:
                     last_output = {"raw": raw, "from": "step %d (%s)" % (idx + 1, c["name"])}
                 ok, detail = step_check(c["name"], inp, out, err)
                 goal_only = False
+                if not ok and c["name"] == "generate_image" and err and image_config_error(out):
+                    # No provider, no key, or a rejected key: nothing the model can change on a retry. The task ends with the tool's own
+                    # sentence (ADR-0021 §5: "say exactly that and stop"), not with three identical attempts and "could not be completed".
+                    msg = image_config_error(out)
+                    self.store.step(tid, "verify", "generate_image", step["goal"][:300], "failed: " + msg + "; not retried — a setting, not the model, has to change")
+                    raise RuntimeError(msg)
                 if ok and c["name"] == "open_app":
                     want = expected_app(request)
                     got = os.path.basename(str(inp.get("app") or "").split()[0]) if inp.get("app") else ""
@@ -3872,6 +3896,18 @@ IMAGE_TIMEOUT = 180
 IMAGE_SIZE_RE = re.compile(r"^\s*(\d{2,4})\s*[xX×]\s*(\d{2,4})\s*$")
 IMAGE_DEFAULT_SIZE = (1024, 1024)
 IMAGE_NO_PROVIDER = "This provider cannot generate images; add an OpenAI or Gemini key in Settings, or a local image endpoint"
+IMAGE_KEY_UNREADABLE = "the stored secret exists but could not be decrypted"
+# A generate_image failure the model cannot repair by trying again: no provider / no key / a wrong setting / a rejected key. The
+# stepwise driver ends the task with this sentence instead of spending its retries (the text is the tool's own error, type prefix off).
+IMAGE_CONFIG_ERR_RE = re.compile(r"cannot generate images|images\.provider (is|must be)|images\.local_endpoint is empty|rejected the key|could not be read|" + re.escape(MANAGED_MSG))
+
+
+def image_config_error(out):
+    """The tool's error sentence when a generate_image result is a configuration failure (see IMAGE_CONFIG_ERR_RE), else None."""
+    err = str((out or {}).get("error") or "") if isinstance(out, dict) else ""
+    if not err or not IMAGE_CONFIG_ERR_RE.search(err):
+        return None
+    return re.sub(r"^\w*(Error|Exception)\w*: ", "", err, count=1).strip()
 IMAGE_MODELS = {"openai": "gpt-image-1", "openai_fallback": "dall-e-3", "gemini": "gemini-2.5-flash-image"}
 IMAGE_SETTINGS = {"images.provider": "", "images.local_endpoint": "", "images.local_model": "", "images.openai_model": IMAGE_MODELS["openai"], "images.gemini_model": IMAGE_MODELS["gemini"]}
 IMAGE_PROVIDER_CHOICES = ("", "auto", "openai", "gemini", "local")
@@ -3947,12 +3983,14 @@ def image_provider(store):
     endpoint = (store.setting("images.local_endpoint", "") or "").strip()
 
     def ok(kind):
+        # has_secret, not get_secret: whether a key EXISTS is all the capability needs, and /status asks every few seconds (get_secret
+        # spawns systemd-creds); the key itself is read once, in generate_images
         if not POLICY.provider_allowed(kind):
             return False
         if kind == "openai":
-            return bool(get_secret("openai_api_key"))
+            return has_secret("openai_api_key")
         if kind == "gemini":
-            return bool(get_secret("gemini_api_key"))
+            return has_secret("gemini_api_key")
         if kind == "local":
             return bool(endpoint)
         return kind == "fake"
@@ -4126,12 +4164,16 @@ def generate_images(store, prompt, size, n):
         raise RuntimeError(detail)
     if kind == "fake":
         model, blobs = fake_images(prompt, size, n)
-    elif kind == "openai":
-        model, blobs = openai_images(store.setting("openai.base_url", PROVIDERS["openai"]["base_url"]), get_secret("openai_api_key"),
-                                     (store.setting("images.openai_model") or IMAGE_MODELS["openai"]).strip(), prompt, size, n)
-    elif kind == "gemini":
-        model, blobs = gemini_images(store.setting("gemini.base_url", PROVIDERS["gemini"]["base_url"]), get_secret("gemini_api_key"),
-                                     (store.setting("images.gemini_model") or IMAGE_MODELS["gemini"]).strip(), prompt, size, n)
+    elif kind in IMAGE_PROVIDERS:
+        key = get_secret(kind + "_api_key")                      # read here, once per picture — never in the capability probe
+        if not key:
+            raise RuntimeError("the %s key could not be read (%s); add it again in Settings" % (PROVIDERS[kind]["label"], IMAGE_KEY_UNREADABLE))
+        if kind == "openai":
+            model, blobs = openai_images(store.setting("openai.base_url", PROVIDERS["openai"]["base_url"]), key,
+                                         (store.setting("images.openai_model") or IMAGE_MODELS["openai"]).strip(), prompt, size, n)
+        else:
+            model, blobs = gemini_images(store.setting("gemini.base_url", PROVIDERS["gemini"]["base_url"]), key,
+                                         (store.setting("images.gemini_model") or IMAGE_MODELS["gemini"]).strip(), prompt, size, n)
     else:
         model, blobs = local_images(store.setting("images.local_endpoint", ""), get_secret("local_api_key"), (store.setting("images.local_model") or "").strip(), prompt, size, n)
     blobs = [b for b in blobs if b]
@@ -4152,10 +4194,13 @@ def save_images(blobs, prompt, size):
         base = "%s-%s-%d" % (day, slug, i)
         path = os.path.join(folder, base + ext)
         k = 2
-        while os.path.exists(path):
-            path = os.path.join(folder, "%s-%d%s" % (base, k, ext))
-            k += 1
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        while True:                                           # O_EXCL decides, not a stat: two tasks saving the same slug at once both get a file
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                break
+            except FileExistsError:
+                path = os.path.join(folder, "%s-%d%s" % (base, k, ext))
+                k += 1
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         wh = png_size(data) or size
@@ -4495,6 +4540,19 @@ def make_handler(store, agent, token):
                     return self._send(400, {"ok": False, "error": "confirm=true is required; the command that would run: " + OLLAMA_INSTALL_CMD, "command": OLLAMA_INSTALL_CMD})
                 if shutil.which("ollama") and not b.get("force"):
                     return self._send(200, {"ok": True, "already_installed": True, "path": shutil.which("ollama"), "detail": "ollama is already installed; the installer also upgrades — pass force=true to run it again"})
+                # A managed computer: the installer is a root download from ollama.com — the same host policy every other outbound
+                # endpoint gets (require_host), and with cloud_allowed=false no download from the internet at all.
+                refused = None
+                if not POLICY.cloud_allowed():
+                    refused = "%s: downloading the Ollama installer is not allowed (cloud_allowed is false)" % MANAGED_MSG
+                else:
+                    try:
+                        POLICY.require_host("ollama.com", "the Ollama installer")
+                    except RuntimeError as e:
+                        refused = str(e)
+                if refused:
+                    store.activity("user", "ollama_install_refused", None, refused[:300])
+                    return self._send(403, {"ok": False, "error": refused, "command": OLLAMA_INSTALL_CMD})
                 store.activity("user", "ollama_install_requested", None, OLLAMA_INSTALL_CMD)
                 out = agent.tools.run_as_root(None, OLLAMA_INSTALL_CMD, HOME, OLLAMA_INSTALL_TIMEOUT)
                 ok = not out.get("error") and out.get("exit_code") == 0
