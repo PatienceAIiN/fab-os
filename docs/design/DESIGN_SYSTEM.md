@@ -197,111 +197,190 @@ text with an action row) with Fab OS tokens.
 
 ## Top bar & dock
 
-Two Fab OS plasmoids in `packages/fabos-desktop/usr/share/plasma/plasmoids/` replace the stock status icons and the
-icons-only task manager; the look-and-feel layout (`…/contents/layouts/org.kde.plasma.desktop-layout.js`) places them.
-Both follow the system colour scheme through `Kirigami.Theme` (no literal colours), use Inter, the FabOS monochrome
-status glyphs (`brand/gen/make_assets.py` MONO_MAP, recoloured by the icon loader) and the motion tokens
-(160–320 ms OutCubic; every animation is a `Behavior` that idles at rest — no timers, no shaders).
+Three Fab OS plasmoids in `packages/fabos-desktop/usr/share/plasma/plasmoids/` — quick settings, clock, dock — replace
+the stock status icons, the stock digital clock and the icons-only task manager; the look-and-feel layout
+(`…/contents/layouts/org.kde.plasma.desktop-layout.js`) places them. All follow the system colour scheme through
+`Kirigami.Theme` (no literal colours), use Inter, the FabOS monochrome status glyphs (`brand/gen/make_assets.py`
+MONO_MAP, recoloured by the icon loader) and the motion tokens (160–320 ms OutCubic; every animation is a `Behavior` or
+a bounded run that idles at rest — no timers driving frames, no shaders).
+
+### One size for everything in the bar
+
+`barSize` (small / medium / large) is **one setting owned by the quick-settings applet** ("Bar" page): glyphs 16 / 18 /
+22 px, indicator text 11 / 12 / 13 px, battery percentage and the clock 12 / 13 / 15 px (Inter 700). The layout writes
+the same value into both applets at first login (`quick.writeConfig("barSize", …)`, `clock.writeConfig("barSize", …)`).
+Because one applet cannot write another's `Plasmoid.configuration` from QML, a later change runs plasmashell's own
+scripting API over D-Bus — `qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript '…'`
+(`status.js: syncScript`: `panels()[i].widgets("in.patienceai.fabos.clock")[j].writeConfig("barSize", …)`, plus the
+dock's `magnify`) — the mechanism actually implemented; there is no shared file. The clock's own page only reports the
+size and points to the quick-settings page. (An `evaluateScript` write lands in the applet's config and its
+`Plasmoid.configuration` binding updates live; the harness asserts the queued command, the VM run the effect.)
+
+### Clock (`in.patienceai.fabos.clock`, top bar, centre)
+
+One `Text`: `Qt.formatDate(now, "ddd d MMM") + " · " + time` → "Mon 15 Sep · 10:47", Inter 700 at the bar size's px,
+`Text.NativeRendering`. The time is the region's short format **without seconds** (the C locale's short format carries
+`:ss`; `autoTimeFormat` strips it), or 24 h / 12 h from the clock's page; the date format is a Qt format string
+(default `ddd d MMM`, off = time only). It ticks once per minute *on the minute* (the timer is re-armed to the next
+boundary; no 1 Hz work). Click opens a month view (`org.kde.plasma.workspace.calendar` MonthView, the stock clock's own
+component) in a 22 × 21 gridUnit dialog; the tooltip is the long date and time.
 
 ### Quick settings (`in.patienceai.fabos.quicksettings`, top bar, right corner)
 
-- **Indicator group** (one applet, one hit area): network glyph by signal level (`network-wireless-signal-{excellent,good,ok,weak,none}[-locked]`,
-  `network-wired`, `network-wireless-off`) with the live rate beside it (`↓ 1.2 MB/s  ↑ 80 kB/s`, hidden after 10 s at
-  zero), Bluetooth glyph while the adapter is on, volume glyph while muted or for 3 s after a change (wheel over it
-  changes the volume), battery glyph **with the percentage in the clock's Inter size**, and the bell with an unread
-  badge (crossed while Do Not Disturb). Hovering an indicator scales its **glyph** to 1.25 (160 ms OutCubic) when
-  "Magnify on hover" is on — the text and the indicator's layout width stay put, so the speed / percentage text never
-  grows into a neighbour and the bar never re-flows. Tooltip: network · battery · volume lines.
-- **Slide-down pane**: one `PlasmaCore.Dialog` (type AppletPopup, FabOS dialog background — the top edge sits on the
-  bar, the bottom corners keep radius 24), `Kirigami.Units.gridUnit × 21` wide. Its height animates 0 → content in
-  240 ms OutCubic while the content fades in; switching between the two panes animates the height the same way; closing
-  shrinks back (260 ms). Click-away closes it (`hideOnWindowDeactivate`).
-  - *Settings pane*: 2-up **tiles** (radius 14, text-colour @ 8 % tint, accent fill while on): Wi-Fi (on/off + SSID ·
-    signal, chevron → the stock network applet), Bluetooth (on/off + connected count, chevron → stock applet); rows:
-    volume slider + mute + chevron (stock volume applet), brightness slider (only with a backlight; disabled with a
-    tooltip when powerdevil's `org.kde.ScreenBrightness` service is absent), battery (percentage · time, power-profile
-    chips power-saver / balanced / performance, chevron → stock battery applet), network (interface · IP, ↓ / ↑);
-    2-up tiles Notifications (count → the history pane) and Do Not Disturb (toggle); footer: System Settings gear,
-    "Bar: Medium" and a chevron to this applet's own settings page.
-  - *Notifications pane* (the bell): header with count, Do Not Disturb, Clear history, Notification settings
-    (`kcmshell6 kcm_notifications`); the history as rows (app icon, summary, two body lines, app · time ago, dismiss on
-    hover; click runs the default action; jobs show their percentage); a banner while Do Not Disturb holds popups;
-    "No notifications" when empty. Opening the pane marks everything read. The dismiss cross stays reachable: the
-    row's hover area spans the whole row and the cross is shown while *either* the row or the cross itself is hovered
-    (`SmallButton.hovered`), because a hovered `MouseArea` takes the hover from the row area beneath it.
-- **Data**: `contents/code/status.sh` (nmcli, bluetoothctl, wpctl, sysfs battery + backlight, upower time estimate,
-  powerprofilesctl; each call under `timeout 4`) through the Plasma5Support executable engine every 10 s (setting) and
-  400 ms after each action; `/proc/net/route` + `/proc/net/dev` every 2 s for the rate of the default-route interface.
-  Parsing lives in `contents/ui/status.js` (pure, tested by `node tests/quicksettings-js-test.js`).
+- **Indicator group** (one applet, one hit area): network glyph by signal level, the live rate beside it
+  (`↓ 1.2 MB/s  ↑ 80 kB/s`; **always shown while a link is up, `0 kB/s` when idle, hidden only without a link** — kB/s
+  is the floor unit, never `B/s` jitter), Bluetooth glyph while the adapter is on, volume glyph while muted or for 3 s
+  after a change (wheel over it changes the volume), battery glyph **with the percentage in the clock's size**, and the
+  bell with an unread badge (crossed while Do Not Disturb). Hovering an indicator scales its **glyph** to 1.25 (160 ms
+  OutCubic) when "Magnify on hover" is on — the text and the indicator's layout width stay put, so the bar never
+  re-flows. Tooltip: network · battery · volume lines.
+- **Accurate Wi-Fi**: the glyph follows NetworkManager's own reading, not the kernel's link quality:
+  `nmcli -t -f ACTIVE,SIGNAL dev wifi list --rescan no` (the `yes:` line; 14–17 ms measured on the dev host, so it
+  runs with every 5 s light probe while a wireless interface is up — `--rescan no`, never a scan) and
+  `nmcli -t -f DEVICE,TYPE,STATE,CONNECTION dev status` for the connection type. Signal 0–100 → five glyphs:
+  `excellent ≥ 80`, `good ≥ 55`, `ok ≥ 30`, `weak ≥ 5`, else `none` (`-locked` with security); `network-wired` when
+  only Ethernet is connected; `network-wireless-off` when every Wi-Fi device reads `unavailable` (radio off);
+  `network-wireless-connected` while associated but not yet read. Recorded nmcli output drives
+  `tests/quicksettings-js-test.js`. `/proc/net/wireless`, where a driver exposes it, is only the fallback for a script
+  older than the applet.
+- **No-blink slide-down**: the `PlasmaCore.Dialog` (type AppletPopup) is **transparent** (`backgroundHints:
+  NoBackground`) and **opens at its final size at once** — `mainItem` is bound to the card's size, which is arithmetic
+  (tile layout height + header + footer; rows × 56 for the history) and does not change while anything moves. Only the
+  **card** inside animates: `y` from −height to 0 and opacity 0 → 1 in 220 ms OutCubic; closing reverses and hides the
+  window when the animation has ended (a window whose size changes per frame is re-rasterised by the compositor every
+  frame — the "blink" the old height animation caused). The card is drawn by the applet: `Kirigami.Theme.backgroundColor`
+  @ 96 %, a 1 px hairline (text colour @ 12 %), radius 24 at the bottom corners (square at the top, against the bar), and
+  a soft shadow from a second translucent rectangle (black @ 16 %, +3 px, radius 26). Switching settings ↔ notifications
+  while open is one instant resize plus a 160 ms cross-fade; the content the card holds is kept while it closes, so
+  the window keeps one size from the first frame of the slide to the last. Proof: the harness samples
+  `Dialog.width/height` and `card.y` every 11 ms while opening and closing (24 samples each) and asserts one width, one
+  height, and a monotonic `y` through ≥ 8 distinct values. Click-away closes it (`hideOnWindowDeactivate`).
+- **Tiles you arrange** (`Plasmoid.configuration.tilesJson`, a JSON array of `{id, size, enabled}` in display order;
+  `status.js TILES / parseTiles / layoutTiles`): Wi-Fi, Bluetooth, Volume, Brightness, Battery, Network speed,
+  Notifications, Do Not Disturb, Power profile, Night light, Screenshot, Settings. `size` is **small** (half a row) or
+  **wide** (a full row); a two-column layout, small tiles pair up left to right, a wide tile takes its own row, the row
+  height is the tallest tile in it (`layoutTiles`, pure, unit-tested for geometry and non-overlap). Tiles that need
+  hardware or a daemon hide while it is absent (brightness without a backlight, battery without one, power profile
+  without power-profiles-daemon, night light unless KWin offers it) — edit mode shows them dimmed so they can still be
+  arranged. The **pencil** in the header toggles edit mode: every tile gets an accent frame, a grab handle, a size
+  toggle and a remove cross; its own controls go inert; a `DragHandler` moves it and `tileAt` (the slot under the tile's
+  centre, or the nearest within a tile height) reorders the model live so the others glide (160 ms) into their new
+  slots; the order is persisted at release. Removed tiles come back as `+ name` chips under the grid; a reset arrow
+  restores the shipped layout. The **Tiles** settings page edits the same model (checkbox, Small / Wide, up / down,
+  Reset to default); the **Bar** page holds the bar size, magnify, "show speed" and the probe cadence.
+  - Tile contents: Wi-Fi (on/off + SSID · signal %, chevron → stock network applet), Bluetooth (on/off + connected
+    count, chevron), Volume (mute · slider · % · chevron; the chevron hides when small), Brightness (powerdevil's
+    `org.kde.ScreenBrightness` through `BrightnessBridge.qml`; disabled with a tooltip when the service is absent),
+    Battery (percentage · time, power-profile chips when wide, chevron), Network speed (interface · IP · ↓ ↑),
+    Notifications (count → the history pane), Do Not Disturb (toggle), Power profile (click cycles power-saver →
+    balanced → performance; chevron → stock battery applet), Night light (toggles `kwinrc NightColor/Active` +
+    `qdbus6 org.kde.KWin /KWin reconfigure` — KWin's `inhibit()` is tied to the caller's bus connection and would end
+    with the one-shot process; chevron → `kcmshell6 kcm_nightlight`), Screenshot (`spectacle`), Settings
+    (`systemsettings`). Footer: System Settings, "Bar: Medium" and a chevron to the applet's pages.
+- **Notifications pane** (the bell): **28 gridUnits wide**, header (count, Do Not Disturb, a labelled **Clear all**
+  pill, settings → `kcmshell6 kcm_notifications`), a banner while Do Not Disturb holds popups, the history as rows of
+  **56 px minimum**: 32 px app icon, 13 px summary and body (two lines), app · time ago; click runs the default action;
+  jobs show their percentage. The list grows with its content up to **60 % of the screen**, then scrolls (a vertical
+  scroll bar shows when it overflows). The dismiss cross stays reachable: the row's hover area spans the whole row and
+  the cross is shown while *either* the row or the cross itself is hovered (`SmallButton.hovered`), because a hovered
+  `MouseArea` takes the hover from the row area beneath it; the kwin_wayland harness clicks it with a real pointer.
+  Opening the pane marks everything read.
+- **Data**: `contents/code/status.sh` (one JSON line) through the Plasma5Support executable engine — the `--light`
+  probe (kernel counters, battery, backlight + the one nmcli ACTIVE,SIGNAL call while a wireless link is up) every 5 s
+  while closed, the full probe (nmcli dev status, BlueZ over busctl, wpctl, power-profiles-daemon, KWin night light)
+  every 30 s while closed, on a link change, every 2 s while the pane is open and 400 ms after each action. Parsing is
+  `contents/ui/status.js` (pure; `node tests/quicksettings-js-test.js`).
 - **Actions**: `nmcli radio wifi on|off`, `bluetoothctl power on|off`, `wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.NN`
   (slider drags coalesced to one call per 120 ms), `wpctl set-mute … toggle`, `powerprofilesctl set …`, brightness
-  through powerdevil's D-Bus service via `org.kde.plasma.private.brightnesscontrolplugin` (`BrightnessBridge.qml`,
-  behind a Loader so a missing plugin only disables the slider; sysfs is root-only for writes). Notifications and Do Not
-  Disturb use `org.kde.notificationmanager` — the same model and `Settings` the stock history uses, in the same
-  plasmashell process, so both views agree; Do Not Disturb writes `notificationsInhibitedUntil` (one year = "until turned
-  off", as the stock applet does) and the stock applet, still loaded in the tray's hidden list, drives the server's
-  inhibited flag from that setting.
-- **Stock applets stay**: the tray hides `battery`, `networkmanagement`, `volume`, `bluetooth` and `notifications`
-  (`/usr/lib/fabos/tray-defaults.js` → `hiddenItems`; they still run — the notifications applet is the notification
-  server, the volume applet handles the volume keys) and the chevrons open them in a window (`plasmawindowed <id>`).
-- **Bar size** (`barSize` = small / medium / large): glyphs 16 / 18 / 22 px, indicator text 11 / 12 / 13 px, battery
-  percentage 12 / 13 / 15 px = the clock's size. The clock is the stock `org.kde.plasma.digitalclock`; `layout.js` writes
-  its `fontSize` from the same table at first login, and because one applet cannot write another's
-  `Plasmoid.configuration` from QML, a later change runs plasmashell's scripting API over D-Bus
-  (`qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript …`, `status.js: syncScript`) to set the
-  clock's `fontSize` and the dock's `magnify`. The clock itself is not magnified on hover (it is not ours to wrap);
-  only the indicators' glyphs are.
+  through powerdevil's D-Bus service, night light through `kwriteconfig6`. Notifications and Do Not Disturb use
+  `org.kde.notificationmanager` — the same model and `Settings` the stock history uses, in the same plasmashell
+  process; Do Not Disturb writes `notificationsInhibitedUntil` (one year = "until turned off", as the stock applet
+  does).
+- **No duplicate tray icons — the real mechanism**: Plasma 6.6's system tray is its own containment and its settings
+  live under the applet in `plasma-org.kde.plasma.desktop-appletsrc`
+  (`[Containments][panel][Applets][tray][General]`). At start its PlasmoidRegistry adds every `EnabledByDefault`
+  status applet it does not yet **know** (`knownItems`) to `extraItems`, and `extraItems` is the list it *loads*.
+  `hiddenItems` only folds a loaded applet into the tray's popup — and Plasma re-shows an "active" one on the bar,
+  which is why the stock network / Bluetooth / volume / battery icons still appeared beside ours. `layout.js
+  configureTray()` therefore writes, on the tray widget returned by `top.addWidget("org.kde.plasma.systemtray")`
+  with `currentConfigGroup = ["General"]`: `knownItems` = everything the registry knew ∪ the five replaced ids, and
+  `extraItems` = that list **without** `org.kde.plasma.networkmanagement`, `bluetooth`, `volume`, `battery`,
+  `brightness` (a recorded default list is the fallback when the registry has not filled `extraItems` yet);
+  `org.kde.plasma.notifications` stays loaded (it is the notification server that draws popups) but in `hiddenItems`.
+  Volume keys and their OSD live in plasma-pa's kded module, brightness keys in powerdevil — not in the removed
+  applets. Proven, not assumed: `tests/desktop-applets-qml-test.sh tray` runs a **real plasmashell** (as a virtual
+  kwin_wayland session with an empty HOME, the layout bind-mounted over the package) and asserts the appletsrc it
+  writes: `extraItems` without the five, `knownItems` with them, no `plugin=org.kde.plasma.{networkmanagement,…}`
+  applet instantiated, the Fab OS clock present and `org.kde.plasma.digitalclock` absent. The chevrons still open the
+  stock applets in a window (`plasmawindowed <id>`).
 - **One owner per shared setting**: the quick settings own the bar size and the "Magnify on hover" switch (pushed to
-  the dock as above); the dock owns its magnification strength (Subtle / Normal / Strong, on the dock's own page) and,
-  when the switch is flipped on the dock's page, writes it back to the quick settings through the same scripting call
-  (`dock main.qml: syncScript`). A write of an unchanged value emits no change on either side, so there is no ping-pong.
+  the clock / dock as above); the dock owns its magnification strength (Subtle / Normal / Strong) and, when the switch
+  is flipped on the dock's page, writes it back through the same scripting call (`dock main.qml: syncScript`). A write
+  of an unchanged value emits no change on either side, so there is no ping-pong.
 
 ### Dock (`in.patienceai.fabos.dock`, bottom floating panel)
 
+- **One applet, one size**: the row is `start button · tasks · peek` (`ExtraItem.qml` for the two ends, `TaskItem.qml`
+  for the tasks) — no separate kickoff / showdesktop applets, whose icons filled the panel (64 px) or sat at a fixed
+  32 px beside 40 px tasks (the owner's "Fab icon very big, others smaller"). The stock launcher applet stays in the
+  panel **zero-width** (`icon=` and `menuLabel=` empty: plasma-desktop 6.6's compact representation then has no size),
+  so the Meta key and `plasmashell activateLauncherMenu` still open it at the dock's left end; the start button calls
+  `org.kde.PlasmaShell.activateLauncherMenu` over D-Bus, peek invokes KWin's *Show Desktop* shortcut.
+- **Uniform visible extent** (measured, not guessed): the FabOS app icons are full-bleed rounded tiles, Breeze app
+  icons keep a margin inside their box. Two facts from the offscreen render drive the code. (1) KIconLoader never
+  scales a fixed-size PNG: at the dock's 40 px resting box it centred the theme's **32 px PNG** (the FabOS scalable
+  directory's nominal `Size=64` loses the best-match to `32x32`), so tiles read 0.80 of the box at rest and would step
+  32 → 48 → 64 while magnifying. Tiles are therefore drawn **from their SVG at exactly the box size**
+  (`dock.tileSource(name)` → `file:///usr/share/icons/FabOS/scalable/apps/<name>.svg`; a task is a tile when its
+  launcher's desktop file names a tile icon or its own icon name is one — the probe `ls`es the theme's `scalable/apps`
+  and reads every desktop file's `Icon=` once at start). Every other icon is requested at Breeze's native scalable size
+  (`stdIconSize` 64, inside `apps/48`'s 48–256 range) and scaled to the box by the item, so it magnifies smoothly and
+  keeps its own glyph margin. (2) Breeze's glyph extent at that size is the target: `tests/dock-qml-harness/measure.py`
+  reads the alpha bounding boxes of nine Breeze-only app icons and of every dock item (raw at `tileScale` 1.0, then at
+  the shipped value) and prints the factor `mean Breeze extent / tile extent`; the shipped `tileScale` default in
+  `config/main.xml` must match it within 0.02 and all items must lie within ±6 % of the mean. Measured 2026-09-15 in
+  the image (40 px resting slot): Breeze glyphs 54 of 64 px = **0.847** (nine icons, 0.844–0.859), tiles 1.000 →
+  factor **0.8472**, shipped `tileScale` **0.85**; normalised, every item — start tile, eight app tiles, a Breeze-icon
+  window, peek — is **34 px of the 40 px slot**, spread ±0.0 %. The start button is the theme's launcher tile (`start-here`, the
+  Fab OS mark on a dark tile); peek is a neutral tile (text colour @ 14 %) behind the monochrome desktop glyph — so
+  every item in the row is a tile of one extent. `dock-uniform.png` is the normalised idle dock.
 - **Backend**: libtaskmanager's `TasksModel` exactly as the stock task manager configures it — launchers from
   `Plasmoid.configuration.launchers` (written back on change), `GroupApplications`, `SortManual`, launch-in-place,
   activity / virtual-desktop filters from the settings. Default pins: Overview, Fab AI Controls, Files, Terminal, Editor,
-  **Brave**, Settings, Software.
-- **Magnify**: a `Row` of `TaskItem`s; the hovered icon scales to 1.6, neighbours 1.3 / 1.1 (Subtle 1.3 / 1.15 / 1.05,
-  Strong 1.9 / 1.45 / 1.15), 160 ms OutCubic. Each item's width follows its own scale, so the row re-flows and icons
-  never overlap. Because a panel clips its applets, the **resting** size is `floor(available height / peak)`, capped at
-  48 px: in the 4-gridUnit dock (72 px) icons rest at about 40 px and the hovered one fills the panel at 64 px; with magnify off the icons fill the height.
-  Scale only — no per-icon effects. The **applet's width is constant while the pointer moves**: resting row + the
-  growth of one magnified group (`reserve` = (peak − 1) + 2 (near − 1) + 2 (far − 1) resting sizes, 56 px at Normal
-  with 40 px icons), so the floating "fit" panel never resizes per frame; the centred row grows into that reserve and,
-  the growth being symmetric about the hovered icon, an interior hovered icon keeps its centre where it rested — the
-  pointer stays over the same icon and neighbours only ever move away from it (no jitter at icon boundaries).
-  `hoveredIndex` is set and cleared by each `TaskItem`'s own `HoverHandler` only; a root-level "unhovered → −1" is
-  wrong here because a `TaskItem` is a `ToolTipArea` (an Item that accepts hover) and takes the hover away from the
-  root beneath it, which reset the magnification the instant the pointer went from a gap onto an icon.
+  **Firefox**, Settings, Software.
+- **Magnify**: the hovered icon scales to 1.6, neighbours 1.3 / 1.1 (Subtle 1.3 / 1.15 / 1.05, Strong 1.9 / 1.45 /
+  1.15), 160 ms OutCubic; the start button and peek magnify like any other slot. Each item's width follows its own
+  scale, so the row re-flows and icons never overlap. Because a panel clips its applets, the **resting** size is
+  `floor(available height / peak)`, capped at 48 px: in the 4-gridUnit dock icons rest at about 40 px and the hovered
+  one fills the panel at 64 px. The **applet's width is constant while the pointer moves**: resting row + the growth of
+  one magnified group (`reserve`), so the floating "fit" panel never resizes per frame and an interior hovered icon
+  keeps its centre where it rested. `hoveredIndex` is set and cleared by each item's own `HoverHandler` only (an item
+  is a `ToolTipArea` and takes the hover away from the root beneath it).
 - **Behaviour**: left click launches (with a 300 ms bounce 1.0 → 1.15 → 1.0), activates, minimises the active window or
   cycles a group's windows; middle click opens a new instance; right click opens an own `PlasmaExtras.Menu` (New Window,
-  Minimise / Restore, Pin to Dock / Unpin, Close, Configure Dock…) — the stock menu (jump lists, recent documents,
-  activities) lives inside the compiled stock applet and is not importable. Tooltips: window title, app name / window
-  count. Running indicator: a 3 px pill under the icon (accent while active, wider for a group, attention colour when
-  demanding attention); minimised windows at 60 %; a pulse while an app is starting.
-- **Settings**: Magnify on hover (the switch shared with the top bar, see above), Magnification (Subtle / Normal /
-  Strong — the dock's own), largest resting icon, grouping, desktop / activity filters.
+  Minimise / Restore, Pin to Dock / Unpin, Close, Configure Dock…). Tooltips: window title, app name / window count.
+  Running indicator: a 3 px pill under the icon (accent while active, wider for a group, attention colour when
+  demanding attention); minimised windows at 60 %; a bounded pulse while an app is starting.
+- **Settings**: Magnify on hover (the switch shared with the top bar), Magnification (the dock's own), largest resting
+  icon, grouping, desktop / activity filters, start / peek items, `tileScale`.
 
 ### Checks
 
-`node tests/quicksettings-js-test.js` (parsers, glyph names, rates, the sync script), `node tests/layout-js-dry-run.js`
-(executes the layout script against a stub of the shell API and asserts the bar and dock contents), and
-`tests/desktop-applets-qml-test.sh` (loads both applets headless with `plasmawindowed` inside the image for a 25 s
-soak, then drives them: fed status text and two `/proc/net` samples, the pane sliding open, a real
-`org.freedesktop.Notifications.Notify` on the session bus into the history, Do Not Disturb, the size change queuing the
-sync script; the dock's hover scales 1.6 / 1.3 / 1.1 and re-flow, constant applet width and fixed hovered centre,
-bounce, menu, magnify off / strong, the write-back command; renders `build/{light,dark}/quicksettings-{bar,pane,notifications}.png`
-and `build/{light,dark}/dock-{idle,hover}.png` — every run uses `QT_QPA_PLATFORMTHEME=kde` as a Plasma session does and
-each harness runs once per Fab OS colour scheme, FabLight and FabDark copied into `~/.config/kdeglobals` inside the
-container). Offscreen, libtaskmanager has no windowing backend (its WindowTasksModel has zero columns and the filter
-proxy then drops every row), so the dock harness runs twice: offscreen against a stand-in model with the same role
-names, and as the session of a virtual, software-rendered `kwin_wayland` (`tests/dock-qml-harness/kwin-session.sh`)
-where the real `TasksModel` yields the 8 configured launchers plus the session's own window. The `kwin_wayland` runs
-also drive a **real pointer**: `tests/quicksettings-qml-harness/fakeinput.py` is a raw Wayland client of KWin's
-`org_kde_kwin_fake_input` (KWin trusts it through a `.desktop` file naming the interface, written by `kwin-session.sh`
-for a private copy of the interpreter); it hovers the bar's network indicator (glyph-only magnify, rendered to
-`build/{light,dark}-kwin/quicksettings-bar-hover.png`), clicks the bell, hovers a history row, moves onto its dismiss
-cross and clicks it (the notification goes), and on the dock hovers icons 3 and 4, leaves, and clicks the Overview
-launcher. One long-lived injector device is kept for the whole phase: with no other pointer device, a one-shot client
-would otherwise add and remove the seat's only pointer and the applet would see a leave/enter per move.
+`node tests/quicksettings-js-test.js` (parsers, recorded nmcli → glyphs, rates and the 0 kB/s floor, the tile model:
+order / size / enabled / geometry / drag helpers, the night-light command, the sync script, the main.qml invariants),
+`node tests/layout-js-dry-run.js` (executes the layout script against a stub of the 6.6 shell API and asserts the bar
+and dock contents and the tray's `extraItems` / `knownItems` / `hiddenItems`), and `tests/desktop-applets-qml-test.sh`
+(inside the image with `plasmawindowed`, offscreen, once per Fab OS colour scheme with `QT_QPA_PLATFORMTHEME=kde`):
+a 25 s soak of each applet, then the harnesses — quick settings: fed status and `/proc/net` samples (moving, idle →
+`0 kB/s` still shown, moving again), the pane opened while the window size and the card's `y` are sampled every 11 ms,
+the tile edit mode (programmatic drag, size toggle, remove / add back, reset → `tilesJson`), a real
+`org.freedesktop.Notifications.Notify` into the 28-gridUnit history (row ≥ 56, icon 32, body 13), Do Not Disturb, the
+size change queuing the sync script, the close sampled the same way; dock: the unified row, hover scales and re-flow,
+constant applet width, bounce, menu, magnify off / strong, the write-back, then the icon-extent grabs for
+`measure.py`; clock: text, px per size, no seconds, formats, the month popup. Renders
+`build/{light,dark}/quicksettings-{bar,pane,edit}.png`, `notifications-pane.png`, `dock-{idle,hover,uniform}.png`,
+`clock-bar.png`. Under a virtual `kwin_wayland` (`tests/dock-qml-harness/kwin-session.sh`) the dock gets the real
+`TasksModel` and both harnesses drive a **real pointer** through `tests/quicksettings-qml-harness/fakeinput.py`
+(KWin's `org_kde_kwin_fake_input`): hover on the network indicator (glyph-only magnify), the bell, a history row and
+its dismiss cross; icons in the dock and a click on the Overview launcher. `tray` runs the real plasmashell and
+asserts the generated appletsrc (above).

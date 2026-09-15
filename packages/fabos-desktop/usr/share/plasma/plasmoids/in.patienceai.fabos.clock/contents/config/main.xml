@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+  <group name="General">
+    <entry name="barSize" type="String">
+      <label>Bar size: small, medium or large -> Inter 12 / 13 / 15 px, the same table as the quick-settings indicators. Owned by the quick-settings applet's page, which pushes a change here through plasmashell's scripting API; the layout writes it at first login.</label>
+      <default>medium</default>
+    </entry>
+    <entry name="showDate" type="Bool">
+      <label>Show the day and date before the time ("Mon 15 Sep · 10:47").</label>
+      <default>true</default>
+    </entry>
+    <entry name="dateFormat" type="String">
+      <label>Qt date format for the date part.</label>
+      <default>ddd d MMM</default>
+    </entry>
+    <entry name="timeFormat" type="String">
+      <label>auto = the locale's short time (12 h or 24 h as the region says), 24h = HH:mm, 12h = h:mm AP.</label>
+      <default>auto</default>
+    </entry>
+  </group>
+</kcfg>

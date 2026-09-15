@@ -2,17 +2,20 @@
 # Fab OS quick settings: ONE probe -> ONE JSON line (parsed by ui/status.js). Run by the applet through the Plasma5Support
 # executable engine; the applet wraps the call in `timeout 8` so a stuck daemon never leaves a probe behind.
 #
-#   status.sh           full probe: kernel readings + NetworkManager, BlueZ, WirePlumber, power-profiles-daemon
-#   status.sh --light   kernel readings only (net counters, Wi-Fi link quality, battery, backlight): 2 processes in total
+#   status.sh           full probe: kernel readings + NetworkManager, BlueZ, WirePlumber, power-profiles-daemon, night light
+#   status.sh --light   kernel readings (net counters, battery, backlight) + the active Wi-Fi signal from NetworkManager
 #   status.sh --pane    also the IPv4 address (shown only inside the pane)
 #
 # Task budget (docs/LOW-RAM.md "Idle budget"; counted with /proc/stat `processes`, which counts forks AND threads, in
 # the image): the previous key=value script created 166 tasks per run (a subshell per `$(...)`, `timeout` around every
 # tool, grep/awk/head/sed pipelines, powerprofilesctl = a Python interpreter, bluetoothctl = 10 tasks per call). This one:
-# --light = sh + one awk = 2; full = sh + nmcli (1–2 calls, 5 tasks each: GLib threads) + busctl (2–3 calls, 2 each) +
-# wpctl (4) [+ ip (2)] + one awk that reads the /proc files and prints the JSON (escaping included) ≈ 16–25. Everything
-# else is shell builtins: read, printf, case, for over lines, ${var%...}. No root: nmcli, busctl, wpctl and sysfs reads
-# all work as the logged-in user.
+# --light = sh + one awk = 2, plus ONE nmcli (5 tasks; 13–21 ms measured) only while a wireless interface is up, so the
+# bar's Wi-Fi glyph follows NetworkManager's own signal reading every probe instead of the kernel's link quality (which
+# some drivers do not expose and which does not match what nmcli / the network applet show); full = sh + nmcli (1–2 calls)
+# + busctl (3–4 calls, 2 each) + wpctl (4) [+ ip (2)] + one awk that reads the /proc files and prints the JSON (escaping
+# included) ≈ 18–27. Everything else is shell builtins: read, printf, case, for over lines, ${var%...}. No root: nmcli,
+# busctl, wpctl and sysfs reads all work as the logged-in user. Every `dev wifi list` says --rescan no: a probe must
+# never trigger a scan (NetworkManager refreshes the active access point's strength by itself).
 LIGHT=0; PANE=0
 for a in "$@"; do case "$a" in --light) LIGHT=1;; --pane) PANE=1;; esac; done
 NL='
@@ -49,20 +52,35 @@ for d in /sys/class/backlight/*; do
   read -r BL_CUR < "$d/brightness"; read -r BL_MAX < "$d/max_brightness" 2>/dev/null || BL_MAX=""
   break
 done
+# ---- is any wireless interface up? (sysfs, no process) — decides whether the light probe spends its one nmcli call
+WLAN_UP=0
+for w in /sys/class/net/*/wireless; do
+  [ -d "$w" ] || continue
+  d=${w%/wireless}; st=""; read -r st < "$d/operstate" 2>/dev/null || st=""
+  [ "$st" = up ] && WLAN_UP=1
+done
 export LIGHT BAT_PRESENT BAT_PCT BAT_STATUS BAT_TIME BL_CUR BL_MAX
-set -f   # no pathname expansion from here on: nmcli lines start with "*" and are split into words below
+set -f   # no pathname expansion from here on: nmcli lines are split into words below
 
-if [ "$LIGHT" = 0 ]; then
+WIFI=""
+if [ "$LIGHT" = 1 ]; then
+  # ACTIVE:SIGNAL of every known access point; the "yes" line is the one in use (nmcli's own reading, 0-100)
+  if [ "$WLAN_UP" = 1 ]; then
+    lines=$(nmcli -w 2 -t -f ACTIVE,SIGNAL dev wifi list --rescan no 2>/dev/null)
+    IFS=$NL; for line in $lines; do case "$line" in yes:*) WIFI=$line; break;; esac; done; unset IFS
+  fi
+  export WIFI
+else
   # ---- daemons. One nmcli for every device (DEVICE:TYPE:STATE:CONNECTION; a Wi-Fi device reads "unavailable" while the
-  # radio is off), the Wi-Fi list only when a Wi-Fi device is connected, BlueZ and power-profiles-daemon through busctl
-  # (2 tasks each; bluetoothctl costs 10 tasks per call, powerprofilesctl ~110 ms of CPU), wpctl for the sink volume.
+  # radio is off), the Wi-Fi list only when a Wi-Fi device is connected, BlueZ, power-profiles-daemon and KWin's night
+  # light through busctl (2 tasks each; bluetoothctl costs 10 tasks per call, powerprofilesctl ~110 ms of CPU), wpctl
+  # for the sink volume.
   DEVS=$(nmcli -w 3 -t -f DEVICE,TYPE,STATE,CONNECTION dev status 2>/dev/null)
-  WIFI=""
   IFS=$NL; for line in $DEVS; do case "$line" in *:wifi:connected:*) WIFI=connected;; esac; done; unset IFS
   if [ "$WIFI" = connected ]; then
-    # IN-USE:SSID:SIGNAL:SECURITY of the network in use (nmcli escapes ':' inside values as '\:'; status.js splits on the unescaped ones)
-    WIFI=""; lines=$(nmcli -w 3 -t -f IN-USE,SSID,SIGNAL,SECURITY dev wifi list --rescan no 2>/dev/null)
-    IFS=$NL; for line in $lines; do case "$line" in \**) WIFI=$line; break;; esac; done; unset IFS
+    # ACTIVE:SIGNAL:SSID:SECURITY of the network in use (nmcli escapes ':' inside values as '\:'; status.js splits on the unescaped ones)
+    WIFI=""; lines=$(nmcli -w 3 -t -f ACTIVE,SIGNAL,SSID,SECURITY dev wifi list --rescan no 2>/dev/null)
+    IFS=$NL; for line in $lines; do case "$line" in yes:*) WIFI=$line; break;; esac; done; unset IFS
   fi
   IP4=""
   if [ "$PANE" = 1 ]; then
@@ -78,12 +96,17 @@ if [ "$LIGHT" = 0 ]; then
   VOLUME=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null)                    # "Volume: 0.45" or "Volume: 0.45 [MUTED]"
   PROFILE=$(busctl --timeout=2 --system get-property net.hadess.PowerProfiles /net/hadess/PowerProfiles net.hadess.PowerProfiles ActiveProfile 2>/dev/null)
   PROFILE=${PROFILE#s \"}; PROFILE=${PROFILE%\"}
-  export DEVS WIFI IP4 BT_PRESENT BT_POWERED BT_OBJECTS VOLUME PROFILE
+  # KWin night light: one GetAll (enabled = set up in Settings, running = tinting right now)
+  NIGHT=$(busctl --user --timeout=2 call org.kde.KWin /org/kde/KWin/NightLight org.freedesktop.DBus.Properties GetAll s org.kde.KWin.NightLight 2>/dev/null)
+  NIGHT_ENABLED=null; NIGHT_RUNNING=false
+  case "$NIGHT" in *'"enabled" b true'*) NIGHT_ENABLED=true;; *'"enabled" b false'*) NIGHT_ENABLED=false;; esac
+  case "$NIGHT" in *'"running" b true'*) NIGHT_RUNNING=true;; esac
+  export DEVS WIFI IP4 BT_PRESENT BT_POWERED BT_OBJECTS VOLUME PROFILE NIGHT_ENABLED NIGHT_RUNNING
 fi
 
-# ---- one awk: default-route interface + its rx/tx bytes, Wi-Fi link quality (0-70 -> %) when the kernel exposes
-# /proc/net/wireless (cfg80211 wext; absent on some kernels — the quality then stays at the last full probe's value),
-# then the JSON line from the values gathered above (strings escaped here, numbers validated here).
+# ---- one awk: default-route interface + its rx/tx bytes, the kernel's Wi-Fi link quality (0-70 -> %) as a fallback
+# when /proc/net/wireless exists (cfg80211 wext; absent on many kernels), then the JSON line from the values gathered
+# above (strings escaped here, numbers validated here).
 W=""; [ -r /proc/net/wireless ] && W=/proc/net/wireless
 LC_ALL=C exec awk '
   # JSON string: escape backslash and quote, tab -> \t, drop other control characters. A per-character loop, not gsub
@@ -101,10 +124,11 @@ LC_ALL=C exec awk '
     r = (dev in rx) ? rx[dev] : 0; t = (dev in tx) ? tx[dev] : 0; ql = (dev in q) ? q[dev] : -1; if (ql > 100) ql = 100
     bat = (ENVIRON["BAT_PRESENT"] == "1") ? "{\"pct\":" jnum(ENVIRON["BAT_PCT"]) ",\"status\":" jstr(ENVIRON["BAT_STATUS"]) ",\"time\":" jstr(ENVIRON["BAT_TIME"]) "}" : "null"
     bl = (ENVIRON["BL_MAX"] != "") ? "{\"cur\":" jnum(ENVIRON["BL_CUR"]) ",\"max\":" jnum(ENVIRON["BL_MAX"]) "}" : "null"
-    head = "\"net\":{\"iface\":" jstr(dev) ",\"rx\":" jnum(r) ",\"tx\":" jnum(t) "},\"wifi_quality\":" (ql < 0 ? "null" : ql) ",\"battery\":" bat ",\"backlight\":" bl
+    head = "\"net\":{\"iface\":" jstr(dev) ",\"rx\":" jnum(r) ",\"tx\":" jnum(t) "},\"wifi_quality\":" (ql < 0 ? "null" : ql) ",\"wifi\":" jstr(ENVIRON["WIFI"]) ",\"battery\":" bat ",\"backlight\":" bl
     if (ENVIRON["LIGHT"] == "1") { print "{\"light\":true," head "}"; exit }
-    print "{\"light\":false," head ",\"devs\":" jlines(ENVIRON["DEVS"]) ",\"wifi\":" jstr(ENVIRON["WIFI"]) ",\"ip4\":" jstr(ENVIRON["IP4"]) \
+    print "{\"light\":false," head ",\"devs\":" jlines(ENVIRON["DEVS"]) ",\"ip4\":" jstr(ENVIRON["IP4"]) \
           ",\"bt\":{\"present\":" ENVIRON["BT_PRESENT"] ",\"powered\":" ENVIRON["BT_POWERED"] ",\"connected\":" btcount(ENVIRON["BT_OBJECTS"]) "}" \
-          ",\"volume\":" jstr(ENVIRON["VOLUME"]) ",\"profile\":" jstr(ENVIRON["PROFILE"]) "}"
+          ",\"volume\":" jstr(ENVIRON["VOLUME"]) ",\"profile\":" jstr(ENVIRON["PROFILE"]) \
+          ",\"night\":{\"enabled\":" ENVIRON["NIGHT_ENABLED"] ",\"running\":" ENVIRON["NIGHT_RUNNING"] "}}"
   }
 ' /proc/net/route /proc/net/dev $W

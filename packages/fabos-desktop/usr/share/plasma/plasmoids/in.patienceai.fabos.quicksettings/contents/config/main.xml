@@ -5,7 +5,7 @@
   <kcfgfile name=""/>
   <group name="General">
     <entry name="barSize" type="String">
-      <label>Bar size: small, medium or large. Scales the indicator glyphs (16/18/22 px), their text (11/12/13 px), the battery percentage (12/13/15 px) and, through the shell scripting API, the stock clock (Inter 12/13/15).</label>
+      <label>Bar size: small, medium or large. Scales the indicator glyphs (16/18/22 px), their text (11/12/13 px), the battery percentage (12/13/15 px) and, through the shell scripting API, the Fab OS clock (Inter 12/13/15) — one size for everything in the bar.</label>
       <default>medium</default>
     </entry>
     <entry name="magnify" type="Bool">
@@ -13,14 +13,18 @@
       <default>true</default>
     </entry>
     <entry name="showSpeed" type="Bool">
-      <label>Show the live download/upload rate beside the network glyph while data flows.</label>
+      <label>Show the live download/upload rate beside the network glyph whenever a link is up (0 kB/s when idle; hidden only without a link).</label>
       <default>true</default>
     </entry>
     <entry name="pollSeconds" type="Int">
-      <label>Seconds between probes while the pane is closed: each one is one small script (2 processes) that reads the kernel's network counters, Wi-Fi link quality, battery and backlight; the full probe (NetworkManager, Bluetooth, volume, power profile) runs every 30 s while closed, every 2 s while the pane is open, and right after each action.</label>
+      <label>Seconds between probes while the pane is closed: each one is one small script (sh + awk, plus one nmcli call for the active Wi-Fi signal while a wireless link is up) that reads the kernel's network counters, battery and backlight; the full probe (NetworkManager, Bluetooth, volume, power profile, night light) runs every 30 s while closed, every 2 s while the pane is open, and right after each action.</label>
       <default>5</default>
       <min>5</min>
       <max>120</max>
+    </entry>
+    <entry name="tilesJson" type="String">
+      <label>The pane's tiles: a JSON array of {id, size, enabled} in display order. size = small (half a row) or wide (a full row). Ids: wifi, bluetooth, volume, brightness, battery, netspeed, notifications, dnd, powerprofile, nightlight, screenshot, settings; unknown ids are ignored, missing ones appended with their defaults. Edited with the pane's pencil (drag to reorder, size toggle, remove) or on the applet's settings page; "Reset to default" writes an empty string.</label>
+      <default>[{"id":"wifi","size":"small","enabled":true},{"id":"bluetooth","size":"small","enabled":true},{"id":"volume","size":"wide","enabled":true},{"id":"brightness","size":"wide","enabled":true},{"id":"battery","size":"wide","enabled":true},{"id":"netspeed","size":"wide","enabled":true},{"id":"notifications","size":"small","enabled":true},{"id":"dnd","size":"small","enabled":true},{"id":"powerprofile","size":"wide","enabled":true},{"id":"nightlight","size":"small","enabled":true},{"id":"screenshot","size":"small","enabled":true},{"id":"settings","size":"small","enabled":true}]</default>
     </entry>
   </group>
 </kcfg>
