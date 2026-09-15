@@ -57,7 +57,9 @@ st=$(vm "fabos-voice -v status"); echo "$st"
 echo; echo "=== fabos-voice listen-once --timeout 4"
 t0=$(date +%s); res=$(vm "fabos-voice listen-once --timeout 4 >/tmp/lo.out 2>/tmp/lo.err; echo rc=\$?; echo out=\$(cat /tmp/lo.out); echo err=\$(cat /tmp/lo.err)"); el=$(( $(date +%s) - t0 )); echo "$res (${el}s)"
 echo "$res" | grep -q '^rc=3$' && [ $el -le 8 ] && verdict PASS "listen-once exit 3 in ${el}s" || verdict FAIL "listen-once: $res in ${el}s"
-echo "$res" | grep -q 'err=.*muted or silent' && verdict PASS "listen-once names the reason (microphone muted or silent)" || verdict FAIL "listen-once stderr: $(echo "$res" | grep err=)"
+# The emulated HDA microphone is not digitally silent (the doctor measured RMS ~270 of noise), so either reason is correct:
+# an all-zero stream -> "muted or silent"; a noisy stream with no speech -> "did not catch that".
+echo "$res" | grep -q -E 'err=.*(muted or silent|did not catch that)' && verdict PASS "listen-once names a reason ($(echo "$res" | grep -o -E 'muted or silent|did not catch that' | head -1))" || verdict FAIL "listen-once stderr: $(echo "$res" | grep err=)"
 echo "$res" | grep -q '^out=$' && verdict PASS "listen-once stdout empty" || verdict FAIL "listen-once printed on stdout"
 
 # ---------- 4. say --test: exit 0, backend + sink reported
