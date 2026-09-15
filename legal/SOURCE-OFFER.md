@@ -30,7 +30,10 @@ more than the cost of physically performing the distribution.
      sha256 `f3f03d96e17ae4b7dcee6347a01c75de6f90ed19e070e98ae8bf2dd71ae276db`, built by `image/rounded-corners-build.sh`
      (cmake, Release, no patches). The same URL and hash are in
      `/usr/share/doc/fabos-rounded-corners/copyright` on the installed system.
-     For each release we mirror this tarball next to the Ubuntu sources (step 2).
+     `scripts/source-offer.sh` records this URL + sha256 in every image's
+     `legal/source-offer/<image-id>/README.txt`, and `scripts/source-offer.sh --download`
+     fetches the tarball (hash verified) into the same `build/sources-<image-id>/`
+     directory as the Ubuntu sources, so the release mirror of step 2 includes it.
 5. Source for Fab OS's own packages is this repository and the
    `ai-native-os` repository (Apache-2.0). The modifications Fab OS applies
    to upstream display strings are themselves scripts distributed in source

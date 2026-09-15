@@ -125,13 +125,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends systemd-zram-ge
 # pinned in image/rounded-corners-build.sh and repeated in the package's copyright file = the corresponding source,
 # legal/SOURCE-OFFER.md) is compiled HERE against this image's exact kwin-dev (a KWin effect has no ABI stability across
 # KWin minors), packaged as the Debian package fabos-rounded-corners (so the manifest, apt and dpkg list it: 165 kB effect
-# plugin kwin4_effect_shapecorners.so, 289 kB KCM, two 23 kB shaders, six .mo files; .deb 134 kB) and installed. The
+# plugin kwin4_effect_shapecorners.so, 289 kB KCM, two 23 kB shaders, six .mo files; .deb 135 kB) and installed. The
 # build tools are then removed again — exactly the packages the step added, never a name list and never autoremove: a dry
 # run in the finished round-3 image showed `apt-get purge qt6-base-dev-tools ...` cascading through plasma-workspace and
 # fabos-desktop and a following autoremove taking 215 packages. The script fails loudly on a hash mismatch, a compile
 # error, a missing file, a dangling library, a build tool left behind or any pre-existing package gone. It is bind-mounted,
-# not COPYed, so nothing of it stays in the image. Measured 2026-09-15 in the round-3 image: +747 MB while the build tools
-# are present (166 packages), net +1 MB afterwards. /etc/xdg/kwinrc (fabos-desktop) switches it on:
+# not COPYed, so nothing of it stays in the image. Measured 2026-09-15 by running this exact script in the round-3 image:
+# +917 MB while the build tools are present (166 packages; 167 archives = 138 MB downloaded, 132 MiB on disk), 916 MB removed
+# again, net +1 MB afterwards (7187 -> 7188 MB in /usr+/var+/etc; the package's Installed-Size is 592 kB). The fetched
+# archives are deleted by listing /var/cache/apt/archives before vs after (apt stamps each .deb with the server's
+# Last-Modified mtime, so `find -newer <marker>` deletes nothing); the 1656 archives of the earlier layers are left alone.
+# One pre-existing package (perl-base) is upgraded by the dev install and stays so; the script lists such upgrades in the
+# build log. /etc/xdg/kwinrc (fabos-desktop) switches it on:
 # kwin4_effect_shapecornersEnabled=true, [Round-Corners] Size=14 = the Aurorae frame's own top radius (ADR-0019).
 # Placed after the model and voice layers on purpose so their 1.2 GB of downloads stay cached across rebuilds.
 RUN --mount=type=bind,source=image/rounded-corners-build.sh,target=/tmp/rounded-corners-build.sh bash /tmp/rounded-corners-build.sh

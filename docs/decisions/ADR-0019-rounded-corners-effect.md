@@ -51,7 +51,7 @@ Build (all commands run; logs kept with the round's report):
   (`getNativeShadow`); `ShadowSize`/`ShadowColor` are used only by the effect's own shadow (`getCustomShadow`). Side effect:
   while loaded, the effect writes `breezerc [Common] OutlineIntensity=OutlineOff, RoundedCorners=false, OutlineEnabled=false`
   (and restores the defaults on unload) — meant for Breeze-decoration users; Fab OS uses Aurorae, so it is inert here.
-- Packaging as a `.deb` (`fabos-rounded-corners_0.10.0-0fabos1_amd64.deb`, 134 kB, Installed-Size 592 kB): `Depends`
+- Packaging as a `.deb` (`fabos-rounded-corners_0.10.0-0fabos1_amd64.deb`, 135 kB, Installed-Size 592 kB): `Depends`
   from `dpkg-shlibdeps` (`libkwin6 (>= 4:6.6.6)`, KF6 config/coreaddons/i18n/kcmutils/widgetsaddons, Qt6 core/dbus/gui/
   widgets, libepoxy0, libc6, libstdc++6) plus an explicit ABI window `libkwin6 (>= 4:6.6), libkwin6 (<< 4:6.7)` and
   `kwin-wayland`. Installing it into the round-3 image needs no other package ("606 kB of additional disk space"); `ldd`
@@ -62,12 +62,18 @@ Build (all commands run; logs kept with the round's report):
   by name cascaded through its reverse dependencies, and autoremove then swept the orphans. The build script therefore
   purges exactly the set of packages it installed (dpkg list before vs after, `comm`), never a name list, never autoremove,
   and fails if any pre-existing package is missing afterwards or anything but `fabos-rounded-corners` was added.
-- Size, measured by running the exact step (`image/rounded-corners-build.sh`) in the round-3 image: the build tools are
-  +917 MB while present (166 packages, 138 MB of downloads); a first version that only purged the packages still left
-  **+133 MB**, because apt keeps every downloaded `.deb` in `/var/cache/apt/archives` — the rootfs stage removes Ubuntu's
-  `docker-clean` hook and nothing runs `apt-get clean`. The step now deletes exactly the archives it fetched (newer than its
-  own marker file), and the net growth is the package alone (Installed-Size 592 kB; the exact measured line is in the build
-  log). Side-finding, not acted on here: the shipped round-3 image already carries **1 406 MB of cached `.deb` files
+- Size, measured by running the exact step (`image/rounded-corners-build.sh`) in the round-3 image (final run 2026-09-15,
+  exit 0): the build tools are **+917 MB** while present (166 packages; 167 archives = apt's "Need to get 138 MB", 132 MiB
+  on disk — the 167th is an upgrade of the pre-existing `perl-base` 5.40.1-7ubuntu0.1 → 0.3 that `perl` required; it stays
+  upgraded and the script prints every such version change, since a name-list `comm` cannot see them). A first version
+  that only purged the packages still left **+133 MB**, because apt keeps every downloaded `.deb` in
+  `/var/cache/apt/archives` — the rootfs stage removes Ubuntu's `docker-clean` hook and nothing runs `apt-get clean`. A
+  second version deleted the archives with `find -newer <marker>` and deleted **nothing** (review finding): apt stamps each
+  downloaded `.deb` with the server's Last-Modified time, which is older than any marker written during the build. The
+  step now lists the archive directory before and after, deletes exactly the difference (167 files, 132 MiB) and asserts
+  that none of them is left; measured result: **7187 → 7188 MB, net +1 MB** (`du -sxm /usr /var /etc`; the package's
+  Installed-Size is 592 kB), 916 MB of build tools removed, the 1656 older archives (1406 MB) untouched. Side-finding, not
+  acted on here: the shipped round-3 image already carries **1 406 MB of cached `.deb` files
   (1 656 archives) from the earlier layers**; a single `apt-get clean` in the final configuration layer would drop them
   (whiteouts in the OCI layers, real savings in the exported rootfs / ISO). That is a separate decision.
 - Headless load check (2026-09-15, `kwin_wayland --virtual` inside the image with the package installed and this kwinrc as
@@ -76,6 +82,12 @@ Build (all commands run; logs kept with the round's report):
   fulfill the requested compositing mode"), so `isEffectSupported` is false there, exactly as `Effect::supported()` says.
   Loading under OpenGL is therefore verified only in the booted VM by `tests/corners-vm.sh` (the Plasma session in QEMU
   composites with OpenGL through llvmpipe, which blur already relies on).
+- Headless scripting check (2026-09-15, same virtual KWin, one PyQt6 window on its Wayland socket): the KWin script lines
+  `tests/corners-vm.sh` uses — `w.frameGeometry = {x, y, width, height}` on a plain JS object, `workspace.activeWindow = w`,
+  `callDBus("org.freedesktop.DBus", …, "in.patienceai.fabos.corners", "event", msg)` — are accepted by KWin 6.6.6's
+  scripting engine: the report right after the assignment still shows the old geometry (490 282 300 236 → Wayland
+  configure round trip), the one 1.5 s later shows exactly 200 120 700 420. That is why the test waits for the
+  `geo settled` report, not the immediate one.
 - Radius geometry: the effect masks the frame **including the decoration**, so the visible top corner is the intersection
   of the effect's arc and the Aurorae arc. If the two differ, either the effect's 1 px outline runs through the frame's
   transparent notch or the frame's arc shows inside the effect's — both visible as a sliver. The two must be the same
@@ -107,22 +119,35 @@ Build (all commands run; logs kept with the round's report):
    own where the effect cannot run.
 3. **Legal:** GPL-3.0 text already in `THIRD_PARTY_LICENSES/GPL-3.0.txt` (index row extended); `ATTRIBUTIONS.md` and
    `legal/THIRD-PARTY.md` rows; the tarball URL + sha256 recorded in `legal/SOURCE-OFFER.md` as a non-archive component
-   whose corresponding source is that tarball, and repeated in `/usr/share/doc/fabos-rounded-corners/copyright` with the
-   upstream `LICENSE` and README beside it. No modification to the upstream source.
+   whose corresponding source is that tarball (`scripts/source-offer.sh` writes the URL + hash into every image's
+   `legal/source-offer/<id>/README.txt` and `--download` mirrors the tarball, hash-verified, next to the Ubuntu sources),
+   and repeated in `/usr/share/doc/fabos-rounded-corners/copyright` with the upstream `LICENSE` and README beside it. No
+   modification to the upstream source. Licence as the tree states it (read 2026-09-15): the `LICENSE` file is GPL
+   version 3; the only per-file notices are the headers of `src/Effect.cpp` and `src/Effect.h` — "Copyright 2015 Robert
+   Metsäranta … either version 2 of the License, or (at your option) any later version", i.e. GPL-2.0-or-later, which
+   permits distribution under GPL-3.0 with the rest; no other file carries a copyright line, and `src/metadata.json` names
+   the authors Rob and Matin Lotfaliei. The copyright file therefore has a `Files: *` GPL-3.0 stanza attributed to "the
+   KDE-Rounded-Corners authors" and a `Files: src/Effect.cpp src/Effect.h` GPL-2.0-or-later stanza — no invented years.
 4. **Tests:** `tests/branding-check.sh` asserts the plugin, its KCM and shaders, the package (dpkg, manifest, `dpkg -S`),
    the copyright hash, the absence of build tools, the kwinrc switch and keys, the frame's radius-14 arcs in the rendered
-   SVG, the generator and probe constants, and the legal/doc files; its radius-20 geometry literals were rewritten in place
-   for radius 14. New `tests/corners-vm.sh` (SSH into the booted VM): `qdbus6 org.kde.KWin /Effects loadedEffects` must list
+   SVG, the generator and probe constants, and the legal/doc files; the pre-existing notch check accepts the radius-20 or
+   the radius-14 geometry (append-only in substance: nothing removed or weakened; the strict radius-14 assertion is a new
+   check). New `tests/corners-vm.sh` (SSH into the booted VM): `qdbus6 org.kde.KWin /Effects loadedEffects` must list
    `kwin4_effect_shapecorners`; Fab Editor is placed at a known frame geometry by a KWin script that reports it over the
    session bus, `spectacle -b -n -f -o` grabs the screen, and each of the four frame-corner pixels is compared with the pixel
    14 px inside and with its diagonal outside neighbour, in Fab Dark and Fab Light; every value is printed with PASS/FAIL.
+   The corner-vs-inside distance threshold is 8 (a noise floor: a square corner gives exactly the window colour), not a
+   contrast requirement, because the shadowed dark wallpaper next to a Fab Dark window can be within ~30 RGB units of it.
+   The script has not yet been run in a booted VM (that is the orchestrator's VM step); the KWin-script placement and spectacle-over-ssh
+   follow `tests/perf-vm.sh`, which is in the same state.
 
 ## Consequences
 
 - Every normal window and dialog has four rounded corners of radius 14 in both schemes, cut by the compositor; the
   decoration's radius is consistent with it. Maximised, full-screen and tiled windows are square by design.
-- The image grows by well under 1 MB; the build grows by one compile (~2 minutes on 4 cores, ~140 MB of dev downloads
-  that are removed again). A KWin update within 6.6.x keeps working (same effect API); a KWin 6.7 would make apt drop
+- The image grows by about 1 MB (measured net +1 MB, Installed-Size 592 kB); the build grows by one compile (~2 minutes on
+  4 cores, 138 MB of dev downloads that are removed again). One Ubuntu package (`perl-base`) ends up at the archive's
+  current revision instead of the rootfs stage's, which is what an `apt-get upgrade` would do anyway. A KWin update within 6.6.x keeps working (same effect API); a KWin 6.7 would make apt drop
   `fabos-rounded-corners` (its `<< 4:6.7` dependency) — then the frame's own radius-14 top corners remain and the package
   has to be rebuilt against the new headers (same script). The package lives in the image only; it is not in the Fab OS
   apt repository (adding it to `scripts/publish-apt.sh` from a built image is future work).

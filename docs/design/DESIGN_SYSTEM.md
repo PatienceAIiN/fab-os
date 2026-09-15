@@ -50,7 +50,8 @@ first release put the corner shadow gradient there (19-38 % black) and every win
 
 A decoration can only shape what it draws: the title bar. The client's own bottom corners stayed square, and on the owner's
 device the top ones read as sharp too. Since 2026-09-15 (ADR-0019) the **compositor** rounds every window: the
-KDE-Rounded-Corners KWin effect (GPL-3.0, upstream id `kwin4_effect_shapecorners`), compiled from its v0.10.0 release
+KDE-Rounded-Corners KWin effect (GPL-3.0 per its LICENSE, two source headers GPL-2.0-or-later; upstream id
+`kwin4_effect_shapecorners`), compiled from its v0.10.0 release
 inside the image against the exact KWin (`image/rounded-corners-build.sh` → package `fabos-rounded-corners`), enabled and
 configured in `/etc/xdg/kwinrc` (`[Plugins] kwin4_effect_shapecornersEnabled=true`, group `[Round-Corners]`; every key is
 from the effect's `src/kcm/options.kcfg`).

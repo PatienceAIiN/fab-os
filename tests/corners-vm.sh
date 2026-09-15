@@ -5,14 +5,18 @@
 #      a reference screenshot of the bare desktop, then Fab Editor (kate) is opened and placed at a known frame geometry by a
 #      KWin script (which reports the geometry over the session bus, like tests/perf-vm.sh), `spectacle -b -n -f -o` grabs the
 #      screen, and the four frame corners are sampled against the pixels 14 px inside. PASS per corner: the corner pixel is
-#      NOT the window colour (distance > 48 in 8-bit RGB) and is closer to its diagonal outside neighbour (wallpaper under the
-#      shadow) than to the inside pixel; the inside pixel of the two top corners equals the title bar's mid-top pixel (proves the
-#      geometry landed). Every sampled value is printed. A square corner (the round-4 defect) fails: corner == inside.
+#      NOT the window colour (distance > 8 in 8-bit RGB — a square corner gives exactly the window colour, distance 0; the
+#      threshold is a noise floor, not a contrast requirement, because next to a Fab Dark window the shadowed dark wallpaper can
+#      be within ~30 of the window colour) and is closer to its diagonal outside neighbour (wallpaper under the shadow) than to
+#      the inside pixel; the inside pixel of the two top corners equals the title bar's mid-top pixel (proves the geometry
+#      landed). Every sampled value is printed, plus a note when inside and outside are themselves within 8 (weak verdict).
+#      A square corner (the round-4 defect) fails: corner == inside. The two bottom corners are the ones only the effect can
+#      round (the Aurorae frame already cuts the top ones), so a missing effect shows as BL/BR BAD with corner == inside.
 #   tests/corners-vm.sh [--keep] [--radius N]      Output: build/corners-vm.out, build/corners-<scheme>.png, build/corners-<scheme>-ref.png
 # Needs on the host: sshpass, python3 with Pillow (PIL) for the pixel sampling.
 set -uo pipefail; HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"
 KEEP=0; R=14
-while [ $# -gt 0 ]; do case "$1" in --keep) KEEP=1;; --radius) R=$2; shift;; -h|--help) sed -n '2,13p' "$0"; exit 0;; *) echo "unknown argument: $1"; exit 3;; esac; shift; done
+while [ $# -gt 0 ]; do case "$1" in --keep) KEEP=1;; --radius) R=$2; shift;; -h|--help) sed -n '2,16p' "$0"; exit 0;; *) echo "unknown argument: $1"; exit 3;; esac; shift; done
 SSH="sshpass -p fabos ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -p 2222 fabos@127.0.0.1"
 SCP="sshpass -p fabos scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -P 2222"
 mkdir -p build; OUT=build/corners-vm.out; : > "$OUT"; exec > >(tee -a "$OUT") 2>&1
@@ -97,7 +101,8 @@ top = im.getpixel((x + w // 2, y + 2)); ok = True
 print("title bar mid-top %s = %s" % ((x + w // 2, y + 2), top))
 for k in ("TL", "TR", "BL", "BR"):
     c, i, o, rp = im.getpixel(corner[k]), im.getpixel(inside[k]), im.getpixel(outside[k]), rf.getpixel(corner[k])
-    good = d(c, i) > 48 and d(c, o) < d(c, i)
+    good = d(c, i) > 8 and d(c, o) < d(c, i)
+    if d(i, o) <= 8: print("note: %s inside and outside differ by only %.0f (window colour = shadowed background here), weak verdict" % (k, d(i, o)))
     if k in ("TL", "TR"): good = good and d(i, top) < 16
     ok = ok and good
     print("%s corner%s=%s inside%s=%s outside%s=%s ref(no window)=%s  d(corner,inside)=%.0f d(corner,outside)=%.0f d(corner,ref)=%.0f  %s"
