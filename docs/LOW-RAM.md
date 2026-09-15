@@ -88,6 +88,40 @@ Estimates from the maintainers' own measurements and experience, not a benchmark
 - **Probe cadence of the quick settings**: right-click the bar → Configure → "Refresh every" (5–120 s).
 - **File Search in Fab Search**: Fab Settings → Search → Plugins → File Search (only useful with the index on).
 
+## The built-in model (Qwen2.5-1.5B, llama-server) — memory and what it can do
+
+Measured in the Fab OS image on 2026-09-15 with the shipped wrapper (`/usr/lib/fabos/ai/llama-start.sh`: `-c 8192 -t <physical
+cores> --parallel 1 --cache-ram 256 --cache-reuse 256 --temp 0.2 --top-p 0.9 --repeat-penalty 1.05 --jinja --no-webui`, plus
+`--no-repack` as the wrapper picks below 6 GiB), `VmHWM` of `llama-server` read from `/proc/<pid>/status` at the end of each run
+(`tests/local-driver-image.sh`, the model file mounted read-only):
+
+| Configuration | Peak RSS (`VmHWM`) | When |
+|---|---|---|
+| repacking on (≥ 6 GiB machines), 6 threads | **2.03–2.06 GB** | after the capability probe (json_schema plan, forced tool call, 200-token generation) |
+| `--no-repack` (the 4 GB machine), free-form loop | **1.86 GB** | after the full L1+L2 ladder (BEFORE run, HEAD daemon) |
+| `--no-repack`, stepwise driver | **1.53–1.65 GB** | after the L1+L2 ladder with the new driver (shorter prompts touch fewer KV cells) |
+
+All of it stays under the unit's `MemoryHigh=2200M` / `MemoryMax=3G` (ADR-0011); 8192 tokens of context cost 224 MiB of
+KV cache (llama-server's own log line). Speed on the build host (6 physical cores): generation **33.8 tok/s with 6 threads
+against 28.6 with all 12** (SMT), prompt processing 103 vs 121 tok/s — so the wrapper keeps physical cores. With
+`--cache-reuse 256` the second request sharing the driver's system prompt processed 6 new tokens and reused 433.
+
+**What the model does with the agent's tasks.** The built-in model runs the agent's *stepwise driver* (ADR-0018): plan as
+strict JSON, one tool call per turn, each step verified (exit codes, files on disk, processes) and retried with the error
+shown, output a step produced saved to files by the driver itself (`save_result`) rather than retyped by the model, then a
+short summary — instead of the free-form loop the cloud providers use. Graded with the ladder's own checks
+(tests/ladder/checks.py, answer key the agent cannot see) on the ladder's own L1/L2 task texts, inside the image:
+
+RESULTS_TABLE_PLACEHOLDER
+
+The honest reading: the stepwise driver turns a model that "did one thing and said done" into one that finishes short,
+concrete desktop tasks and, when it cannot, **fails with the step named** instead of claiming success. It is not a cloud
+model: multi-command shell pipelines and tabular arithmetic still fail more often than not, the self-check approves wrong
+results, and run-to-run variance at temperature 0.2 is real (the same task can pass one run and fail the next). For hard
+tasks a cloud provider is one dropdown away. Rerun: `tests/local-driver-image.sh --label after --extra-args --no-repack`
+(this tree) and `--label before --agent-src build/baseline --llama-start build/baseline/llama-start.sh` after extracting
+the HEAD files there.
+
 ## Minimum requirements
 
 - 2 GB RAM (with the zram swap above; 4 GB recommended for large office documents and many browser tabs)

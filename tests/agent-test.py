@@ -1181,6 +1181,420 @@ class Daemon(unittest.TestCase):
         else:
             self.assertIn("AGENT-SOCKET-VISIBLE", env_text)                                    # fallback: only the variable is gone (documented)
 
+    # ---- the small-model driver (ADR-0018), scripted by FakeProvider: agent.driver=stepwise makes any provider run it
+    def stepwise(self, text, mode="bypass", timeout=60):
+        self.cli("settings", "agent.driver", "stepwise")
+        try:
+            r = self.cli("do", "--mode", mode, text); return self.wait(r["id"], timeout=timeout)
+        finally:
+            self.cli("settings", "agent.driver", "")
+
+    @staticmethod
+    def kinds(t, kind, name=None):
+        return [s for s in t["steps"] if s["kind"] == kind and (name is None or s["name"] == name)]
+
+    def test_26_stepwise_plan_execute_verify_finish(self):
+        """PLAN (one JSON plan recorded), EXECUTE (one tool per turn in plan order), VERIFY (a verify row per step), FINISH (the
+        reply step's text IS the result): the file exists with the exact content and the count came from the shell, not the model."""
+        path = os.path.join(self.env["HOME"], "sw", "a.txt")
+        t = self.stepwise("stepwise: create %s with hello and count it" % path)
+        self.assertEqual(t["status"], "done", t)
+        plan = [s for s in self.kinds(t, "assistant") if s["output"].startswith("Plan:")]
+        self.assertEqual(len(plan), 1, t["steps"]); self.assertIn("1. [write_file]", plan[0]["output"]); self.assertIn("3. [reply]", plan[0]["output"])
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["write_file", "run_shell"])
+        self.assertEqual(open(path).read(), "hello\n")
+        ver = self.kinds(t, "verify")
+        self.assertEqual([v["name"] for v in ver], ["write_file", "run_shell"]); self.assertTrue(all(v["output"].startswith("ok: ") for v in ver), ver)
+        self.assertIn("exists, 6 bytes", ver[0]["output"]); self.assertIn("output: 1", ver[1]["output"])
+        self.assertEqual(t["result"], "WORDS: 1")                                                  # the reply step used the shell's output
+
+    def test_27_stepwise_runs_one_tool_per_turn(self):
+        t = self.stepwise("stepwise: two calls at once")
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual(len(self.kinds(t, "tool_call")), 1)                                        # the second call of the turn never ran
+        self.assertEqual(json.loads(self.kinds(t, "tool_call")[0]["input"])["command"], "echo first")
+        self.assertTrue(any(v["name"] == "one-tool-per-turn" and "ignored 1 extra" in v["output"] for v in self.kinds(t, "verify")), t["steps"])
+        self.assertTrue(t["result"].startswith("Done, stepwise finished"), t["result"])           # FINISH: the closing summary call
+
+    def test_28_stepwise_verification_retries_with_the_error_shown(self):
+        t = self.stepwise("stepwise: flaky command")
+        self.assertEqual(t["status"], "done", t)
+        calls = self.kinds(t, "tool_call"); self.assertEqual([json.loads(c["input"])["command"] for c in calls], ["exit 3", "echo recovered"])
+        ver = self.kinds(t, "verify", "run_shell")
+        self.assertTrue(ver[0]["output"].startswith("failed: exit code 3"), ver[0]); self.assertIn("retrying with the error shown", ver[0]["output"])
+        self.assertTrue(ver[1]["output"].startswith("ok: exit 0, output: recovered"), ver[1])
+
+    def test_29_stepwise_self_check_no_triggers_a_retry(self):
+        t = self.stepwise("stepwise: selfcheck no")
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual(len(self.kinds(t, "tool_call")), 2)
+        ver = self.kinds(t, "verify", "run_shell")
+        self.assertIn("the model's own check says no", ver[0]["output"]); self.assertTrue(ver[1]["output"].startswith("ok: "), ver[1])
+        self.cli("settings", "agent.stepwise_selfcheck", "false")                                  # the self-check can be switched off
+        try:
+            t = self.stepwise("stepwise: selfcheck no"); self.assertEqual(len(self.kinds(t, "tool_call")), 1, t["steps"])
+        finally:
+            self.cli("settings", "agent.stepwise_selfcheck", "")
+
+    def test_30_stepwise_gives_up_honestly_after_the_retries(self):
+        t = self.stepwise("stepwise: hopeless")
+        self.assertEqual(t["status"], "failed", t)
+        self.assertEqual(len(self.kinds(t, "tool_call")), 1 + fa.STEP_RETRIES)                      # first attempt + STEP_RETRIES retries, then stop
+        self.assertIn("Step 1 of 1 could not be completed after 3 attempts", t["error"]); self.assertIn("exit code 7", t["error"])
+        self.assertIn("you sent exactly the same call again and it failed the same way", t["error"])            # the identical repeat is named
+
+    def test_31_stepwise_plan_is_repaired_when_the_first_answer_is_not_a_plan(self):
+        d = os.path.join(self.env["HOME"], "sw"); os.makedirs(d, exist_ok=True); open(os.path.join(d, "b.txt"), "w").write("x")
+        t = self.stepwise("stepwise: count files in %s (bad plan first)" % d)
+        self.assertEqual(t["status"], "done", t)
+        bad = self.kinds(t, "verify", "plan"); self.assertEqual(len(bad), 1); self.assertIn("invalid plan", bad[0]["output"]); self.assertIn("asking again", bad[0]["output"])
+        self.assertTrue(any(s["output"].startswith("Plan:") for s in self.kinds(t, "assistant")))
+        self.assertRegex(t["result"], r"^FILE COUNT: \d+$")
+
+    def test_31b_stepwise_all_web_plan_for_a_local_task_is_planned_again(self):
+        d = os.path.join(self.env["HOME"], "sw-local"); os.makedirs(d, exist_ok=True); open(os.path.join(d, "c.txt"), "w").write("x")
+        t = self.stepwise("stepwise: count files in %s (invented api plan first)" % d)
+        self.assertEqual(t["status"], "done", t)
+        bad = self.kinds(t, "verify", "plan"); self.assertEqual(len(bad), 1)
+        self.assertIn("every step uses the web, but the task names no web page or URL", bad[0]["output"]); self.assertIn("asking again", bad[0]["output"])
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell"]); self.assertRegex(t["result"], r"^FILE COUNT: \d+$")
+
+    def test_32_stepwise_missing_tool_call_is_retried(self):
+        t = self.stepwise("stepwise: no tool")
+        self.assertEqual(t["status"], "done", t)
+        ver = self.kinds(t, "verify")
+        self.assertTrue(ver[0]["output"].startswith("failed: no tool call was made"), ver[0])
+        self.assertEqual([json.loads(c["input"])["command"] for c in self.kinds(t, "tool_call")], ["echo pong"])
+
+    def test_33b_stepwise_outcome_check_adds_a_repair_step(self):
+        """The request names an output file the plan never wrote: before finishing, the driver notices (deterministically) and adds
+        one write_file step; the file then exists with the value from the earlier result."""
+        path = os.path.join(self.env["HOME"], "sw", "out.txt")
+        t = self.stepwise("stepwise: forget the file %s" % path)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell", "write_file"])
+        outcome = self.kinds(t, "verify", "outcome"); self.assertEqual(len(outcome), 1); self.assertIn("does not exist after the plan; adding a save_result step", outcome[0]["output"])
+        self.assertEqual(open(path).read(), "42\n")                                                       # the shell's output, byte for byte
+        self.assertTrue(any(v["name"] == "save_result" and "writing the output of step 1 (run_shell)" in v["output"] for v in self.kinds(t, "verify")), t["steps"])
+
+    def test_32b_stepwise_unparseable_arguments_never_reach_the_tool(self):
+        t = self.stepwise("stepwise: broken json")
+        self.assertEqual(t["status"], "done", t)
+        calls = self.kinds(t, "tool_call"); self.assertEqual(len(calls), 1); self.assertEqual(json.loads(calls[0]["input"])["command"], "echo pong")   # the broken call never ran
+        ver = self.kinds(t, "verify", "run_shell"); self.assertIn("were not valid JSON", ver[0]["output"]); self.assertTrue(ver[1]["output"].startswith("ok: "), ver)
+
+    def test_32c_stepwise_missing_folder_is_named_in_the_retry(self):
+        path = os.path.join(self.env["HOME"], "sw-deep", "a", "x.txt")
+        t = self.stepwise("stepwise: missing parent %s" % path)
+        self.assertEqual(t["status"], "done", t)
+        ver = self.kinds(t, "verify", "run_shell")
+        self.assertIn("No such file or directory", ver[0]["output"]); self.assertIn("the folder %s does not exist yet: create it first, e.g. mkdir -p" % os.path.dirname(path), ver[0]["output"])
+        self.assertTrue(ver[1]["output"].startswith("ok: "), ver[1]); self.assertEqual(open(path).read(), "hi\n")
+
+    def test_33c_stepwise_save_result_writes_the_previous_output_verbatim(self):
+        """save_result (driver-only): the model names a path, the driver writes the previous tool call's output there byte for byte
+        through the real write_file tool (same gate, recorded as write_file) — the model never retypes the data."""
+        path = os.path.join(self.env["HOME"], "sw", "health.json")
+        t = self.stepwise("stepwise: fetch and save %s" % path)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell", "write_file"])
+        self.assertEqual(open(path).read(), '{"ok": true, "app": "Fab OS"}\n')
+        sv = self.kinds(t, "verify", "save_result"); self.assertEqual(len(sv), 1); self.assertIn("writing the output of step 1 (run_shell) (30 chars) to %s, unchanged" % path, sv[0]["output"])
+        self.assertTrue(self.kinds(t, "verify", "write_file")[0]["output"].startswith("ok: "), t["steps"])
+        self.assertNotIn("save_result", [x["name"] for x in fa.TOOLS])                                # never offered to the free-form (cloud) loop
+
+    def test_33d_stepwise_save_result_with_nothing_to_save_fails_honestly(self):
+        t = self.stepwise("stepwise: save nothing")
+        self.assertEqual(t["status"], "failed", t)
+        self.assertEqual(self.kinds(t, "tool_call"), [])                                                    # no write ever happened
+        self.assertIn("nothing to save yet", t["error"]); self.assertIn("after 3 attempts", t["error"])
+
+    def test_33e_stepwise_plan_sanity_drops_forbidden_files_and_adds_the_reply(self):
+        """The fake planner answers an answer-only task with run_shell + save_result and no reply (the model's measured habit); the
+        task says 'Do not create or change any file' and asks for FILE COUNT — the driver drops the write and adds the reply."""
+        d = os.path.join(self.env["HOME"], "sw-count"); os.makedirs(d, exist_ok=True); open(os.path.join(d, "one.txt"), "w").close()
+        t = self.stepwise("stepwise: count files in %s (regular files only) — do not create or change any file; end your reply with FILE COUNT: <number>" % d)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell"])                     # the save_result step is gone
+        notes = [v["output"] for v in self.kinds(t, "verify", "plan")]
+        self.assertTrue(any("dropped 1 file-writing step" in n for n in notes), notes); self.assertTrue(any("added a reply step" in n for n in notes), notes)
+        self.assertEqual(t["result"], "FILE COUNT: 1"); self.assertFalse(os.path.exists("/tmp/count.txt"))
+
+    def test_33f_stepwise_open_app_must_match_the_app_the_task_names(self):
+        t = self.stepwise("stepwise: wrong app — Open the Fab Terminal application and leave it open.")
+        self.assertEqual(t["status"], "failed", t)
+        ver = self.kinds(t, "verify", "open_app"); self.assertEqual(len(ver), 3)
+        self.assertIn("the task asks for Fab Terminal, which is konsole — you opened sleep", ver[0]["output"]); self.assertIn("after 3 attempts", t["error"])
+        subprocess.run(["pkill", "-x", "-f", "sleep 8"], capture_output=True)
+
+    def test_33g_stepwise_short_value_without_the_file_forces_save_result(self):
+        """The step's command printed one short value (42) but the file its goal names does not exist: the retry offers save_result
+        only, the (fake) model names the path from the hint, and the file gets the value verbatim through write_file."""
+        path = os.path.join(self.env["HOME"], "sw", "answer.txt")
+        t = self.stepwise("stepwise: forget the redirect %s" % path)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell", "write_file"])
+        self.assertEqual(open(path).read(), "42\n")
+        ver = self.kinds(t, "verify")
+        self.assertIn("named in this step does not exist afterwards", ver[0]["output"]); self.assertIn("call save_result", ver[0]["output"])
+        self.assertTrue(any(v["name"] == "save_result" and "writing the output of step 1 (run_shell) (3 chars)" in v["output"] for v in ver), ver)
+
+    def test_33_status_reports_driver_and_network(self):
+        st = self.cli("status"); self.assertEqual(st["driver"], "freeform")                        # the fake provider defaults to the cloud loop
+        self.assertEqual(set(st["network"]), {"online", "target", "checked", "age_s"})
+        self.cli("settings", "agent.driver", "stepwise")
+        try:
+            self.assertEqual(self.cli("status")["driver"], "stepwise"); self.assertEqual(self.cli("settings")["agent.driver"], "stepwise")
+        finally:
+            self.cli("settings", "agent.driver", "")
+        self.assertEqual(self.cli("status")["driver"], "freeform")
+
+
+class StepwiseUnits(unittest.TestCase):
+    """In-process checks of the small-model driver's pieces (ADR-0018): plan parsing, deterministic step checks, the compact
+    turn text, the prompt budget, driver selection, the online probe, and the OpenAI-compatible provider's schema call."""
+
+    def test_parse_plan(self):
+        allowed = fa.STEP_TOOLS
+        ok = '{"steps": [{"tool": "run_shell", "goal": " copy   the folder "}, {"tool": "reply", "goal": "say so"}]}'
+        self.assertEqual(fa.parse_plan(ok, allowed), ([{"tool": "run_shell", "goal": "copy the folder"}, {"tool": "reply", "goal": "say so"}], None))
+        self.assertEqual(fa.parse_plan("Sure! Here it is:\n" + ok + "\nDone.", allowed)[0][0]["tool"], "run_shell")   # JSON embedded in prose
+        for bad, why in (("not json", "not a JSON object"), ('{"steps": []}', "no steps"), ('{"plan": 1}', "no steps"),
+                         ('{"steps": [{"tool": "teleport", "goal": "x"}]}', "unknown tool"), ('{"steps": [{"tool": "run_shell", "goal": ""}]}', "no goal"),
+                         ('{"steps": [' + ",".join(['{"tool": "run_shell", "goal": "x"}'] * 9) + ']}', "more than 8"), ('{"steps": ["x"]}', "not an object")):
+            plan, err = fa.parse_plan(bad, allowed); self.assertIsNone(plan, bad); self.assertIn(why, err)
+        self.assertIn("unknown tool", fa.parse_plan('{"steps": [{"tool": "send_email", "goal": "x"}]}', ["run_shell", "reply"])[1])   # a policy-denied tool is not offered
+
+    def test_step_check(self):
+        c = fa.step_check
+        self.assertEqual(c("run_shell", {}, {"exit_code": 0, "stdout": "8\n", "stderr": ""}, False), (True, "exit 0, output: 8"))
+        ok, why = c("run_shell", {}, {"exit_code": 2, "stdout": "", "stderr": "cp: cannot stat 'x': No such file"}, False); self.assertFalse(ok); self.assertIn("exit code 2: cp: cannot stat", why)
+        ok, why = c("run_shell", {}, {"error": "timeout after 120s"}, True); self.assertFalse(ok); self.assertIn("timeout", why)
+        tmp = tempfile.mkdtemp(prefix="fabos-sw-")
+        try:
+            p = os.path.join(tmp, "a.txt"); open(p, "w").write("hi\n")
+            self.assertEqual(c("write_file", {"path": p, "content": "hi\n"}, {"path": p, "bytes": 3}, False), (True, "%s exists, 3 bytes" % p))
+            self.assertIn("content differs", c("write_file", {"path": p, "content": "other"}, {"path": p}, False)[1])
+            self.assertIn("does not exist", c("write_file", {"path": os.path.join(tmp, "nope.txt"), "content": "x"}, {}, False)[1])
+            self.assertTrue(c("write_file", {"path": p, "content": "zzz", "append": True}, {"path": p}, False)[0])      # append: existence is enough
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertEqual(c("type_text", {"text": "hello"}, {"typed_chars": 5}, False), (True, "typed 5 characters"))
+        self.assertFalse(c("type_text", {"text": "hello"}, {"typed_chars": 0}, False)[0])
+        self.assertFalse(c("web_fetch", {"url": "http://x"}, {"text": "  "}, False)[0]); self.assertTrue(c("web_fetch", {"url": "http://x"}, {"text": "{}"}, False)[0])
+        self.assertEqual(c("open_app", {"app": "xdg-open", "args": ["https://x"]}, {"launched": "xdg-open https://x"}, False), (True, "launched"))
+        self.assertFalse(c("open_app", {"app": "no-such-app-fabos-test"}, {"launched": "x"}, False)[0])                  # not running afterwards = failed
+        self.assertTrue(c("read_file", {"path": "x"}, {"content": "abc"}, False)[0]); self.assertTrue(c("list_dir", {"path": "x"}, {"entries": [], "total": 0}, False)[0])
+        self.assertFalse(c("send_email", {"to": "a@b"}, {"sent": False}, False)[0]); self.assertTrue(c("notify_user", {}, {"notified": False}, False)[0])
+
+    def test_plan_sanity_adds_the_typing_step(self):
+        plan = [{"tool": "open_app", "goal": "open Fab Editor"}]
+        notes = fa.plan_sanity("Type the word hello into a new Fab Editor window: open it with open_app, then type it with type_text.", plan)
+        self.assertEqual([s["tool"] for s in plan], ["open_app", "type_text"]); self.assertEqual(len(notes), 1); self.assertIn("type_text", notes[0])
+        plan = [{"tool": "open_app", "goal": "open Fab Editor"}, {"tool": "type_text", "goal": "type hello"}]
+        self.assertEqual(fa.plan_sanity("type hello into the editor", plan), []); self.assertEqual(len(plan), 2)                    # already there
+        plan = [{"tool": "run_shell", "goal": "copy the folder"}]
+        self.assertEqual(fa.plan_sanity("Copy the folder /tmp/a to ~/b (file types unchanged)", plan), []); self.assertEqual(len(plan), 1)   # no open_app, no typing
+        plan = [{"tool": "open_app", "goal": "open konsole"}]
+        self.assertEqual(fa.plan_sanity("Open the Fab Terminal and leave it open", plan), []); self.assertEqual(len(plan), 1)
+
+    def test_expected_app_and_the_request_regexes(self):
+        self.assertEqual(fa.expected_app("Open the Fab Terminal application so a terminal window is running"), "konsole")
+        self.assertEqual(fa.expected_app("Type the word hello into a new Fab Editor window"), "kate"); self.assertEqual(fa.expected_app("open Fab Files"), "dolphin")
+        self.assertIsNone(fa.expected_app("Copy the folder /tmp/a to ~/b")); self.assertIsNone(fa.expected_app("open Fab Editor and then the browser"))   # none / several
+        self.assertTrue(fa.NO_FILES_RE.search("count the files. do not create or change any file.")); self.assertTrue(fa.NO_FILES_RE.search("without writing any files"))
+        self.assertFalse(fa.NO_FILES_RE.search("create the file ~/a.txt")); self.assertFalse(fa.NO_FILES_RE.search("do not stop until the file exists"))
+        self.assertTrue(fa.ANSWER_RE.search("count how many files are there")); self.assertTrue(fa.ANSWER_RE.search("end your reply with a line FILE COUNT: <n>"))
+        self.assertFalse(fa.ANSWER_RE.search("copy the folder /tmp/ladder/notes to ~/ladder/notes-copy"))
+        plan = [{"tool": "run_shell", "goal": "count"}, {"tool": "write_file", "goal": "save the count"}]
+        notes = fa.plan_sanity("Count how many files are in /tmp/x. Do not create or change any file.", plan)
+        self.assertEqual([s["tool"] for s in plan], ["run_shell", "reply"]); self.assertEqual(len(notes), 2)
+        plan = [{"tool": "write_file", "goal": "x"}]
+        self.assertEqual(fa.plan_sanity("Do not change any file", plan), []); self.assertEqual(len(plan), 1)                    # never empties the plan
+        plan = [{"tool": "run_shell", "goal": "copy"}]
+        self.assertEqual(fa.plan_sanity("Copy /tmp/a to ~/b so it holds the same files", plan), []); self.assertEqual(len(plan), 1)
+        plan = [{"tool": "web_fetch", "goal": "fetch the health URL"}, {"tool": "write_file", "goal": "save it to ~/h.json"}]
+        notes = fa.plan_sanity("Use your web fetch tool on http://x/health and save the JSON body you get back, unchanged, to ~/h.json", plan)
+        self.assertEqual([s["tool"] for s in plan], ["web_fetch", "save_result"]); self.assertEqual(len(notes), 1); self.assertIn("save_result instead of retyping", notes[0])
+        plan = [{"tool": "list_dir", "goal": "list the folder"}, {"tool": "web_fetch", "goal": "fetch list.txt"}, {"tool": "type_text", "goal": "type the count"}, {"tool": "reply", "goal": "answer"}]
+        notes = fa.plan_sanity("Count how many files are in the folder /tmp/x (regular files only). End your reply with FILE COUNT: <number>", plan)
+        self.assertEqual([s["tool"] for s in plan], ["list_dir", "reply"]); self.assertEqual(len(notes), 2)      # no web word, no open/type word in the task
+        plan = [{"tool": "web_fetch", "goal": "fetch"}]
+        self.assertEqual(fa.plan_sanity("Count the files in /tmp/x", plan), []); self.assertEqual(len(plan), 1)                       # never empties the plan
+        plan = [{"tool": "open_app", "goal": "open the browser"}]
+        self.assertEqual(fa.plan_sanity("Open the browser on https://example.com", plan), []); self.assertEqual(len(plan), 1)
+        self.assertEqual(fa.plan_max_steps("Copy /tmp/a to ~/b so that ~/b holds the same files."), 3)                                # 1 sentence -> 3
+        self.assertEqual(fa.plan_max_steps("Count the files in /tmp/x (regular files only). Do not change any file. End your reply with FILE COUNT: <n>"), 5)
+        self.assertEqual(fa.plan_max_steps(". ".join(["Do this"] * 12) + "."), fa.PLAN_MAX_STEPS)
+        web = [{"tool": "run_shell", "goal": "web_fetch 'https://example.com/api/grand_total'"}, {"tool": "save_result", "goal": "save the api answer"}]
+        self.assertIn("every step uses the web", fa.plan_reject_reason("Add the amount column of /tmp/a.csv and /tmp/b.csv into ~/total.txt", web))
+        self.assertIsNone(fa.plan_reject_reason("Fetch https://example.com/api and save it", web))                                    # the task names a URL
+        self.assertIsNone(fa.plan_reject_reason("Add the amounts", [web[0], {"tool": "run_shell", "goal": "sum the column"}]))       # one local step: not rejected
+        self.assertEqual(fa.plan_schema(["run_shell"], 4)["properties"]["steps"]["maxItems"], 4)
+        plan = [{"tool": "web_fetch", "goal": "fetch the page"}, {"tool": "write_file", "goal": "write a summary to ~/s.txt"}]
+        self.assertEqual(fa.plan_sanity("Fetch http://x and write a two-line summary to ~/s.txt", plan), []); self.assertEqual(plan[1]["tool"], "write_file")   # no verbatim wording: untouched
+
+    def test_goal_paths_and_result_rendering(self):
+        self.assertEqual(fa.goal_paths("Write the date into ~/Ladder/one/date.txt (source: /tmp/ladder/notes); see http://127.0.0.1:8790/health and ~/Ladder/total.txt."),
+                         ["~/Ladder/one/date.txt", "/tmp/ladder/notes", "~/Ladder/total.txt"])
+        self.assertEqual(fa.goal_paths("count the regular files in the folder"), [])
+        self.assertEqual(fa.missing_goal_paths("Copy /tmp to ~/no-such-dir-fabos/x"), ["~/no-such-dir-fabos/x"])
+        self.assertEqual(fa.missing_goal_paths("Delete ~/no-such-dir-fabos/x"), []); self.assertEqual(fa.missing_goal_paths("Move ~/no-such-dir-fabos/x to ~/y"), [])
+        self.assertEqual(fa.missing_goal_paths("Rename every .txt in ~/no-such-dir-fabos to .md"), []); self.assertEqual(fa.missing_goal_paths("List /tmp"), [])
+        r = fa.render_result
+        self.assertEqual(r("run_shell", {"exit_code": 0, "stdout": "8\n", "stderr": ""}), "exit_code 0\nstdout: 8")
+        self.assertEqual(r("run_shell", {"exit_code": 1, "stdout": "", "stderr": "boom"}), "exit_code 1\nstdout: (empty)\nstderr: boom")
+        self.assertEqual(r("web_fetch", {"url": "u", "text": '{"ok": true}'}), '{"ok": true}'); self.assertEqual(r("read_file", {"content": "abc"}), "abc")
+        self.assertEqual(r("list_dir", {"total": 2, "path": "/x", "entries": [{"name": "a", "dir": True}, {"name": "b.txt", "dir": False}]}), "2 entries in /x (1 files, 1 folders): a/, b.txt")
+        self.assertEqual(r("write_file", {"path": "/x", "bytes": 3}), "wrote 3 bytes to /x"); self.assertEqual(r("run_shell", {"error": "timeout"}), "error: timeout")
+        self.assertEqual(r("type_text", {"typed_chars": 5}), "typed 5 characters"); self.assertEqual(r("notify_user", {"notified": True}), '{"notified": true}')
+
+    def test_turn_text_is_compact_and_shows_the_current_step(self):
+        plan = [{"tool": "run_shell", "goal": "sum the column"}, {"tool": "write_file", "goal": "write the total"}, {"tool": "reply", "goal": "report it"}]
+        big = "x" * 5000
+        results = {0: {"tool": "run_shell", "text": big}, 1: {"tool": "write_file", "text": "y" * 3000}}
+        t = fa.stepwise_turn_text("Add  up the\namounts", plan, 2, results)
+        self.assertTrue(t.startswith("Task: Add up the amounts\nPlan:\n"))                                        # no paths in the task: no Paths line
+        t3 = fa.stepwise_turn_text("Write the date into ~/Ladder/one/date.txt", plan, 0, {})
+        self.assertIn("\nPaths named in the task (use them exactly): ~/Ladder/one/date.txt = %s/Ladder/one/date.txt" % fa.HOME, t3); self.assertIn("\nPlan:\n", t3)
+        self.assertIn("1. [run_shell] sum the column  (done)", t); self.assertIn("2. [write_file] write the total  (done)", t); self.assertIn("3. [reply] report it  (NOW)", t)
+        self.assertIn("Step 3 of 3: report it", t); self.assertIn("No tool call", t)
+        self.assertLess(len(t), fa.RESULT_LIMIT_STEP + fa.RESULT_LIMIT_EARLIER + 600)        # results clipped: last <= 1500 chars, earlier <= 300
+        self.assertIn("truncated", t)
+        t2 = fa.stepwise_turn_text("Task", plan, 1, {0: {"tool": "run_shell", "text": "ok"}}, error="exit code 1: No such file")
+        self.assertIn("(later)", t2); self.assertIn("Your previous attempt at this step failed: exit code 1: No such file", t2); self.assertIn("ONE write_file call", t2)
+
+    def test_raw_result_and_the_paths_line(self):
+        r = fa.raw_result
+        self.assertEqual(r("run_shell", {"exit_code": 0, "stdout": "8\n", "stderr": ""}), "8\n"); self.assertIsNone(r("run_shell", {"error": "timeout"}))
+        self.assertEqual(r("web_fetch", {"text": '{"ok": true}'}), '{"ok": true}'); self.assertEqual(r("read_file", {"content": "abc"}), "abc")
+        self.assertEqual(r("list_dir", {"entries": [{"name": "a"}, {"name": "b"}]}), "a\nb\n")
+        self.assertIsNone(r("open_app", {"launched": "kate"})); self.assertIsNone(r("write_file", {"path": "/x", "bytes": 3})); self.assertIsNone(r("run_shell", "junk"))
+        self.assertEqual(r("type_text", {"typed_chars": 5}, {"text": "hello", "delay_ms": 1500}), "hello\n")                          # what is on screen now
+        self.assertIsNone(r("type_text", {"typed_chars": 0}, {"text": "hello"})); self.assertIsNone(r("type_text", {"error": "wtype failed"}, {"text": "x"}))
+        tmp = tempfile.mkdtemp(prefix="fabos-pl-")
+        try:
+            os.makedirs(os.path.join(tmp, "have"))
+            line = fa.task_paths_line("Copy %s/have to %s/have/out.txt and to %s/missing/deep/out.txt." % (tmp, tmp, tmp))
+            want = "Paths named in the task (use them exactly): %s/have; %s/have/out.txt; %s/missing/deep/out.txt (its folder %s/missing/deep does not exist yet: mkdir -p it first; write_file and save_result create it)" % (tmp, tmp, tmp, tmp)
+            self.assertEqual(line, want)                      # existing path and existing folder: no note; missing folder: named, once
+            self.assertEqual(fa.task_paths_line("count the files in the folder"), "")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_self_check_is_shown_what_was_observed(self):
+        class P:
+            name = "x"
+
+            def complete(self, system, user, schema=None, max_tokens=600, on_usage=None):
+                P.user, P.schema = user, schema
+                return '{"ok": false, "reason": "the names still end in .txt"}'
+        ok, why = fa.Agent._self_check(None, P(), {"goal": "rename the notes to .md"}, "run_shell", {"command": "mv ..."}, '{"exit_code": 0, "stdout": ""}',
+                                       "exit 0, no output; ~/x now holds 2 entries: a.txt.md, b.txt.md", None, "Rename every  .txt in ~/x\nto .md")
+        self.assertFalse(ok); self.assertEqual(why, "the names still end in .txt"); self.assertIs(P.schema, fa.CHECK_SCHEMA)
+        self.assertTrue(P.user.startswith("Task: Rename every .txt in ~/x to .md\nGoal of the step: rename the notes to .md\n"), P.user)      # the task itself, whitespace-normalised
+        self.assertIn("Tool result: {\"exit_code\": 0, \"stdout\": \"\"}\nChecked afterwards: exit 0, no output; ~/x now holds 2 entries: a.txt.md, b.txt.md\nWas the goal achieved?", P.user)
+        self.assertIn("save_result", fa.STEP_TOOLS); self.assertEqual(fa.SAVE_RESULT_TOOL["input_schema"]["required"], ["path"])
+
+    def test_local_prompt_budget_and_content(self):
+        s = fa.local_system_prompt("auto", {"online": True})
+        self.assertLess(len(s), 2800, len(s))            # measured with the model's tokenizer in the image (build/tokens.sh, see ADR-0018): ~3.7 chars per token, so 2800 chars stays under the 900-token budget
+        for must in ("ONE tool call", "Never say a step is done", "Show your work", "web_fetch", "run_shell", "write_file", "save_result", "open_app", "type_text", "Internet: ONLINE", "never need it", "Permission mode: auto", fa.HOME):
+            self.assertIn(must, s)
+        self.assertIn("Internet: OFFLINE", fa.local_system_prompt("ask", {"online": False})); self.assertIn("Internet: unknown", fa.local_system_prompt("ask", {"online": None}))
+        self.assertLess(len(fa.PLAN_SYSTEM), 2500); self.assertIn("reply", fa.PLAN_SYSTEM)     # measured with the model tokenizer (build/tokens.sh, ADR-0018): ~4.2 chars per token, so ~550 tokens
+        sch = fa.plan_schema(["run_shell", "reply"]); self.assertEqual(sch["properties"]["steps"]["items"]["properties"]["tool"]["enum"], ["run_shell", "reply"]); self.assertEqual(sch["properties"]["steps"]["maxItems"], fa.PLAN_MAX_STEPS)
+
+    def test_driver_selection(self):
+        tmp = tempfile.mkdtemp(prefix="fabos-drv-"); st = fa.Store(os.path.join(tmp, "a.db"))
+        try:
+            self.assertEqual(fa.driver_name(st, "local"), "stepwise"); self.assertEqual(fa.driver_name(st, "claude"), "freeform"); self.assertEqual(fa.driver_name(st, "fake"), "freeform")
+            st.set_setting("agent.driver", "freeform"); self.assertEqual(fa.driver_name(st, "local"), "freeform")
+            st.set_setting("agent.driver", "Stepwise "); self.assertEqual(fa.driver_name(st, "claude"), "stepwise")
+            st.set_setting("agent.driver", "bogus"); self.assertEqual(fa.driver_name(st, "local"), "stepwise")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_network_probe_target_and_cache(self):
+        tmp = tempfile.mkdtemp(prefix="fabos-net-"); st = fa.Store(os.path.join(tmp, "a.db"))
+        real, saved_env = fa._net_probe, os.environ.pop("FABOS_AGENT_PROVIDER", None)
+        try:
+            self.assertEqual(fa.net_probe_target(st), "api.anthropic.com")                                        # no setting -> the default provider (claude) -> its API host
+            st.set_setting("provider", "claude"); self.assertEqual(fa.net_probe_target(st), "api.anthropic.com")
+            st.set_setting("provider", "local"); self.assertEqual(fa.net_probe_target(st), "1.1.1.1")             # loopback endpoint: probe Cloudflare instead
+            st.set_setting("provider", "openai"); self.assertEqual(fa.net_probe_target(st), "api.openai.com")
+            st.set_setting("provider", "local"); st.set_setting("local.base_url", "http://192.168.1.20:8080/v1"); self.assertEqual(fa.net_probe_target(st), "1.1.1.1")
+            for h in ("127.0.0.1", "localhost", "10.0.0.5", "172.16.3.4", "192.168.0.1", None, ""):
+                self.assertTrue(fa._private_host(h), h)
+            self.assertFalse(fa._private_host("172.32.0.1")); self.assertFalse(fa._private_host("example.com"))
+            calls = []
+            fa._net_probe = lambda host: calls.append(host) or True
+            with fa._net_lock:
+                fa._net.update(online=None, target="", checked=0.0, refreshing=False)
+            d = fa.network_status(st, block=True); self.assertEqual((d["online"], d["target"], d["age_s"]), (True, "1.1.1.1:443", 0)); self.assertEqual(calls, ["1.1.1.1"])
+            fa._net_probe = lambda host: calls.append(host) or False
+            d = fa.network_status(st, block=True); self.assertTrue(d["online"]); self.assertEqual(len(calls), 1)     # cached for NET_CACHE_S: no second probe
+            with fa._net_lock:
+                fa._net["checked"] = time.time() - fa.NET_CACHE_S - 1
+            d = fa.network_status(st, block=False); self.assertTrue(d["online"]); self.assertGreaterEqual(d["age_s"], fa.NET_CACHE_S)   # stale value returned at once
+            for _ in range(50):
+                if not fa._net.get("refreshing"): break
+                time.sleep(0.05)
+            self.assertEqual(len(calls), 2); self.assertFalse(fa.network_status(st, block=True)["online"])          # the background refresh landed
+        finally:
+            fa._net_probe = real
+            if saved_env is not None: os.environ["FABOS_AGENT_PROVIDER"] = saved_env
+            with fa._net_lock:
+                fa._net.update(online=None, target="", checked=0.0, refreshing=False)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_openai_compat_complete_and_step_options(self):
+        """The local provider sends temperature 0.2 + top_p 0.9, response_format json_schema for schema calls (falling back to the
+        schema in the prompt when the endpoint rejects it), tool_choice/max_tokens on tool turns; other providers keep their shape."""
+        real = urllib.request.urlopen
+        bodies = []
+
+        def fake_urlopen(req, timeout=None, **kw):
+            body = json.loads(req.data); bodies.append(body)
+            if "response_format" in body and getattr(fake_urlopen, "reject", False):
+                raise urllib.error.HTTPError(req.full_url, 400, "err", {}, io.BytesIO(json.dumps({"error": {"message": "response_format is not supported"}}).encode()))
+            content = '{"steps": [{"tool": "run_shell", "goal": "g"}]}' if ("response_format" in body or "schema" in body["messages"][-1]["content"]) else "plain answer"
+            return _Resp(200, {"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 5, "completion_tokens": 2}})
+        urllib.request.urlopen = fake_urlopen
+        try:
+            local = fa.OpenAICompatProvider("http://127.0.0.1:8080/v1", None, "local", name="local", result_limit=fa.RESULT_LIMIT_LOCAL)
+            cloud = fa.OpenAICompatProvider("https://api.example.test/v1", "k", "m", name="openai")
+            used = []
+            out = local.complete("sys", "Task from the user:\nx", schema=fa.plan_schema(["run_shell"]), max_tokens=123, on_usage=lambda i, o: used.append((i, o)))
+            self.assertEqual(json.loads(out)["steps"][0]["tool"], "run_shell"); self.assertEqual(used, [(5, 2)])
+            b = bodies[-1]; self.assertEqual((b["temperature"], b["top_p"], b["repeat_penalty"], b["max_tokens"]), (0.2, 0.9, 1.05, 123)); self.assertEqual(b["response_format"]["type"], "json_schema")
+            self.assertEqual(b["response_format"]["json_schema"]["schema"]["properties"]["steps"]["items"]["properties"]["tool"]["enum"], ["run_shell"]); self.assertTrue(local.json_schema_ok)
+            fake_urlopen.reject = True; local.json_schema_ok = None
+            out = local.complete("sys", "Task from the user:\nx", schema=fa.CHECK_SCHEMA)
+            self.assertEqual(json.loads(out)["steps"][0]["goal"], "g"); self.assertFalse(local.json_schema_ok)
+            self.assertNotIn("response_format", bodies[-1]); self.assertIn("matching this schema", bodies[-1]["messages"][-1]["content"])
+            fake_urlopen.reject = False
+            self.assertEqual(local.complete("sys", "hello"), "plain answer"); self.assertNotIn("response_format", bodies[-1])
+            local.step("sys", [{"role": "user", "content": "do"}], [fa.TOOLS[0]], tool_choice="required", max_tokens=700)
+            b = bodies[-1]; self.assertEqual(b["tool_choice"], "required"); self.assertEqual(b["max_tokens"], 700); self.assertEqual(b["top_p"], 0.9); self.assertEqual(len(b["tools"]), 1)
+            local.step("sys", [{"role": "user", "content": "do"}], [])
+            self.assertNotIn("tools", bodies[-1]); self.assertNotIn("tool_choice", bodies[-1])
+            cloud.step("sys", [{"role": "user", "content": "do"}], fa.TOOLS)
+            b = bodies[-1]; self.assertEqual(b["temperature"], 0.2); self.assertNotIn("top_p", b); self.assertNotIn("repeat_penalty", b); self.assertNotIn("max_tokens", b); self.assertNotIn("tool_choice", b)   # the cloud request shape is unchanged
+            self.assertEqual(len(b["tools"]), len(fa.TOOLS))
+        finally:
+            urllib.request.urlopen = real
+
+    def test_provider_complete_falls_back_to_step_for_providers_without_complete(self):
+        class P:
+            name = "x"
+
+            def step(self, system, messages, tools, on_usage=None, **opts):
+                P.seen = (messages[0]["content"], tools, opts)
+                return {"content": [{"type": "text", "text": '{"ok": true, "reason": "fine"}'}], "stop_reason": "end_turn"}
+        out = fa.provider_complete(P(), "sys", "Goal: x", schema=fa.CHECK_SCHEMA, max_tokens=60)
+        self.assertEqual(json.loads(out)["ok"], True); self.assertIn("matching this schema", P.seen[0]); self.assertEqual(P.seen[1], []); self.assertEqual(P.seen[2]["max_tokens"], 60)
+
 
 class SecurityUnits(unittest.TestCase):
     """In-process checks of the enterprise controls (ADR-0017): policy clamps, HMAC audit chain, pkexec argv + authz record,

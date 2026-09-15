@@ -178,6 +178,7 @@ tests/iso-boot-test.sh           # headless live-boot smoke test
 tests/branding-check.sh vm       # 60+ static checks: identity, no Canonical/KDE names, legal files present
 tests/ui-tour.sh                 # boots headless, drives the UI, captures screenshots to build/screenshots/
 python3 tests/agent-test.py      # agent unit tests (offline, FakeProvider)
+tests/local-driver-image.sh --label after --extra-args --no-repack   # the built-in model on the ladder's L1/L2 tasks inside the image (real model, ~10 min)
 python3 tests/voice-test.py      # voice: VAD, phrases, CLI contract, daemon follow-loop; wake word + whisper when the engines are present
 ```
 
