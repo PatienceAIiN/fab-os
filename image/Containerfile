@@ -142,7 +142,7 @@ RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/; s/^# *en_IN UTF-8/en_IN 
     test -f /etc/sysctl.d/70-fabos-hardening.conf && grep -q '^net.core.bpf_jit_harden = 2' /etc/sysctl.d/70-fabos-hardening.conf && \
     apparmor_parser -Q -K /etc/apparmor.d/fabos-agentd /etc/apparmor.d/fabos-voiced /etc/apparmor.d/fabos-llama && \
     python3 -c "import xml.etree.ElementTree as E; a=E.parse('/usr/share/polkit-1/actions/in.patienceai.fabos.rootexec.policy').getroot().find('action'); assert {d.tag: d.text for d in a.find('defaults')} == {'allow_any': 'no', 'allow_inactive': 'no', 'allow_active': 'auth_admin_keep'}" && \
-    ! test -e /etc/sudoers.d/fabos-agent && ! grep -rq NOPASSWD /etc/sudoers.d /etc/sudoers && visudo -cqf /etc/sudoers.d/fabos-hardening && \
+    ! test -e /etc/sudoers.d/fabos-agent && ! grep -rqE '^[^#]*NOPASSWD' /etc/sudoers.d /etc/sudoers && visudo -cqf /etc/sudoers.d/fabos-hardening && \
     test -x /usr/bin/bwrap && test -u /usr/bin/pkexec && test -x /usr/lib/polkit-1/polkitd && \
     systemctl is-enabled unattended-upgrades && grep -q 'APT::Periodic::Unattended-Upgrade "1"' /etc/apt/apt.conf.d/20auto-upgrades && grep -q -- '-security' /etc/apt/apt.conf.d/52fabos-unattended && \
     grep -q '^Autolock=true' /etc/xdg/kscreenlockerrc && grep -q '^LidAction=1' /etc/xdg/powerdevilrc && \
@@ -154,7 +154,9 @@ RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/; s/^# *en_IN UTF-8/en_IN 
     ufw default deny incoming && ufw default allow outgoing && \
     sed -i 's/^ENABLED=no$/ENABLED=yes/' /etc/ufw/ufw.conf && grep -q '^ENABLED=yes$' /etc/ufw/ufw.conf && systemctl enable ufw && \
     truncate -s0 /etc/machine-id && rm -f /var/lib/dbus/machine-id && \
-    flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+    ( flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || echo 'flathub remote not added (offline build?) - continuing' )
+# ^ the Flatpak fallback is grouped on purpose: a bare trailing '|| true' would swallow a failure ANYWHERE in this && chain
+#   (it did once: a comment containing the word NOPASSWD tripped the assertion above and every later command was skipped).
 # Ship the official archive in the OS, not the build mirror
 COPY image/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources
 COPY image/overlay/common/ /
