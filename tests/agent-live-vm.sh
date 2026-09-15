@@ -90,9 +90,14 @@ run_task ask-1 300 ask "$MODEL" "Delete the file ~/notes/hello.txt"
 after=$(api GET /activity | python3 -c 'import sys,json; d=json.load(sys.stdin); print(sum(1 for a in (d if isinstance(d,list) else d.get("activity",[])) if "approval" in json.dumps(a)))' 2>/dev/null)
 if [ "$APPROVED" -ge 1 ] && ! vm "test -e ~/notes/hello.txt"; then verdict PASS "ask-1 approval requested (${before:-?}->${after:-?}) then executed"; else verdict FAIL "ask-1 approvals=$APPROVED status=$TASK_STATUS"; fi
 # ---------- MAIL (only to the address you authorised)
-if [ -n "$MAIL_TO" ]; then
+if [ -n "$MAIL_TO" ] && [ -n "${MAIL_APP_PASSWORD:-}" ] && [ -n "${MAIL_ADDRESS:-}" ]; then
   run_task mail-1 300 auto "$MODEL" "Send an email to $MAIL_TO with the subject 'Fab OS agent test' and a short body that reports this machine's hostname and disk usage of /."
   check "email_sent logged" "fabos log --limit 60 | grep -i 'email_sent'" && verdict PASS "mail-1 sent from the user's own account to $MAIL_TO (check the inbox)" || verdict FAIL "mail-1 ($TASK_STATUS)"
+elif [ -n "$MAIL_TO" ]; then
+  # No user mail account was supplied (MAIL_ADDRESS + MAIL_APP_PASSWORD): the agent has no Brevo path any more, so the
+  # right behaviour is to ask the user to sign in — verify exactly that instead of pretending to send.
+  run_task mail-1 120 auto "$MODEL" "Send an email to $MAIL_TO with the subject 'Fab OS agent test' and a short body that reports this machine's hostname."
+  if echo "$TASK_RESULT" | grep -q -i -E 'sign in|not configured|Settings.*Mail|mail account'; then echo ">>> SKIP: mail-1 no mail account supplied; the agent correctly asked the user to sign in (Settings > Mail)"; else verdict FAIL "mail-1 without an account: agent neither sent nor asked to sign in ($TASK_STATUS)"; fi
 fi
 # ---------- WATCH
 run_task watch-1 240 auto "$MODEL" "Every 20 seconds check whether the file ~/work/flag.txt exists; when it appears, notify me and stop checking."
