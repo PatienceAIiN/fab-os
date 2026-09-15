@@ -5,8 +5,8 @@ Priority: optional
 Architecture: all
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
 Homepage: @HOME_URL@
-Depends: python3 (>= 3.12), python3-pyqt6, python3-anthropic, python3-dbus, python3-gi, libnotify-bin, wtype, xdg-utils, curl, systemd, fabos-branding
-Recommends: kate, konsole, dolphin
+Depends: python3 (>= 3.12), python3-pyqt6, python3-anthropic, python3-dbus, python3-gi, libnotify-bin, wtype, xdg-utils, curl, systemd, fabos-branding, pkexec, polkitd, bubblewrap
+Recommends: kate, konsole, dolphin, apparmor
 Description: @DISTRO_NAME@ autonomous agent — ask bar, Fab AI Controls, policy engine, history
  The @DISTRO_NAME@ agent takes a plain-language goal ("open editor, write hi and
  mail it to someone, then tell me when they reply") and carries it out on the
@@ -15,3 +15,7 @@ Description: @DISTRO_NAME@ autonomous agent — ask bar, Fab AI Controls, policy
  approvals), is logged in the Fab AI Controls history, and can be cancelled,
  retried, edited or deleted. Ships the desktop "Ask me to do" bar, the
  Fab AI Controls chat app, the fabos CLI and the per-user fabos-agent service.
+ .
+ Security: root only through pkexec + polkit (the user's own password, every
+ mode); shell steps run inside bubblewrap; the activity log is an HMAC chain;
+ an administrator policy (/etc/fabos/policy.json) clamps every user setting.

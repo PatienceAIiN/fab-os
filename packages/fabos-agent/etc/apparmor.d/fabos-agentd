@@ -1,0 +1,111 @@
+# AppArmor profile for the @DISTRO_NAME@ agent daemon (fabos-agentd) — COMPLAIN MODE.
+#
+# Attached to the script path: fabos-agent.service runs /usr/lib/fabos/agent/fabos_agentd.py directly, so the kernel
+# enters this profile at exec (no change_onexec, unaffected by kernel.apparmor_restrict_unprivileged_unconfined).
+#
+# Why complain and not enforce (ADR-0017): the daemon's job is to act as the user across the whole desktop — it reads and
+# writes the user's files on request, launches any installed application, runs bubblewrap, pkexec and the user's shell.
+# The rule set below is the complete list of what the daemon's OWN code touches (fabos_agentd.py, read path by path), but
+# the children it launches for the user cannot be enumerated in advance, and an enforce-mode mistake would silently break
+# every task. In complain mode the kernel logs every access the rules would deny (`journalctl -k | grep apparmor` shows
+# ALLOWED ... profile="fabos-agentd") and denies nothing.
+#
+# Path to enforce: (1) run tests/agent-ladder-vm.sh and tests/agent-live-vm.sh in a VM with this profile loaded,
+# (2) `aa-logprof` / `journalctl -k` -> add the missing rules, (3) repeat until a full ladder run logs nothing,
+# (4) remove `complain` from flags below, rebuild, run tests/security-check.sh (it asserts the profile parses) and the
+# ladder once more. Children keep running as they do now: bubblewrap under Ubuntu's `bwrap` profile (px), pkexec and the
+# user's applications unconfined (Ux), which is what today's session gives them anyway.
+
+abi <abi/5.0>,
+
+include <tunables/global>
+
+profile fabos-agentd /usr/lib/fabos/agent/fabos_agentd.py flags=(complain,attach_disconnected) {
+  include <abstractions/base>
+  include <abstractions/python>
+  include <abstractions/nameservice>
+  include <abstractions/openssl>
+  include <abstractions/ssl_certs>
+  include <abstractions/dbus-session-strict>
+
+  # provider / mail / web endpoints (TCP), DNS, getaddrinfo (netlink), D-Bus + systemd-creds (unix)
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+  network netlink raw,
+  network unix stream,
+  network unix dgram,
+
+  # interpreter
+  /usr/bin/env ix,
+  /usr/bin/python3.[0-9]* ix,
+  /usr/lib/fabos/agent/ r,
+  /usr/lib/fabos/agent/*.py r,
+  deny /usr/lib/fabos/agent/__pycache__/** w,
+
+  # configuration (system + user), secrets (systemd-creds files), history database, runtime dir (token, port, authz records)
+  /etc/fabos/ r,
+  /etc/fabos/* r,
+  owner @{HOME}/.config/ w,
+  owner @{HOME}/.config/fabos/ rw,
+  owner @{HOME}/.config/fabos/** rwk,
+  owner @{HOME}/.local/ w,
+  owner @{HOME}/.local/share/ w,
+  owner @{HOME}/.local/share/fabos/ rw,
+  owner @{HOME}/.local/share/fabos/** rwk,
+  owner @{run}/user/@{uid}/fabos-agent/ rw,
+  owner @{run}/user/@{uid}/fabos-agent/** rwk,
+  owner @{run}/user/@{uid}/systemd/private rw,
+  owner @{run}/user/@{uid}/systemd/notify w,
+
+  # the user's own files: read_file / write_file / list_dir / attachments act on them on request (the deterministic
+  # policy + approvals bound this; ~/.ssh, ~/.gnupg and ~/.config/fabos are CRITICAL there and hidden from run_shell)
+  owner @{HOME}/ r,
+  owner @{HOME}/** rwk,
+  owner /tmp/ r,
+  owner /tmp/** rwk,
+  owner /var/tmp/** rwk,
+
+  # application registry (list_apps / system prompt)
+  /usr/share/applications/ r,
+  /usr/share/applications/** r,
+  /usr/local/share/applications/ r,
+  /usr/local/share/applications/** r,
+  /var/lib/flatpak/exports/share/applications/ r,
+  /var/lib/flatpak/exports/share/applications/** r,
+
+  # process bookkeeping (subprocess, kill_tree, systemctl show-environment)
+  @{PROC}/@{pid}/fd/ r,
+  @{PROC}/@{pid}/{stat,statm,status,cmdline,cgroup,mountinfo,mounts} r,
+  @{PROC}/sys/kernel/osrelease r,
+  /etc/localtime r,
+  /usr/share/zoneinfo/** r,
+
+  # children. bubblewrap: Ubuntu's own profile (it grants the user namespace bwrap needs; its children are stripped of
+  # capabilities). pkexec is setuid-root and must run unconfined; so do the user's applications and the fallback shell
+  # (open_app/setsid/xdg-open/bash), exactly as an interactive session would run them. Helpers inherit this profile.
+  # AppArmor matches the RESOLVED path: on Ubuntu 26.04 /usr/bin/sudo -> sudo.ws, /usr/bin/true -> gnutrue and the coreutils
+  # (/usr/bin/env, cat, sleep ...) are symlinks into /usr/lib/cargo/bin/coreutils/ (Rust coreutils); both names are listed.
+  /usr/bin/bwrap px -> bwrap,
+  /usr/bin/pkexec Ux,
+  /usr/bin/{sudo,sudo.ws} Ux,
+  /usr/bin/bash Ux,
+  /usr/bin/setsid Ux,
+  /usr/bin/xdg-open Ux,
+  /usr/bin/kdialog Ux,
+  /usr/bin/notify-send ix,
+  /usr/bin/wtype ix,
+  /usr/bin/systemctl ix,
+  /usr/bin/systemd-creds ix,
+  /usr/bin/{true,gnutrue} ix,
+  /usr/lib/cargo/bin/coreutils/* ix,
+  owner @{run}/user/@{uid}/wayland-* rw,
+  owner @{run}/user/@{uid}/bus rw,
+
+  # cancelling a task kills its process group; the children are unconfined (Ux) or under bwrap's profiles
+  signal (send),
+  signal (receive) peer=unconfined,
+
+  include if exists <local/fabos-agentd>
+}

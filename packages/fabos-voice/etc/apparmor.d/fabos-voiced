@@ -1,0 +1,126 @@
+# AppArmor profile for the @DISTRO_NAME@ voice daemon (fabos-voiced, the "Hey Fab" listener) — COMPLAIN MODE.
+#
+# Attached to the script path: fabos-voiced.service runs /usr/lib/fabos/voice/fabos_voiced.py directly (drop-in
+# 50-fabos-apparmor.conf), so the kernel enters this profile at exec. The unit sets NoNewPrivileges=yes, which forbids any
+# later profile change; every helper the daemon starts therefore INHERITS this profile (ix) and its needs are listed here.
+#
+# Why complain and not enforce yet (ADR-0017, amended after review): this rule set was derived from every subprocess call in
+# fabos_voiced.py and voicelib.py (grep `_run(\[|Popen\(|subprocess.run`) and from the binaries' data directories, but it
+# has never run under an AppArmor kernel — the build container has no AppArmor interface — and an enforce-mode mistake
+# would silently break the wake word or run whisper inside the 200M service cgroup (the systemd-run probe runs `true`).
+# In complain mode the kernel logs every access the rules would deny (`journalctl -k | grep 'profile="fabos-voiced"'`
+# shows ALLOWED ... ) and denies nothing.
+#
+# Path to enforce: (1) boot the image, run tests/voice-vm.sh and a spoken approval round trip, (2) `journalctl -k | grep
+# 'profile="fabos-voiced"'` must stay empty (or `aa-logprof` adds the missing rules), (3) remove `complain` from flags
+# below, rebuild, run tests/security-check.sh (it asserts the profile parses) and tests/voice-vm.sh once more.
+#
+# What the program touches, from reading fabos_voiced.py, voicelib.py and phrases.py:
+#   reads   /usr/share/fabos/voice/ggml-tiny.en.bin (whisper model), /usr/share/pocketsphinx/model/en-us/** (wake word),
+#           espeak-ng-data, PipeWire client config, /proc/meminfo (whisper memory gate), /dev/snd/ listing (microphone check),
+#           $XDG_RUNTIME_DIR/fabos-agent/{token,port} (the agent's API)
+#   writes  $XDG_RUNTIME_DIR/fabos-voice/ (WAV clips, spotter.err, playback.lock, state.json) and
+#           $XDG_STATE_HOME/fabos-voice/ (spoken.log, first-run marker) — nothing else in the home directory
+#   runs    pactl pw-cli pw-dump wpctl (volume/mute) pw-record/pw-play (pw-cat) parec/paplay (pacat) arecord aplay
+#           pocketsphinx whisper-cli espeak-ng notify-send systemd-run (transient scope for whisper; its probe execs `true`,
+#           which on Ubuntu 26.04 is the symlink /usr/bin/true -> gnutrue) and the playback fallbacks ffplay / mpv
+#           (only reached when pw-play, paplay and aplay are all absent; mpv is not in the image). Ubuntu 26.04's coreutils
+#           are the Rust ones: /usr/bin/env, sleep, cat ... are symlinks into /usr/lib/cargo/bin/coreutils/, and AppArmor
+#           matches the resolved path, hence that rule.
+#   network 127.0.0.1:<agent port> (HTTP), the user's PipeWire/PulseAudio sockets, the session D-Bus (notifications,
+#           user manager), the system D-Bus only for RealtimeKit (PipeWire's rt module; failure is non-fatal)
+# Anything else — every other file in the home directory, ~/.ssh, ~/.config/fabos, the network beyond the above — is
+# outside the rules and will be logged in complain mode, denied once enforced.
+
+abi <abi/5.0>,
+
+include <tunables/global>
+
+profile fabos-voiced /usr/lib/fabos/voice/fabos_voiced.py flags=(complain,attach_disconnected) {
+  include <abstractions/base>
+  include <abstractions/python>
+  include <abstractions/nameservice>
+  include <abstractions/audio>
+  include <abstractions/dbus-session-strict>
+  include <abstractions/dbus-strict>
+
+  network inet stream,
+  network inet6 stream,
+  network netlink raw,
+  network unix stream,
+  network unix dgram,
+
+  # interpreter and helpers (inherit this profile)
+  /usr/bin/env ix,
+  /usr/lib/cargo/bin/coreutils/* ix,
+  /usr/bin/python3.[0-9]* ix,
+  /usr/bin/{pactl,pw-cli,pw-dump,wpctl,pw-cat,pw-record,pw-play,pacat,parec,paplay,arecord,aplay} ix,
+  /usr/bin/{pocketsphinx,whisper-cli,espeak-ng,notify-send,systemd-run} ix,
+  /usr/bin/{true,gnutrue,ffplay,mpv} ix,
+  /usr/lib/fabos/voice/ r,
+  /usr/lib/fabos/voice/*.py r,
+  deny /usr/lib/fabos/voice/__pycache__/** w,
+
+  # models and data, read-only
+  /usr/share/fabos/voice/ r,
+  /usr/share/fabos/voice/** r,
+  /usr/share/pocketsphinx/ r,
+  /usr/share/pocketsphinx/** r,
+  /usr/lib/@{multiarch}/espeak-ng-data/ r,
+  /usr/lib/@{multiarch}/espeak-ng-data/** r,
+  /usr/share/espeak-ng-data/ r,
+  /usr/share/espeak-ng-data/** r,
+  /usr/share/pipewire/ r,
+  /usr/share/pipewire/** r,
+  /etc/pipewire/ r,
+  /etc/pipewire/** r,
+  owner @{HOME}/.config/pipewire/ r,
+  owner @{HOME}/.config/pipewire/** r,
+  /etc/fabos/voice.env r,
+  /etc/localtime r,
+  /usr/share/zoneinfo/** r,
+
+  # state and runtime files (the only writable places)
+  owner @{HOME}/.local/ w,
+  owner @{HOME}/.local/state/ rw,
+  owner @{HOME}/.local/state/fabos-voice/ rw,
+  owner @{HOME}/.local/state/fabos-voice/** rwk,
+  owner @{run}/user/@{uid}/fabos-voice/ rw,
+  owner @{run}/user/@{uid}/fabos-voice/** rwk,
+  owner @{run}/user/@{uid}/fabos-agent/{token,port} r,
+
+  # audio server sockets (PipeWire native; Pulse socket comes from abstractions/audio)
+  owner @{run}/user/@{uid}/pipewire-0 rw,
+  owner @{run}/user/@{uid}/pipewire-0-manager rw,
+  owner @{run}/user/@{uid}/pipewire-0.lock rk,
+  /dev/snd/ r,
+
+  # systemd-run --user --scope talks to the user manager over its private socket
+  owner @{run}/user/@{uid}/systemd/private rw,
+  owner @{run}/user/@{uid}/systemd/notify w,
+
+  # D-Bus: desktop notifications (notify-send), the user manager (systemd-run), RealtimeKit (PipeWire rt module, optional)
+  dbus send bus=session path=/org/freedesktop/Notifications interface=org.freedesktop.Notifications
+       member={Notify,CloseNotification,GetCapabilities,GetServerInformation} peer=(name=org.freedesktop.Notifications),
+  dbus receive bus=session path=/org/freedesktop/Notifications interface=org.freedesktop.Notifications,
+  dbus send bus=session path=/org/freedesktop/systemd1 interface=org.freedesktop.systemd1.Manager peer=(name=org.freedesktop.systemd1),
+  dbus send bus=session path=/org/freedesktop/systemd1{,/**} interface=org.freedesktop.DBus.Properties peer=(name=org.freedesktop.systemd1),
+  dbus receive bus=session path=/org/freedesktop/systemd1{,/**} peer=(name=org.freedesktop.systemd1),
+  dbus send bus=system path=/org/freedesktop/RealtimeKit1 interface=org.freedesktop.RealtimeKit1 peer=(name=org.freedesktop.RealtimeKit1),
+  dbus send bus=system path=/org/freedesktop/RealtimeKit1 interface=org.freedesktop.DBus.Properties member=Get peer=(name=org.freedesktop.RealtimeKit1),
+
+  # process bookkeeping (python subprocess, numpy/openblas, ggml thread sizing)
+  @{PROC}/@{pid}/fd/ r,
+  @{PROC}/@{pid}/{stat,statm,status,cmdline,cgroup,cpuset,mountinfo,mounts} r,
+  @{PROC}/@{pid}/task/ r,
+  @{PROC}/@{pid}/task/** r,
+  @{PROC}/meminfo r,
+  @{PROC}/sys/kernel/osrelease r,
+  @{sys}/devices/system/cpu/** r,
+
+  # the daemon stops its own recorder/spotter/players; systemd (unconfined) stops the daemon
+  signal (send, receive) peer=fabos-voiced,
+  signal (receive) peer=unconfined,
+
+  include if exists <local/fabos-voiced>
+}

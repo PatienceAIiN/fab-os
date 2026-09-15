@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+case "$1" in
+  remove|purge|upgrade|disappear)
+    # the pre-1.0-4 NOPASSWD rule for rootexec must never linger (root is reached through pkexec + polkit now, ADR-0017)
+    rm -f /etc/sudoers.d/fabos-agent
+    ;;
+esac
+case "$1" in
+  remove|purge)
+    if command -v apparmor_parser >/dev/null 2>&1 && [ -d /sys/kernel/security/apparmor ]; then
+      apparmor_parser -R /etc/apparmor.d/fabos-agentd 2>/dev/null || true
+    fi
+    ;;
+esac
+exit 0

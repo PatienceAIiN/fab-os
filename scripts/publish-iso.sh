@@ -11,9 +11,14 @@ while [ $# -gt 0 ]; do case $1 in --iso) ISO=$2; shift;; --server) SERVER=$2; sh
 [ -n "$SERVER" ] || { echo "set the target with --server user@host (or FABOS_DEPLOY_HOST)"; exit 1; }
 base=$(basename "$ISO")
 echo "== checksum"; (cd "$(dirname "$ISO")" && sha256sum "$base") | tee "build/$base.sha256"
+# SHA256SUMS + detached signature with the Fab OS Archive key (same GNUPGHOME as publish-apt.sh; docs/ENTERPRISE.md §7).
+# Without the key this stops: an unsigned download is not a release (FABOS_UNSIGNED=1 only for a local dry run).
+echo "== SHA256SUMS + SHA256SUMS.gpg"; "$HERE/scripts/release-checksums.sh" build/release-sums "$ISO"
 echo "== upload to $SERVER:~/fab-os-download/ ($(du -h "$ISO" | cut -f1))"
 ssh -o BatchMode=yes -i "$KEY" "$SERVER" 'mkdir -p ~/fab-os-download'
-rsync -az --progress -e "ssh -o BatchMode=yes -i $KEY" "$ISO" "build/$base.sha256" "$SERVER:fab-os-download/"
+SUMS=(build/release-sums/SHA256SUMS)
+for f in SHA256SUMS.gpg fabos-archive-key.asc; do [ -f "build/release-sums/$f" ] && SUMS+=("build/release-sums/$f"); done
+rsync -az --progress -e "ssh -o BatchMode=yes -i $KEY" "$ISO" "build/$base.sha256" "${SUMS[@]}" "$SERVER:fab-os-download/"
 cat <<MSG
 
 == staged on the server. Run this ONE command to publish the download (needs your sudo password):
@@ -22,4 +27,5 @@ cat <<MSG
 
 Then the one-click link works:  https://fabos.patienceai.in/download/$base
 Checksum page:                 https://fabos.patienceai.in/download/$base.sha256
+Signed checksums:              https://fabos.patienceai.in/download/SHA256SUMS  +  SHA256SUMS.gpg  (key: fabos-archive-key.asc)
 MSG

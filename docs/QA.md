@@ -579,3 +579,34 @@ runs above; none of the numbers above moved because no image has been built from
   (117 checks), `tests/desktop-applets-qml-test.sh` PASS (all steps incl. the kwin harnesses), `tests/ai-controls-render.py`
   default pass exit 0 and `--settings --welcome` exit 0 (both after the abort change), `bash -n tests/perf-vm.sh`, `sh -n` on
   the tune + hook, `py_compile` on `command_center.py`. **Not run:** `tests/perf-vm.sh` (needs the booted VM).
+
+### Enterprise security track (2026-09-15, sources only — no image rebuilt yet; ADR-0017)
+
+- **Root path changed:** `sudo -n` + `/etc/sudoers.d/fabos-agent` (NOPASSWD) → `pkexec /usr/lib/fabos/agent/rootexec` under the
+  polkit action `in.patienceai.fabos.rootexec` (`no` / `no` / `auth_admin_keep`). The sudoers file is gone from the package;
+  `postinst`/`postrm` remove it on upgrade. `rootexec` now also checks the record id and the command's sha256.
+- **New controls in the tree:** bubblewrap sandbox for `run_shell`, hard-denied secret/token paths, `/etc/fabos/policy.json`
+  loader with clamps, HMAC-chained activity log + `fabos audit verify|export`, `/etc/sysctl.d/70-fabos-hardening.conf`, AppArmor
+  profiles `fabos-voiced` + `fabos-llama` (enforce) and `fabos-agentd` (complain), `avahi-daemon` disabled, `sudoers.d/fabos-hardening`,
+  10-minute idle lock + lid sleeps, hardened `fabos-agent.service`, `scripts/sbom.py`, `tests/security-check.sh` + baselines.
+- **`tests/agent-test.py`: 45 → 70 → 73 tests** (SecurityUnits, PolicyDaemon, Daemon.test_20-25; `test_11b` now documents both
+  background-process behaviours; review round added `test_25` — a daemon started with a planted `ANTHROPIC_API_KEY`, a
+  `*_TOKEN` variable and a live ssh-agent socket, none of which reaches `env` inside a shell step — plus the environment
+  allowlist and runtime-socket masking as unit tests and the `SUDO_UID` policy gate of `rootexec`). **`tests/branding-check.sh`:
+  164 → 169 → 172 checks** (five security checks appended, then three review-round checks).
+- **Review round (same day) — what changed after the first cut (ADR-0017 amendment 7-12):** children no longer inherit the
+  daemon's environment (`clean_env` allowlist + deny pattern; `Agent.tool_env` also drops ssh/gpg agent variables); the
+  sandbox hides `$XDG_RUNTIME_DIR/{gnupg,gcr,keyring}` and binds `/dev/null` over the ssh-agent socket files; `fabos-voiced`
+  moved to **complain** (its enforce profile missed `wpctl`, `ffplay`/`mpv` and `true` → `gnutrue`; all three profiles still
+  compile with the image's `apparmor_parser` 5.0.2); `scripts/release-checksums.sh` produces `SHA256SUMS` + `SHA256SUMS.gpg`
+  and `publish-iso.sh` / `release-github.sh` call it (exercised with a throwaway key: sign, verify, two tampers rejected);
+  `rootexec` accepts a `sudo` launcher only with `require_password_for_root: false`; `tests/security-check.sh` exits 2 without
+  the image and no check can pass on empty output. Verified commands: `python3 tests/agent-test.py` (73 OK), `bash
+  tests/security-check.sh vm`, the profile compile inside `localhost/fabos:vm`, `bwrap` on the host (0.11.0).
+- **Run against the round-3 `vm` image (built before these sources):** `tests/security-check.sh vm` — the numbers are in the
+  track report; every FAIL there is a control that exists only in the rebuilt image (profiles, sysctl file, polkit action,
+  sudoers changes, unit changes, avahi, lock-screen keys, `/var/log/fabos`) and is expected until the next build.
+- **To verify in the next VM boot (not yet run):** an `as_root` step shows the polkit dialog and runs after the password (and is
+  refused without it, in bypass too); `journalctl -k | grep 'profile="fabos-'` stays empty through `tests/voice-vm.sh` and a
+  local-model task (enforced profiles complete); `bwrap` works in the session (`fabos status` says `"sandbox": "bwrap"`);
+  `sysctl net.core.bpf_jit_harden` reads 2; the screen locks after 10 idle minutes.

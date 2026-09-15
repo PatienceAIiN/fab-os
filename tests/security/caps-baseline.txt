@@ -1,0 +1,6 @@
+# Fab OS privileged-file baseline: file capabilities (getcap -r /; Ubuntu + KDE stock set, measured 2026-09-15 on localhost/fabos:vm and :iso).
+/usr/bin/kwin_wayland cap_sys_nice=ep
+/usr/bin/ping cap_net_raw=ep
+/usr/lib/x86_64-linux-gnu/gstreamer1.0/gstreamer-1.0/gst-ptp-helper cap_net_bind_service,cap_net_admin,cap_sys_nice=ep
+/usr/lib/x86_64-linux-gnu/libexec/ksysguard/ksgrd_network_helper cap_net_raw=ep
+/usr/lib/x86_64-linux-gnu/libexec/org_kde_powerdevil cap_wake_alarm=ep

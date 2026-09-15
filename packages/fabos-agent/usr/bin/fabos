@@ -14,6 +14,10 @@
   fabos mail-signin                                    "Sign in with Google" for Gmail (opens the browser; needs the distributor's OAuth client)
   fabos approvals [--task ID]        pending approvals (optionally only those of one task)
   fabos watches | unwatch ID | log [--limit N] | status [--brief]
+  fabos audit verify                 check the tamper-evident (HMAC-chained) activity log; exit 1 when a row was altered
+  fabos audit export [--since 24h|7d|ISO] [--out DIR]   write the activity log as JSON Lines (default dir: the policy's
+                                     audit_export_dir, else ~/.local/share/fabos/audit); the first line carries the chain head
+  fabos policy [--reload]            the administrator's policy (/etc/fabos/policy.json) as the daemon applies it
 """
 import argparse, getpass, json, os, sys, time, urllib.request, urllib.error
 
@@ -65,6 +69,8 @@ def main():
     sub.add_parser("watches")
     p = sub.add_parser("log"); p.add_argument("--limit", type=int, default=50)
     p = sub.add_parser("status"); p.add_argument("--brief", action="store_true")
+    p = sub.add_parser("audit"); p.add_argument("action", choices=["verify", "export"]); p.add_argument("--since", metavar="24h|7d|ISO"); p.add_argument("--out", metavar="DIR")
+    p = sub.add_parser("policy"); p.add_argument("--reload", action="store_true", help="re-read /etc/fabos/policy.json now (the daemon also reloads on SIGHUP)")
     a = ap.parse_args()
     if not a.cmd:
         ap.print_help(); return
@@ -177,6 +183,27 @@ def main():
         if not a.json:
             for e in reversed(out): print("%s %-7s %-18s %s %s" % (ts(e["ts"]), e["actor"], e["kind"], ("#%d" % e["task_id"]) if e["task_id"] else "", (e["detail"] or "")[:120].replace("\n", " ")))
             return
+    elif a.cmd == "audit":
+        if a.action == "verify":
+            out = api("GET", "/audit/verify")
+            if not a.json and "ok" in out:
+                print("Audit chain %s: %d rows, %d signed, %d unsigned%s, head %s" % ("OK" if out["ok"] else "BROKEN", out["rows"], out["signed"], out["unsigned"],
+                                                                                    (", first altered or missing row #%s" % out["first_bad"]) if out.get("first_bad") else "", (out.get("head") or "-")[:16]))
+                sys.exit(0 if out["ok"] else 1)
+        else:
+            out = api("POST", "/audit/export", {k: v for k, v in (("since", a.since), ("out_dir", a.out)) if v})
+            if not a.json and "path" in out:
+                print("Exported %d rows to %s (chain %s)" % (out["rows"], out["path"], "OK" if out["verify"]["ok"] else "BROKEN"))
+                sys.exit(0 if out["verify"]["ok"] else 1)
+    elif a.cmd == "policy":
+        out = api("POST", "/policy/reload") if a.reload else api("GET", "/policy")
+        if not a.json and "managed" in out:
+            print("Managed by your organisation: %s  (%s)" % ("yes" if out["managed"] else "no", out["path"]))
+            for k in ("mode_max", "providers_allowed", "cloud_allowed", "tools_denied", "hosts_allowed", "audit_export_dir", "require_password_for_root", "sandbox_network"):
+                print("  %-26s %s" % (k, out.get(k)))
+            if out.get("error"): print("  error: " + out["error"])
+            if out.get("unknown_keys"): print("  unknown keys: " + ", ".join(out["unknown_keys"]))
+            return
     elif a.cmd == "status":
         out = api("GET", "/status")
         if a.brief and "mode" in out:
@@ -188,6 +215,7 @@ def main():
             if out["pending_approvals"]: s += " · %d approval%s pending" % (out["pending_approvals"], "s" if out["pending_approvals"] > 1 else "")
             if last: s += " · last #%d %s: %s" % (last["id"], last["status"], (last["title"] or "")[:50])
             if not out["provider_ready"]: s = "AI provider not configured — open Fab AI Controls → Settings · " + s
+            if (out.get("policy") or {}).get("managed"): s += " · Managed by your organisation"
             print(s); return
     print(json.dumps(out, indent=1, default=str) if out is not None else "")
     if isinstance(out, dict) and int(out.get("http") or 0) >= 400:       # the daemon refused it: the exit code says so too

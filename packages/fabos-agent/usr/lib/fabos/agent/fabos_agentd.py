@@ -23,6 +23,13 @@ HTTP API on 127.0.0.1:8790 (bearer token in $XDG_RUNTIME_DIR/fabos-agent/token, 
   POST /mail/oauth/start {provider: gmail}  GET /mail/oauth/status?flow_id=  — "Sign in with Google" (OAuth 2.0 loopback +
        PKCE, XOAUTH2 for SMTP/IMAP); only offered when /etc/fabos/google-oauth.env carries the owner's Desktop client id.
   POST /tasks/{id}/feedback {rating: good|bad}      DELETE /watches/{id}
+  GET  /policy  POST /policy/reload                 the administrator policy (/etc/fabos/policy.json, also reloaded on SIGHUP)
+  GET  /audit/verify                                checks the HMAC chain over the activity log; POST /audit/export {since, out_dir?} writes JSONL
+Security (docs/ENTERPRISE.md, SECURITY.md): root only through `pkexec rootexec` (polkit, the user's own password in every mode);
+run_shell inside bubblewrap when available; the agent's secrets, token and history are unreadable to tools; children get an
+allowlisted session environment (never the daemon's own, which holds the provider key) and tool commands no ssh/gpg agent;
+the activity log is a tamper-evident HMAC chain keyed from systemd-creds; every user setting is clamped to the administrator's
+policy.json.
 Providers: Claude (Anthropic), OpenAI, Google Gemini, DeepSeek, or any OpenAI-compatible chat endpoint (local llama-server).
 Mail: the user's OWN account (Gmail, Outlook/Hotmail, Yahoo, Zoho, iCloud presets, or any IMAP/SMTP server) — settings
 mail.provider / mail.address / mail.from_name, secret mail_password (an app password where the provider requires one) or
@@ -30,7 +37,7 @@ the Google refresh token mail_oauth_refresh. The feedback relay (fabos-feedback)
 Every tool step carries a one-sentence "narration" (Indian English) that UIs display and the voice daemon speaks.
 FABOS_AGENT_PROVIDER=fake runs a scripted provider for tests.
 """
-import base64, hashlib, io, json, os, re, secrets as _secrets, shlex, socket, sqlite3, subprocess, sys, threading, time, uuid, wave, urllib.request, urllib.error, urllib.parse
+import base64, hashlib, hmac, io, json, os, re, secrets as _secrets, shlex, shutil, signal, socket, sqlite3, subprocess, sys, threading, time, uuid, wave, urllib.request, urllib.error, urllib.parse
 import smtplib, imaplib, email, email.utils, email.header, datetime as _dt
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -52,12 +59,163 @@ def LOG(*a):
 RISK = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
 # minimum risk that needs the user's approval in each permission mode; None = never ask
 MODES = {"ask": "MEDIUM", "auto": "CRITICAL", "bypass": None}
+MODE_ORDER = ("ask", "auto", "bypass")          # least to most permissive; policy mode_max allows a prefix of this list
+POLICY_FILE = os.environ.get("FABOS_POLICY_FILE", "/etc/fabos/policy.json")
+POLICY_KEYS = ("mode_max", "providers_allowed", "cloud_allowed", "tools_denied", "hosts_allowed", "audit_export_dir", "require_password_for_root", "sandbox_network")
+MANAGED_MSG = "Managed by your organisation"
+
+
+class Policy:
+    """Administrator policy from /etc/fabos/policy.json (root-owned 0644; absent = no restriction, i.e. today's behaviour).
+    Loaded at start and on SIGHUP (or POST /policy/reload); every user setting is clamped to it; /status carries it under
+    "policy" so UIs can show a "Managed by your organisation" line. Keys (all optional):
+      mode_max                  ask|auto|bypass: the most permissive mode a user may pick (default bypass = unrestricted)
+      providers_allowed         provider ids the user may select ([] = all)
+      cloud_allowed             false: only the local model (and the test provider) may be used; cloud speech is off too
+      tools_denied              tool names the agent may never call (removed from the model's tool list, refused at the gate)
+      hosts_allowed             hosts web_fetch, mail and provider endpoints may reach ("example.com" also matches its
+                                subdomains, "*.example.com" only the subdomains; [] = any host)
+      audit_export_dir          directory `fabos audit export` writes JSONL files to (must be writable by the user)
+      require_password_for_root true (default): root steps go through pkexec only; false additionally allows an
+                                administrator-installed `sudo -n` rule for rootexec when pkexec is absent (kiosks)
+      sandbox_network           true (default): run_shell keeps the network inside its sandbox; false = --unshare-net
+    Unknown keys are reported, not fatal. A malformed file is reported in /status and treated as absent on purpose: a broken
+    policy file must not lock the user out of their own computer, and the visible error gets it fixed."""
+
+    def __init__(self, path=None):
+        self.path = path or POLICY_FILE
+        self.data, self.error, self.loaded_at, self.unknown = {}, "", 0.0, []
+        self.load()
+
+    def load(self):
+        self.data, self.error, self.unknown = {}, "", []
+        self.loaded_at = time.time()
+        try:
+            with open(self.path) as f:
+                raw = json.load(f)
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError) as e:
+            self.error = "%s: %s" % (type(e).__name__, e)
+            LOG("policy file ignored:", self.path, self.error)
+            return False
+        if not isinstance(raw, dict):
+            self.error = "policy.json must contain a JSON object"
+            return False
+        self.unknown = sorted(k for k in raw if k not in POLICY_KEYS)
+        d = {}
+        if raw.get("mode_max") in MODE_ORDER:
+            d["mode_max"] = raw["mode_max"]
+        elif "mode_max" in raw:
+            self.error = "mode_max must be ask|auto|bypass (ignored)"
+        for key in ("providers_allowed", "tools_denied", "hosts_allowed"):
+            if isinstance(raw.get(key), list):
+                d[key] = [str(x).strip().lower() for x in raw[key] if str(x).strip()]
+        for key in ("cloud_allowed", "require_password_for_root", "sandbox_network"):
+            if isinstance(raw.get(key), bool):
+                d[key] = raw[key]
+        if isinstance(raw.get("audit_export_dir"), str) and raw["audit_export_dir"].startswith("/"):
+            d["audit_export_dir"] = raw["audit_export_dir"]
+        self.data = d
+        LOG("policy loaded:", self.path, json.dumps(d, sort_keys=True))
+        return True
+
+    @property
+    def managed(self):
+        return bool(self.data)
+
+    def mode_max(self):
+        return self.data.get("mode_max", "bypass")
+
+    def clamp_mode(self, mode):
+        """The effective permission mode: never more permissive than mode_max."""
+        mode = mode if mode in MODE_ORDER else "auto"
+        return mode if MODE_ORDER.index(mode) <= MODE_ORDER.index(self.mode_max()) else self.mode_max()
+
+    def cloud_allowed(self):
+        return self.data.get("cloud_allowed", True)
+
+    def provider_allowed(self, kind):
+        if kind == "fake":
+            return True
+        if not self.cloud_allowed() and kind != "local":
+            return False
+        allowed = self.data.get("providers_allowed") or []
+        return not allowed or kind in allowed
+
+    def tool_denied(self, name):
+        return name in (self.data.get("tools_denied") or [])
+
+    def host_allowed(self, host):
+        allowed = self.data.get("hosts_allowed") or []
+        if not allowed:
+            return True
+        h = (host or "").lower().rstrip(".").split(":")[0]
+        if not h:
+            return False
+        for a in allowed:
+            if a.startswith("*."):
+                if h.endswith(a[1:]):
+                    return True
+            elif h == a or h.endswith("." + a):
+                return True
+        return False
+
+    def require_host(self, host, what):
+        """Raise a clear, user-facing error when policy forbids the host."""
+        if not self.host_allowed(host):
+            raise RuntimeError("%s: %s may not reach %s. Allowed hosts: %s." % (MANAGED_MSG, what, host or "(no host)", ", ".join(self.data.get("hosts_allowed") or [])))
+
+    def require_password_for_root(self):
+        return self.data.get("require_password_for_root", True)
+
+    def sandbox_network(self):
+        return self.data.get("sandbox_network", True)
+
+    def audit_export_dir(self):
+        return self.data.get("audit_export_dir")
+
+    def status(self):
+        s = {"managed": self.managed, "path": self.path, "loaded_at": self.loaded_at, "error": self.error, "unknown_keys": self.unknown}
+        s.update({k: self.data.get(k) for k in POLICY_KEYS})
+        s["mode_max"] = self.mode_max()
+        s["cloud_allowed"] = self.cloud_allowed()
+        s["require_password_for_root"] = self.require_password_for_root()
+        s["sandbox_network"] = self.sandbox_network()
+        return s
+
+    def prompt_line(self):
+        """One system-prompt sentence so the model does not attempt what the organisation forbids."""
+        if not self.managed:
+            return ""
+        parts = ["This computer is managed by an organisation"]
+        if self.mode_max() != "bypass":
+            parts.append("the permission mode is limited to %s" % self.mode_max())
+        if self.data.get("tools_denied"):
+            parts.append("these tools are not available: %s" % ", ".join(self.data["tools_denied"]))
+        if self.data.get("hosts_allowed"):
+            parts.append("only these hosts may be reached (web, mail, AI endpoints): %s" % ", ".join(self.data["hosts_allowed"]))
+        if not self.cloud_allowed():
+            parts.append("cloud AI providers are disabled; only the local model runs")
+        return "; ".join(parts) + ". Do not try to work around these limits; say so and stop."
+
+
+POLICY = Policy()
+
+
+def audit_hmac(key, prev_hmac, rid, ts, actor, kind, task_id, detail):
+    """One link of the activity log's chain: HMAC-SHA256(key, previous row's hmac || canonical row)."""
+    msg = (prev_hmac or "") + "|" + json.dumps([rid, ts, actor, kind, task_id, detail], separators=(",", ":"), ensure_ascii=False)
+    return hmac.new(key or b"", msg.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 # ----------------------------------------------------------------------------- storage
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, audit_key=None):
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        # the audit chain's key (bytes). main() hands over the systemd-creds 'audit_key'; a Store opened without one (tests,
+        # tools) still chains its rows with an empty key so the structure is identical and `audit_verify` still runs.
+        self.audit_key = audit_key if isinstance(audit_key, bytes) else (audit_key or "").encode()
         self.lock = threading.RLock()
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
@@ -82,6 +240,8 @@ class Store:
         for col in ("narration", "narration_done"):
             if col not in cols:
                 self.db.execute("ALTER TABLE steps ADD COLUMN %s TEXT" % col)
+        if "hmac" not in {r["name"] for r in self.db.execute("PRAGMA table_info(activity)").fetchall()}:
+            self.db.execute("ALTER TABLE activity ADD COLUMN hmac TEXT")      # rows written before this column stay unsigned (legacy)
         self.db.commit()
 
     def columns(self, table):
@@ -108,7 +268,61 @@ class Store:
         self.q("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, str(value))
 
     def activity(self, actor, kind, task_id=None, detail=""):
-        self.q("INSERT INTO activity(ts,actor,kind,task_id,detail) VALUES(?,?,?,?,?)", time.time(), actor, kind, task_id, detail[:4000])
+        """Append one audit row and seal it: hmac = HMAC-SHA256(audit_key, previous row's hmac || this row). Rows are never
+        updated afterwards; `audit_verify` recomputes the chain. Callers keep details short (commands/outputs are capped
+        before they get here) and never pass secrets."""
+        detail = (detail or "")[:4000]
+        with self.lock:
+            prev = self.one("SELECT hmac FROM activity ORDER BY id DESC LIMIT 1")
+            ts = time.time()
+            rid = self.q("INSERT INTO activity(ts,actor,kind,task_id,detail) VALUES(?,?,?,?,?)", ts, actor, kind, task_id, detail).lastrowid
+            self.q("UPDATE activity SET hmac=? WHERE id=?", audit_hmac(self.audit_key, (prev or {}).get("hmac"), rid, ts, actor, kind, task_id, detail), rid)
+            return rid
+
+    def audit_verify(self):
+        """Walk the chain in id order. Rows from before the chain existed carry no hmac and count as unsigned; the first signed
+        row anchors the chain; an unsigned row after that, or any hmac that does not recompute, is a break. Truncation of the
+        newest rows is not detectable from the database alone: compare `head` with the head recorded in the last export."""
+        rows = self.all("SELECT id, ts, actor, kind, task_id, detail, hmac FROM activity ORDER BY id")
+        prev_h, signed, unsigned, first_bad = "", 0, 0, None
+        for r in rows:
+            if r["hmac"] is None:
+                if signed and first_bad is None:
+                    first_bad = r["id"]
+                unsigned += 1
+                continue
+            if first_bad is None and audit_hmac(self.audit_key, prev_h, r["id"], r["ts"], r["actor"], r["kind"], r["task_id"], r["detail"]) != r["hmac"]:
+                first_bad = r["id"]
+            prev_h = r["hmac"]
+            signed += 1
+        return {"ok": first_bad is None, "rows": len(rows), "signed": signed, "unsigned": unsigned, "first_bad": first_bad, "head": prev_h}
+
+    def audit_export(self, since=None, out_dir=None):
+        """Write the activity rows since `since` (epoch seconds) as JSON Lines into out_dir (policy audit_export_dir by default,
+        else ~/.local/share/fabos/audit). The first line is a header with the chain's verification result and head so a
+        collector can detect truncation between exports. Returns {path, rows, verify}."""
+        target = out_dir or POLICY.audit_export_dir() or os.path.join(DATA_DIR, "audit")
+        if not os.path.isdir(target):
+            if target.startswith(DATA_DIR + os.sep):
+                os.makedirs(target, mode=0o700, exist_ok=True)
+            else:
+                raise RuntimeError("audit export directory %s does not exist; the administrator creates it writable for the user (docs/ENTERPRISE.md)" % target)
+        if not os.access(target, os.W_OK):
+            raise RuntimeError("audit export directory %s is not writable by this user" % target)
+        since = float(since or 0)
+        rows = self.all("SELECT id, ts, actor, kind, task_id, detail, hmac FROM activity WHERE ts >= ? ORDER BY id", since)
+        ver = self.audit_verify()
+        name = "fabos-audit-%s-%s-%s.jsonl" % (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), socket.gethostname()[:32], os.environ.get("USER", str(os.getuid())))
+        path = os.path.join(target, name)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "fabos-audit-export", "generated": datetime.now(timezone.utc).isoformat(), "host": socket.gethostname(),
+                                "user": os.environ.get("USER", ""), "uid": os.getuid(), "since": since, "rows": len(rows), "chain_ok": ver["ok"], "chain_head": ver["head"],
+                                "chain_first_bad": ver["first_bad"]}, ensure_ascii=False) + "\n")
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
+        self.activity("user", "audit_export", None, "%d rows since %s -> %s (chain %s)" % (len(rows), int(since), path, "ok" if ver["ok"] else "BROKEN"))
+        return {"path": path, "rows": len(rows), "verify": ver}
 
     def step(self, task_id, kind, name="", inp="", out="", risk="", decision="", narration=""):
         cur = self.q("INSERT INTO steps(task_id,ts,kind,name,input,output,risk,decision,narration) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -168,7 +382,7 @@ def del_secret(name):
 # ----------------------------------------------------------------------------- tool definitions (Anthropic JSON schema; converted for other providers)
 TOOLS = [
     {"name": "run_shell",
-     "description": "Run a shell command on this computer (bash). Use for anything the OS can do: inspect files, run programs, git, compilers, tests, package managers (privileged commands need approval). Returns stdout, stderr and exit code. Start long-running GUI apps with open_app instead.",
+     "description": "Run a shell command on this computer (bash). Use for anything the OS can do: inspect files, run programs, git, compilers, tests, package managers (privileged commands need approval). Returns stdout, stderr and exit code. The command runs in a sandbox: the system is read-only, the home directory is writable except ~/.ssh, ~/.gnupg and the agent's own configuration, and every process it started ends with the command. Start long-running programs and GUI apps with open_app instead.",
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string", "description": "working directory (default: home)"}, "timeout_s": {"type": "integer", "default": 120},
                                                        "as_root": {"type": "boolean", "default": False, "description": "run as root for system administration (apt, systemctl, modprobe, sysctl, /etc, disks). CRITICAL risk: requires the user's approval unless their mode is bypass. Do not write sudo in the command."}}, "required": ["command"]}},
     {"name": "read_file", "description": "Read a text file (UTF-8). Returns up to 200 KB.",
@@ -435,6 +649,179 @@ def _strip_html(s):
     return re.sub(r"\s+\n", "\n", re.sub(r"[ \t]+", " ", s)).strip()
 
 
+ROOTEXEC = "/usr/lib/fabos/agent/rootexec"
+POLKIT_ACTION = "in.patienceai.fabos.rootexec"
+
+
+def root_argv(aid, policy=None):
+    """How the daemon reaches root: `pkexec rootexec <authz-id>` under the polkit action in.patienceai.fabos.rootexec
+    (allow_active=auth_admin_keep: the user types their own password in the system dialog, remembered for five minutes) —
+    in EVERY mode, bypass included. Fab OS ships no sudoers rule for rootexec any more. Only when the administrator's policy
+    sets require_password_for_root=false AND pkexec is absent does the daemon fall back to `sudo -n rootexec`, i.e. to a rule
+    the administrator installed themselves (unattended kiosks)."""
+    policy = policy or POLICY
+    if shutil.which("pkexec") or policy.require_password_for_root():
+        return ["pkexec", ROOTEXEC, aid]
+    return ["sudo", "-n", ROOTEXEC, aid]
+
+
+def protected_path(path):
+    """Paths NO tool may read, list or write even when the step was approved: the agent's secrets (provider keys, mail
+    password, audit key) and its runtime directory (API token, root authorization records). The classifier already makes
+    ~/.config/fabos CRITICAL; this is the hard stop behind it. Symlinks are resolved first."""
+    try:
+        rp = os.path.realpath(os.path.expanduser(str(path)))
+    except (TypeError, ValueError):
+        return True
+    for base in (os.path.join(CONF_DIR, "secrets"), RUN_DIR):
+        b = os.path.realpath(base)
+        if rp == b or rp.startswith(b + os.sep):
+            return True
+    return False
+
+
+def check_protected(path):
+    if protected_path(path):
+        raise PermissionError("refused: %s holds the agent's own secrets or session token; no tool may read or write it, whatever the approval" % path)
+
+
+# ----------------------------------------------------------------------------- the environment handed to children
+# The daemon's own environment is not the user's: the unit loads EnvironmentFile /etc/fabos/agent.env and
+# ~/.config/fabos/agent.env (ANTHROPIC_API_KEY is a documented key source), systemd adds its bookkeeping, and the session
+# manager (`systemctl --user show-environment`) may hold whatever the user exported. A child — a shell step inside
+# bubblewrap, a watch command, an application — therefore gets an ALLOWLIST of desktop-session variables, and on top of
+# that a deny pattern: a name that smells like a credential is dropped even when its prefix is allowed. Without this the
+# tmpfs over ~/.config/fabos would be theatre: `env` inside the sandbox would print the provider key.
+ENV_ALLOW = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TZDIR", "TERM", "COLORTERM", "TMPDIR", "HOSTNAME",
+             "EDITOR", "VISUAL", "PAGER", "BROWSER", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS",
+             "DESKTOP_SESSION", "XMODIFIERS", "INPUT_METHOD", "SSH_AUTH_SOCK"}
+ENV_ALLOW_PREFIX = ("XDG_", "LC_", "QT_", "KDE_", "GTK_", "GDK_", "XCURSOR_", "PIPEWIRE_", "PULSE_", "MOZ_", "ELECTRON_", "SDL_",
+                    "PLASMA_", "KWIN_", "SAL_", "LIBVA_", "MESA_", "__GL", "VDPAU_", "GBM_", "WLR_")
+ENV_DENY = re.compile(r"API_?KEY|TOKEN|SECRET|PASSW|PASSPHRASE|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY|OAUTH|COOKIE|^FABOS_|^ANTHROPIC_|^OPENAI_|"
+                      r"^GEMINI_|^GOOGLE_|^DEEPSEEK_|^AWS_|^AZURE_|^GH_|^GITHUB_|^HF_|^INVOCATION_ID$|^JOURNAL_STREAM$|^MANAGERPID$|"
+                      r"^CREDENTIALS_DIRECTORY$|^NOTIFY_SOCKET$|^LISTEN_", re.I)
+# the user's key agents: applications launched for the user keep them (a launcher would), tool commands never see them
+AGENT_SOCKET_VARS = ("SSH_AUTH_SOCK", "SSH_AGENT_PID", "SSH_AGENT_LAUNCHER", "GPG_AGENT_INFO", "GNUPGHOME", "GPG_TTY")
+
+
+def env_allowed(name):
+    if ENV_DENY.search(name):
+        return False
+    return name in ENV_ALLOW or name.startswith(ENV_ALLOW_PREFIX)
+
+
+def clean_env(*sources, drop=()):
+    """Merge environment mappings (later sources win) keeping only allowed names; `drop` removes names on top."""
+    env = {}
+    for src in sources:
+        for k, v in src.items():
+            if isinstance(k, str) and isinstance(v, str) and env_allowed(k) and k not in drop:
+                env[k] = v
+    return env
+
+
+def session_environment():
+    """The desktop session's variables as the user manager holds them (`systemctl --user show-environment`); {} when absent."""
+    out = {}
+    try:
+        text = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, text=True, timeout=5).stdout
+        for line in text.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                out[k] = v
+    except Exception:
+        pass
+    return out
+
+
+# run_shell sandbox (bubblewrap). Hidden = replaced by an empty tmpfs; read-only = visible but not writable; masked = a
+# socket file replaced by /dev/null.
+def sandbox_runtime_dir():
+    return os.environ.get("XDG_RUNTIME_DIR") or os.path.dirname(RUN_DIR)
+
+
+def sandbox_hidden():
+    """Directories replaced by an empty tmpfs: the user's keys, a wallet, the agent's own configuration and runtime dir, and
+    the key agents' socket directories inside $XDG_RUNTIME_DIR (gnupg: gpg-agent + its ssh socket; gcr: GNOME keyring's
+    ssh agent; keyring: gnome-keyring control) — the runtime dir itself stays bound for Wayland, D-Bus and PipeWire."""
+    rt = sandbox_runtime_dir()
+    return [os.path.expanduser("~/.ssh"), os.path.expanduser("~/.gnupg"), os.path.dirname(CONF_DIR), os.path.expanduser("~/.local/share/kwalletd"), RUN_DIR,
+            os.path.join(rt, "gnupg"), os.path.join(rt, "gcr"), os.path.join(rt, "keyring")]
+
+
+def sandbox_masked(env=None):
+    """Socket files replaced by /dev/null inside the sandbox: Ubuntu's ssh-agent.socket ($XDG_RUNTIME_DIR/openssh_agent) and
+    whatever SSH_AUTH_SOCK names in the session (KDE's ssh-agent, a manual ssh-agent under /tmp). Paths that do not exist or
+    already sit inside a hidden directory are skipped."""
+    rt = sandbox_runtime_dir()
+    cands = [os.path.join(rt, "openssh_agent")]
+    s = (env if env is not None else os.environ).get("SSH_AUTH_SOCK")
+    if s and s.startswith("/"):
+        cands.append(s)
+    hidden = sandbox_hidden()
+    out = []
+    for p in cands:
+        p = os.path.realpath(p) if os.path.exists(p) else p
+        if not os.path.exists(p) or os.path.isdir(p) or p in out:
+            continue
+        if any(p == h or p.startswith(h + os.sep) for h in hidden):
+            continue
+        out.append(p)
+    return out
+
+
+def sandbox_readonly():
+    return [DATA_DIR]          # the agent's history and audit chain: a task may read them, never rewrite them
+
+
+def sandbox_available():
+    """bwrap is installed and can create namespaces here (one probe, cached by the Agent). FABOS_AGENT_SANDBOX=0 disables it
+    (tests exercise the fallback that way)."""
+    if os.environ.get("FABOS_AGENT_SANDBOX", "1").lower() in ("0", "false", "no", "off"):
+        return False
+    if not shutil.which("bwrap"):
+        return False
+    try:
+        r = subprocess.run(["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-pid", "--die-with-parent", "/bin/true"],
+                           capture_output=True, timeout=15)
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def sandbox_argv(cwd, network=True, env=None):
+    """The bubblewrap prefix for run_shell: the whole system read-only; the home directory writable EXCEPT the user's keys
+    (~/.ssh, ~/.gnupg), a wallet if one exists, and the agent's own configuration (empty tmpfs over each); the agent's
+    history read-only; the agent's runtime directory (API token, root authorization records) hidden — so a task cannot
+    approve its own steps through the API; /tmp shared with the session; a fresh /dev (plus the GPU nodes) and /proc; the
+    session runtime dir kept so Wayland/D-Bus/PipeWire clients work, minus the key agents' socket directories (tmpfs) and
+    socket files (/dev/null over them; `env` is the session environment that names SSH_AUTH_SOCK); own PID namespace;
+    killed with the daemon. What the runtime dir still exposes is the desktop itself: the Wayland socket, the session
+    D-Bus, PipeWire — the same as any application the user starts."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    a = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--bind", "/tmp", "/tmp"]
+    if os.path.isdir("/var/tmp"):
+        a += ["--bind", "/var/tmp", "/var/tmp"]
+    if os.path.isdir("/dev/dri"):
+        a += ["--dev-bind", "/dev/dri", "/dev/dri"]
+    if os.path.isdir(HOME):
+        a += ["--bind", HOME, HOME]
+    if runtime and os.path.isdir(runtime):
+        a += ["--bind", runtime, runtime]
+    for p in sandbox_readonly():
+        if os.path.isdir(p):
+            a += ["--ro-bind", p, p]
+    for p in sandbox_hidden():
+        if os.path.isdir(p):
+            a += ["--tmpfs", p]
+    for p in sandbox_masked(env):
+        a += ["--ro-bind", "/dev/null", p]
+    a += ["--unshare-pid", "--die-with-parent", "--chdir", cwd if os.path.isdir(cwd) else HOME]
+    if not network:
+        a += ["--unshare-net"]
+    return a
+
+
 class Tools:
     def __init__(self, store, agent):
         self.store, self.agent = store, agent
@@ -449,20 +836,31 @@ class Tools:
             return {"error": "%s: %s" % (type(e).__name__, e)}, True
 
     def run_as_root(self, task_id, command, cwd, timeout):
-        """Root execution through /usr/lib/fabos/agent/rootexec. The policy gate has already allowed this CRITICAL step;
-        a one-time authorization record (owned by the user, 10-minute validity) is consumed by the sudoers-whitelisted
-        executor, so nothing runs as root that the daemon did not explicitly authorize."""
+        """Root execution through /usr/lib/fabos/agent/rootexec, started with pkexec (polkit action in.patienceai.fabos.rootexec,
+        auth_admin_keep). The policy gate has already allowed this CRITICAL step; the user now authenticates in the system
+        dialog — in every mode, bypass included — and rootexec runs only the command recorded here: a one-time record (owned by
+        the user, private, 10-minute validity, id + sha256 of the command inside) that rootexec consumes and re-checks."""
         authz_dir = os.path.join(RUN_DIR, "authz")
         os.makedirs(authz_dir, mode=0o700, exist_ok=True)
+        os.chmod(authz_dir, 0o700)
         aid = uuid.uuid4().hex
-        rec = {"command": command, "cwd": cwd if cwd.startswith("/") else "/", "timeout_s": timeout, "task_id": task_id, "created": time.time()}
+        digest = hashlib.sha256(command.encode()).hexdigest()
+        rec = {"id": aid, "command": command, "command_sha256": digest, "cwd": cwd if cwd.startswith("/") else "/", "timeout_s": timeout,
+               "task_id": task_id, "created": time.time(), "uid": os.getuid()}
         p = os.path.join(authz_dir, aid + ".json")
-        with open(p, "w") as f:
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(rec, f)
-        os.chmod(p, 0o600)
+        argv = root_argv(aid)
+        self.store.activity("agent", "root_exec_requested", task_id, "via %s sha256=%s cmd=%s" % (argv[0], digest[:16], command[:300]))
         try:
-            r = subprocess.run(["sudo", "-n", "/usr/lib/fabos/agent/rootexec", aid], capture_output=True, text=True, timeout=timeout + 15)
+            # the password dialog may stay open for a while: allow five minutes on top of the command's own timeout
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout + 15 + (300 if argv[0] == "pkexec" else 0), stdin=subprocess.DEVNULL)
+        except FileNotFoundError:
+            self.store.activity("agent", "root_exec_refused", task_id, "%s is not installed" % argv[0])
+            return {"error": "root execution unavailable: %s is not installed" % argv[0]}
         except subprocess.TimeoutExpired:
+            self.store.activity("agent", "root_exec_refused", task_id, "timeout waiting for authentication or the command")
             return {"error": "timeout after %ss (root)" % timeout}
         finally:
             try:
@@ -470,12 +868,20 @@ class Tools:
             except FileNotFoundError:
                 pass
         if r.returncode != 0 and not r.stdout.strip().startswith("{"):
-            return {"error": "root execution unavailable: %s" % (r.stderr.strip() or "sudo refused (user not in the sudo group, or the fabos-agent sudoers rule is missing)")}
+            err = r.stderr.strip()
+            if argv[0] == "pkexec" and r.returncode == 126:
+                why = "you dismissed the password dialog"
+            elif argv[0] == "pkexec" and r.returncode == 127:
+                why = "not authorised (%s)" % (err.splitlines()[-1] if err else "wrong password, or no authentication agent is running in this session")
+            else:
+                why = err or "%s refused" % argv[0]
+            self.store.activity("agent", "root_exec_refused", task_id, "%s: %s" % (command[:200], why[:200]))
+            return {"error": "root execution refused: %s" % why}
         try:
             out = json.loads(r.stdout.strip().splitlines()[-1])
         except Exception:
             out = {"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stderr": r.stderr[-10000:]}
-        self.store.activity("agent", "root_exec", task_id, command[:300])
+        self.store.activity("agent", "root_exec", task_id, "exit=%s sha256=%s cmd=%s" % (out.get("exit_code", out.get("error")), digest[:16], command[:300]))
         return out
 
     def t_run_shell(self, task_id, inp):
@@ -488,17 +894,24 @@ class Tools:
         # ("python3 -m http.server &") inherits stdout, and with pipes the step would block until its timeout and then
         # kill_tree() would take the server down with it. With files the step ends when bash exits; the background
         # process lives on (it is still in the task's process group, so cancelling the task still stops it).
+        # Sandbox: bubblewrap when it works here (see sandbox_argv), else the plain shell with the step marked sandbox=none.
+        # Inside the sandbox every process the command started ends with it (own PID namespace): background servers do not
+        # survive the step — long-running programs go through open_app, which runs in the session.
+        # Environment: the allowlisted session variables only (Agent.tool_env) — never the daemon's own environment, which
+        # carries the provider key from agent.env — and without the user's ssh/gpg agent sockets, sandboxed or not.
         import tempfile
+        sandbox = self.agent.sandbox_name()
+        senv = self.agent.session_env()
+        argv = (sandbox_argv(cwd, POLICY.sandbox_network(), env=senv) if sandbox == "bwrap" else []) + ["bash", "-lc", inp["command"]]
         fo = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace"); fe = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
-        p = subprocess.Popen(["bash", "-lc", inp["command"]], cwd=cwd, stdout=fo, stderr=fe, text=True,
-                             env=self.agent.session_env(), start_new_session=True)
+        p = subprocess.Popen(argv, cwd=cwd, stdout=fo, stderr=fe, text=True, env=self.agent.tool_env(senv), start_new_session=True)
         self.agent.procs.setdefault(task_id, set()).add(p)
         try:
             p.wait(timeout=to)
             fo.seek(0); fe.seek(0); out, err = fo.read(), fe.read()
             if task_id in self.agent.cancel:
                 return {"error": "cancelled by user"}
-            return {"exit_code": p.returncode, "stdout": out[-30000:], "stderr": err[-10000:]}
+            return {"exit_code": p.returncode, "stdout": out[-30000:], "stderr": err[-10000:], "sandbox": sandbox}
         except subprocess.TimeoutExpired:
             kill_tree(p)
             return {"error": "timeout after %ss (process killed)" % to}
@@ -508,12 +921,14 @@ class Tools:
 
     def t_read_file(self, task_id, inp):
         p = os.path.expanduser(inp["path"])
+        check_protected(p)
         with open(p, "r", errors="replace") as f:
             data = f.read(200000)
         return {"path": p, "content": data, "truncated": os.path.getsize(p) > 200000}
 
     def t_write_file(self, task_id, inp):
         p = os.path.expanduser(inp["path"])
+        check_protected(p)
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
         with open(p, "a" if inp.get("append") else "w") as f:
             f.write(inp["content"])
@@ -521,6 +936,7 @@ class Tools:
 
     def t_list_dir(self, task_id, inp):
         p = os.path.expanduser(inp["path"])
+        check_protected(p)
         names = sorted(os.listdir(p))
         ents = []
         for n in names[:500]:
@@ -582,6 +998,7 @@ class Tools:
         return {"sent": True, "message_id": msg["Message-ID"], "to": inp["to"], "via": cfg["provider"]}
 
     def _imap_search(self, cfg, from_contains=None, subject_contains=None, since_hours=48, unseen_only=False, limit=10, include_body=True, seen_uids=None):
+        POLICY.require_host(cfg["imap_host"], "mail (IMAP)")
         M = imaplib.IMAP4_SSL(cfg["imap_host"], int(cfg["imap_port"] or 993), timeout=60)
         try:
             imap_login(M, cfg)
@@ -656,6 +1073,7 @@ class Tools:
         return {"watch_id": cur.lastrowid, "kind": inp["kind"], "interval_s": iv, "expires_in_hours": int(inp.get("expires_hours") or 72)}
 
     def t_web_fetch(self, task_id, inp):
+        POLICY.require_host(urllib.parse.urlparse(inp["url"]).hostname, "web_fetch")
         req = urllib.request.Request(inp["url"], headers={"User-Agent": "FabOS-agent/1.0"})
         with urllib.request.urlopen(req, timeout=60) as r:
             ct = r.headers.get("Content-Type", "")
@@ -719,7 +1137,8 @@ def build_system_prompt(store, mode, apps):
     system = SYSTEM_PROMPT.format(app=APP, user=os.environ.get("USER", "user"), home=HOME, app_count=len(apps), app_names=names,
                                   now=datetime.now().strftime("%Y-%m-%d %H:%M %Z"), mode=mode)
     persona = persona_prompt(store)
-    return system + ("\n- " + persona if persona else "")
+    managed = POLICY.prompt_line()
+    return system + ("\n- " + persona if persona else "") + ("\n- " + managed if managed else "")
 
 
 # ---- narration: one human sentence per tool step (Indian English), filled deterministically at insert time and on
@@ -753,7 +1172,7 @@ def narration_for(name, inp, show_raw=False):
         cmd = str(inp.get("command") or "").strip().split("\n")[0]
         if show_raw and cmd:
             return "Running: %s" % cmd[:120]
-        return "Running a command for you." if not inp.get("as_root") else "Running an administrator command for you."
+        return "Running a command for you." if not inp.get("as_root") else "Running an administrator command for you; the system will ask for your password."
     if name == "write_file":
         return "Saving the file %s." % _base(inp.get("path"))
     if name == "read_file":
@@ -879,8 +1298,10 @@ def compact_messages(messages, limit):
 
 
 def kill_tree(p, grace=2.0):
-    """Terminate a Popen started with start_new_session=True together with everything it spawned."""
-    import signal
+    """Terminate a Popen started with start_new_session=True together with everything it spawned: SIGTERM to the whole
+    process group, then SIGKILL to whatever is left of the group after `grace` seconds — checked on the GROUP (killpg with
+    signal 0), not only on the leader, so a descendant that outlived a dead leader is still taken down. With the bubblewrap
+    sandbox the leader is bwrap and the command lives in its PID namespace, which the kernel tears down with bwrap's init."""
     try:
         os.killpg(p.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -890,10 +1311,22 @@ def kill_tree(p, grace=2.0):
     try:
         p.wait(grace)
     except subprocess.TimeoutExpired:
+        pass
+    deadline = time.time() + grace
+    while time.time() < deadline:
         try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except Exception:
-            p.kill()
+            os.killpg(p.pid, 0)            # probe: does the group still have members?
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            break
+        time.sleep(0.05)
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except Exception:
+        p.kill()
 
 
 class _ClaudeHTTPError(Exception):
@@ -1109,6 +1542,20 @@ class FakeProvider:
             plan = [tu("run_shell", {"command": "id -u; systemctl is-active sddm; sysctl -n kernel.hostname", "as_root": True})]
         elif "privileged" in low:
             plan = [tu("run_shell", {"command": "sudo -n true"})]
+        # security tests (tests/agent-test.py): sandbox hides the keys, protected paths are refused, hosts follow policy
+        elif "read my ssh key" in low:
+            plan = [tu("run_shell", {"command": "cat ~/.ssh/id_rsa; ls -la ~/.ssh"})]
+        elif "read the agent token" in low:
+            plan = [tu("read_file", {"path": os.path.join(RUN_DIR, "token")})]
+        elif "list the agent secrets" in low:
+            plan = [tu("list_dir", {"path": os.path.join(CONF_DIR, "secrets")})]
+        elif "show the environment" in low:
+            # a shell step prints its environment and probes the ssh-agent socket: no daemon secret, no agent socket may be visible
+            plan = [tu("run_shell", {"command": "env | sort; echo SOCK=${SSH_AUTH_SOCK:-unset}; test -S \"$XDG_RUNTIME_DIR/openssh_agent\" && echo AGENT-SOCKET-VISIBLE || echo agent-socket-masked"})]
+        elif re.search(r"\bsay hi\b", low):
+            plan = [tu("run_shell", {"command": "echo hi"})]
+        elif re.search(r"\bfetch\s+(https?://\S+)", low):
+            plan = [tu("web_fetch", {"url": re.search(r"\bfetch\s+(https?://\S+)", req, re.I).group(1)})]
         else:
             plan = [tu("run_shell", {"command": "uname -a; date"})]
         if n_results < len(plan):
@@ -1209,6 +1656,8 @@ class Agent:
         self.cancel = set()
         self.procs = {}          # task id -> running shell subprocesses (killed on cancel)
         self.answers = {}
+        self._sandbox = None     # None = not probed yet; "bwrap" | "none"
+        self._sandbox_lock = threading.Lock()
         self.sem = threading.Semaphore(int(store.setting("agent.max_parallel", "2")))
         for r in store.all("SELECT id FROM tasks WHERE status IN ('running','waiting_approval','waiting_user')"):
             store.q("UPDATE tasks SET status='failed', error='service restarted while task was running', updated=? WHERE id=?", time.time(), r["id"])
@@ -1216,21 +1665,25 @@ class Agent:
             self.start(r["id"])
 
     def session_env(self):
-        env = dict(os.environ)
-        # inherit the desktop session's environment (theme, display, D-Bus, PATH) so launched apps look and behave like user-launched ones
-        try:
-            out = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, text=True, timeout=5).stdout
-            for line in out.splitlines():
-                if "=" in line and not line.startswith(("INVOCATION_ID", "JOURNAL_STREAM", "MANAGERPID")):
-                    k, v = line.split("=", 1)
-                    env.setdefault(k, v)
-        except Exception:
-            pass
+        """The environment for applications launched for the user (open_app, type_text, the OAuth browser): the desktop
+        session's variables (theme, display, D-Bus, PATH) so they look and behave like user-launched ones — filtered through
+        the allowlist (clean_env): the daemon's own environment carries the provider key from agent.env and must not be
+        inherited by anything. The daemon's values win over the session manager's (HOME, XDG_RUNTIME_DIR, PATH are what the
+        daemon itself computed its paths from)."""
+        env = clean_env(session_environment(), os.environ)
         env.setdefault("XDG_RUNTIME_DIR", os.path.dirname(RUN_DIR))
         env.setdefault("WAYLAND_DISPLAY", "wayland-0")
         env.setdefault("DISPLAY", ":0")
         env.setdefault("XDG_SESSION_TYPE", "wayland")
         env.setdefault("QT_QPA_PLATFORM", "wayland")
+        return env
+
+    def tool_env(self, session=None):
+        """The environment for tool commands (run_shell, schedule_watch), sandboxed or not: session_env without the user's
+        ssh/gpg agent variables — a command must not sign, decrypt or log in with cached keys it cannot read."""
+        env = dict(session if session is not None else self.session_env())
+        for k in AGENT_SOCKET_VARS:
+            env.pop(k, None)
         return env
 
     def ai_enabled(self):
@@ -1240,19 +1693,26 @@ class Agent:
         if not self.ai_enabled():
             raise RuntimeError("System-Wide AI is OFF. Turn it on in Fab AI Controls (switch in the header) or run: fabos settings ai.enabled true")
         kind = os.environ.get("FABOS_AGENT_PROVIDER") or self.store.setting("provider", "claude")
+        if not POLICY.provider_allowed(kind):
+            raise RuntimeError("%s: the %s provider is not allowed here (%s). Choose an allowed provider in Fab AI Controls → Settings."
+                               % (MANAGED_MSG, PROVIDERS.get(kind, {}).get("label", kind),
+                                  "cloud AI is disabled" if not POLICY.cloud_allowed() else "allowed: " + ", ".join(POLICY.data.get("providers_allowed") or [])))
         if kind == "fake":
             return FakeProvider()
         if kind == "claude":
             key = get_secret("claude_api_key") or os.environ.get("ANTHROPIC_API_KEY")
             if not key:
                 raise RuntimeError("No Claude API key configured. Open Fab AI Controls → Settings → AI provider and paste your key, or choose another provider (Gemini, OpenAI, DeepSeek, local model).")
+            POLICY.require_host(urllib.parse.urlparse(ClaudeProvider.API).hostname, "the Claude API")
             return ClaudeProvider(key, self.store.setting("claude.model", PROVIDERS["claude"]["model"]), self.store.setting("claude.fallbacks", "true") == "true")
         if kind in PROVIDERS:
             pre = PROVIDERS[kind]
             key = get_secret(pre["secret"])
             if not key and kind != "local":
                 raise RuntimeError("No %s API key configured. Open Fab AI Controls → Settings → AI provider." % pre["label"])
-            return OpenAICompatProvider(self.store.setting(kind + ".base_url", pre["base_url"]), key, self.store.setting(kind + ".model", pre["model"]),
+            base = self.store.setting(kind + ".base_url", pre["base_url"])
+            POLICY.require_host(urllib.parse.urlparse(base).hostname, "the %s endpoint" % pre["label"])
+            return OpenAICompatProvider(base, key, self.store.setting(kind + ".model", pre["model"]),
                                         name=kind, result_limit=RESULT_LIMIT_LOCAL if kind == "local" else RESULT_LIMIT_CLOUD)
         raise RuntimeError("unknown provider " + kind)
 
@@ -1266,13 +1726,14 @@ class Agent:
         except ValueError:
             return getattr(prov, "result_limit", RESULT_LIMIT_CLOUD)
 
-    def model_step(self, tid, prov, system, messages, usage):
+    def model_step(self, tid, prov, system, messages, usage, tools=None):
         """One provider call. If the conversation no longer fits the model's context, compact earlier tool outputs and retry
         (twice, progressively harder) instead of failing the task with an opaque HTTP error."""
         limits = (1500, 300)  # chars per earlier tool result after the 1st and 2nd overflow
+        tools = TOOLS if tools is None else tools
         for attempt in range(len(limits) + 1):
             try:
-                return prov.step(system, messages, TOOLS, usage)
+                return prov.step(system, messages, tools, usage)
             except ContextOverflow as e:
                 if attempt == len(limits):
                     raise RuntimeError("The model's context window is too small for this task even after compacting tool outputs (%s). "
@@ -1282,8 +1743,20 @@ class Agent:
                 self.store.step(tid, "compact", "context", str(e)[:500], "shortened %d earlier tool outputs to %d chars and retried" % (n, limit))
                 LOG("task", tid, "context overflow:", str(e)[:200], "-> compacted", n, "results to", limit)
 
+    def sandbox_name(self):
+        """"bwrap" when run_shell runs inside bubblewrap here, else "none" (probed once; recorded on every step)."""
+        with self._sandbox_lock:
+            if self._sandbox is None:
+                self._sandbox = "bwrap" if sandbox_available() else "none"
+                LOG("run_shell sandbox:", self._sandbox)
+            return self._sandbox
+
+    def tools_for_model(self):
+        return [t for t in TOOLS if not POLICY.tool_denied(t["name"])]
+
     def mode(self, task=None):
-        return (task or {}).get("mode") or self.store.setting("mode", "auto")
+        """The effective permission mode: the task's or the user's choice, clamped to the administrator's mode_max."""
+        return POLICY.clamp_mode((task or {}).get("mode") or self.store.setting("mode", "auto"))
 
     def needs_approval(self, risk, mode):
         thr = MODES.get(mode, "MEDIUM")
@@ -1354,6 +1827,12 @@ class Agent:
         risk, reason = classify(name, inp)
         mode = self.mode(task)
         narration = narration_for(name, inp, self.show_raw())
+        if POLICY.tool_denied(name):
+            # the organisation's policy, not the user's mode: recorded as such, never asked
+            reason = "%s: the %s tool is disabled by policy" % (MANAGED_MSG, name)
+            sid = self.store.step(tid, "tool_call", name, json.dumps(inp)[:20000], "", risk, "denied-by-policy", narration=narration)
+            self.store.activity("policy", "tool_denied", tid, name)
+            return sid, False, risk, reason
         if not self.needs_approval(risk, mode):
             sid = self.store.step(tid, "tool_call", name, json.dumps(inp)[:20000], "", risk, "auto-approved", narration=narration)
             return sid, True, risk, reason
@@ -1395,6 +1874,7 @@ class Agent:
             messages = [{"role": "user", "content": task["request"]}]
             final = ""
             limit = self.result_limit(prov)
+            tools = self.tools_for_model()
 
             def usage(i, o):
                 self.store.q("UPDATE tasks SET cost_in=cost_in+?, cost_out=cost_out+? WHERE id=?", i, o, tid)
@@ -1402,7 +1882,7 @@ class Agent:
                 for turn in range(int(self.store.setting("agent.max_turns", "60"))):
                     if tid in self.cancel:
                         raise RuntimeError("cancelled by user")
-                    resp = self.model_step(tid, prov, system, messages, usage)
+                    resp = self.model_step(tid, prov, system, messages, usage, tools)
                     content = resp["content"]
                     messages.append({"role": "assistant", "content": content})
                     for b in content:
@@ -1422,7 +1902,7 @@ class Agent:
                         sid, ok, risk, reason = self._gate(tid, task, c["name"], inp)
                         if not ok:
                             out, err = {"error": "Denied by user/policy (%s: %s). Do not retry the same action; explain or find an allowed way." % (risk, reason)}, True
-                            done_line = "Sorry, that did not work: you did not allow it."
+                            done_line = "Sorry, that did not work: %s." % ("your organisation does not allow it" if reason.startswith(MANAGED_MSG) else "you did not allow it")
                         else:
                             out, err = self.tools.run(tid, c["name"], inp)
                             done_line = narration_done_for(c["name"], inp, out, error=err)
@@ -1484,7 +1964,9 @@ class Watcher(threading.Thread):
                     hit = msgs[0]
                     spec["seen_uids"] = (spec.get("seen_uids") or []) + [m["uid"] for m in msgs]
             elif w["kind"] == "command":
-                r = subprocess.run(["bash", "-lc", spec.get("command") or "true"], capture_output=True, text=True, timeout=120, env=self.agent.session_env())
+                senv = self.agent.session_env()
+                prefix = sandbox_argv(HOME, POLICY.sandbox_network(), env=senv) if self.agent.sandbox_name() == "bwrap" else []
+                r = subprocess.run(prefix + ["bash", "-lc", spec.get("command") or "true"], capture_output=True, text=True, timeout=120, env=self.agent.tool_env(senv))
                 if re.search(spec.get("expect") or ".", r.stdout + r.stderr):
                     hit = {"output": (r.stdout + r.stderr)[-2000:]}
         except Exception as e:
@@ -1528,6 +2010,8 @@ def test_provider(store, kind, api_key=None, base_url=None, model=None):
     The key is taken from the request when given (so a typed key can be checked before it is saved), else from the stored secret."""
     if kind not in PROVIDERS:
         return {"ok": False, "detail": "unknown provider %s" % kind, "latency_ms": 0}
+    if not POLICY.provider_allowed(kind):
+        return {"ok": False, "detail": "%s: this provider is not allowed" % MANAGED_MSG, "latency_ms": 0, "provider": kind, "model": model or ""}
     pre = PROVIDERS[kind]
     key = (api_key or "").strip() or get_secret(pre["secret"]) or (os.environ.get("ANTHROPIC_API_KEY") if kind == "claude" else None) or ""
     model = (model or store.setting(kind + ".model") or pre["model"]).strip()
@@ -1664,6 +2148,7 @@ def xoauth2_string(user, token):
 
 
 def smtp_connect(cfg, timeout):
+    POLICY.require_host(cfg["smtp_host"], "mail (SMTP)")
     port, sec = cfg["smtp_port"], cfg["smtp_security"]
     if sec == "ssl" or (sec not in ("starttls", "none") and port == 465):
         return smtplib.SMTP_SSL(cfg["smtp_host"], port, timeout=timeout)
@@ -2018,6 +2503,7 @@ def test_mail(store, provider=None, address=None, password=None, overrides=None)
             out["imap"] = {"ok": False, "skipped": True, "detail": "no IMAP server set — sending works, reading the inbox does not"}
             return
         try:
+            POLICY.require_host(host, "mail (IMAP)")
             M = imaplib.IMAP4_SSL(host, port, timeout=MAIL_TEST_TIMEOUT)
             try:
                 imap_login(M, cfg, pw)
@@ -2057,6 +2543,8 @@ SPEECH_TIMEOUT = 30
 
 def _speech_provider(store):
     kind = os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude")
+    if not POLICY.provider_allowed(kind) or not POLICY.cloud_allowed():
+        return None, None, None, {"ok": False, "detail": "%s: cloud speech is not allowed" % MANAGED_MSG, "backend": "none", "provider": kind}
     if kind not in SPEECH_PROVIDERS:
         return None, None, None, {"ok": False, "detail": "no cloud speech for this provider", "backend": "none", "provider": kind}
     key = get_secret(PROVIDERS[kind]["secret"])
@@ -2180,6 +2668,27 @@ def speech_say(store, text):
     return {"ok": True, "audio_b64": base64.b64encode(wav).decode(), "format": "wav", "backend": "gemini:" + model}
 
 
+def parse_since(v):
+    """'24h' | '7d' | '90m' | epoch seconds | ISO 8601 date/time | None -> epoch seconds (0 = everything)."""
+    if v in (None, "", 0, "0"):
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    t = str(v).strip()
+    m = re.match(r"^(\d+)([smhd])$", t)
+    if m:
+        return time.time() - int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+    if re.match(r"^\d+(\.\d+)?$", t):
+        return float(t)
+    try:
+        d = datetime.fromisoformat(t.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("since must be like 24h, 7d, an epoch time or an ISO 8601 date")
+    if d.tzinfo is None:
+        d = d.astimezone()
+    return d.timestamp()
+
+
 # ----------------------------------------------------------------------------- HTTP API
 def make_handler(store, agent, token):
     class H(BaseHTTPRequestHandler):
@@ -2220,7 +2729,11 @@ def make_handler(store, agent, token):
                 prov = os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude")
                 ready = prov == "fake" or prov == "local" or (prov in PROVIDERS and (has_secret(PROVIDERS[prov]["secret"]) or (prov == "claude" and bool(os.environ.get("ANTHROPIC_API_KEY")))))
                 mcfg = mail_config(store)
-                return self._send(200, {"mode": store.setting("mode", "auto"), "provider": prov, "provider_ready": ready, "ai_enabled": agent.ai_enabled(),
+                return self._send(200, {"mode": agent.mode(), "mode_setting": store.setting("mode", "auto"), "provider": prov, "provider_ready": ready and POLICY.provider_allowed(prov),
+                                        "provider_allowed": POLICY.provider_allowed(prov), "ai_enabled": agent.ai_enabled(),
+                                        # "policy": the administrator's /etc/fabos/policy.json as loaded (managed=true when any key is set) — UIs show
+                                        # "Managed by your organisation" from it. root_path/sandbox: how root and run_shell are reached on this machine.
+                                        "policy": POLICY.status(), "root_path": "polkit" if root_argv("x")[0] == "pkexec" else "sudo", "sandbox": agent.sandbox_name(),
                                         "provider_label": PROVIDERS[prov]["label"] if prov in PROVIDERS else prov,
                                         "provider_model": store.setting(prov + ".model", PROVIDERS[prov]["model"]) if prov in PROVIDERS else "",
                                         "ui_show_raw": store.setting("ui.show_raw", "false") == "true",
@@ -2253,6 +2766,8 @@ def make_handler(store, agent, token):
                 s["mail_provider_order"] = list(MAIL_PROVIDER_ORDER)
                 s["mail_oauth"] = mail_oauth_status()
                 s["mail_ready"] = mail_ready(store)
+                s["policy"] = POLICY.status()
+                s["mode_effective"] = agent.mode()
                 return self._send(200, s)
             if p == "/tasks":
                 return self._send(200, store.all("SELECT id,title,status,mode,created,updated,parent_id,cost_in,cost_out,substr(result,1,200) result,error,substr(request,1,400) request FROM tasks ORDER BY id DESC LIMIT ?", int(qs.get("limit", 100))))
@@ -2279,6 +2794,10 @@ def make_handler(store, agent, token):
                 if not flow:
                     return self._send(404, {"error": "no such sign-in flow"})
                 return self._send(200, flow.status())
+            if p == "/policy":
+                return self._send(200, POLICY.status())
+            if p == "/audit/verify":
+                return self._send(200, store.audit_verify())
             if p == "/watches":
                 return self._send(200, store.all("SELECT * FROM watches ORDER BY id DESC LIMIT 200"))
             if p == "/activity":
@@ -2293,6 +2812,20 @@ def make_handler(store, agent, token):
                 b = self._body()
             except ValueError as e:
                 return self._send(413 if "too large" in str(e) else 400, {"error": str(e)})
+            if p == "/policy/reload":
+                POLICY.load()
+                store.activity("user", "policy_reload", None, json.dumps(POLICY.status(), default=str)[:1000])
+                return self._send(200, POLICY.status())
+            if p == "/audit/export":
+                since = b.get("since")
+                try:
+                    since = parse_since(since)
+                except ValueError as e:
+                    return self._send(400, {"error": str(e)})
+                try:
+                    return self._send(200, store.audit_export(since, b.get("out_dir")))
+                except (RuntimeError, OSError) as e:
+                    return self._send(409, {"error": str(e)})
             if p == "/providers/test":
                 kind = b.get("provider") or store.setting("provider", "claude")
                 r = test_provider(store, kind, b.get("api_key"), b.get("base_url"), b.get("model"))
@@ -2323,6 +2856,8 @@ def make_handler(store, agent, token):
                 if not agent.ai_enabled():
                     return self._send(403, {"error": "System-Wide AI is OFF. Turn it on in Fab AI Controls or: fabos settings ai.enabled true"})
                 request, parent = b["request"], b.get("parent_id")
+                if b.get("mode") and POLICY.clamp_mode(b["mode"]) != b["mode"]:
+                    return self._send(403, {"error": "%s: the permission mode is limited to %s (requested %s)" % (MANAGED_MSG, POLICY.mode_max(), b["mode"])})
                 if parent not in (None, "", 0):
                     try:
                         parent = root_task_id(store, int(parent))
@@ -2384,8 +2919,15 @@ def make_handler(store, agent, token):
                 for k, v in b.items():
                     if k == "mode" and v not in MODES:
                         return self._send(400, {"error": "mode must be ask|auto|bypass"})
+                    if k == "mode" and POLICY.clamp_mode(v) != v:
+                        return self._send(403, {"error": "%s: the permission mode is limited to %s" % (MANAGED_MSG, POLICY.mode_max())})
                     if k == "provider" and v not in PROVIDERS and v != "fake":
                         return self._send(400, {"error": "provider must be one of " + ", ".join(PROVIDERS)})
+                    if k == "provider" and not POLICY.provider_allowed(v):
+                        return self._send(403, {"error": "%s: the %s provider is not allowed (%s)" % (MANAGED_MSG, PROVIDERS.get(v, {}).get("label", v),
+                                                                                                    "cloud AI is disabled" if not POLICY.cloud_allowed() else "allowed: " + ", ".join(POLICY.data.get("providers_allowed") or []))})
+                    if k in ("policy", "mode_effective"):
+                        continue
                     if k == "mail.provider" and str(v).lower() not in MAIL_PROVIDERS and str(v) != "":       # "" = unset: infer it from the address
                         return self._send(400, {"error": "mail.provider must be one of " + ", ".join(MAIL_PROVIDER_ORDER) + " (or empty to infer it from the address)"})
                     if k == "mail.auth" and str(v).lower() not in ("password", "oauth", ""):
@@ -2454,14 +2996,25 @@ def main():
         os.close(fd)
     with open(os.path.join(RUN_DIR, "port"), "w") as f:
         f.write(str(PORT))
-    store = Store(DB_PATH)
+    # Audit chain key: a systemd-creds secret (0600 file fallback) generated once; never exposed through the API (not in SECRET_NAMES).
+    audit_key = get_secret("audit_key")
+    if not audit_key:
+        audit_key = _secrets.token_hex(32)
+        LOG("audit key generated (%s)" % set_secret("audit_key", audit_key))
+    store = Store(DB_PATH, audit_key=audit_key.encode())
     agent = Agent(store)
     Watcher(store, agent).start()
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), make_handler(store, agent, token))
     srv.daemon_threads = True
-    LOG("fabos-agentd listening on 127.0.0.1:%d db=%s mode=%s provider=%s" % (PORT, DB_PATH, store.setting("mode", "auto"),
-        os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude")))
-    store.activity("system", "service_start", None, "fabos-agentd")
+    LOG("fabos-agentd listening on 127.0.0.1:%d db=%s mode=%s provider=%s policy=%s" % (PORT, DB_PATH, agent.mode(),
+        os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude"), "managed" if POLICY.managed else ("error: " + POLICY.error if POLICY.error else "none")))
+    store.activity("system", "service_start", None, "fabos-agentd policy=%s sandbox=%s root=%s" % ("managed" if POLICY.managed else "none", agent.sandbox_name(), root_argv("x")[0]))
+
+    def on_hup(*_a):
+        POLICY.load()
+        store.activity("system", "policy_reload", None, "SIGHUP: " + json.dumps(POLICY.status(), default=str)[:900])
+        LOG("policy reloaded on SIGHUP:", "managed" if POLICY.managed else "none", POLICY.error)
+    signal.signal(signal.SIGHUP, on_hup)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -8,6 +8,8 @@ while [ $# -gt 0 ]; do case $1 in --repo) REPO=$2; shift;; --iso) ISO=$2; shift;
 [ -f "$ISO" ] || { echo "no ISO at $ISO — run scripts/build-rootfs.sh iso && scripts/build-iso.sh"; exit 1; }
 OUT=build/release/$TAG; rm -rf "$OUT"; mkdir -p "$OUT"; base=$(basename "$ISO")
 echo "== checksums"; (cd "$(dirname "$ISO")" && sha256sum "$base") > "$OUT/$base.sha256"
+# SHA256SUMS + detached signature with the Fab OS Archive key, published as release assets (docs/ENTERPRISE.md §7)
+"$HERE/scripts/release-checksums.sh" "$OUT" "$ISO"
 size=$(stat -c %s "$ISO"); limit=$((1900*1024*1024))
 # GitHub caps one asset at 2 GiB; the ISO is bigger and splitting is user-hostile. The full one-click download is
 # hosted on fabos.patienceai.in (scripts/publish-iso.sh). GitHub carries only the checksum, manifest and notes.
@@ -22,7 +24,8 @@ Ubuntu 26.04 LTS based desktop by Patience AI with KDE Plasma 6, the Fab OS look
 ## Download
 One file, one click: **https://fabos.patienceai.in/download/$base**  (about 2.3 GB).
 Write it to an 8 GB+ USB stick with [Balena Etcher](https://etcher.balena.io/), restart, pick the USB stick.
-Try it live, then double-click **Install Fab OS** on the desktop. Verify with \`sha256sum -c $base.sha256\`.
+Try it live, then double-click **Install Fab OS** on the desktop. Verify with \`sha256sum -c SHA256SUMS\` and
+\`gpg --verify SHA256SUMS.gpg SHA256SUMS\` (Fab OS Archive key: fabos-archive-key.asc, also at https://fabos.patienceai.in/apt/fabos-archive-key.asc).
 
 ## What is inside
 See MANIFEST.txt (every package and version). Bundled: Brave Browser (Brave's official build), LibreOffice, VLC, KWeather, Fab Terminal,

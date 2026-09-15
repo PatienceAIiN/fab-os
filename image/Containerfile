@@ -86,7 +86,8 @@ RUN printf 'Types: deb\nURIs: https://brave-browser-apt-release.s3.brave.com\nSu
 # Agent runtime deps (separate layer so the big desktop layer above stays cached)
 RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3-dbus python3-gi libnotify-bin wtype unattended-upgrades ubuntu-drivers-common && rm -rf /var/lib/apt/lists/*
 # Bundled applications (own layer): LibreOffice with KDE integration, VLC, KWeather, extra Plasma widgets (weather, etc.)
-RUN apt-get update && apt-get install -y libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-kf6 libreoffice-style-breeze hunspell-en-us vlc kweather plasma-widgets-addons && rm -rf /var/lib/apt/lists/*
+# bubblewrap: the agent's run_shell sandbox (ADR-0017; Ubuntu's /etc/apparmor.d/bwrap-userns-restrict grants it user namespaces).
+RUN apt-get update && apt-get install -y libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-kf6 libreoffice-style-breeze hunspell-en-us vlc kweather plasma-widgets-addons bubblewrap && rm -rf /var/lib/apt/lists/*
 # Built-in local AI model (offline): Qwen2.5-1.5B-Instruct, GGUF Q4_K_M, 1 117 320 736 bytes, Apache-2.0 (Copyright 2024 Alibaba Cloud).
 # Shipped inside BOTH profiles (vm + iso) so the agent works with no account and nothing to download; served on demand by
 # fabos-llama.socket (package fabos-ai, ADR-0011). Pinned by byte count + sha256: the build FAILS on a short file or a mismatch.
@@ -127,7 +128,24 @@ RUN apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update && apt-get
 # Firewall on by default (ufw: deny incoming, allow outgoing, no rules — the ISO ships no SSH server).
 # `ufw enable` cannot run here (no netfilter in the build container), so persist exactly what it would write: the policies
 # in /etc/default/ufw, ENABLED=yes in /etc/ufw/ufw.conf (ufw-init loads the rules at boot only when this is yes) and ufw.service.
+# Enterprise hardening (ADR-0017, docs/ENTERPRISE.md, asserted by tests/security-check.sh):
+#  - mDNS off: avahi-daemon (service + socket) disabled — a discovery surface nothing in the image needs (no KDE Connect, no
+#    cups-browsed); re-enable with `systemctl enable --now avahi-daemon.socket avahi-daemon.service`.
+#  - the three Fab OS AppArmor profiles (fabos-llama enforce; fabos-voiced + fabos-agentd complain until a VM run under an
+#    AppArmor kernel shows no denials — ADR-0017 amendment 9) must parse with the
+#    image's own apparmor_parser (-Q -K: compile only; the build container has no AppArmor interface), and the kernel
+#    hardening sysctl file must be in place; the polkit action for the agent's root path must be well-formed XML.
+#  - no NOPASSWD rule may exist in sudoers (the fabos-live rule of the iso profile is written later and deleted by the installer).
+#  - unattended-upgrades stays enabled with Ubuntu security + the Fab OS origins (fabos-updates ships 52fabos-unattended).
 RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/; s/^# *en_IN UTF-8/en_IN UTF-8/' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
+    systemctl disable avahi-daemon.service avahi-daemon.socket && \
+    test -f /etc/sysctl.d/70-fabos-hardening.conf && grep -q '^net.core.bpf_jit_harden = 2' /etc/sysctl.d/70-fabos-hardening.conf && \
+    apparmor_parser -Q -K /etc/apparmor.d/fabos-agentd /etc/apparmor.d/fabos-voiced /etc/apparmor.d/fabos-llama && \
+    python3 -c "import xml.etree.ElementTree as E; a=E.parse('/usr/share/polkit-1/actions/in.patienceai.fabos.rootexec.policy').getroot().find('action'); assert {d.tag: d.text for d in a.find('defaults')} == {'allow_any': 'no', 'allow_inactive': 'no', 'allow_active': 'auth_admin_keep'}" && \
+    ! test -e /etc/sudoers.d/fabos-agent && ! grep -rq NOPASSWD /etc/sudoers.d /etc/sudoers && visudo -cqf /etc/sudoers.d/fabos-hardening && \
+    test -x /usr/bin/bwrap && test -u /usr/bin/pkexec && test -x /usr/lib/polkit-1/polkitd && \
+    systemctl is-enabled unattended-upgrades && grep -q 'APT::Periodic::Unattended-Upgrade "1"' /etc/apt/apt.conf.d/20auto-upgrades && grep -q -- '-security' /etc/apt/apt.conf.d/52fabos-unattended && \
+    grep -q '^Autolock=true' /etc/xdg/kscreenlockerrc && grep -q '^LidAction=1' /etc/xdg/powerdevilrc && \
     ln -sf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime && echo Asia/Kolkata > /etc/timezone && \
     printf 'LABEL=fabos-root  /         ext4  defaults,discard  0 1\nLABEL=FABOS-ESP   /boot/efi vfat  umask=0077        0 1\n' > /etc/fstab && mkdir -p /boot/efi && \
     systemctl enable NetworkManager systemd-resolved systemd-timesyncd sddm fabos-feedback.socket systemd-oomd.service && \

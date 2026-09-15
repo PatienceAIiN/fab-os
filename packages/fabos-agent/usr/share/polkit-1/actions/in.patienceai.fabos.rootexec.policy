@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- The @DISTRO_NAME@ agent's only path to root (ADR-0017, SECURITY.md). fabos-agentd runs
+     `pkexec /usr/lib/fabos/agent/rootexec <authz-id>` for an approved CRITICAL as_root step; polkit asks the ACTIVE local
+     user for their own password (an administrator's for a non-admin account, 49-ubuntu-admin.rules) and keeps the
+     authorization for five minutes (auth_admin_keep). Remote and inactive sessions are refused outright. There is no
+     NOPASSWD sudoers rule for rootexec any more; an organisation that needs unattended root writes its own
+     /etc/polkit-1/rules.d/ rule for this action (docs/ENTERPRISE.md). -->
+<policyconfig>
+  <vendor>@VENDOR_NAME@</vendor>
+  <vendor_url>@HOME_URL@</vendor_url>
+  <action id="in.patienceai.fabos.rootexec">
+    <description>Run an approved @DISTRO_NAME@ agent step as administrator</description>
+    <message>The @DISTRO_NAME@ agent wants to run an approved step as administrator. Enter your password to allow it.</message>
+    <icon_name>fabos</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/fabos/agent/rootexec</annotate>
+  </action>
+</policyconfig>
