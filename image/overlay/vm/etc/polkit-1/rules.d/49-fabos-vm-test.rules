@@ -1,0 +1,6 @@
+// vm TEST profile only (never in the ISO): the headless test VM has no polkit authentication agent, so the agent's
+// root action would otherwise hang/fail in tests/agent-live-vm.sh (root-1) and the ladder. Installed systems and the
+// live ISO keep the real system authentication dialog (auth_admin_keep).
+polkit.addRule(function(action, subject) {
+    if (action.id == "in.patienceai.fabos.rootexec" && subject.user == "fabos") { return polkit.Result.YES; }
+});
