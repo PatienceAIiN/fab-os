@@ -4,9 +4,13 @@ import org.kde.plasma.plasma5support as P5Support
 import org.kde.kirigami as Kirigami
 
 // Headless driver for the dock. Loaded by one Loader line appended to a COPY of main.qml (tests/desktop-applets-qml-test.sh).
-// Sizes the window like the floating dock panel, checks the unified row (start button · tasks · peek at ONE size),
-// drives hover through dock.hoveredIndex (the scales 1.6 / 1.3 / 1.1 and the re-flow), the launch bounce, the context
-// menu and the magnify switch, renders /out/dock-{idle,hover}.png and prints PASS/FAIL lines + "HARNESS DONE failures=N".
+// Sizes the window like the floating dock panel, checks the unified row (start button · tasks · peek at ONE size, 12 px
+// between every item, the row centred with equal room at both ends, the gaps printed as "DOCK_GAPS [...]"), the
+// running / active indicators (a launcher shows nothing; a running app a 6 px accent dot, a group two, a minimised
+// window a dimmer one; the active window a 24 × 3 bar + a tinted background — the geometry is printed as one
+// "INDICATORS {...}" line so tests/dock-qml-harness/measure.py can measure the pixels in dock-rest.png), drives hover
+// through dock.hoveredIndex (the scales 1.6 / 1.3 / 1.1 and the re-flow), the launch bounce, the context menu and the
+// magnify switch, renders /out/dock-{rest,hover}.png and prints PASS/FAIL lines + "HARNESS DONE failures=N".
 // Offscreen it then MEASURES: every item's icon box is grabbed to /out/measure/raw-<slot>-<name>.png at tileScale 1.0
 // and to norm-<slot>-<name>.png at the shipped tileScale, plus a set of Breeze-only app icons at the same box size as
 // the reference (breeze-<name>.png); tests/dock-qml-harness/measure.py reads the alpha bounding boxes and computes the
@@ -57,7 +61,9 @@ Item {
     // Offscreen there is no windowing backend: libtaskmanager's WindowTasksModel has zero columns, so the task filter
     // proxy rejects every row (launchers included). The visual and input checks then run against this stand-in model
     // with the same role names; the real TasksModel path is covered by the kwin_wayland run of the same harness.
-    // Eight default launchers (Fab OS tiles, Firefox among them) plus one window of an app with a Breeze icon only.
+    // Eight default launchers (Fab OS tiles, Firefox among them) plus one window of an app with a Breeze icon only. Kinds
+    // for the indicator check: launcher-only (Overview, Fab AI Controls, Editor, Firefox, Software), ACTIVE window
+    // (Files), a 3-window group (Terminal), a MINIMISED window (Settings), a plain running window (KDevelop).
     ListModel {
         id: fakeTasks
         ListElement { display: "Overview"; decoration: "fabos-overview"; IsLauncher: true; IsWindow: false; IsActive: false; IsMinimized: false; IsGroupParent: false; ChildCount: 0; IsStartup: false; IsDemandingAttention: false; HasLauncher: false; IsClosable: false; IsMinimizable: false; CanLaunchNewInstance: true; LauncherUrlWithoutIcon: "applications:fabos-overview.desktop"; AppName: "Overview"; GenericName: "" }
@@ -66,7 +72,7 @@ Item {
         ListElement { display: "Terminal"; decoration: "utilities-terminal"; IsLauncher: false; IsWindow: false; IsActive: false; IsMinimized: false; IsGroupParent: true; ChildCount: 3; IsStartup: false; IsDemandingAttention: false; HasLauncher: true; IsClosable: true; IsMinimizable: false; CanLaunchNewInstance: true; LauncherUrlWithoutIcon: "applications:org.kde.konsole.desktop"; AppName: "Terminal"; GenericName: "" }
         ListElement { display: "Editor"; decoration: "kate"; IsLauncher: true; IsWindow: false; IsActive: false; IsMinimized: false; IsGroupParent: false; ChildCount: 0; IsStartup: false; IsDemandingAttention: false; HasLauncher: false; IsClosable: false; IsMinimizable: false; CanLaunchNewInstance: true; LauncherUrlWithoutIcon: "applications:org.kde.kate.desktop"; AppName: "Editor"; GenericName: "" }
         ListElement { display: "Firefox"; decoration: "firefox"; IsLauncher: true; IsWindow: false; IsActive: false; IsMinimized: false; IsGroupParent: false; ChildCount: 0; IsStartup: false; IsDemandingAttention: false; HasLauncher: false; IsClosable: false; IsMinimizable: false; CanLaunchNewInstance: true; LauncherUrlWithoutIcon: "applications:firefox.desktop"; AppName: "Firefox"; GenericName: "Web Browser" }
-        ListElement { display: "Settings"; decoration: "preferences-system"; IsLauncher: false; IsWindow: true; IsActive: false; IsMinimized: true; IsGroupParent: false; ChildCount: 0; IsStartup: false; IsDemandingAttention: true; HasLauncher: true; IsClosable: true; IsMinimizable: true; CanLaunchNewInstance: true; LauncherUrlWithoutIcon: "applications:systemsettings.desktop"; AppName: "Settings"; GenericName: "" }
+        ListElement { display: "Settings"; decoration: "preferences-system"; IsLauncher: false; IsWindow: true; IsActive: false; IsMinimized: true; IsGroupParent: false; ChildCount: 0; IsStartup: false; IsDemandingAttention: false; HasLauncher: true; IsClosable: true; IsMinimizable: true; CanLaunchNewInstance: true; LauncherUrlWithoutIcon: "applications:systemsettings.desktop"; AppName: "Settings"; GenericName: "" }
         ListElement { display: "Software"; decoration: "plasmadiscover"; IsLauncher: true; IsWindow: false; IsActive: false; IsMinimized: false; IsGroupParent: false; ChildCount: 0; IsStartup: false; IsDemandingAttention: false; HasLauncher: false; IsClosable: false; IsMinimizable: false; CanLaunchNewInstance: true; LauncherUrlWithoutIcon: "applications:org.kde.discover.desktop"; AppName: "Software"; GenericName: "" }
         ListElement { display: "KDevelop"; decoration: "kdevelop"; IsLauncher: false; IsWindow: true; IsActive: false; IsMinimized: false; IsGroupParent: false; ChildCount: 0; IsStartup: false; IsDemandingAttention: false; HasLauncher: false; IsClosable: true; IsMinimizable: true; CanLaunchNewInstance: true; LauncherUrlWithoutIcon: "applications:org.kde.kdevelop.desktop"; AppName: "KDevelop"; GenericName: "" }
     }
@@ -120,7 +126,8 @@ Item {
         var t0 = task(0)
         check(t0 && t0.width === dock.baseSize && near(t0.s, 1), "idle items rest at 1.0 (width " + (t0 ? t0.width : -1) + ")")
         check(t0 && t0.mainText.length > 0 && t0.running === false && t0.pinned === true, "first task is a pinned launcher named '" + (t0 ? t0.mainText : "") + "'")
-        if (!h.realBackend) { check(task(2).running && task(3).running && task(6).running && task(3).childCount === 3 && task(8).running, "running dot for a window, a 3-window group, a minimised window and the Breeze-icon window") }
+        if (!h.realBackend) { check(task(2).running && task(3).running && task(6).running && task(3).childCount === 3 && task(8).running, "running: a window, a 3-window group, a minimised window and the Breeze-icon window") }
+        check(dock.gap === 12 && row.spacing === 12 && dock.dotSpace === 8 && dock.dotSize === 6 && dock.barWidth === 24 && dock.barHeight === 3, "one Row, 12 px spacing; indicator band 8 px: 6 px dot, 24 x 3 bar")
         check(t0 && t0.model.IsLauncher === true && t0.model.IsWindow !== true, "IsLauncher role read through the delegate")
         check(dock.tileMapReady && dock.isTileLauncher("applications:org.kde.dolphin.desktop") && dock.isTileIcon("firefox") && !dock.isTileLauncher("applications:org.kde.kdevelop.desktop") && !dock.isTileIcon("kdevelop"), "tile probe ran: Files' desktop file and the firefox icon name are Fab OS tiles, KDevelop is not")
         if (!h.realBackend) check(task(0).isTile && task(2).isTile && task(5).isTile && task(8).isTile === false, "tile detection per row: Overview, Files, Firefox tiles; KDevelop (Breeze) full box")
@@ -134,7 +141,32 @@ Item {
         h.idleWidth = dock.appletWidth
         h.idleCentre = centreOf(4)
         check(Math.abs(h.idleCentre - (dock.width / 2 - dock.restingWidth / 2 + 4 * (b + dock.gap) + b / 2)) <= 1, "resting centre of slot 4 measured after layout (" + h.idleCentre.toFixed(1) + ")")
-        grab(dock, "/out/dock-idle.png")
+        // uniform spacing: every gap between neighbours (start button and peek included) is 12 px; the row is centred (equal room at both ends)
+        var gaps = [], geo = [], first = dock.itemAt(0), last = dock.itemAt(n - 1)
+        for (var g = 0; g + 1 < n; g++) { var a = dock.itemAt(g), nb = dock.itemAt(g + 1); gaps.push(Math.round((nb.x - (a.x + a.width)) * 10) / 10) }
+        var gapsOk = gaps.every(function (v) { return Math.abs(v - 12) <= 1 })
+        console.log("DOCK_GAPS " + JSON.stringify(gaps))
+        check(gapsOk, "all " + gaps.length + " gaps between neighbours are 12 px within 1 px (start button and peek included): " + gaps.join(" "))
+        var leftRoom = first.mapToItem(dock, 0, 0).x, rightRoom = dock.width - last.mapToItem(dock, last.width, 0).x   // applet coordinates (item.x is Row-local)
+        check(Math.abs(leftRoom - rightRoom) <= 1 && leftRoom >= 0, "row centred in the applet: " + leftRoom.toFixed(1) + " px free at the left, " + rightRoom.toFixed(1) + " at the right (the magnify reserve split equally, no one-sided gap)")
+        // indicators by kind (stand-in model offscreen; the real TasksModel under kwin has launchers only)
+        if (!h.realBackend) {
+            var L = task(0), A = task(2), G = task(3), M = task(6), Rn = task(8)
+            check(L.indicator.visible === false && task(4).indicator.visible === false && L.activeBackground.visible === false, "launcher without a window: no dot, no bar, no background")
+            check(A.indicator.visible && A.activeBar.visible && A.activeBar.width === 24 && A.activeBar.height === 3 && A.dots.visible === false && A.activeBackground.visible && A.activeBackground.width === dock.baseSize + 8, "active window: 24 x 3 accent bar, tinted background " + A.activeBackground.width + " px, no dot")
+            check(G.indicator.visible && G.dots.visible && G.dotCount === 2 && G.activeBar.visible === false && G.dots.opacity === 1, "3-window group: two 6 px dots")
+            check(M.indicator.visible && M.dots.visible && M.dotCount === 1 && near(M.dots.opacity, 0.45) && M.glyph.opacity < 1, "minimised window: one dimmer dot (opacity " + M.dots.opacity + "), icon dimmed")
+            check(Rn.indicator.visible && Rn.dots.visible && Rn.dotCount === 1 && Rn.dots.opacity === 1 && Rn.activeBackground.visible === false, "running (not active) window: one full dot, no background")
+            check(A.mainText === "Documents — Files" && A.subText === "Files", "tooltip carries the window title: '" + A.mainText + "'")
+            check(A.activeBar.color === Kirigami.Theme.highlightColor && G.dots.children.length >= 2, "indicator colour is the scheme's accent (Kirigami.Theme.highlightColor)")
+        }
+        for (var q = 0; q < n; q++) {
+            var it = dock.itemAt(q), ix = it.mapToItem(dock, 0, 0).x, kind = q === 0 ? "start" : (q === n - 1 ? "peek" : (!it.running ? "launcher" : (it.isActive ? "active" : (it.isGroup ? "group" : (it.isMinimized ? "minimised" : "running")))))
+            geo.push({ slot: q, kind: kind, cx: Math.round((ix + it.width / 2) * 10) / 10, x: Math.round(ix * 10) / 10, w: it.width })
+        }
+        var hc = Kirigami.Theme.highlightColor, bgc = Kirigami.Theme.backgroundColor
+        console.log("INDICATORS " + JSON.stringify({ width: dock.width, height: dock.height, dotSpace: dock.dotSpace, dotSize: dock.dotSize, barWidth: dock.barWidth, barHeight: dock.barHeight, accent: String(hc), background: String(bgc), items: geo }))
+        grab(dock, "/out/dock-rest.png")
         dock.hoveredIndex = 4
         stage2.start()
     } }

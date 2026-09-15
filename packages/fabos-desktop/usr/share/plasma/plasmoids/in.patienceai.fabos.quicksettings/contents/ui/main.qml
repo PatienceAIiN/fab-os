@@ -14,17 +14,28 @@ import "status.js" as Status
 // percentage, bell with unread badge — and one PlasmaCore.Dialog holding either the settings tiles or the notification
 // history.
 //
+// The pane (v3): a dropdown card 36 gridUnits wide at the Medium bar size (32 / 40 at Small / Large), top edge flush
+// with the bar, radius 24 at the bottom corners, aligned to the bar's right edge with a 12 px margin (the transparent
+// dialog window is clamped to the screen edge; the card sits `edge` px inside it). Padding 20, a THREE-column tile grid
+// with 12 px gaps (status.js layoutTiles): Wi-Fi (2 cols) + Bluetooth · volume slider (full width) · brightness slider ·
+// Battery card (2 cols: percentage 28/700, state, time, power-profile segmented control) + Do Not Disturb · Night light ·
+// Screenshot · Settings; footer: the network row (interface · IP · live ↓ ↑) and Edit (pencil) + All settings. Inter:
+// titles 15/600, detail 13, big numbers 28/700. Tiles radius 16, 4 % tint, accent when on, 120 ms hover lift; every
+// colour from Kirigami.Theme. The notification history is the same width with 64 px rows and 14 px body text.
+//
 // No-blink slide-down: the dialog window is TRANSPARENT (backgroundHints NoBackground) and opens at its FINAL size at
-// once; only the card inside it moves — y from -height to 0 and opacity 0 -> 1 in 220 ms OutCubic; closing reverses and
-// hides the window when the animation has ended. A window that changes size while it animates is re-rasterised by the
-// compositor on every frame (the "blink"); this one never changes size while anything moves. The rounded card is drawn
-// here: background colour @ 96 %, hairline, radius 24 at the bottom corners, a soft shadow from a second translucent
-// rectangle. Switching settings <-> notifications while open is one instant resize plus a 160 ms cross-fade.
+// once; only the card inside it moves — y from -0.35 × height to 0 and opacity 0 -> 1 in 220 ms OutCubic, the tiles
+// staggering in behind it (30 ms apart, 160 ms, 8 px rise + fade); closing reverses in 160 ms and hides the window when
+// the animation has ended. A window that changes size while it animates is re-rasterised by the compositor on every
+// frame (the "blink"); this one never changes size while anything moves (the harness samples the window size every
+// 11 ms through the open, the stagger and the close). The rounded card is drawn here: background colour @ 96 %,
+// hairline, a soft shadow from a second translucent rectangle. Switching settings <-> notifications while open is one
+// instant resize plus a 160 ms cross-fade.
 //
 // Tiles: Plasmoid.configuration.tilesJson (status.js TILES / parseTiles / layoutTiles) — every tile has an order, a
-// size (small = half a row, wide = a full row) and enabled; the pencil toggles edit mode: drag to reorder (DragHandler,
-// slot from layoutTiles + tileAt), size toggle, remove, "+ tile" chips for the removed ones, reset. The same model is
-// edited on the "Tiles" settings page.
+// size (small = one column, medium = two, wide = the full row) and enabled; the pencil toggles edit mode: drag to
+// reorder (DragHandler, slot from layoutTiles + tileAt), size cycle, remove, "+ tile" chips for the removed ones, reset.
+// The same model is edited on the "Tiles" settings page.
 //
 // Data: contents/code/status.sh through the Plasma5Support executable engine — ONE script call, ONE JSON line. While the
 // pane is closed the periodic call is the --light probe (kernel readings + nmcli's ACTIVE,SIGNAL for the Wi-Fi glyph)
@@ -181,6 +192,7 @@ PlasmoidItem {
     Connections { target: notificationSettings; function onSettingsChanged() { root.refreshDnd() } }
     Component.onCompleted: { root.refreshDnd(); root.refresh() }   // one full probe at start; the periodic light probe then keeps the kernel readings fresh
 
+
     // ---------------------------------------------------------------- the tiles (order / size / enabled), edit mode
     property var tiles: Status.parseTiles(Plasmoid.configuration.tilesJson)
     Connections { target: Plasmoid.configuration; function onTilesJsonChanged() { var t = Status.parseTiles(Plasmoid.configuration.tilesJson); if (Status.tilesJson(t) !== Status.tilesJson(root.tiles)) root.tiles = t } }
@@ -190,7 +202,7 @@ PlasmoidItem {
     function tileAvailable(id) {              // tiles that need hardware or a daemon hide while it is absent (edit mode shows them all)
         var st = root.st
         if (id === "brightness") return root.brightnessPct >= 0
-        if (id === "battery") return st.hasBattery
+        if (id === "battery") return st.hasBattery || st.profile.length > 0     // a desktop with power profiles keeps the card as "Power"
         if (id === "powerprofile") return st.profile.length > 0
         if (id === "nightlight") return st.nightEnabled !== null
         return true
@@ -201,32 +213,41 @@ PlasmoidItem {
         return out
     }
     readonly property var hiddenTiles: root.tiles.filter(function (t) { return t.enabled === false })
-    readonly property int cardPad: 10
-    readonly property int settingsWidth: Kirigami.Units.gridUnit * 21
-    readonly property int notifWidth: Kirigami.Units.gridUnit * 28
-    readonly property var tileLayout: Status.layoutTiles(root.shownTiles, root.settingsWidth - 2 * root.cardPad, 8)
+    // ---- geometry: 36 gridUnits wide at Medium (about 650 px), 32 / 40 at Small / Large; padding 20; three columns, 12 px gaps
+    readonly property int paneUnits: root.barSize === "small" ? 32 : (root.barSize === "large" ? 40 : 36)
+    readonly property int settingsWidth: Kirigami.Units.gridUnit * root.paneUnits
+    readonly property int notifWidth: root.settingsWidth                     // the notification pane is the same width
+    readonly property int cardPad: 20
+    readonly property int tileGap: 12
+    readonly property int contentWidth: root.settingsWidth - 2 * root.cardPad
+    readonly property var tileLayout: Status.layoutTiles(root.shownTiles, root.contentWidth, root.tileGap)
     function tileRect(id) { return Status.rectFor(root.tileLayout, id) }
     function tileSize(id) { for (var i = 0; i < root.tiles.length; i++) if (root.tiles[i].id === id) return root.tiles[i].size; return "small" }
     function reorderTo(id, targetId) { if (id !== targetId) root.tiles = Status.moveTileTo(root.tiles, id, targetId) }   // live while dragging
     function dropTiles() { root.saveTiles(root.tiles) }                                                                  // persisted at release
-    readonly property int headerH: 36
-    readonly property int footerH: 36
-    readonly property int addRowH: root.editing && root.hiddenTiles.length > 0 ? addFlow.implicitHeight + 8 : 0
-    readonly property int settingsHeight: 2 * root.cardPad + root.headerH + 8 + root.tileLayout.height + root.addRowH + 8 + root.footerH
-    // notifications: header 40, banner while Do Not Disturb, rows (56 px minimum) up to 60 % of the screen, then a scroll
-    readonly property int notifMaxList: Math.round(root.screenH * 0.6) - (2 * root.cardPad + 46 + (root.dnd ? 46 : 0))
-    readonly property int notifListH: history.count === 0 ? 64 : Math.max(56, Math.min(Math.round(notifList.contentHeight), root.notifMaxList))
-    readonly property int notifHeight: 2 * root.cardPad + 40 + 6 + (root.dnd ? 46 : 0) + root.notifListH
+    readonly property int footerH: 44
+    readonly property int footerGap: 16
+    readonly property int addRowH: root.editing && root.hiddenTiles.length > 0 ? addFlow.implicitHeight + 12 : 0
+    readonly property int settingsHeight: 2 * root.cardPad + root.tileLayout.height + root.addRowH + root.footerGap + root.footerH
+    // notifications: header 44, a 44 px banner while Do Not Disturb, rows (64 px minimum) up to 60 % of the screen, then a scroll
+    readonly property int notifHeaderH: 44
+    readonly property int notifBannerH: root.dnd ? 44 + 8 : 0
+    readonly property int notifMaxList: Math.round(root.screenH * 0.6) - (2 * root.cardPad + root.notifHeaderH + 8 + root.notifBannerH)
+    readonly property int notifListH: history.count === 0 ? 96 : Math.max(64, Math.min(Math.round(notifList.contentHeight), root.notifMaxList))
+    readonly property int notifHeight: 2 * root.cardPad + root.notifHeaderH + 8 + root.notifBannerH + root.notifListH
 
     // ---------------------------------------------------------------- pane open / close (imperative: the dialog's
     // visibility is set here and in closeTimer only, so the slide-up can finish before the window hides)
+    signal tilesIntro()                        // the tiles stagger in (30 ms apart) when the settings pane opens
     function openPane(mode) {
         closeTimer.stop(); root.closing = false
-        if (root.paneMode === "closed") { openBehavior.enabled = false; pane.openProgress = 0; openBehavior.enabled = true }
+        var fromClosed = root.paneMode === "closed", wasContent = root.paneContent
+        if (fromClosed) { openBehavior.enabled = false; pane.openProgress = 0; openBehavior.enabled = true }
         root.paneMode = mode
         root.paneContent = mode
         pane.visible = true              // at its final size: mainItem is bound to the card's size, which does not change while the card moves
         pane.openProgress = 1
+        if (mode === "settings" && (fromClosed || wasContent !== "settings")) root.tilesIntro()
         if (mode === "notifications") history.lastRead = new Date()
         // no refresh() here: paneOpen switches the periodic source to the full probe, which runs it at once
     }
@@ -237,7 +258,7 @@ PlasmoidItem {
         root.closing = true; pane.openProgress = 0; closeTimer.restart()
     }
     function togglePane(mode) { if (root.paneMode === mode && !root.closing) root.closePane(); else root.openPane(mode) }
-    Timer { id: closeTimer; interval: 230; onTriggered: { root.closing = false; root.paneMode = "closed"; pane.visible = false } }   // = the slide duration + one frame
+    Timer { id: closeTimer; interval: 170; onTriggered: { root.closing = false; root.paneMode = "closed"; pane.visible = false } }   // = the 160 ms slide-up + one frame
 
     // ---------------------------------------------------------------- the bar
     PlasmaCore.ToolTipArea {
@@ -308,8 +329,9 @@ PlasmoidItem {
         onVisibleChanged: if (!visible && root.paneMode !== "closed" && !root.closing) { history.lastRead = new Date(); root.editing = false; root.paneMode = "closed" }
 
         property real openProgress: 0
-        Behavior on openProgress { id: openBehavior; NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
-        readonly property int shadow: 14                                     // room for the shadow beside and under the card
+        Behavior on openProgress { id: openBehavior; NumberAnimation { duration: root.closing ? 160 : 220; easing.type: Easing.OutCubic } }
+        readonly property int shadow: 14                                     // room for the shadow at the left of and under the card
+        readonly property int edge: 12                                       // the card's right edge sits 12 px inside the window: the window is clamped to the bar's right (screen) edge
         readonly property bool notif: root.paneContent === "notifications"
         readonly property int cardWidth: notif ? root.notifWidth : root.settingsWidth
         readonly property int cardHeight: notif ? root.notifHeight : root.settingsHeight
@@ -320,7 +342,7 @@ PlasmoidItem {
             id: paneMain
             Kirigami.Theme.colorSet: Kirigami.Theme.Window
             Kirigami.Theme.inherit: false
-            width: pane.cardWidth + 2 * pane.shadow
+            width: pane.cardWidth + pane.shadow + pane.edge
             height: pane.cardHeight + pane.shadow
             clip: true                                                        // the card slides in from above the window's top edge
 
@@ -331,10 +353,10 @@ PlasmoidItem {
                 color: Qt.rgba(0, 0, 0, 0.16)
                 opacity: card.opacity
             }
-            Rectangle {   // the card itself: y -height -> 0 and opacity 0 -> 1; the window around it never changes size while it moves
+            Rectangle {   // the card itself: y -0.35 × height -> 0 and opacity 0 -> 1; the window around it never changes size while it moves
                 id: card
                 x: pane.shadow
-                y: Math.round(-height * (1 - pane.openProgress))
+                y: Math.round(-0.35 * height * (1 - pane.openProgress))
                 width: pane.cardWidth
                 height: pane.cardHeight
                 opacity: pane.openProgress
@@ -343,8 +365,9 @@ PlasmoidItem {
                 border.color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.12)
                 topLeftRadius: 0; topRightRadius: 0
                 bottomLeftRadius: pane.radius; bottomRightRadius: pane.radius
+                readonly property color tc: Kirigami.Theme.textColor
 
-                // ================================================ settings: header · tiles · (+ chips) · footer
+                // ================================================ settings: tiles · (+ chips) · footer
                 Item {
                     id: settingsPane
                     anchors.fill: parent
@@ -353,23 +376,12 @@ PlasmoidItem {
                     opacity: root.paneContent === "settings" ? 1 : 0
                     Behavior on opacity { NumberAnimation { duration: 160 } }
                     readonly property int contentHeight: root.settingsHeight
-
-                    RowLayout {   // header: title, reset (edit mode), pencil / done
-                        id: settingsHeader
-                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                        height: root.headerH
-                        spacing: 4
-                        Text { Layout.leftMargin: 6; text: root.editing ? "Arrange tiles" : "Quick settings"; color: Kirigami.Theme.textColor; font.family: "Inter"; font.pixelSize: 14; font.weight: Font.DemiBold }
-                        Text { visible: root.editing; text: "drag · resize · remove"; color: Kirigami.Theme.textColor; opacity: 0.5; font.family: "Inter"; font.pixelSize: 11 }
-                        Item { Layout.fillWidth: true }
-                        SmallButton { visible: root.editing; icon: "edit-undo"; tip: "Reset to default"; onClicked: root.saveTiles(Status.defaultTiles()) }
-                        SmallButton { id: editButton; icon: root.editing ? "checkmark" : "document-edit"; tip: root.editing ? "Done" : "Edit tiles: drag to arrange, resize, remove"; onClicked: root.editing = !root.editing }
-                    }
+                    readonly property Item footerItem: footer      // harness hooks
+                    readonly property Item chips: addFlow
 
                     Item {   // the tiles, positioned from status.js layoutTiles; one delegate per known tile, shown when it has a slot
                         id: tilesArea
-                        anchors.left: parent.left; anchors.right: parent.right
-                        anchors.top: settingsHeader.bottom; anchors.topMargin: 8
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                         height: root.tileLayout.height
                         Repeater {
                             id: tileRepeater
@@ -379,7 +391,9 @@ PlasmoidItem {
                                 required property int index
                                 readonly property string tileId: Status.TILES[index].id
                                 readonly property var rect: root.tileRect(tileId)
-                                readonly property bool wide: root.tileSize(tileId) === "wide"
+                                readonly property string size: root.tileSize(tileId)
+                                readonly property int span: rect ? rect.span : Status.spanOf(size)
+                                readonly property int order: rect ? rect.n : 0         // position among the placed tiles: the stagger index
                                 readonly property bool available: root.tileAvailable(tileId)
                                 readonly property bool dragging: drag.active
                                 readonly property Item content: contentLoader.item
@@ -391,10 +405,25 @@ PlasmoidItem {
                                 width: rect ? rect.w : 0
                                 height: rect ? rect.h : 0
                                 z: dragging ? 10 : 0
-                                opacity: available || !root.editing ? 1 : 0.5
+                                opacity: (available || !root.editing ? 1 : 0.5) * tw.introOpacity
+                                transform: Translate { y: tw.introDy }              // the stagger rise: a transform, so x/y stay the layout's
                                 Behavior on x { enabled: root.editing && !tw.dragging; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
                                 Behavior on y { enabled: root.editing && !tw.dragging; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
                                 Behavior on width { enabled: root.editing; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+                                Behavior on height { enabled: root.editing; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+                                // stagger-in when the pane opens: 30 ms per tile, then 160 ms of 8 px rise + fade (OutCubic)
+                                property real introDy: 0
+                                property real introOpacity: 1
+                                SequentialAnimation {
+                                    id: intro
+                                    PauseAnimation { duration: tw.order * 30 }
+                                    ParallelAnimation {
+                                        NumberAnimation { target: tw; property: "introDy"; to: 0; duration: 160; easing.type: Easing.OutCubic }
+                                        NumberAnimation { target: tw; property: "introOpacity"; to: 1; duration: 160; easing.type: Easing.OutCubic }
+                                    }
+                                }
+                                function playIntro() { intro.stop(); tw.introDy = 8; tw.introOpacity = 0; intro.restart() }
+                                Connections { target: root; function onTilesIntro() { if (tw.rect) tw.playIntro() } }
                                 property real dragX: 0
                                 property real dragY: 0
                                 property point origin: Qt.point(0, 0)
@@ -418,29 +447,29 @@ PlasmoidItem {
                                     anchors.fill: parent
                                     enabled: !root.editing                 // edit mode: the tile's own controls are inert, the drag and the overlay act
                                     sourceComponent: tw.tileId === "volume" ? volumeRow : tw.tileId === "brightness" ? brightnessRow : tw.tileId === "battery" ? batteryRow : tw.tileId === "netspeed" ? netRow : toggleTile
-                                    onLoaded: { item.tileId = tw.tileId; item.wide = Qt.binding(function () { return tw.wide }); item.available = Qt.binding(function () { return tw.available }) }
+                                    onLoaded: { item.tileId = tw.tileId; item.span = Qt.binding(function () { return tw.span }); item.available = Qt.binding(function () { return tw.available }) }
                                 }
                                 Rectangle {   // edit-mode frame
                                     id: editFrame
                                     visible: root.editing
                                     anchors.fill: parent
-                                    radius: 14
+                                    radius: 16
                                     color: "transparent"
                                     border.width: tw.dragging ? 2 : 1
                                     border.color: Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g, Kirigami.Theme.highlightColor.b, tw.dragging ? 0.9 : 0.55)
                                 }
                                 Kirigami.Icon {   // grab handle
                                     visible: root.editing
-                                    anchors.left: parent.left; anchors.leftMargin: 2; anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left; anchors.leftMargin: 3; anchors.verticalCenter: parent.verticalCenter
                                     width: 14; height: 14
                                     source: "handle-sort"; isMask: true; color: Kirigami.Theme.textColor; opacity: 0.55
                                 }
-                                Row {   // size toggle + remove
+                                Row {   // size cycle + remove
                                     id: editControls
                                     visible: root.editing
-                                    anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 3
+                                    anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 4
                                     spacing: 0
-                                    SmallButton { icon: tw.wide ? "view-restore" : "view-fullscreen"; iconSize: 13; implicitWidth: 24; implicitHeight: 24; tip: tw.wide ? "Make small (half a row)" : "Make wide (a full row)"; onClicked: root.saveTiles(Status.toggleTileSize(root.tiles, tw.tileId)) }
+                                    SmallButton { icon: tw.size === "wide" ? "view-restore" : "view-fullscreen"; iconSize: 13; implicitWidth: 24; implicitHeight: 24; tip: Status.sizeLabel(tw.size) + " → " + Status.sizeLabel(Status.nextSize(tw.size)); onClicked: root.saveTiles(Status.toggleTileSize(root.tiles, tw.tileId)) }
                                     SmallButton { icon: "dialog-close"; iconSize: 13; implicitWidth: 24; implicitHeight: 24; tip: "Remove from the pane"; onClicked: root.saveTiles(Status.setTileEnabled(root.tiles, tw.tileId, false)) }
                                 }
                             }
@@ -450,19 +479,19 @@ PlasmoidItem {
                     Flow {   // edit mode: the removed tiles as "+ name" chips
                         id: addFlow
                         anchors.left: parent.left; anchors.right: parent.right
-                        anchors.top: tilesArea.bottom; anchors.topMargin: 8
+                        anchors.top: tilesArea.bottom; anchors.topMargin: 12
                         visible: root.editing && root.hiddenTiles.length > 0
-                        spacing: 6
+                        spacing: 8
                         Repeater {
                             model: root.hiddenTiles.length
                             delegate: Rectangle {
                                 required property int index
                                 readonly property var tile: root.hiddenTiles[index]
                                 readonly property var def: Status.tileDef(tile.id)
-                                width: chipText.implicitWidth + 30; height: 28; radius: 12
-                                color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, chipArea.containsMouse ? 0.16 : 0.08)
-                                Kirigami.Icon { anchors.left: parent.left; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter; width: 12; height: 12; source: "list-add"; isMask: true; color: Kirigami.Theme.textColor }
-                                Text { id: chipText; anchors.left: parent.left; anchors.leftMargin: 22; anchors.verticalCenter: parent.verticalCenter; text: parent.def ? parent.def.title : parent.tile.id; color: Kirigami.Theme.textColor; font.family: "Inter"; font.pixelSize: 12 }
+                                width: chipText.implicitWidth + 34; height: 32; radius: 12
+                                color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, chipArea.containsMouse ? 0.14 : 0.06)
+                                Kirigami.Icon { anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter; width: 12; height: 12; source: "list-add"; isMask: true; color: Kirigami.Theme.textColor }
+                                Text { id: chipText; anchors.left: parent.left; anchors.leftMargin: 25; anchors.verticalCenter: parent.verticalCenter; text: parent.def ? parent.def.title : parent.tile.id; color: Kirigami.Theme.textColor; font.family: "Inter"; font.pixelSize: 13; font.weight: Font.Medium }
                                 MouseArea { id: chipArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveTiles(Status.setTileEnabled(root.tiles, parent.tile.id, true)) }
                                 Accessible.role: Accessible.Button
                                 Accessible.name: "Add " + (def ? def.title : tile.id)
@@ -470,54 +499,92 @@ PlasmoidItem {
                         }
                     }
 
-                    RowLayout {   // footer
+                    RowLayout {   // footer: the network row (interface · IP · live ↓ ↑) and Edit (pencil) + All settings; while editing: hint · reset · settings · Done
+                        id: footer
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                         height: root.footerH
-                        spacing: 4
-                        SmallButton { icon: "settings-configure"; iconSize: 18; tip: "System Settings"; onClicked: root.launch("systemsettings") }
-                        Text { text: "System Settings"; color: Kirigami.Theme.textColor; opacity: 0.7; font.family: "Inter"; font.pixelSize: 12 }
+                        spacing: 8
+                        readonly property Item networkText: netText   // harness hooks
+                        readonly property Item speedLabel: speedText
+                        readonly property Item pill: footerPill
+                        readonly property Item pencil: editButton
+                        Kirigami.Icon {
+                            visible: !root.editing
+                            Layout.leftMargin: 8; Layout.preferredWidth: 18; Layout.preferredHeight: 18
+                            source: root.st.connType === "wired" ? "network-wired" : (root.st.iface ? Status.wifiIcon(root.st) : "network-wireless-disconnected")
+                            isMask: true; color: card.tc; opacity: 0.8
+                        }
+                        Text {
+                            id: netText
+                            visible: !root.editing
+                            text: root.st.iface ? root.st.iface + (root.st.ip4 ? " · " + root.st.ip4 : "") : "No network"
+                            color: card.tc; opacity: 0.8; font.family: "Inter"; font.pixelSize: 13; font.weight: Font.Medium
+                            elide: Text.ElideRight; Layout.maximumWidth: 260
+                        }
+                        Text {
+                            id: speedText
+                            visible: !root.editing && root.st.iface !== ""
+                            text: Status.speedText(root.down, root.up)
+                            color: card.tc; font.family: "Inter"; font.pixelSize: 13; font.weight: Font.DemiBold
+                        }
+                        Text { visible: root.editing; Layout.leftMargin: 8; text: "Drag to arrange · size · remove"; color: card.tc; opacity: 0.6; font.family: "Inter"; font.pixelSize: 13 }
                         Item { Layout.fillWidth: true }
-                        Text { text: "Bar: " + root.barSize.charAt(0).toUpperCase() + root.barSize.slice(1); color: Kirigami.Theme.textColor; opacity: 0.55; font.family: "Inter"; font.pixelSize: 11 }
-                        SmallButton { icon: "arrow-right"; tip: "Configure the bar (size, tiles, magnify)"; onClicked: { root.closePane(); Plasmoid.internalAction("configure").trigger() } }
+                        SmallButton { visible: root.editing; icon: "edit-undo"; iconSize: 18; implicitWidth: 36; implicitHeight: 36; tip: "Reset to default"; onClicked: root.saveTiles(Status.defaultTiles()) }
+                        SmallButton { visible: root.editing; icon: "configure"; iconSize: 18; implicitWidth: 36; implicitHeight: 36; tip: "Bar size, tiles and refresh settings"; onClicked: { root.closePane(); Plasmoid.internalAction("configure").trigger() } }
+                        SmallButton { id: editButton; visible: !root.editing; icon: "document-edit"; iconSize: 18; implicitWidth: 36; implicitHeight: 36; tip: "Edit tiles: drag to arrange, resize, remove"; onClicked: root.editing = true }
+                        Rectangle {   // "All settings" (System Settings) at rest; "Done" (accent) while editing
+                            id: footerPill
+                            Layout.preferredWidth: pillText.implicitWidth + 46; Layout.preferredHeight: 36
+                            radius: 12
+                            readonly property color fg: root.editing ? Kirigami.Theme.highlightedTextColor : card.tc
+                            color: root.editing ? (pillArea.containsMouse ? Qt.lighter(Kirigami.Theme.highlightColor, 1.08) : Kirigami.Theme.highlightColor)
+                                                : Qt.rgba(card.tc.r, card.tc.g, card.tc.b, pillArea.containsMouse ? 0.12 : 0.06)
+                            Behavior on color { ColorAnimation { duration: 140 } }
+                            Kirigami.Icon { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; width: 18; height: 18; source: root.editing ? "checkmark" : "settings-configure"; isMask: true; color: footerPill.fg }
+                            Text { id: pillText; anchors.left: parent.left; anchors.leftMargin: 36; anchors.verticalCenter: parent.verticalCenter; text: root.editing ? "Done" : "All settings"; color: footerPill.fg; font.family: "Inter"; font.pixelSize: 13; font.weight: Font.Medium }
+                            MouseArea { id: pillArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (root.editing) root.editing = false; else { root.closePane(); root.launch("systemsettings") } } }
+                            Accessible.role: Accessible.Button
+                            Accessible.name: pillText.text
+                        }
                     }
                 }
 
-                // ================================================ notification history (28 gridUnits wide, rows 56 px, up to 60 % of the screen)
+                // ================================================ notification history (the pane's width, rows 64 px, up to 60 % of the screen)
                 ColumnLayout {
                     id: notifPane
                     anchors.fill: parent
                     anchors.margins: root.cardPad
-                    spacing: 6
+                    spacing: 8
                     visible: opacity > 0
                     opacity: root.paneContent === "notifications" ? 1 : 0
                     Behavior on opacity { NumberAnimation { duration: 160 } }
 
                     RowLayout {
-                        Layout.fillWidth: true; Layout.preferredHeight: 40; Layout.leftMargin: 8; spacing: 6
-                        Text { text: "Notifications"; color: Kirigami.Theme.textColor; font.family: "Inter"; font.pixelSize: 15; font.weight: Font.DemiBold }
-                        Text { visible: history.count > 0; text: history.count; color: Kirigami.Theme.textColor; opacity: 0.5; font.family: "Inter"; font.pixelSize: 13 }
+                        Layout.fillWidth: true; Layout.preferredHeight: root.notifHeaderH; Layout.leftMargin: 6; spacing: 8
+                        Text { text: "Notifications"; color: card.tc; font.family: "Inter"; font.pixelSize: 15; font.weight: Font.DemiBold }
+                        Text { visible: history.count > 0; text: history.count; color: card.tc; opacity: 0.5; font.family: "Inter"; font.pixelSize: 13 }
                         Item { Layout.fillWidth: true }
-                        SmallButton { icon: root.dnd ? "notifications-disabled" : "notifications"; iconSize: 18; implicitWidth: 32; implicitHeight: 32; tip: root.dnd ? "Turn Do Not Disturb off" : "Do Not Disturb"; onClicked: root.toggleDnd() }
+                        SmallButton { icon: root.dnd ? "notifications-disabled" : "notifications"; iconSize: 18; implicitWidth: 36; implicitHeight: 36; tip: root.dnd ? "Turn Do Not Disturb off" : "Do Not Disturb"; onClicked: root.toggleDnd() }
                         Rectangle {   // "Clear all": a labelled pill, reachable at any pane width
                             id: clearAll
-                            Layout.preferredWidth: clearText.implicitWidth + 34; Layout.preferredHeight: 30
+                            Layout.preferredWidth: clearText.implicitWidth + 40; Layout.preferredHeight: 36
                             radius: 12
                             readonly property bool active: history.count > 0
                             opacity: active ? 1 : 0.45
-                            color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, clearArea.containsMouse && active ? 0.16 : 0.08)
-                            Kirigami.Icon { anchors.left: parent.left; anchors.leftMargin: 9; anchors.verticalCenter: parent.verticalCenter; width: 14; height: 14; source: "edit-clear-all"; isMask: true; color: Kirigami.Theme.textColor }
-                            Text { id: clearText; anchors.left: parent.left; anchors.leftMargin: 26; anchors.verticalCenter: parent.verticalCenter; text: "Clear all"; color: Kirigami.Theme.textColor; font.family: "Inter"; font.pixelSize: 12; font.weight: Font.Medium }
+                            color: Qt.rgba(card.tc.r, card.tc.g, card.tc.b, clearArea.containsMouse && active ? 0.12 : 0.06)
+                            Kirigami.Icon { anchors.left: parent.left; anchors.leftMargin: 11; anchors.verticalCenter: parent.verticalCenter; width: 16; height: 16; source: "edit-clear-all"; isMask: true; color: card.tc }
+                            Text { id: clearText; anchors.left: parent.left; anchors.leftMargin: 31; anchors.verticalCenter: parent.verticalCenter; text: "Clear all"; color: card.tc; font.family: "Inter"; font.pixelSize: 13; font.weight: Font.Medium }
                             MouseArea { id: clearArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: if (clearAll.active) history.clear(NotificationManager.Notifications.ClearExpired) }
                             Accessible.role: Accessible.Button
                             Accessible.name: "Clear all notifications"
                         }
-                        SmallButton { icon: "settings-configure"; iconSize: 18; implicitWidth: 32; implicitHeight: 32; tip: "Notification settings"; onClicked: root.launch("kcmshell6 kcm_notifications") }
+                        SmallButton { icon: "settings-configure"; iconSize: 18; implicitWidth: 36; implicitHeight: 36; tip: "Notification settings"; onClicked: root.launch("kcmshell6 kcm_notifications") }
                     }
                     Rectangle {
-                        Layout.fillWidth: true; Layout.preferredHeight: 40; radius: 14
+                        Layout.fillWidth: true; Layout.preferredHeight: 44; radius: 14
                         visible: root.dnd
                         color: Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g, Kirigami.Theme.highlightColor.b, 0.18)
-                        Text { anchors.centerIn: parent; text: "Do Not Disturb is on — popups are held here"; color: Kirigami.Theme.textColor; font.family: "Inter"; font.pixelSize: 13 }
+                        Text { anchors.centerIn: parent; text: "Do Not Disturb is on — popups are held here"; color: card.tc; font.family: "Inter"; font.pixelSize: 14 }
                     }
                     ListView {
                         id: notifList
@@ -532,12 +599,14 @@ PlasmoidItem {
                         add: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 200 } }
                         QQC2.ScrollBar.vertical: QQC2.ScrollBar { policy: notifList.contentHeight > notifList.height ? QQC2.ScrollBar.AlwaysOn : QQC2.ScrollBar.AsNeeded }
                     }
-                    Text {
+                    Item {   // empty state
                         visible: history.count === 0
                         Layout.fillWidth: true; Layout.fillHeight: true
-                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                        text: "No notifications"
-                        color: Kirigami.Theme.textColor; opacity: 0.55; font.family: "Inter"; font.pixelSize: 13
+                        Column {
+                            anchors.centerIn: parent; spacing: 6
+                            Kirigami.Icon { anchors.horizontalCenter: parent.horizontalCenter; width: 28; height: 28; source: "notifications"; isMask: true; color: card.tc; opacity: 0.35 }
+                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: "No notifications"; color: card.tc; opacity: 0.55; font.family: "Inter"; font.pixelSize: 14 }
+                        }
                     }
                 }
             }
@@ -545,23 +614,23 @@ PlasmoidItem {
     }
 
     // ---------------------------------------------------------------- tile components (chosen per id by the delegate's Loader)
-    Component {   // generic toggle tile: Wi-Fi, Bluetooth, Notifications, Do Not Disturb, Power profile, Night light, Screenshot, Settings
+    Component {   // generic toggle tile: Wi-Fi, Bluetooth, Do Not Disturb, Night light, Screenshot, Settings, Notifications, Power profile
         id: toggleTile
         Tile {
             property string tileId: ""
-            property bool wide: true
+            property int span: 1
             property bool available: true
             readonly property var st: root.st
             icon: tileId === "wifi" ? Status.wifiIcon(st) : tileId === "bluetooth" ? Status.bluetoothIcon(st) : tileId === "notifications" ? "notifications"
                 : tileId === "dnd" ? "notifications-disabled" : tileId === "powerprofile" ? Status.profileIcon(st.profile) : tileId === "nightlight" ? "redshift-status-off"
                 : tileId === "screenshot" ? "camera-photo-symbolic" : "settings-configure"
             title: Status.tileDef(tileId) ? Status.tileDef(tileId).title : tileId
-            detail: tileId === "wifi" ? Status.wifiLine(st) : tileId === "bluetooth" ? Status.bluetoothLine(st)
+            detail: tileId === "wifi" ? Status.wifiLine(st) : tileId === "bluetooth" ? (span > 1 ? Status.bluetoothLine(st) : Status.bluetoothShort(st))
                 : tileId === "notifications" ? (root.unread > 0 ? root.unread + " new" : (history.count > 0 ? history.count + " in history" : "None"))
                 : tileId === "dnd" ? (root.dnd ? "On until turned off" : "Off")
                 : tileId === "powerprofile" ? (Status.profileLabel(st.profile) || "Unavailable")
                 : tileId === "nightlight" ? Status.nightLine(st, false)
-                : tileId === "screenshot" ? "Capture the screen" : "All settings"
+                : tileId === "screenshot" ? "Capture the screen" : "System Settings"
             on: tileId === "wifi" ? st.wifiRadio === true : tileId === "bluetooth" ? (st.btPresent && st.btPowered === true) : tileId === "dnd" ? root.dnd
               : tileId === "nightlight" ? st.nightEnabled === true : false
             actionEnabled: available && (tileId === "wifi" ? st.wifiRadio !== null : tileId === "bluetooth" ? st.btPresent : tileId === "powerprofile" ? st.profile.length > 0
@@ -585,115 +654,71 @@ PlasmoidItem {
             }
         }
     }
-    Component {   // volume: mute · slider · percent · chevron (Audio devices)
+    Component {   // volume: mute glyph · slider (36 px thumb) · percent · chevron (Audio devices)
         id: volumeRow
-        Rectangle {
-            id: volumeTile
+        SliderTile {
             property string tileId: ""
-            property bool wide: true
+            property int span: 3
             property bool available: true
-            radius: 14
-            color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.08)
-            RowLayout {
-                anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 4; spacing: 6
-                SmallButton { icon: Status.volumeIcon(root.st.volume, root.st.muted); iconSize: 20; tip: root.st.muted ? "Unmute" : "Mute"; active: root.st.hasAudio; onClicked: root.toggleMute() }
-                QQC2.Slider {
-                    id: volumeSlider
-                    Layout.fillWidth: true
-                    from: 0; to: 100; stepSize: 1
-                    enabled: root.st.hasAudio
-                    value: root.st.volume < 0 ? 0 : root.st.volume
-                    onMoved: root.setVolume(value)
-                    Accessible.name: "Volume"
-                }
-                Text { text: root.st.hasAudio ? Math.round(volumeSlider.value) + "%" : "No audio"; color: Kirigami.Theme.textColor; opacity: 0.8; font.family: "Inter"; font.pixelSize: 12; Layout.preferredWidth: volumeTile.wide ? 46 : 34; horizontalAlignment: Text.AlignRight }
-                SmallButton { visible: volumeTile.wide; icon: "arrow-right"; tip: "Audio devices"; onClicked: root.launch("plasmawindowed org.kde.plasma.volume") }
-            }
+            icon: Status.volumeIcon(root.st.volume, root.st.muted)
+            glyphClickable: true
+            glyphTip: root.st.muted ? "Unmute" : "Mute"
+            sliderEnabled: root.st.hasAudio
+            value: root.st.volume < 0 ? 0 : root.st.volume
+            valueText: root.st.hasAudio ? Math.round(sliderItem.value) + "%" : "—"
+            chevronTip: "Audio devices"
+            expandable: span > 1
+            onMoved: (v) => root.setVolume(v)
+            onGlyphClicked: root.toggleMute()
+            onExpand: root.launch("plasmawindowed org.kde.plasma.volume")
         }
     }
     Component {   // brightness (only with a backlight): glyph · slider · percent · chevron (Display settings)
         id: brightnessRow
-        Rectangle {
-            id: brightnessTile
+        SliderTile {
             property string tileId: ""
-            property bool wide: true
+            property int span: 3
             property bool available: true
-            radius: 14
-            color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.08)
-            RowLayout {
-                anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 4; spacing: 6
-                Kirigami.Icon { source: "video-display-brightness"; isMask: true; color: Kirigami.Theme.textColor; opacity: 0.7; Layout.preferredWidth: 20; Layout.preferredHeight: 20; Layout.leftMargin: 4 }
-                QQC2.Slider {
-                    id: brightnessSlider
-                    Layout.fillWidth: true
-                    from: 1; to: 100; stepSize: 1
-                    enabled: root.brightnessOk
-                    value: Math.max(1, root.brightnessPct)
-                    onMoved: root.setBrightness(value)
-                    Accessible.name: "Brightness"
-                    QQC2.ToolTip.visible: !root.brightnessOk && hovered
-                    QQC2.ToolTip.text: "Brightness control is not available (powerdevil not running)"
-                }
-                Text { text: Math.round(brightnessSlider.value) + "%"; color: Kirigami.Theme.textColor; opacity: 0.8; font.family: "Inter"; font.pixelSize: 12; Layout.preferredWidth: brightnessTile.wide ? 46 : 34; horizontalAlignment: Text.AlignRight }
-                SmallButton { visible: brightnessTile.wide; icon: "arrow-right"; tip: "Display settings"; onClicked: root.launch("plasmawindowed org.kde.plasma.brightness") }
-            }
+            icon: "video-display-brightness"
+            glyphTip: "Brightness"
+            from: 1
+            sliderEnabled: root.brightnessOk
+            value: Math.max(1, root.brightnessPct)
+            valueText: Math.round(sliderItem.value) + "%"
+            disabledTip: "Brightness control is not available (powerdevil not running)"
+            chevronTip: "Display settings"
+            expandable: span > 1
+            onMoved: (v) => root.setBrightness(v)
+            onExpand: root.launch("plasmawindowed org.kde.plasma.brightness")
         }
     }
-    Component {   // battery: glyph · "Battery" + line · power-profile chips (wide only) · chevron (Battery details)
+    Component {   // battery card: percentage 28/700 · state · time · power-profile segmented control · chevron (Battery details)
         id: batteryRow
-        Rectangle {
-            id: batteryTile
+        BatteryCard {
             property string tileId: ""
-            property bool wide: true
-            property bool available: true
-            radius: 14
-            color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.08)
-            RowLayout {
-                anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 4; spacing: 10
-                Kirigami.Icon { source: Status.batteryIcon(root.st.batPct, root.st.batStatus); isMask: true; color: Kirigami.Theme.textColor; Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
-                ColumnLayout {
-                    Layout.fillWidth: true; spacing: 3
-                    Text { text: root.st.hasBattery ? "Battery" : "Power"; color: Kirigami.Theme.textColor; font.family: "Inter"; font.pixelSize: 13; font.weight: Font.DemiBold }
-                    Text { text: Status.batteryLine(root.st); color: Kirigami.Theme.textColor; opacity: 0.75; font.family: "Inter"; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true }
-                }
-                Row {   // power profile chips (powerprofilesctl)
-                    spacing: 4
-                    visible: batteryTile.wide && root.st.profile.length > 0
-                    Repeater {
-                        model: [ { id: "power-saver", icon: "battery-profile-powersave", tip: "Power saver" }, { id: "balanced", icon: "battery-profile-balanced", tip: "Balanced" }, { id: "performance", icon: "battery-profile-performance", tip: "Performance" } ]
-                        delegate: Rectangle {
-                            required property var modelData
-                            readonly property bool current: root.st.profile === modelData.id
-                            width: 30; height: 30; radius: 12
-                            color: current ? Kirigami.Theme.highlightColor : Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, chipArea.containsMouse ? 0.16 : 0.0)
-                            Behavior on color { ColorAnimation { duration: 140 } }
-                            Kirigami.Icon { anchors.centerIn: parent; width: 16; height: 16; source: parent.modelData.icon; isMask: true; color: parent.current ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor }
-                            MouseArea { id: chipArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setProfile(parent.modelData.id) }
-                            QQC2.ToolTip.visible: chipArea.containsMouse
-                            QQC2.ToolTip.text: modelData.tip
-                            QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
-                        }
-                    }
-                }
-                SmallButton { icon: "arrow-right"; tip: "Battery details"; onClicked: root.launch("plasmawindowed org.kde.plasma.battery") }
-            }
+            property int span: 2
+            st: root.st
+            onSetProfile: (p) => root.setProfile(p)
+            onExpand: root.launch("plasmawindowed org.kde.plasma.battery")
         }
     }
-    Component {   // network speed: glyph · interface · IP · ↓ ↑ (always shown while a link is up)
+    Component {   // network speed tile (optional; the footer carries the same line): glyph · interface · IP · ↓ ↑
         id: netRow
         Rectangle {
             id: netTile
             property string tileId: ""
-            property bool wide: true
+            property int span: 3
             property bool available: true
-            radius: 14
-            color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.08)
+            radius: 16
+            readonly property color tc: Kirigami.Theme.textColor
+            color: Qt.rgba(tc.r, tc.g, tc.b, 0.04)
+            border.width: 1; border.color: Qt.rgba(tc.r, tc.g, tc.b, 0.06)
             RowLayout {
-                anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 10
-                Kirigami.Icon { source: root.st.connType === "wired" ? "network-wired" : "network-wireless-connected"; isMask: true; color: Kirigami.Theme.textColor; Layout.preferredWidth: 20; Layout.preferredHeight: 20 }
-                Text { visible: netTile.wide; Layout.fillWidth: true; elide: Text.ElideRight; color: Kirigami.Theme.textColor; opacity: 0.85; font.family: "Inter"; font.pixelSize: 12
+                anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 14; spacing: 10
+                Kirigami.Icon { source: root.st.connType === "wired" ? "network-wired" : "network-wireless-connected"; isMask: true; color: netTile.tc; Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
+                Text { visible: netTile.span > 1; Layout.fillWidth: true; elide: Text.ElideRight; color: netTile.tc; opacity: 0.85; font.family: "Inter"; font.pixelSize: 13; font.weight: Font.Medium
                        text: root.st.iface ? root.st.iface + (root.st.ip4 ? " · " + root.st.ip4 : "") : "No network" }
-                Text { Layout.fillWidth: !netTile.wide; color: Kirigami.Theme.textColor; font.family: "Inter"; font.pixelSize: 12; font.weight: Font.Medium; elide: Text.ElideRight
+                Text { Layout.fillWidth: netTile.span === 1; color: netTile.tc; font.family: "Inter"; font.pixelSize: 13; font.weight: Font.DemiBold; elide: Text.ElideRight
                        text: root.st.iface ? Status.speedText(root.down, root.up) : "No network" }
             }
         }

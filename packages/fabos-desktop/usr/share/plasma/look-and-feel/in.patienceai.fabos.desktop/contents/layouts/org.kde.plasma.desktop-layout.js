@@ -71,9 +71,16 @@ quick.writeConfig("showSpeed", true)   // the live rate stays on the bar wheneve
 var dock = new Panel
 dock.location = "bottom"; dock.height = Math.round(gridUnit * 4.0); dock.floating = true; dock.hiding = "dodgewindows"
 dock.lengthMode = "fit"; dock.alignment = "center"
-var kickoff = dock.addWidget("org.kde.plasma.kickoff")   // the launcher menu: zero-width (no icon, no label); the Fab OS dock draws the start button
+// The launcher menu: the stock kickoff applet stays in the dock panel (the Meta key and the Fab OS start button call
+// plasmashell's activateLauncherMenu, which needs a launcher applet to exist), but it must not show. An EMPTY icon does
+// not make it zero-width: Plasma 6.6's panel gives an applet whose Layout.minimumWidth is 0 the panel THICKNESS instead
+// (org.kde.panel main.qml: findPositive(applet.Layout.minimumWidth, availHeight)) — the blank square before the Fab OS
+// button on the device. Kickoff sizes its compact form from its icon, and a non-square image FILE is drawn at
+// height / aspect, so the icon is the dock's 1 × 64 transparent launcher-anchor.png: the applet is 1 px wide, invisible,
+// and the menu still anchors at the dock's left end. The Fab OS dock draws the visible start button.
+var kickoff = dock.addWidget("org.kde.plasma.kickoff")
 kickoff.currentConfigGroup = ["General"]
-kickoff.writeConfig("icon", "")
+kickoff.writeConfig("icon", "/usr/share/plasma/plasmoids/in.patienceai.fabos.dock/contents/images/launcher-anchor.png")
 kickoff.writeConfig("menuLabel", "")
 kickoff.writeConfig("showActionButtonCaptions", false)
 kickoff.writeConfig("primaryActions", 0)

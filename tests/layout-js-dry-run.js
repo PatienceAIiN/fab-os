@@ -83,7 +83,10 @@ assert.deepStrictEqual(tray.config["General:shownItems"], []);
   assert.ok(w.config["General:extraItems"].length >= 12 && !w.config["General:extraItems"].includes("org.kde.plasma.volume") && w.config["General:knownItems"].includes("org.kde.plasma.volume"), "fallback list applied when extraItems is empty");
 }
 // dock
-assert.strictEqual(kickoff.config["General:icon"], "", "kickoff has no icon -> zero-width compact representation");
+// An empty icon is NOT zero-width in Plasma 6.6's panel (findPositive() substitutes the panel thickness for a 0 minimum
+// width — the blank square before the Fab OS button); the 1 x 64 transparent anchor image makes kickoff 1 px wide.
+assert.strictEqual(kickoff.config["General:icon"], "/usr/share/plasma/plasmoids/in.patienceai.fabos.dock/contents/images/launcher-anchor.png", "kickoff's icon is the dock's 1 x 64 transparent anchor -> a 1 px compact representation");
+assert.ok(fs.existsSync(path.join(__dirname, "..", "packages/fabos-desktop/usr/share/plasma/plasmoids/in.patienceai.fabos.dock/contents/images/launcher-anchor.png")), "the anchor image ships with the dock plasmoid");
 assert.strictEqual(kickoff.config["General:menuLabel"], "", "…and no label");
 assert.strictEqual(tasks.config["General:magnify"], quick.config["General:magnify"], "dock and bar share the magnify default");
 assert.strictEqual(tasks.config["General:magnification"], "normal");
