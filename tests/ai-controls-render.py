@@ -12,7 +12,14 @@ the connection check (through a patched api) enables Save on success and blocks 
 dialog hides the raw command behind "Show details" (ui.show_raw off, low risk) and Deny reaches the daemon; an approval
 resolved elsewhere closes the dialog WITHOUT posting a decision; editing the chat's root message in place threads the
 new version into the same chat; --task ID opens on that chat; Save in Settings with the daemon offline keeps the dialog open;
-the GUI thread stays responsive while a daemon reply takes 2 s (every call runs on the window's worker thread).
+the GUI thread stays responsive while a daemon reply takes 2 s (every call runs on the window's worker thread);
+generated images: a generate_image step whose output names a REAL PNG (written by tests/askbar-qml-harness/mkpng.py, no
+python3-pil in the image) renders ONE image card (also when the final text names the same file), a step naming a missing
+file renders none; the card opens the 80 % ImageViewer whose controls exist and degrade by the binaries found, Copy image
+puts the picture on the clipboard, Save as copies through the (patched) file dialog and falls back to ~/Pictures, Open /
+wallpaper launch their binaries, Regenerate posts the follow-up with the chat root as parent_id and closes the viewer
+(ai-controls-image-{card,viewer}.png); the composer's Send is disabled on an empty / whitespace box and Enter posts nothing;
+the cloud hint chip shows only for the local provider, Choose opens Settings › AI provider, dismissal lasts the session.
 Exit code 0 only if every step ran without an exception. Needs PyQt6 — run it inside the image:
   podman run --rm -v $PWD:/work:Z -e QT_QPA_PLATFORM=offscreen localhost/fabos:vm python3 /work/tests/ai-controls-render.py /work/build
 
@@ -25,9 +32,11 @@ Quick passes (no chat seeding; the output directory stays the first argument):
               (exit 3 / exit 4 / missing binary) — the mic never fails silently
   --welcome   the welcome wizard's Mail page (welcome-mail-*.png) and its "Use your own mail" button
 """
-import os, shutil, sqlite3, subprocess, sys, tempfile, time, traceback, urllib.request
+import json, os, shutil, sqlite3, subprocess, sys, tempfile, time, traceback, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests", "askbar-qml-harness"))
+import mkpng                                    # the standard-library PNG writer shared with the ask bar harness
 AGENT_DIR = os.path.join(ROOT, "packages/fabos-agent/usr/lib/fabos/agent")
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "build")
 PORT = "18791"
@@ -407,12 +416,22 @@ def main():
         else:
             raise RuntimeError("daemon did not start")
         os.environ["XDG_RUNTIME_DIR"] = tmp                 # command_center.api() reads token/port from here
+        os.environ["HOME"] = env["HOME"]                    # so ~/Pictures/Fab OS/… in the seeded final text is the test's home
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         sys.path.insert(0, AGENT_DIR)
         import command_center as cc
         from PyQt6.QtWidgets import QApplication, QDialog
-        from PyQt6.QtGui import QPalette, QColor, QFont
+        from PyQt6.QtGui import QPalette, QColor, QFont, QGuiApplication
         from PyQt6.QtCore import QPoint, QTimer, QEvent
+
+        def wait_until(app, pred, what, timeout=8):
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                app.processEvents()
+                if pred():
+                    return
+                time.sleep(0.02)
+            raise AssertionError("timed out waiting for " + what)
 
         def wait(tid, states=("done", "failed", "cancelled", "waiting_approval", "waiting_user"), timeout=40):
             for _ in range(timeout * 5):
@@ -458,6 +477,20 @@ def main():
         # a Markdown answer (list, inline code, fenced code block) so the render exercises the Markdown bubble
         md = "Here is what I found:\n\n- Kernel **Linux 6.x**, up for 3 days\n- Note saved to `~/Documents/fabos-note.txt`\n\n```bash\nuname -a; date\n```\n\nRun `fabos status` any time for a summary."
         db.execute("INSERT INTO steps(task_id,ts,kind,name,input,output,risk,decision) VALUES(?,?,?,?,?,?,?,?)", (fu, time.time(), "assistant", "fake", "", md, "", ""))
+        # a generated image: a REAL PNG (mkpng, standard library only) named by a finished generate_image step AND by the final
+        # text (one card, not two); a second step naming a file that was never written (no card)
+        img_dir = os.path.join(env["HOME"], "Pictures", "Fab OS")
+        os.makedirs(img_dir, exist_ok=True)
+        img_path = mkpng.write_png(os.path.join(img_dir, "fab-test-image.png"))
+        img_prompt = "a red kite over a green hill at sunrise"
+        db.execute("INSERT INTO steps(task_id,ts,kind,name,input,output,risk,decision) VALUES(?,?,?,?,?,?,?,?)",
+                   (fu, time.time(), "tool_call", "generate_image", json.dumps({"prompt": img_prompt}),
+                    json.dumps({"path": img_path, "width": 640, "height": 400, "provider": "fake", "prompt": img_prompt}), "LOW", "auto-approved"))
+        db.execute("INSERT INTO steps(task_id,ts,kind,name,input,output,risk,decision) VALUES(?,?,?,?,?,?,?,?)",
+                   (fu, time.time(), "tool_call", "generate_image", json.dumps({"prompt": "a second one"}),
+                    json.dumps({"path": os.path.join(img_dir, "never-written.png"), "width": 640, "height": 400, "provider": "fake", "prompt": "a second one"}), "LOW", "auto-approved"))
+        db.execute("INSERT INTO steps(task_id,ts,kind,name,input,output,risk,decision) VALUES(?,?,?,?,?,?,?,?)",
+                   (fu, time.time(), "final", "", "", "Your kite is saved at ~/Pictures/Fab OS/fab-test-image.png.", "", ""))
         db.commit()
         db.close()
         for _ in range(25):        # let the sleeping task reach 'running'
@@ -567,6 +600,105 @@ def main():
             assert any(r.narration.text() == "Done, Fab Editor is open." for r in done_rows), [r.narration.text() for r in done_rows]
             assert not any(r.raw.isVisible() for r in done_rows), "raw output shown with ui.show_raw off"
             assert w.provider_chip.text() == "Test provider · ready", w.provider_chip.text()
+            # --- generated images: ONE card for the real file (its step and the final text both name it), none for the missing file
+            assert any(r.title.text() == "Created an image" for r in done_rows), [r.title.text() for r in done_rows]
+            turn_fu = w.view.turns[fu]
+            assert list(turn_fu.image_cards) == [img_path], list(turn_fu.image_cards)
+            card = turn_fu.image_cards[img_path]
+            assert card.isVisible() and card.caption.text() == img_prompt and card.meta.text() == "Test provider · 640 × 400", (card.caption.text(), card.meta.text())
+            pm = card.thumb.pixmap()
+            assert pm is not None and not pm.isNull() and pm.height() <= 320 and pm.width() <= card.width(), (pm.width(), pm.height(), card.width())
+            assert abs(pm.width() / pm.height() - 1.6) < 0.02, "the 640x400 file keeps its aspect ratio (%dx%d)" % (pm.width(), pm.height())
+            assert cc.image_paths_in_text("see ~/Pictures/Fab OS/a b.png, file:///home/u/Pictures/Fab%20OS/c.jpg and /tmp/x.png") == ["~/Pictures/Fab OS/a b.png", "/home/u/Pictures/Fab OS/c.jpg"]
+            assert cc.image_from_step({"kind": "tool_call", "name": "generate_image", "decision": "auto-approved", "input": "{}", "output": json.dumps({"path": "/p/k.png", "provider": "x"})}) == {"path": "/p/k.png", "prompt": "", "provider": "x", "width": 0, "height": 0}
+            assert cc.image_from_step({"kind": "tool_call", "name": "generate_image", "decision": "auto-approved", "input": "{}", "output": ""}) is None
+            cpx = card.grab()
+            assert cpx.save(os.path.join(OUT, "ai-controls-image-card%s.png" % ("" if name == "dark" else "-light")))
+            results["image-card-" + name] = (cpx.width(), cpx.height())
+            # the enlarge viewer: 80 % of the screen, every control present; binary-dependent ones follow what the machine has
+            viewer = turn_fu.open_image(card)
+            spin(app)
+            sg = w.screen().availableGeometry()
+            assert viewer.isVisible() and viewer.width() == int(sg.width() * 0.8) and viewer.height() == int(sg.height() * 0.8), (viewer.width(), viewer.height(), sg)
+            b = viewer.buttons
+            assert set(b) == {"save", "copy", "open", "wallpaper", "regenerate", "close"}, sorted(b)
+            assert b["copy"].isEnabled() and b["save"].isEnabled() and b["regenerate"].isEnabled() and b["close"].isEnabled()
+            assert b["open"].isEnabled() == bool(shutil.which("gwenview") or shutil.which("xdg-open")), ("open", b["open"].isEnabled())
+            assert b["wallpaper"].isEnabled() == bool(shutil.which("plasma-apply-wallpaperimage")), ("wallpaper", b["wallpaper"].isEnabled())
+            if not b["wallpaper"].isEnabled():
+                assert "plasma-apply-wallpaperimage" in b["wallpaper"].toolTip(), b["wallpaper"].toolTip()
+            if not b["open"].isEnabled():
+                assert "gwenview" in b["open"].toolTip(), b["open"].toolTip()
+            b["copy"].click()
+            spin(app)
+            ci = QGuiApplication.clipboard().image()
+            assert not ci.isNull() and (ci.width(), ci.height()) == (640, 400), "Copy image did not put the picture on the clipboard"
+            assert viewer.toast.text() == "Image copied", viewer.toast.text()
+            dest = os.path.join(tmp, "saved copy.png")
+            orig_dlg = cc.QFileDialog.getSaveFileName
+            cc.QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (dest, "Images"))
+            try:
+                b["save"].click()
+            finally:
+                cc.QFileDialog.getSaveFileName = orig_dlg
+            assert os.path.isfile(dest) and open(dest, "rb").read() == open(img_path, "rb").read(), "Save as did not copy the file"
+            assert viewer.toast.text() == "Saved to " + dest, viewer.toast.text()
+            os.remove(dest)
+
+            def no_dialog(*a, **k):
+                raise RuntimeError("no file dialog here")
+            cc.QFileDialog.getSaveFileName = staticmethod(no_dialog)
+            try:
+                b["save"].click()
+            finally:
+                cc.QFileDialog.getSaveFileName = orig_dlg
+            fallback = os.path.join(env["HOME"], "Pictures", "fab-test-image.png")
+            assert os.path.isfile(fallback) and viewer.toast.text() == "Saved to " + fallback, ("fallback copy in ~/Pictures", viewer.toast.text())
+            os.remove(fallback)
+            launched = []
+
+            class FakeProc:
+                def poll(self):
+                    return None
+            orig_popen = cc.subprocess.Popen
+            cc.subprocess.Popen = lambda argv, *a, **k: (launched.append(list(argv)), FakeProc())[1]
+            try:
+                if b["open"].isEnabled():
+                    b["open"].click()
+            finally:
+                cc.subprocess.Popen = orig_popen
+            if b["open"].isEnabled():
+                assert launched and launched[0][-1] == img_path and os.path.basename(launched[0][0]) in ("gwenview", "xdg-open"), launched
+                assert viewer.toast.text().startswith("Opened in"), viewer.toast.text()
+            if b["wallpaper"].isEnabled():       # for real: without a plasmashell the tool fails and the viewer says so (graceful, never silent)
+                b["wallpaper"].click()
+                assert viewer.toast.text() == "Setting the wallpaper…", viewer.toast.text()
+                wait_until(app, lambda: viewer.toast.text() != "Setting the wallpaper…", "plasma-apply-wallpaperimage to finish", 20)
+                assert viewer.toast.text() in ("Wallpaper set", "Could not set the wallpaper"), viewer.toast.text()
+                print("[%s] wallpaper outcome in the container: %s" % (name, viewer.toast.text()))
+            viewer.toast.setText("")
+            vpx = viewer.grab()
+            assert vpx.save(os.path.join(OUT, "ai-controls-image-viewer%s.png" % ("" if name == "dark" else "-light")))
+            results["image-viewer-" + name] = (vpx.width(), vpx.height())
+            regen_posts = []
+
+            def regen_api(method, path, body=None, *a, _o=real_api, **k):
+                if method == "POST" and path == "/tasks":
+                    regen_posts.append(body)
+                    return {"id": 99999, "status": "queued"}          # not a real task: the fake provider must not act on it
+                return _o(method, path, body, *a, **k)
+            cc.api = regen_api
+            try:
+                b["regenerate"].click()
+                spin(app)
+                sync(w)
+            finally:
+                cc.api = real_api
+            assert regen_posts == [{"request": cc.REGENERATE_REQUEST, "parent_id": root}], regen_posts
+            assert not viewer.isVisible(), "Regenerate must close the viewer"
+            assert card.viewer is None, "the card forgot its closed viewer"
+            w.refresh_list()
+            sync(w)
             # the image ships fabos-voice since ISO 1.0 rev 2, so the "no voice" state is forced here rather than assumed
             w.voice.bin, w.voice.status = None, {"stt": "none", "tts": "none", "mic": False, "wake": False, "listening": False}
             w.update_voice_buttons()
@@ -908,6 +1040,62 @@ def main():
             cards[0].click()
             assert w.ask.text() == cards[0].text()
             w.ask.clear()
+            # --- the composer's Send follows the text: disabled on an empty / whitespace box (Enter posts nothing), live with text
+            w.list_timer.stop()                                       # no poll may rewrite status / composer state during these checks
+            sync(w)
+            spin(app)
+            assert w.send_btn.glyph == "send" and not w.send_btn.isEnabled() and w.send_btn.toolTip() == "Type a request first", (w.send_btn.glyph, w.send_btn.isEnabled(), w.send_btn.toolTip())
+            w.ask.setText("   ")
+            spin(app)
+            assert not w.send_btn.isEnabled(), "whitespace must not enable Send"
+            enter_posts = []
+
+            def enter_api(method, path, body=None, *a, _o=real_api, **k):
+                if method == "POST":
+                    enter_posts.append((path, body))
+                return _o(method, path, body, *a, **k)
+            cc.api = enter_api
+            try:
+                w.submit(source="enter")
+                spin(app)
+                sync(w)
+            finally:
+                cc.api = real_api
+            assert not enter_posts, "Enter on a whitespace box must post nothing: %r" % enter_posts
+            w.ask.setText("draw a poster of a kite")
+            spin(app)
+            assert w.send_btn.isEnabled() and w.send_btn.toolTip() == "Send", (w.send_btn.isEnabled(), w.send_btn.toolTip())
+            w.ask.clear()
+            spin(app)
+            assert not w.send_btn.isEnabled()
+            # --- cloud hint chip: only for the built-in (local) provider; Choose -> Settings › AI provider; dismissal lasts the session
+            assert not w.cloud_hint.isVisible(), "no chip with the test provider"
+            w.status["provider"] = "local"
+            w.update_header()
+            spin(app)
+            assert w.cloud_hint.isVisible() and w.cloud_hint_label.text() == "Using the built-in model. For the best results use a cloud model", w.cloud_hint_label.text()
+            hp = w.grab()
+            assert hp.save(os.path.join(OUT, "ai-controls-cloud-hint-%s.png" % name))
+            results[name + "-cloud-hint"] = (hp.width(), hp.height())
+            opened = []
+            w.open_settings = lambda tab=None: opened.append(tab)      # instance attribute shadows the method for this check
+            try:
+                w.cloud_hint_choose.click()
+            finally:
+                del w.open_settings
+            assert opened == ["provider"], opened
+            w.cloud_hint_close.click()
+            spin(app)
+            assert not w.cloud_hint.isVisible(), "dismiss must hide the chip"
+            w.update_header()
+            spin(app)
+            assert not w.cloud_hint.isVisible(), "the dismissal must last the session"
+            w._cloud_hint_dismissed = False
+            w.status["provider"] = "fake"
+            w.update_header()
+            spin(app)
+            assert not w.cloud_hint.isVisible(), "never with a cloud / non-local provider"
+            w.list_timer.start()
             close_window(app, w)
             del w
             # --task ID opens the app on that task's conversation (the home-screen bar uses it)

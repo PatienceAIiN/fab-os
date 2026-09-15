@@ -102,7 +102,7 @@ var TOOL_ICONS = {
     run_shell: "utilities-terminal", read_file: "text-x-generic", write_file: "document-new", list_dir: "folder",
     web_fetch: "globe", send_email: "mail-message", check_email: "mail-message", notify_user: "notifications",
     ask_user: "dialog-question", schedule_watch: "view-visible", type_text: "input-keyboard", open_app: "window-new",
-    list_apps: "view-list-details"
+    list_apps: "view-list-details", generate_image: "image-x-generic"
 }
 
 // One tool step -> what the live feed shows. Never raw commands unless showRaw (daemon setting ui.show_raw).
@@ -170,6 +170,10 @@ function describeStep(s, showRaw, lastApp) {
     case "list_apps":
         d.running = "Looking at installed apps"; d.done = "Looked at installed apps"
         break
+    case "generate_image":
+        d.running = "Creating an image"; d.done = "Created an image"
+        d.subtitle = clip(String(inp.prompt || ""), 120)
+        break
     default:
         d.running = "Working on " + name.replace(/_/g, " "); d.done = "Finished " + name.replace(/_/g, " ")
     }
@@ -211,6 +215,74 @@ function isActive(st) { return st === "queued" || st === "running" || st === "wa
 function riskLabel(r) {
     return { LOW: "Low risk", MEDIUM: "Medium risk", HIGH: "High risk", CRITICAL: "Critical" }[String(r || "").toUpperCase()] || String(r || "")
 }
+
+// ---- generated images. The daemon's generate_image tool answers {"path": "/home/<user>/Pictures/Fab OS/<name>.png", "width",
+// "height", "provider", "prompt"}; the final text may mention the path too. The bar shows ONE image card per file, and
+// only after the shell confirmed the file exists (imageCheckCommand) — a path the model merely talked about is no card.
+function isImagePath(p) { return /\.(png|jpe?g)$/i.test(String(p || "")) }
+
+// every PNG/JPG path under ~/Pictures/Fab OS/ mentioned in a text (~ / $HOME / /home/<user> / file:// forms), each once.
+// (The literal lives inside the function: a fresh RegExp per call, no shared lastIndex.)
+function imagePathsInText(text) {
+    var out = [], seen = {}, m, s = String(text || "")
+    var re = /(?:file:\/\/)?((?:~|\$HOME|\/home\/[^\/\s"'`<>]+)\/Pictures\/Fab(?:%20| )OS\/[^\n"'`<>*|]*?\.(?:png|jpe?g))(?!\w)/gi
+    while ((m = re.exec(s)) !== null) {
+        var p = m[1].replace(/%20/g, " ")
+        if (!seen[p]) { seen[p] = true; out.push(p) }
+    }
+    return out
+}
+
+// a finished generate_image step -> {path, prompt, provider, width, height}; null for any other step or an unfinished one
+function imageFromStep(s) {
+    if (String(s.name || "") !== "generate_image" || stepStatus(s) !== "done") return null
+    var out = parseJson(s.output) || {}, inp = parseJson(s.input) || {}
+    var p = String(out.path || "")
+    if (!isImagePath(p)) return null
+    return { path: p, prompt: String(out.prompt || inp.prompt || ""), provider: String(out.provider || ""),
+             width: parseInt(out.width, 10) || 0, height: parseInt(out.height, 10) || 0 }
+}
+
+// the small provider label under a card: the built-in model by name, a cloud provider by the id the daemon reported
+function imageProviderLabel(p) { p = String(p || ""); return p === "local" ? "Built-in model" : p }
+
+// shell word for a user path: a leading ~/ or $HOME/ becomes "$HOME"/ so the SHELL expands the home (never inside the quotes)
+function shellPath(p) {
+    var m = /^(?:~|\$HOME)\/(.*)$/.exec(String(p || ""))
+    return m ? '"$HOME"/' + shellQuote(m[1]) : shellQuote(p)
+}
+// prints the absolute path when the file exists (~ expanded by the shell), nothing (exit 1) when it does not
+function imageCheckCommand(p) { return "P=" + shellPath(p) + "; [ -f \"$P\" ] && printf '%s\\n' \"$P\"" }
+
+// viewer helpers: which binaries the controls depend on (one sh, one line per binary found), and the actions themselves
+var VIEWER_BINS = ["wl-copy", "gwenview", "xdg-open", "plasma-apply-wallpaperimage"]
+function binsCommand() { return "for b in " + VIEWER_BINS.join(" ") + "; do command -v \"$b\" >/dev/null 2>&1 && printf '%s\\n' \"$b\"; done; echo -" }
+function parseBins(out) {
+    var found = {}, lines = String(out || "").split("\n")
+    for (var i = 0; i < lines.length; i++) { var l = lines[i].trim(); if (l.length && l !== "-") found[l] = true }
+    return found
+}
+function imageMime(p) { return /\.jpe?g$/i.test(String(p || "")) ? "image/jpeg" : "image/png" }
+function copyImageCommand(p) { return "wl-copy --type " + imageMime(p) + " < " + shellQuote(p) + " && echo copied" }
+function openImageCommand(p, bins) {
+    var app = bins["gwenview"] ? "gwenview" : (bins["xdg-open"] ? "xdg-open" : "")
+    return app.length ? "setsid -f " + app + " -- " + shellQuote(p) + " >/dev/null 2>&1; echo " + app : ""
+}
+function wallpaperCommand(p) { return "plasma-apply-wallpaperimage " + shellQuote(p) + " >/dev/null 2>&1 && echo ok" }
+// Save as fallback (no file dialog): a copy in ~/Pictures, never overwriting — prints where it went
+function saveCopyCommand(p) {
+    var b = basename(p)
+    return "D=\"$HOME/Pictures\"; mkdir -p \"$D\"; B=" + shellQuote(b) + "; T=\"$D/$B\"; [ -e \"$T\" ] && T=\"$D/${B%.*}-$(date +%H%M%S).${B##*.}\"; cp -- " + shellQuote(p) + " \"$T\" && printf '%s\\n' \"$T\""
+}
+function copyToCommand(src, dest) { return "cp -- " + shellQuote(src) + " " + shellQuote(dest) + " && printf '%s\\n' " + shellQuote(dest) }
+// a FileDialog's selectedFile (file:///home/u/Pictures/Fab%20OS/x.png) -> a local path
+function localPath(url) {
+    var u = String(url || "")
+    if (u.indexOf("file://") === 0) u = u.slice(7)
+    try { return decodeURIComponent(u) } catch (e) { return u }
+}
+// a local path -> a file URL the Image element accepts (spaces and other reserved characters escaped per segment)
+function fileUrl(p) { return "file://" + String(p || "").split("/").map(encodeURIComponent).join("/") }
 
 // ---- Markdown-lite -> Qt rich text (bold, italics, inline code, links, bullet/numbered lists, headings, paragraphs)
 function escapeHtml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") }

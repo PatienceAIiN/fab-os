@@ -18,14 +18,14 @@ a callback on the GUI thread — a slow or hung daemon reply can never freeze th
 slow down to 6 s / 12 s while the window is hidden or minimised. Tickers run only while shown (docs/LOW-RAM.md).
 Launch: fabos-command-center [--ask] [--prefill TEXT] [--settings] [--task ID]   (the executable keeps its historical name)
 """
-import datetime, http.client, json, math, os, queue, shutil, socket, subprocess, sys, threading, time, urllib.parse
+import datetime, http.client, json, math, os, queue, re, shutil, socket, subprocess, sys, threading, time, urllib.parse
 from PyQt6.QtCore import (Qt, QTimer, QSize, QPropertyAnimation, QVariantAnimation, QEasingCurve, QRectF, QEvent, QPointF, QPoint, QProcess, QThread,
-                          QObject, pyqtSignal, pyqtProperty)
-from PyQt6.QtGui import (QFont, QIcon, QImage, QPixmap, QPainter, QColor, QPalette, QPen, QBrush, QTextDocument, QTextCursor, QTextBlockFormat,
+                          QObject, pyqtSignal, pyqtProperty, QStandardPaths)
+from PyQt6.QtGui import (QFont, QIcon, QImage, QImageReader, QPixmap, QPainter, QColor, QPalette, QPen, QBrush, QTextDocument, QTextCursor, QTextBlockFormat,
                          QTextCharFormat, QTextFormat, QGuiApplication, QAction, QFontMetrics, QPainterPath, QKeyEvent)
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QPushButton, QListWidget, QListWidgetItem,
                              QTextBrowser, QPlainTextEdit, QLabel, QComboBox, QTabWidget, QDialog, QFormLayout, QFrame, QScrollArea, QSizePolicy, QToolButton,
-                             QCheckBox, QStackedWidget, QMenu, QGraphicsOpacityEffect, QStyle)
+                             QCheckBox, QStackedWidget, QMenu, QGraphicsOpacityEffect, QStyle, QFileDialog)
 
 APP_NAME = "Fab AI Controls"
 DESKTOP_ID = "fabos-command-center"           # executable / desktop-file / icon id: unchanged so shortcuts and docks keep working
@@ -314,6 +314,9 @@ GLYPHS = {
     "bulb": '<path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 1 4 12.7V17H8v-2.3A7 7 0 0 1 12 2z"/>',
     "bolt": '<path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/>',
     "minus": '<path d="M5 12h14"/>',
+    "image": '<rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5-5-8 8"/><path d="M3 18l4-4 3 3"/>',
+    "save": '<path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>',
+    "wallpaper": '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/><path d="M7 13l3-3 3 3 4-4"/>',
 }
 _ICON_CACHE = {}
 
@@ -495,9 +498,26 @@ QCheckBox::indicator:checked { background: %(hi)s; border-color: %(hi)s; }
 QLabel#riskBadge { border-radius: 9px; padding: 2px 8px; font-size: 11.5px; font-weight: 600; }
 QLabel#sectionTitle { font-size: 12px; font-weight: 600; letter-spacing: 0.4px; color: %(muted)s; padding-top: 6px; }
 QLabel#checkResult { font-size: 13px; }
+QFrame#cloudHint { background: %(alt)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; }
+QLabel#hintText { color: %(text)s; font-size: 12.5px; }
+QPushButton#linkBtn { background: transparent; border: none; color: %(hi)s; font-weight: 600; font-size: 12.5px; padding: 3px 8px; border-radius: 8px; }
+QPushButton#linkBtn:hover { background: %(hisoft)s; }
+QFrame#imageCard { background: %(alt)s; border: 1px solid %(line)s; border-radius: 16px; }
+QFrame#imageCard:hover { border-color: %(hi)s; }
+QLabel#imageCaption { font-size: 13px; }
+QLabel#imageMeta { color: %(muted)s; font-size: 11.5px; }
+QDialog#imageViewer { background: #0A0D14; }
+QDialog#imageViewer QLabel { color: #F4F6FA; }
+QLabel#viewerMeta { color: rgba(244, 246, 250, 0.55); font-size: 12px; }
+QLabel#viewerToast { color: #F4F6FA; font-size: 13px; font-weight: 500; }
+QPushButton#viewerBtn { background: rgba(255, 255, 255, 0.10); color: #F4F6FA; border: none; border-radius: 12px; padding: 8px 14px; font-size: 13px; font-weight: 500; }
+QPushButton#viewerBtn:hover { background: rgba(255, 255, 255, 0.18); }
+QPushButton#viewerBtn:disabled { color: rgba(244, 246, 250, 0.40); background: rgba(255, 255, 255, 0.05); }
+QToolButton#viewerIcon { background: transparent; border: none; border-radius: 12px; }
+QToolButton#viewerIcon:hover { background: rgba(255, 255, 255, 0.14); }
 """ % dict(text=text.name(), win=win.name(), card=card, alt=alt.name(), hi=hi.name(), hit=hit.name(), line=line, hover=hover, muted=muted, tint4=tint4, tint8=tint8,
            press=rgba(text, 0.12), hisoft=rgba(hi, 0.16 if dark else 0.14), hihover=hi.lighter(112).name() if dark else hi.darker(108).name(),
-           hidim=rgba(hi, 0.35), scroll=rgba(text, 0.18), scrollh=rgba(text, 0.30), errbg=rgba(QColor(RED), 0.14), warnbg=rgba(QColor("#E0A64B"), 0.16),
+           hidim=rgba(hi, 0.40), scroll=rgba(text, 0.18), scrollh=rgba(text, 0.30), errbg=rgba(QColor(RED), 0.14), warnbg=rgba(QColor("#E0A64B"), 0.16),
            codebg=rgba(text, 0.08), mutedline=rgba(text, 0.35), rctl=R_CONTROL, rfield=R_FIELD, rcard=R_CARD, rpopup=R_POPUP, rsmall=R_SMALL)
 
 
@@ -558,9 +578,10 @@ class IconButton(QToolButton):
     """An action as an icon with a tooltip (no words). accent=True gives the round accent button (send / stop / allow).
     dim=0.6 draws the icon at 60 % and 100 % on hover (the message action rows)."""
 
-    def __init__(self, glyph, tooltip, size=32, accent=False, icon_size=20, parent=None, dim=0.85, object_name=None):
+    def __init__(self, glyph, tooltip, size=32, accent=False, icon_size=20, parent=None, dim=0.85, object_name=None, color=None):
         super().__init__(parent)
         self.glyph, self.accent, self._icon_size, self.dim = glyph, accent, icon_size, dim
+        self.fixed_color = QColor(color) if color else None     # a glyph colour that ignores the palette (the image viewer's dark scrim)
         self._hovered = False
         self.setObjectName(object_name or ("iconAccent" if accent else "icon"))
         self.setToolTip(tooltip)
@@ -581,10 +602,11 @@ class IconButton(QToolButton):
 
     def refresh_icon(self):
         pal = self.palette()
-        col = pal.color(QPalette.ColorRole.HighlightedText) if self.accent else pal.color(QPalette.ColorRole.Text)
+        col = QColor(self.fixed_color or (pal.color(QPalette.ColorRole.HighlightedText) if self.accent else pal.color(QPalette.ColorRole.Text)))
         if not self.accent:
-            col = QColor(col)
             col.setAlphaF(1.0 if (self._hovered or self.isChecked()) else self.dim)
+        elif not self.isEnabled():
+            col.setAlphaF(0.4)                 # the disabled Send: 40 % glyph on the 40 % accent disc (build_style hidim)
         self.setIcon(glyph_icon(self.glyph, col, self._icon_size))
 
     def enterEvent(self, e):
@@ -598,7 +620,7 @@ class IconButton(QToolButton):
         super().leaveEvent(e)
 
     def changeEvent(self, e):
-        if e.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange):
+        if e.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange, QEvent.Type.EnabledChange):
             self.refresh_icon()
         super().changeEvent(e)
 
@@ -1083,16 +1105,113 @@ class ApprovalDialog(RoundedDialog):
 FRIENDLY = {"run_shell": "Ran a command", "read_file": "Read a file", "write_file": "Wrote a file", "list_dir": "Looked inside a folder",
             "open_app": "Opened an app", "type_text": "Typed into an app", "send_email": "Sent an email", "check_email": "Checked the inbox",
             "schedule_watch": "Set up a background watch", "web_fetch": "Read a web page", "notify_user": "Sent you a notification",
-            "ask_user": "Asked you a question", "list_apps": "Looked up installed apps", "context": "Tidied earlier notes to fit the model's memory"}
+            "ask_user": "Asked you a question", "list_apps": "Looked up installed apps", "context": "Tidied earlier notes to fit the model's memory",
+            "generate_image": "Created an image"}
 PENDING = {"run_shell": "run a command", "read_file": "read a file", "write_file": "write a file", "list_dir": "look inside a folder", "open_app": "open an app",
            "type_text": "type into an app", "send_email": "send an email", "check_email": "check the inbox", "schedule_watch": "set up a background watch",
-           "web_fetch": "read a web page", "notify_user": "send you a notification", "ask_user": "ask you a question", "list_apps": "look up installed apps"}
+           "web_fetch": "read a web page", "notify_user": "send you a notification", "ask_user": "ask you a question", "list_apps": "look up installed apps",
+           "generate_image": "create an image"}
 LIVE = {"run_shell": "Running a command", "read_file": "Reading a file", "write_file": "Writing a file", "list_dir": "Looking inside a folder", "open_app": "Opening an app",
         "type_text": "Typing", "send_email": "Sending an email", "check_email": "Checking the inbox", "schedule_watch": "Setting up a background watch",
         "web_fetch": "Reading a web page", "notify_user": "Sending you a notification", "ask_user": "Asking you a question", "list_apps": "Looking up installed apps",
-        "context": "Tidying earlier notes"}
+        "context": "Tidying earlier notes", "generate_image": "Creating an image"}
 STEP_GLYPH = {"run_shell": "terminal", "type_text": "keyboard", "write_file": "file", "read_file": "file", "list_dir": "folder", "web_fetch": "globe", "send_email": "mail",
-              "check_email": "mail", "notify_user": "bell", "ask_user": "question", "schedule_watch": "eye", "list_apps": "apps", "open_app": "apps", "context": "tools"}
+              "check_email": "mail", "notify_user": "bell", "ask_user": "question", "schedule_watch": "eye", "list_apps": "apps", "open_app": "apps", "context": "tools",
+              "generate_image": "image"}
+# generated images: the generate_image tool answers {"path": "/home/<user>/Pictures/Fab OS/<name>.png", "width", "height", "provider", "prompt"};
+# the final text may mention such a path too (~ / $HOME / /home/<user> / file:// forms). A card is shown once per file that exists.
+IMAGE_PATH_RE = re.compile(r'(?:file://)?((?:~|\$HOME|/home/[^/\s"\'`<>]+)/Pictures/Fab(?:%20| )OS/[^\n"\'`<>*|]*?\.(?:png|jpe?g))(?!\w)', re.I)
+REGENERATE_REQUEST = "regenerate the image with the same prompt"
+
+
+def expand_home(p):
+    p = str(p or "").replace("%20", " ")
+    home = os.path.expanduser("~")
+    for prefix in ("~/", "$HOME/"):
+        if p.startswith(prefix):
+            return os.path.join(home, p[len(prefix):])
+    return p
+
+
+def image_paths_in_text(text):
+    out, seen = [], set()
+    for m in IMAGE_PATH_RE.finditer(str(text or "")):
+        p = m.group(1).replace("%20", " ")
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def image_from_step(step):
+    """A finished generate_image step -> {path, prompt, provider, width, height}; None for anything else."""
+    if (step.get("name") or "") != "generate_image" or step.get("kind", "tool_call") != "tool_call" or step_state(step) != "ok":
+        return None
+    try:
+        out = json.loads(step.get("output") or "{}")
+    except Exception:
+        return None
+    if not isinstance(out, dict):
+        return None
+    path = str(out.get("path") or "")
+    if not re.search(r"\.(png|jpe?g)$", path, re.I):
+        return None
+    inp = parse_input(step.get("input"))
+    try:
+        w, h = int(out.get("width") or 0), int(out.get("height") or 0)
+    except (TypeError, ValueError):
+        w, h = 0, 0
+    return {"path": path, "prompt": str(out.get("prompt") or inp.get("prompt") or ""), "provider": str(out.get("provider") or ""), "width": w, "height": h}
+
+
+def task_images(task):
+    """Every generated image of a task that exists on disk, in step order, one entry per file (absolute path)."""
+    infos, seen = [], set()
+    for s in task.get("steps") or []:
+        if s.get("kind") == "tool_call":
+            info = image_from_step(s)
+            if info:
+                infos.append(info)
+        elif s.get("kind") == "final":
+            for p in image_paths_in_text(s.get("output") or ""):
+                infos.append({"path": p, "prompt": user_text(task.get("request")), "provider": "", "width": 0, "height": 0})
+    out = []
+    for info in infos:
+        p = os.path.abspath(expand_home(info["path"]))
+        if p in seen or not os.path.isfile(p):
+            continue
+        seen.add(p)
+        out.append(dict(info, path=p))
+    return out
+
+
+def load_image(path, cap=2048):
+    """Decode an image at most `cap` px on its long side (a thumbnail or a viewer never keeps a huge bitmap)."""
+    rd = QImageReader(path)
+    rd.setAutoTransform(True)
+    size = rd.size()
+    if size.isValid() and max(size.width(), size.height()) > cap:
+        rd.setScaledSize(size.scaled(cap, cap, Qt.AspectRatioMode.KeepAspectRatio))
+    return rd.read()
+
+
+def rounded_pixmap(pix, radius):
+    out = QPixmap(pix.size())
+    out.setDevicePixelRatio(pix.devicePixelRatio())
+    out.fill(Qt.GlobalColor.transparent)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, pix.width() / pix.devicePixelRatio(), pix.height() / pix.devicePixelRatio()), radius, radius)
+    p.setClipPath(path)
+    p.drawPixmap(0, 0, pix)
+    p.end()
+    return out
+
+
+def pictures_dir():
+    d = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+    return d or os.path.join(os.path.expanduser("~"), "Pictures")
 APP_NAMES = {"kate": "Fab Editor", "dolphin": "Fab Files", "konsole": "Fab Terminal", "xdg-open": "the default app", "open": "the default app", "firefox": "Firefox",
              "firefox-esr": "Firefox", "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos", "okular": "Fab Documents",
              "kcalc": "Fab Calculator", "spectacle": "Fab Screenshot", "systemsettings": "Fab Settings"}
@@ -1797,8 +1916,269 @@ class ActionFeed(QWidget):
 WorkedChip = ActionFeed     # historical name
 
 
+class ImageCard(QFrame):
+    """A generated picture in the chat: rounded thumbnail (radius 12 inside a radius-16 card, ≤ 320 px tall, fitted to the
+    content width), the prompt as caption, a small provider line. The whole card is a click target for ImageViewer."""
+    clicked = pyqtSignal()
+
+    def __init__(self, info, parent=None):
+        super().__init__(parent)
+        self.info = dict(info)
+        self.path = info["path"]
+        self.setObjectName("imageCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click to enlarge")
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self._image = load_image(self.path, 1024)          # decoded once, at most 1024 px on the long side
+        self._w = 0
+        self.viewer = None
+        v = QVBoxLayout(self)
+        v.setContentsMargins(8, 8, 8, 10)
+        v.setSpacing(6)
+        self.thumb = QLabel()
+        self.thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(self.thumb)
+        self.caption = QLabel(info.get("prompt") or os.path.basename(self.path))
+        self.caption.setObjectName("imageCaption")
+        self.caption.setWordWrap(True)
+        self.caption.setContentsMargins(4, 0, 4, 0)
+        v.addWidget(self.caption)
+        prov = PROVIDER_LABELS.get(info.get("provider") or "", info.get("provider") or "")
+        w, h = (self._image.width(), self._image.height()) if not self._image.isNull() else (info.get("width") or 0, info.get("height") or 0)
+        self.meta = QLabel(" · ".join(x for x in (prov, ("%d × %d" % (w, h)) if w and h else "") if x))
+        self.meta.setObjectName("imageMeta")
+        self.meta.setContentsMargins(4, 0, 4, 0)
+        self.meta.setVisible(bool(self.meta.text()))
+        v.addWidget(self.meta)
+        self.set_max_width(520)
+
+    def set_max_width(self, w):
+        w = max(220, int(w))
+        if abs(w - self._w) < 8 and self.thumb.pixmap() is not None and not self.thumb.pixmap().isNull():
+            return
+        self._w = w
+        self.setMaximumWidth(w)
+        if self._image.isNull():
+            self.thumb.setText("This image is no longer at %s" % os.path.basename(self.path))
+            return
+        scaled = self._image.scaled(w - 16, 320, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self.thumb.setPixmap(rounded_pixmap(QPixmap.fromImage(scaled), 12))
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(e)
+
+    def open_viewer(self):
+        """The enlarge viewer (non-modal, one per card); returns it so callers can wire Regenerate."""
+        if self.viewer is not None:
+            try:
+                self.viewer.raise_()
+                self.viewer.activateWindow()
+                return self.viewer
+            except RuntimeError:
+                self.viewer = None
+        self.viewer = ImageViewer(self.info, self.window())
+        self.viewer.finished.connect(lambda _r: setattr(self, "viewer", None))
+        self.viewer.show()
+        return self.viewer
+
+
+class ImageViewer(QDialog):
+    """Enlarge viewer for a generated image: a window 80 % of the screen, the picture fitted on a dark scrim (a photo
+    viewer's scrim is dark in both colour schemes; every word on it is white), the prompt above, one control row under it —
+    Save as · Copy image · Open in Fab Photos · Set as wallpaper · Regenerate · Close (Esc). Controls that depend on a
+    binary degrade: missing = disabled with a tooltip naming what is missing; Save as falls back to a copy in ~/Pictures
+    when the file dialog cannot be shown."""
+    regenerate_requested = pyqtSignal()
+
+    def __init__(self, info, parent=None):
+        super().__init__(parent)
+        self.info = dict(info)
+        self.path = info["path"]
+        self.setObjectName("imageViewer")
+        self.setWindowTitle(info.get("prompt") or os.path.basename(self.path))
+        self.setModal(False)
+        screen = (parent.screen() if parent is not None else None) or QGuiApplication.primaryScreen()
+        g = screen.availableGeometry()
+        self.resize(int(g.width() * 0.8), int(g.height() * 0.8))
+        self._image = load_image(self.path, 4096)
+        self._pix = QPixmap.fromImage(self._image) if not self._image.isNull() else QPixmap()
+        self.procs = []
+        v = QVBoxLayout(self)
+        v.setContentsMargins(SP3, SP2, SP3, SP2)
+        v.setSpacing(12)
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        self.title = QLabel(info.get("prompt") or os.path.basename(self.path))
+        self.title.setWordWrap(True)
+        f = self.title.font()
+        f.setPointSizeF(f.pointSizeF() + 1)
+        f.setWeight(QFont.Weight.DemiBold)
+        self.title.setFont(f)
+        col.addWidget(self.title)
+        prov = PROVIDER_LABELS.get(info.get("provider") or "", info.get("provider") or "")
+        size = ("%d × %d" % (self._image.width(), self._image.height())) if not self._image.isNull() else ""
+        self.meta = QLabel(" · ".join(x for x in (prov, size, os.path.basename(self.path)) if x))
+        self.meta.setObjectName("viewerMeta")
+        col.addWidget(self.meta)
+        head.addLayout(col, 1)
+        self.close_icon = IconButton("close", "Close (Esc)", size=36, icon_size=20, object_name="viewerIcon", color="#F4F6FA")
+        self.close_icon.clicked.connect(self.reject)
+        head.addWidget(self.close_icon, 0, Qt.AlignmentFlag.AlignTop)
+        v.addLayout(head)
+        self.picture = QLabel()
+        self.picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.picture.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.picture.setMinimumSize(120, 80)
+        if self._pix.isNull():
+            self.picture.setText("This image is no longer at %s" % self.path)
+        v.addWidget(self.picture, 1)
+        self.toast = QLabel("")
+        self.toast.setObjectName("viewerToast")
+        self.toast.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.toast.setFixedHeight(20)
+        v.addWidget(self.toast)
+        self._toast_timer = QTimer(self)
+        self._toast_timer.setSingleShot(True)
+        self._toast_timer.timeout.connect(lambda: self.toast.setText(""))
+        # the control row: one row when it fits, two rows of three on a narrow viewer (reflowed on resize); the dialog keeps
+        # the 80 % size it asked for (no layout minimum pushes it wider)
+        self.rows = [QHBoxLayout(), QHBoxLayout()]
+        for r in self.rows:
+            r.setSpacing(8)
+            v.addLayout(r)
+        v.setSizeConstraint(QVBoxLayout.SizeConstraint.SetNoConstraint)
+        self.buttons = {}
+        self.button_order = []
+        have = not self._pix.isNull()
+        self.gwenview, self.xdg_open, self.wallpaper_bin = shutil.which("gwenview"), shutil.which("xdg-open"), shutil.which("plasma-apply-wallpaperimage")
+        self._button("save", "save", "Save as", self.save_as, have, "Save a copy where you choose", "Waiting for the image")
+        self._button("copy", "copy", "Copy image", self.copy_image, have, "Copy the picture to the clipboard", "Waiting for the image")
+        self._button("open", "expand", "Open in Fab Photos", self.open_photos, bool(self.gwenview or self.xdg_open),
+                     "Open the file in Fab Photos" if self.gwenview else "Open the file in your image viewer", "Fab Photos (gwenview) is not installed")
+        self._button("wallpaper", "wallpaper", "Set as wallpaper", self.set_wallpaper, bool(self.wallpaper_bin) and have,
+                     "Use this picture as the desktop wallpaper", "plasma-apply-wallpaperimage is not available on this machine" if not self.wallpaper_bin else "Waiting for the image")
+        self._button("regenerate", "retry", "Regenerate", self.regenerate, True, "Ask for a new picture from the same prompt", "")
+        self._button("close", "close", "Close", self.reject, True, "Esc", "")
+        self._rows_used = 0
+        self._reflow()
+
+    def _button(self, key, glyph, text, fn, enabled, tip, reason):
+        b = QPushButton(text)
+        b.setObjectName("viewerBtn")
+        b.setCursor(Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ArrowCursor)
+        b.setIcon(glyph_icon(glyph, QColor("#F4F6FA") if enabled else QColor(244, 246, 250, 102), 18))
+        b.setIconSize(QSize(18, 18))
+        b.setEnabled(enabled)
+        b.setToolTip(tip if enabled else reason)
+        b.clicked.connect(fn)
+        self.buttons[key] = b
+        self.button_order.append(b)
+        return b
+
+    def _reflow(self):
+        need = sum(b.sizeHint().width() for b in self.button_order) + 8 * (len(self.button_order) - 1)
+        rows = 1 if need <= self.width() - 2 * SP3 else 2
+        if rows == self._rows_used:
+            return
+        self._rows_used = rows
+        for r in self.rows:
+            while r.count():
+                r.takeAt(0)
+        per = len(self.button_order) if rows == 1 else (len(self.button_order) + 1) // 2
+        for i, b in enumerate(self.button_order):
+            r = self.rows[0 if i < per else 1]
+            if r.count() == 0:
+                r.addStretch(1)
+            r.addWidget(b)
+        for r in self.rows:
+            if r.count():
+                r.addStretch(1)
+
+    def flash(self, text):
+        self.toast.setText(text)
+        self._toast_timer.start(2400)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._reflow()
+        self._fit()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._reflow()
+        self._fit()
+
+    def _fit(self):
+        if self._pix.isNull():
+            return
+        area = self.picture.contentsRect().size()
+        if area.width() < 10 or area.height() < 10:
+            return
+        self.picture.setPixmap(self._pix.scaled(area, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    # ---- controls
+    def save_as(self):
+        suggested = os.path.join(pictures_dir(), os.path.basename(self.path))
+        try:
+            dest, _filter = QFileDialog.getSaveFileName(self, "Save image as", suggested, "Images (*.png *.jpg *.jpeg);;All files (*)")
+        except Exception:
+            dest = None                                # no file dialog here: a copy in ~/Pictures instead
+        if dest is None:
+            dest = self._free_name(suggested)
+        if not dest:
+            return                                     # cancelled
+        try:
+            os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+            shutil.copyfile(self.path, dest)
+            self.flash("Saved to %s" % dest)
+        except OSError as e:
+            self.flash("Could not save the image (%s)" % e.strerror)
+
+    @staticmethod
+    def _free_name(path):
+        if not os.path.exists(path):
+            return path
+        stem, ext = os.path.splitext(path)
+        return "%s-%s%s" % (stem, time.strftime("%H%M%S"), ext)
+
+    def copy_image(self):
+        if self._image.isNull():
+            return
+        QGuiApplication.clipboard().setImage(self._image)
+        self.flash("Image copied")
+
+    def open_photos(self):
+        app = self.gwenview or self.xdg_open
+        if not app:
+            return
+        try:
+            self.procs.append(subprocess.Popen([app, self.path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+            self.flash("Opened in Fab Photos" if self.gwenview else "Opened in your image viewer")
+        except OSError as e:
+            self.flash("Could not open the image (%s)" % e.strerror)
+
+    def set_wallpaper(self):
+        if not self.wallpaper_bin:
+            return
+        p = QProcess(self)
+        p.finished.connect(lambda code, _st: self.flash("Wallpaper set" if code == 0 else "Could not set the wallpaper"))
+        p.start(self.wallpaper_bin, [self.path])
+        self.procs.append(p)
+        self.flash("Setting the wallpaper…")
+
+    def regenerate(self):
+        self.regenerate_requested.emit()
+        self.accept()
+
+
 class Turn(QWidget):
-    """One task of the chat: the request pill (or its edit card), the live action timeline, the agent's messages, status."""
+    """One task of the chat: the request pill (or its edit card), the live action timeline, the agent's messages, status,
+    and a card per generated image (a finished generate_image step, or a ~/Pictures/Fab OS/*.png|jpg path in the final text,
+    for files that exist — once per file)."""
     edit_requested = pyqtSignal(int, str)
     edit_submitted = pyqtSignal(int, str)
     edit_cancelled = pyqtSignal(int)
@@ -1806,11 +2186,13 @@ class Turn(QWidget):
     stop_requested = pyqtSignal(int)
     speak_requested = pyqtSignal(str)
     feedback = pyqtSignal(int, str)
+    regenerate_requested = pyqtSignal(int)
 
     def __init__(self, task_id, parent=None):
         super().__init__(parent)
         self.task_id = task_id
         self.task = None
+        self.image_cards = {}           # absolute path -> ImageCard
         self.lay = QVBoxLayout(self)
         self.lay.setContentsMargins(0, 0, 0, 0)
         self.lay.setSpacing(8)
@@ -1852,6 +2234,30 @@ class Turn(QWidget):
         self.user.set_max_width(w)
         for b in self.step_widgets.values():
             b.set_max_width(w)
+        for c in self.image_cards.values():
+            c.set_max_width(max(240, int(w * 1.38)))
+
+    def _sync_images(self, task, animate):
+        wanted = task_images(task)
+        keep = {i["path"] for i in wanted}
+        for p in list(self.image_cards):
+            if p not in keep:
+                discard(self.image_cards.pop(p))
+        for info in wanted:
+            if info["path"] in self.image_cards:
+                continue
+            card = ImageCard(info)
+            card.set_max_width(max(240, int(self.max_w * 1.38)))
+            card.clicked.connect(lambda c=card: self.open_image(c))
+            self.image_cards[info["path"]] = card
+            self.lay.insertWidget(self.lay.count() - 1, card)      # before the status row
+            if animate:
+                fade_in(card)
+
+    def open_image(self, card):
+        viewer = card.open_viewer()
+        viewer.regenerate_requested.connect(lambda: self.regenerate_requested.emit(self.task_id))
+        return viewer
 
     def begin_edit(self):
         self.editing = True
@@ -1934,6 +2340,7 @@ class Turn(QWidget):
                 w = self.step_widgets.pop(sid)
                 self.order.remove(sid)
                 discard(w)
+        self._sync_images(task, animate and not first)
         self.typing.setVisible(st in ("queued", "running"))
         self.stop_btn.setVisible(st in ("queued", "running", "waiting_approval"))
         label = {"queued": "Queued…", "waiting_approval": "Waiting for your approval", "waiting_user": "Waiting for your answer"}.get(st, "")
@@ -1964,6 +2371,7 @@ class ConversationView(QScrollArea):
     stop_requested = pyqtSignal(int)
     speak_requested = pyqtSignal(str)
     feedback = pyqtSignal(int, str)
+    regenerate_requested = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2032,6 +2440,7 @@ class ConversationView(QScrollArea):
                     turn.stop_requested.connect(self.stop_requested.emit)
                     turn.speak_requested.connect(self.speak_requested.emit)
                     turn.feedback.connect(self.feedback.emit)
+                    turn.regenerate_requested.connect(self.regenerate_requested.emit)
                     self.turns[t["id"]] = turn
                     self.vl.insertWidget(i, turn)
                     if animate:
@@ -3701,8 +4110,34 @@ class AIControls(QMainWindow):
         self.view.stop_requested.connect(self.stop_task)
         self.view.speak_requested.connect(self.speak)
         self.view.feedback.connect(self.send_feedback)
+        self.view.regenerate_requested.connect(self.regenerate_image)
         self.stack.addWidget(self.view)
         ml.addWidget(self.stack, 1)
+        # ---- cloud hint chip (built-in model only): above the composer, dismissible for the session
+        self._cloud_hint_dismissed = False
+        self.cloud_hint = QFrame()
+        self.cloud_hint.setObjectName("cloudHint")
+        self.cloud_hint.hide()
+        chl = QHBoxLayout(self.cloud_hint)
+        chl.setContentsMargins(12, 5, 6, 5)
+        chl.setSpacing(8)
+        self.cloud_hint_icon = QLabel()
+        self.cloud_hint_icon.setFixedSize(16, 16)
+        self.cloud_hint_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chl.addWidget(self.cloud_hint_icon)
+        self.cloud_hint_label = QLabel("Using the built-in model. For the best results use a cloud model")
+        self.cloud_hint_label.setObjectName("hintText")
+        chl.addWidget(self.cloud_hint_label, 1)
+        self.cloud_hint_choose = QPushButton("Choose")
+        self.cloud_hint_choose.setObjectName("linkBtn")
+        self.cloud_hint_choose.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cloud_hint_choose.setToolTip("Pick a cloud model in Settings › AI provider")
+        self.cloud_hint_choose.clicked.connect(lambda: self.open_settings("provider"))
+        chl.addWidget(self.cloud_hint_choose, 0)
+        self.cloud_hint_close = IconButton("close", "Dismiss for now", size=26, icon_size=14)
+        self.cloud_hint_close.clicked.connect(self.dismiss_cloud_hint)
+        chl.addWidget(self.cloud_hint_close, 0)
+        ml.addWidget(self.cloud_hint)
         # ---- composer: two-row rounded card
         self.composer = QFrame()
         self.composer.setObjectName("composer")
@@ -3746,9 +4181,11 @@ class AIControls(QMainWindow):
         row2.addWidget(self.mic_btn, 0)
         self.send_btn = IconButton("send", "Send", size=36, accent=True, icon_size=18)
         self.send_btn.clicked.connect(self.submit)
+        self._send_tip = "Send"
         row2.addWidget(self.send_btn, 0)
         cv.addLayout(row2)
         ml.addWidget(self.composer)
+        self.ask.textChanged.connect(self.update_send_state)   # Send follows the text: disabled (40 %) while the box is empty or whitespace
         body.addWidget(self.main, 1)
         outer.addLayout(body, 1)
         self.toast = Toast(self.main)
@@ -3787,6 +4224,7 @@ class AIControls(QMainWindow):
         for lab, glyph in self.column_icons:
             lab.setPixmap(glyph_pixmap(glyph, text, 24))
         self.mode_btn.setIcon(glyph_icon("shield", text, 16))
+        self.cloud_hint_icon.setPixmap(glyph_pixmap("info", hi, 16))
         for b in self.findChildren(IconButton):
             b.refresh_icon()
         self.sidebar.refresh_icons()
@@ -3988,6 +4426,7 @@ class AIControls(QMainWindow):
             self.offline = off
             self.offline_label.setVisible(off)
             self.update_composer()
+            self.update_cloud_hint()
         if off:
             self.offline_label.setText("Can't reach the agent service. Start it with:  systemctl --user start fabos-agent   (%s)" % why[:120])
             self.subtitle.setText("Agent service offline")
@@ -4033,6 +4472,17 @@ class AIControls(QMainWindow):
             self._voice_on = voice_on
             self.update_voice_buttons()
         self._voice_on = voice_on
+        self.update_cloud_hint()
+
+    def update_cloud_hint(self):
+        """The chip shows only while the built-in (local) model is the provider, until dismissed for this session."""
+        show = self.status.get("provider") == "local" and not self._cloud_hint_dismissed and not self.offline
+        if show != self.cloud_hint.isVisible():
+            self.cloud_hint.setVisible(show)
+
+    def dismiss_cloud_hint(self):
+        self._cloud_hint_dismissed = True
+        self.update_cloud_hint()
 
     def _apply_show_raw(self, new_raw):
         if new_raw != self.show_raw:
@@ -4048,18 +4498,34 @@ class AIControls(QMainWindow):
             self.ask.setPlaceholderText("Listening…")
         elif busy and not waiting_user:
             self.send_btn.set_glyph("stop", "Stop this task")
+            self._send_tip = "Stop this task"
             self.ask.setPlaceholderText("The agent is working… type your follow-up now, send it when it finishes")
         elif waiting_user:
             self.send_btn.set_glyph("send", "Send your answer")
+            self._send_tip = "Send your answer"
             self.ask.setPlaceholderText("Answer the agent's question…")
         else:
             self.send_btn.set_glyph("send", "Send")
+            self._send_tip = "Send"
             self.ask.setPlaceholderText("Ask me to do anything…" if self.current_root is None else "Follow up in this chat…")
         if not on:
             self.ask.setPlaceholderText("Agent service offline" if self.offline else "System-Wide AI is off — turn it on to give the agent tasks")
         self.ask.setEnabled(on)
-        self.send_btn.setEnabled(on)
+        self.update_send_state()
         self.mic_btn.setEnabled(on and self.voice.stt_available() and getattr(self, "_voice_on", True))
+
+    def update_send_state(self):
+        """Send is live only with text in the box (whitespace is not text); Stop, while a task runs, is always live. The mic
+        is untouched here. Enter on an empty box is ignored by submit()."""
+        latest = self.latest_task()
+        stop = bool(latest and latest["status"] in ACTIVE and latest["status"] != "waiting_user")
+        on = bool(self.status.get("ai_enabled", True)) and not self.offline
+        has_text = bool(self.ask.text().strip())
+        live = on and (stop or has_text)
+        if self.send_btn.isEnabled() != live:
+            self.send_btn.setEnabled(live)
+        self.send_btn.setToolTip(self._send_tip if (live or not on) else "Type a request first")
+        self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor if live else Qt.CursorShape.ArrowCursor)
 
     def update_voice_buttons(self):
         ok = self.voice.stt_available() and getattr(self, "_voice_on", True)
@@ -4188,6 +4654,12 @@ class AIControls(QMainWindow):
     def retry_task(self, task_id):
         parent = self.current_root
         self.api_async("POST", "/tasks/%d/retry" % task_id, cb=lambda r, parent=parent: self._after_create(r, parent))
+
+    def regenerate_image(self, task_id):
+        """The image viewer's Regenerate: a follow-up in the same chat — the daemon has the prompt in the task context."""
+        parent = self.current_root or self.root_of_task(task_id) or task_id
+        self.view.stick = True
+        self.api_async("POST", "/tasks", {"request": REGENERATE_REQUEST, "parent_id": parent}, cb=lambda r, parent=parent: self._after_create(r, parent))
 
     def send_feedback(self, task_id, rating):
         self.api_async("POST", "/tasks/%d/feedback" % task_id, {"rating": rating})

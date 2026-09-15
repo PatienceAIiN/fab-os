@@ -10,6 +10,8 @@ import "agent.js" as Agent
 //   tools      "Worked: N actions" chip (group head)  step       live action card (icon · title · narration · typewriter · state)
 //   approval   permission card with Allow / Deny      question   inline answer field
 //   error      tinted error card                      note       small muted system line
+//   image      generated picture: rounded thumbnail (≤ 320 px tall, fitted to the row), caption = prompt, provider label;
+//              a tap asks main.qml for the enlarge viewer (text = absolute path, subtitle = prompt, name = provider)
 Item {
     id: del
     required property int index
@@ -47,6 +49,7 @@ Item {
     signal copyText(string copied)
     signal retry()
     signal openExternal()
+    signal openImage(string path, string prompt, string provider)
 
     readonly property bool collapsed: kind === "step" && !shown
     readonly property string mono: "JetBrains Mono"
@@ -75,7 +78,125 @@ Item {
         width: parent.width
         sourceComponent: del.kind === "user" ? userComp : del.kind === "assistant" ? assistantComp : del.kind === "tools" ? toolsComp
                        : del.kind === "step" ? stepComp : del.kind === "approval" ? approvalComp : del.kind === "question" ? questionComp
-                       : del.kind === "error" ? errorComp : noteComp
+                       : del.kind === "error" ? errorComp : del.kind === "image" ? imageComp : noteComp
+    }
+
+    // ---- generated image: card (radius 16); the picture itself is drawn ONCE by a Canvas (QPainter into an image buffer,
+    // clipped to a radius-12 rounded rectangle — deterministic in every scene-graph backend; a ShaderEffectSource into
+    // Kirigami.ShadowedTexture came out upside-down and a MultiEffect layer mask came out blank under the RHI in the
+    // headless image). A hidden Image decodes the file (shared pixmap cache) and its implicit size — the decoded picture —
+    // drives the box; no sourceSize cap, because Qt scales a raster UP to a requested sourceSize (640 px became 2560 px).
+    // Fitted to the row's width and never taller than 320 px, fading in when painted; caption = the prompt, a small
+    // provider line; the whole card is a tap target for the enlarge viewer. A file that vanished shows a note.
+    Component {
+        id: imageComp
+        Rectangle {
+            id: imgCard
+            radius: 16
+            color: Kirigami.Theme.alternateBackgroundColor
+            border.width: 1
+            border.color: imgArea.containsMouse ? Kirigami.Theme.highlightColor : del.hairline
+            Behavior on border.color { ColorAnimation { duration: 160 } }
+            readonly property int pad: 8
+            readonly property int maxThumb: 320
+            readonly property bool ready: pic.status === Image.Ready
+            readonly property bool broken: pic.status === Image.Error
+            // the picture's box: as wide as the card allows, ≤ 320 px tall, the aspect ratio kept (so the rounded corners are the picture's own)
+            readonly property real srcW: pic.implicitWidth > 0 ? pic.implicitWidth : 4
+            readonly property real srcH: pic.implicitHeight > 0 ? pic.implicitHeight : 3
+            readonly property real boxW: Math.max(1, width - pad * 2)
+            readonly property real thumbH: broken ? 0 : Math.round(Math.min(maxThumb, boxW * srcH / srcW))
+            readonly property real thumbW: broken ? 0 : Math.round(Math.min(boxW, thumbH * srcW / srcH))
+            implicitHeight: pad + thumbH + (broken ? 0 : 8) + imgText.implicitHeight + pad + 2
+            readonly property bool painted: thumb.painted
+            Image {   // decodes the file (asynchronously) and knows its size; never drawn itself
+                id: pic
+                x: Math.round((imgCard.width - width) / 2); y: imgCard.pad
+                width: imgCard.thumbW; height: imgCard.thumbH
+                source: del.text.length ? Agent.fileUrl(del.text) : ""
+                asynchronous: true
+                autoTransform: true
+                visible: false
+            }
+            Canvas {   // the rounded thumbnail: one QPainter pass, re-done only when the box changes
+                id: thumb
+                x: pic.x; y: pic.y; width: pic.width; height: pic.height
+                visible: !imgCard.broken
+                renderTarget: Canvas.Image
+                renderStrategy: Canvas.Immediate
+                property bool painted: false
+                readonly property string src: String(pic.source)
+                readonly property int rounding: 12
+                opacity: painted ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }   // fade-in
+                Component.onCompleted: if (src.length) loadImage(src)
+                onSrcChanged: { painted = false; if (src.length) loadImage(src) }
+                onImageLoaded: requestPaint()
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+                onPaint: {
+                    var ctx = getContext("2d"), w = width, h = height, r = rounding
+                    ctx.reset()
+                    ctx.clearRect(0, 0, w, h)
+                    if (w < 2 || h < 2 || !src.length || !isImageLoaded(src)) return
+                    ctx.save()
+                    ctx.beginPath()
+                    ctx.moveTo(r, 0); ctx.lineTo(w - r, 0); ctx.arcTo(w, 0, w, r, r); ctx.lineTo(w, h - r); ctx.arcTo(w, h, w - r, h, r)
+                    ctx.lineTo(r, h); ctx.arcTo(0, h, 0, h - r, r); ctx.lineTo(0, r); ctx.arcTo(0, 0, r, 0, r); ctx.closePath()
+                    ctx.clip()
+                    ctx.drawImage(src, 0, 0, w, h)
+                    ctx.restore()
+                    painted = true
+                }
+            }
+            Spinner { anchors.centerIn: pic; width: 18; height: 18; visible: !imgCard.ready && !imgCard.broken }
+            Rectangle {   // small "enlarge" badge, visible on hover
+                anchors.right: pic.right; anchors.top: pic.top; anchors.margins: 8
+                width: 26; height: 26; radius: 13
+                color: Qt.rgba(0, 0, 0, 0.55)
+                visible: imgCard.ready
+                opacity: imgArea.containsMouse ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 160 } }
+                Kirigami.Icon { anchors.centerIn: parent; width: 14; height: 14; source: "view-fullscreen"; isMask: true; color: "white" }
+            }
+            ColumnLayout {
+                id: imgText
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: pic.bottom
+                anchors.leftMargin: imgCard.pad + 4; anchors.rightMargin: imgCard.pad + 4; anchors.topMargin: imgCard.broken ? 0 : 8
+                spacing: 2
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: imgCard.broken
+                    spacing: 8
+                    Kirigami.Icon { Layout.preferredWidth: 16; Layout.preferredHeight: 16; source: "image-missing"; isMask: true; color: Kirigami.Theme.neutralTextColor }
+                    Text { Layout.fillWidth: true; text: "This image is no longer at " + Agent.basename(del.text); color: Kirigami.Theme.textColor; opacity: 0.7; font.family: del.ui; font.pixelSize: 12; elide: Text.ElideMiddle }
+                }
+                Text {   // caption = the prompt
+                    Layout.fillWidth: true
+                    visible: del.subtitle.length > 0
+                    text: del.subtitle
+                    color: Kirigami.Theme.textColor; font.family: del.ui; font.pixelSize: 13; lineHeight: 1.2
+                    wrapMode: Text.Wrap; maximumLineCount: 3; elide: Text.ElideRight
+                }
+                Text {   // provider label (+ size when known)
+                    Layout.fillWidth: true
+                    visible: text.length > 0
+                    text: [Agent.imageProviderLabel(del.name), del.title].filter(function (x) { return x.length }).join(" · ")
+                    color: Kirigami.Theme.textColor; opacity: 0.55; font.family: del.ui; font.pixelSize: 11; elide: Text.ElideRight
+                }
+            }
+            MouseArea {
+                id: imgArea
+                anchors.fill: parent
+                hoverEnabled: true
+                enabled: imgCard.ready
+                cursorShape: imgCard.ready ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: del.openImage(del.text, del.subtitle, del.name)
+            }
+            QQC2.ToolTip.visible: imgArea.containsMouse && imgCard.ready
+            QQC2.ToolTip.text: "Tap to enlarge"
+            QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+        }
     }
 
     // ---- user request: right-aligned pill (radius 20, tinted, max 72 % wide)

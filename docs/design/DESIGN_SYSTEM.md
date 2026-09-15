@@ -117,7 +117,11 @@ historical name `fabos-command-center`). It is the reference implementation of t
 | Type | Inter (14 px body, 15 px messages, 16/600 titles, 18/600 column titles, 32/600 empty-state title, 12 px muted, 12.5 italic narration); JetBrains Mono for code blocks, on a tinted (`text` at 8 %) background |
 | Icons | Material-style 24-grid glyphs as inline SVG, rasterised in the palette colour (`glyph_icon`); action rows use 20 px icons at 60 % opacity, 100 % on hover; every action is an icon button with a tooltip — no verbs as words. The action timeline shows the launched app's own theme icon for `open_app` |
 | Chat | a chat = a root task + follow-ups (`parent_id`). User message = pill right (r24, text @ 8 %, ≤ 70 % width) with edit / retry on hover; editing turns the pill into a card with Cancel (outlined) / Send (filled) pills. Agent messages = plain text left (no bubble, sparkle mark), Markdown via `QTextDocument.setMarkdown`, action row copy · good · bad · speak · edit · retry, Stop while running |
-| Live action feed | one "Working / Worked: N actions" chip per turn; open by itself while the task runs. Each step is a timeline row: per-tool icon (app icon / keyboard / terminal / file / folder / globe / mail / bell / question / eye), present-tense title while it runs ("Opening Fab Files"), past tense when done, the agent's **narration** in italics underneath (`steps.narration` → `narration_done`), a spinner while the output is empty, an animated green check / amber cross / red cross (denied) when it completes; `type_text` is revealed with a typewriter effect (25 ms/char). Rows are appended and updated in place — never rebuilt; raw commands only when `ui.show_raw` is on |
+| Live action feed | one "Working / Worked: N actions" chip per turn; open by itself while the task runs. Each step is a timeline row: per-tool icon (app icon / keyboard / terminal / file / folder / globe / mail / bell / question / eye / picture for `generate_image`), present-tense title while it runs ("Opening Fab Files", "Creating an image"), past tense when done, the agent's **narration** in italics underneath (`steps.narration` → `narration_done`), a spinner while the output is empty, an animated green check / amber cross / red cross (denied) when it completes; `type_text` is revealed with a typewriter effect (25 ms/char). Rows are appended and updated in place — never rebuilt; raw commands only when `ui.show_raw` is on |
+| Image cards | a finished `generate_image` step (output `{"path": "/home/<user>/Pictures/Fab OS/<name>.png", "width", "height", "provider", "prompt"}`) — or a `~/Pictures/Fab OS/*.png|jpg` path named in the final text (`~`, `$HOME`, `/home/<user>`, `file://` forms) — becomes an **image card** (`ImageCard`, `QFrame#imageCard`: radius 16, alternate-base surface, hairline; hover = accent border) for every file that **exists**, once per file however often it is mentioned; the thumbnail is the picture with radius-12 corners (`rounded_pixmap`), fitted to the agent's text width and never taller than 320 px, decoded at most 1024 px wide (`load_image`), fading in like a message; caption = the prompt (13 px), a small line "Provider · W × H" (11.5 px muted). Cards sit after the turn's messages, before its status row |
+| Image viewer | a click on a card opens `ImageViewer` (`QDialog#imageViewer`, non-modal, **80 % of the screen**, one per card): a dark scrim (#0A0D14 — a photo viewer's scrim is dark in both schemes, every word on it white), prompt + "Provider · W × H · file" above, the picture fitted (re-scaled on resize, ≤ 4096 px decode), an outcome line, and the control row of radius-12 pills (white @ 10 %, 18 % on hover; one row, or two rows of three when the viewer is narrow): **Save as** (`QFileDialog` suggesting `~/Pictures/<name>`; if the dialog cannot be shown, a copy into `~/Pictures` — never overwriting — and the outcome line says where) · **Copy image** (`QClipboard.setImage`) · **Open in Fab Photos** (`gwenview`, else `xdg-open`, else disabled with "Fab Photos (gwenview) is not installed") · **Set as wallpaper** (`plasma-apply-wallpaperimage` through a `QProcess`; its exit code decides "Wallpaper set" / "Could not set the wallpaper"; disabled with the binary's name when absent) · **Regenerate** (POST `/tasks` `{"request": "regenerate the image with the same prompt", "parent_id": <chat root>}` — the daemon has the prompt in the thread — then the viewer closes) · **Close** (Esc). A disabled control is 40 % and its tooltip names what is missing; nothing fails silently |
+| Composer state | **Send is disabled while the box is empty or whitespace** (the accent disc and its glyph at 40 %, arrow cursor, no hover fill; tooltip "Type a request first"; Enter posts nothing) and live the moment there is text; the mic is independent of the text. While a task runs the same button is **Stop** and stays live |
+| Cloud hint | with the built-in model (`/status` `provider == "local"`) a chip (`QFrame#cloudHint`: radius 12, alternate-base, hairline; info glyph in the accent) sits **above the composer**: "Using the built-in model. For the best results use a cloud model" · **Choose** (accent text button → Settings › AI provider) · dismiss (×). Dismissal lasts the session (`_cloud_hint_dismissed`, not a setting); the chip never shows with a cloud provider or while the service is offline |
 | Settings (compact) | `SettingsDialog`, 620 px wide, radius 24, **four tabs whose first level holds only what most people touch**; every tab has a collapsed **Advanced** expander (`Disclosure`: a chevron row, no height animation, the dialog re-fits). **General**: Permission mode · System-Wide AI switch — Advanced: persona, raw responses, max steps, tool-result limit. **AI provider**: ONE dropdown (five providers), one password key field ("stored" placeholder when a secret exists), **Check connection** → `POST /providers/test` off the GUI thread; success = a circle that draws itself then a check mark (~520 ms, `ResultMark`) with "Connected · model · N ms", failure = shake on the field + "Key rejected" / "Cannot reach provider" — Advanced: model, endpoint (opened automatically for Local), "Require a successful check", the systemd-creds note. **Voice**: Listen for "Hey Fab" · Speak replies · **Voice check** (`fabos-voice doctor`, its lines in a monospace `#raw` box; an older CLI without `doctor` falls back to `status` and says so) · **Test voice** (`fabos-voice say --test`, plain `say` fallback) — Advanced: wake-word text, offline only, cloud voice name. **Mail**: provider dropdown (Gmail first), address, one **Sign in** — with Google OAuth available it runs the browser flow and shows the animated check ("Signed in with Google as …"); otherwise it reveals, in reading order, the app-password field, the provider's 3-step hint (plus the preset's note — Outlook: IMAP password sign-in is switched off) and then the **Check connection** row *under* the field it checks → `POST /mail/test` with the same check / shake pattern ("Signed in · SMTP ✓ · IMAP ✓ · N ms"; a sending-only account gets "Signed in · SMTP ✓ · IMAP off · N ms" with the reason on a second line and Save enabled; "Wrong password — Gmail needs an app password…" / "…closed the connection at sign-in…" in red shakes the password field; "Cannot reach host:port" in amber shakes the address). Once a check passed, the 3-step hint is hidden (it returns when the form changes). The "no Google sign-in on this build" reason is one short line in the result column; the daemon's full sentence is its tooltip. Advanced: sender name, SMTP / IMAP servers auto-filled by the preset and stored only when they differ (`none` in IMAP server = sending only). Save is disabled until a typed key or changed mail account passed its check (unless the requirement is unticked); the reason is written inline next to the buttons. The dialog is as tall as the **current** tab (`TabPage` reports no size while hidden; `RoundedDialog.refit()` invalidates + activates the layout before `adjustSize`, then grows to the layout's height-for-width so nothing is clipped), and every wrapped hint / result label is a `WrapLabel` — a word-wrapped QLabel whose sizeHint is its height at the width it actually has, because `QFormLayout` (Qt 6) reserves a wrapped field's guessed-width sizeHint height, never its height-for-width at the real column width (measured: 176 px reserved for 112 px of text; a squeezed result label clipped). Measured offscreen at Medium font: General 307 · AI provider 380 · Voice 326 · Mail 357 px collapsed; Mail states — app-password path 470 · check passed 415 · wrong password 470 · Outlook hint + note 533 · Outlook sending-only 463; budget ≤ 560, no clipped rows (`tests/ai-controls-render.py --settings` asserts both). Provider names appear only as dropdown labels and in the API-key help text; the **Model** field and the daemon's speech calls carry the providers' own model identifiers (technical strings, not UI copy) — the only place such vendor wording is allowed |
 | Motion | typing indicator (three pulsing dots, 40 ms tick), fade-in (260 ms, OutCubic) for new agent text and new timeline rows (200 ms), switch knob 160 ms, check-mark draw 520 ms OutCubic, shake 420 ms, mic pulse ring 1.1 s loop while listening, toast fade 220 ms; nothing loops except the typing dots / spinners while a task runs and the mic ring while listening |
 | Live data | `/tasks` every 4 s for the sidebar, `/tasks/{id}` every 1.5 s for the visible chat only (5 s HTTP timeout; the daemon is local); models are updated in place — sidebar rows are *reconciled* (a row already at its position is kept, a chat that moved up is re-inserted, vanished rows are dropped; the list is never cleared), bubbles by step id — with `setUpdatesEnabled` guards, and the view only auto-scrolls when the reader was already at the bottom |
@@ -134,7 +138,18 @@ scripted daemon, writes `build/ai-controls-{dark,light}.png`, `build/ai-controls
 switch restyles every surface, sidebar rows keep their identity while chats appear / move / vanish, the live timeline
 spins for the running step and shows checks + narration for finished ones, the provider check enables / blocks Save,
 the approval dialog's details toggle and Deny, a stale approval closing without a POST, in-place editing of the root
-message staying in its chat, `--task ID` opening on that chat, and an offline Save keeping Settings open.
+message staying in its chat, `--task ID` opening on that chat, and an offline Save keeping Settings open. It also seeds a
+`generate_image` step naming a **real PNG** (written by `tests/askbar-qml-harness/mkpng.py` — standard library only; the
+image has no python3-pil), a second step naming a file never written, and a final text naming the first file again, and
+asserts: exactly one image card (caption = prompt, "Test provider · 640 × 400", thumbnail ≤ 320 px with the aspect ratio
+kept), the viewer at 80 % of the screen with all six controls, Copy image putting a 640 × 400 picture on the clipboard,
+Save as copying through a patched `QFileDialog` and falling back to `~/Pictures` when the dialog raises, Open launching
+`gwenview` / `xdg-open` with the path (patched `Popen`), Set as wallpaper running `plasma-apply-wallpaperimage` for real and
+reporting its outcome, Regenerate posting `{"request": "regenerate the image with the same prompt", "parent_id": <root>}`
+and closing the viewer (renders `build/ai-controls-image-{card,viewer}.png`, `-light` variants); the composer's Send
+disabled on an empty / whitespace box with Enter posting nothing and live with text; the cloud hint chip only for
+`provider == "local"`, Choose → `open_settings("provider")`, dismissal remembered, never for another provider
+(`build/ai-controls-cloud-hint-{dark,light}.png`).
 
 ## Ask bar (home screen)
 
@@ -161,7 +176,15 @@ text with an action row) with Fab OS tokens.
   (fabos-voice is missing)"). A failed tap is never a silent no-op — in the compact (panel) form, where the status
   line is hidden, the same reason goes into the field's placeholder and the card's hover tooltip. The transcript is
   typed into the field at ~25 ms/char and submitted) and the accent **Do it** pill (reads "Send" while a
-  conversation is open).
+  conversation is open). **Do it / Send is disabled while the field is empty or whitespace**: 40 % opacity, no hover
+  lift or tint, arrow cursor, a click does nothing and Enter is ignored (`submit()` trims first); a tooltip says "Type
+  or speak a request first"; it is live the moment there is text. The mic beside it is never affected. The card is
+  6.2 grid units tall, or taller when its rows need it (`cardCol.implicitHeight` + margins): under the field and the
+  status line a **cloud hint chip** (radius 12, `alternateBackgroundColor`, hairline, info glyph in the accent) appears
+  while `/status` reports `provider == "local"` — "Using the built-in model. For the best results use a cloud model" ·
+  **Choose** (accent text → `fabos-command-center --settings provider`) · × dismiss. The dismissal lasts the session (a
+  plain property, not `Plasmoid.configuration`); the chip never shows with a cloud provider, while unconfigured, or in
+  the compact form.
 - **Response panel**: an `Item` **inside the applet** — there is no `PlasmaCore.Dialog` (no separate popup window) on
   the desktop. It sits flush under the card: `y = card.y + card.height + 8`, the card's x and width, radius 24 like
   the card so the pair reads as one stack, `Kirigami.Theme.backgroundColor` @ 96 % with the 12 % hairline. Because
@@ -206,6 +229,36 @@ text with an action row) with Fab OS tokens.
   (`POST /approvals/{id}`); questions render an inline answer field (`POST /tasks/{id}/answer`; the answer is shown at
   once as a user pill and bound to the daemon's `answer` step — whose text is in `input` — when the next poll returns it,
   so it is never duplicated; answers given elsewhere appear from that step).
+- **Image cards** (`ConvoDelegate` kind `image`): a finished `generate_image` step — output `{"path": "/home/<user>/Pictures/Fab
+  OS/<name>.png", "width", "height", "provider", "prompt"}`, shown in the feed as "Creating / Created an image" with the
+  prompt and a picture glyph — or a `~/Pictures/Fab OS/*.png|jpg` path named in the final text (`~`, `$HOME`,
+  `/home/<user>`, `file://` forms; `Agent.imagePathsInText`) **offers** an image; the bar asks the shell whether the file
+  is there (`Agent.imageCheckCommand`: `[ -f ]` with `~`/`$HOME` expanded by the shell, printing the absolute path) and
+  only then appends **one card per file**, however often and in whatever form it was mentioned. The card: radius 16,
+  `alternateBackgroundColor`, hairline (accent on hover), the picture fitted to the row's width and never taller than
+  320 px with its own radius-12 corners — painted once by a `Canvas` (QPainter, clipped to a rounded rectangle; a
+  hidden `Image` decodes the file and its implicit size drives the box — deterministic in every scene-graph backend,
+  where a ShaderEffectSource into `Kirigami.ShadowedTexture` came out upside-down and a MultiEffect mask blank in the
+  headless image) — fading in when painted, a hover badge "enlarge", caption = the prompt (13 px), a small "Built-in model ·
+  W × H" line (11 px; a cloud provider by the id the daemon reports — no vendor names live in the bar). A file that
+  vanished later shows a muted "This image is no longer at …" line. The card is a tap target.
+- **Image viewer** (`ImageViewer.qml` in a `PlasmaCore.Dialog`, `viewerLoader` in main.qml — the only window the desktop
+  form ever opens, and only on a tap): **80 % of the screen**, frameless, a dark scrim (radius 24 — a photo viewer's
+  scrim is dark in both schemes; every word on it is white), the prompt and "Built-in model · W × H · file" above, the
+  picture fitted (decoded at the file's size — a `sourceSize` cap would scale a small file UP), an outcome line, and one
+  control row of radius-12 pills (white @ 10 %, 18 % on hover; `Flow`, so a narrow screen wraps): **Save as**
+  (`QtQuick.Dialogs` FileDialog loaded through a `Loader` from `SaveDialog.qml` — when the module is missing, a copy
+  into `~/Pictures` that never overwrites, and the outcome line says where; the same fallback command is
+  `Agent.saveCopyCommand`) · **Copy image** (`wl-copy --type image/png|jpeg < file`; disabled with "Copying needs
+  wl-clipboard (wl-copy), which is not installed" when the probe finds none) · **Open in Fab Photos** (`gwenview`, else
+  `xdg-open`, else disabled with "Fab Photos (gwenview) is not installed") · **Set as wallpaper**
+  (`plasma-apply-wallpaperimage file`; disabled with the binary's name when absent) · **Regenerate** (a follow-up in the
+  conversation: `POST /tasks {"request": "regenerate the image with the same prompt", "parent_id": root}` — the daemon
+  has the prompt in the thread — then the viewer closes and the request row appears like any submit) · **Close**
+  (Esc, the × in the header, or a click on the scrim). The binaries are probed once per opening with one `sh`
+  (`Agent.binsCommand`: `command -v` for wl-copy, gwenview, xdg-open, plasma-apply-wallpaperimage); until it answers the
+  dependent controls read "Checking what this machine can do…". Every control that depends on a binary degrades to a
+  disabled 40 % pill with the reason in its tooltip — nothing fails silently.
 - **Polling**: one curl snapshot (`/status` + `/tasks/{id}`) every 2 s while a task is followed, 8 s while awake and idle, a 60 s heartbeat while asleep, nothing while closed — through the executable DataSource (curl; port from
   `$XDG_RUNTIME_DIR/fabos-agent/port`; the bearer token is handed to curl as one config line on stdin — `printf … | curl
   -K -`, the shell's builtin printf — so it is never on a command line / in `/proc/*/cmdline`), only while the panel is
@@ -244,7 +297,20 @@ text with an action row) with Fab OS tokens.
   shrinks the window to a panel thickness so the compact form runs for real (Dialog appears, the mic reason moves into
   the placeholder), and renders `build/askbar-{bar,panel,feed,scroll-bottom,scroll-top}.png` — bar = the whole strip
   with the card + panel stack, scroll-bottom/top = the 40-row panel at its maximum, followed to the end and scrolled
-  to the top).
+  to the top). Its polish stages then assert the disabled Do it (empty and whitespace field: `canSend` false, no hover,
+  arrow cursor, `submit()` posts nothing, opacity 0.40 after the animation, the mic still `active`; live at 1.0 with
+  text), the cloud hint chip (shown for `provider == "local"` under the field inside the card with the panel still 8 px
+  under the card, Choose → `--settings provider`, dismissed and remembered across the next `/status`, never for a cloud
+  provider), and the image cards for real: `mkpng.py` writes a 640 × 400 PNG inside the image (HOME=/tmp) before
+  plasmawindowed starts; a task with two `generate_image` steps (the real file via `~/…`, a file never written) and a
+  final text naming both (`$HOME/…`, `~/…`) yields four `[ -f ]` checks and **exactly one** card (absolute path,
+  caption = prompt, "640 × 400"), the Canvas thumbnail ≤ 320 px with the aspect ratio kept and painted, and
+  `pngcheck.py` samples the render itself — blue sky at the top of the thumbnail, green hill at the bottom — so the
+  picture is proven painted and upright, not eyeballed; a tap opens the viewer (80 % of the screen, path / prompt /
+  provider carried), the binary probe answers (gwenview and plasma-apply-wallpaperimage present → enabled; no wl-copy in
+  the image → Copy image disabled at 40 % with the wl-clipboard reason), the FileDialog module loads, the viewer holds
+  focus, the Save as fallback really copies into `~/Pictures` and says where, Regenerate closes the viewer and posts the
+  follow-up under the root task, Close / Esc closes it; renders `build/askbar-image-{card,viewer}.png`.
 
 ## Top bar & dock
 

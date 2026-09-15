@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import org.kde.plasma.plasma5support as P5Support
 import org.kde.kirigami as Kirigami
 import "../ui" as Ask
+import "../ui/agent.js" as Agent
 
 // Headless driver for the ask bar. tests/askbar-qml-test.sh copies the plasmoid into a temp package, appends one
 // Loader line to that COPY of main.qml which loads this file and hands over the root item and its ids, then runs the
@@ -16,8 +17,15 @@ import "../ui" as Ask
 // shrunk to a panel thickness so `compact` flips, the PlasmaCore.Dialog appears and the mic hint moves into the
 // placeholder / tooltip, then grown back. Every ConvoDelegate kind and every AiMark state are instantiated too.
 // A 40-row conversation with long lines and one-line code then checks the scroll geometry (see the scroll stage below).
-// Prints PASS/FAIL lines and "HARNESS DONE failures=N", renders /out/askbar-{bar,panel,feed,scroll-bottom,scroll-top}.png,
-// then stops plasmawindowed.
+// The polish stages at the end cover the disabled Do it (empty / whitespace field), the cloud hint chip (built-in
+// model only, dismissal remembered for the session) and the image cards: a generate_image step pointing at a REAL PNG
+// (written by mkpng.py inside the image before plasmawindowed starts, HOME=/tmp) renders one card after the `[ -f ]`
+// check, a missing file none, the same file mentioned in the final text no duplicate; a tap opens the 80 % viewer
+// (PlasmaCore.Dialog) whose controls follow the binaries found (no wl-copy in the image => Copy image disabled with a
+// reason; gwenview + plasma-apply-wallpaperimage present => enabled), Save as falls back to a real copy in ~/Pictures,
+// Regenerate posts the follow-up and closes the viewer.
+// Prints PASS/FAIL lines and "HARNESS DONE failures=N", renders /out/askbar-{bar,panel,feed,scroll-bottom,scroll-top,
+// image-card,image-viewer}.png, then stops plasmawindowed.
 Item {
     id: h
     property var bar: null
@@ -31,6 +39,13 @@ Item {
     property var vbar: null          // the list's overlay ScrollBar (main.qml id vbar)
     property var panelHeader: null   // fixed control row above the list
     property var panelFoot: null     // fixed foot (typing dots) below the list
+    property var go: null            // the Do it / Send pill and its MouseArea
+    property var goArea: null
+    property var micButton: null
+    property var cloudHint: null     // the cloud hint chip, its text and its Choose action
+    property var cloudHintText: null
+    property var cloudChoose: null
+    property var viewer: null        // the image viewer's Loader (main.qml id viewerLoader)
     property var list: null
     property int failures: 0
     property int grabsPending: 0
@@ -39,7 +54,7 @@ Item {
     function rowAt(i) { return convo.get(i) }
     // plasmawindowed opens the applet at its Layout.minimum size (396x128 here) while the desktop layout gives the strip
     // sh*0.66: the harness sizes the applet like a small home screen before the checks (700x640; Screen is 800x600 offscreen)
-    onListChanged: if (bar && convo && card && panel && panelMain && popup && statusText && field && vbar && panelHeader && panelFoot && list) {
+    onListChanged: if (bar && convo && card && panel && panelMain && popup && statusText && field && vbar && panelHeader && panelFoot && go && goArea && micButton && cloudHint && cloudHintText && cloudChoose && viewer && list) {
         bar.Layout.minimumWidth = 700; bar.Layout.minimumHeight = 640     // plasmawindowed sizes its window from these hints
         var w = h.Window.window; if (w) { w.minimumWidth = 700; w.minimumHeight = 640; w.width = 700; w.height = 640 }
         startTimer.start()
@@ -151,7 +166,8 @@ Item {
             makeRow({ kind: "approval", approvalId: 9, title: "Running a command", risk: "HIGH", narration: "deletes files", status: "pending", icon: "utilities-terminal", iconFallback: "system-run" }),
             makeRow({ kind: "question", questionId: 5, text: "Which folder should I use instead?", status: "pending" }),
             makeRow({ kind: "error", text: "The model declined this request (policy)." }),
-            makeRow({ kind: "note", text: "Trying again…" })
+            makeRow({ kind: "note", text: "Trying again…" }),
+            makeRow({ kind: "image", text: h.imgPath, subtitle: "a prompt", name: "local", title: "640 × 400", status: "ready" })
         ]
         var ok = true
         for (var i = 0; i < rows.length; i++) { if (!rows[i]) ok = false; else rows[i].y = 2000 }
@@ -472,6 +488,153 @@ Item {
         check(bar.compact === false && bar.onDesktop === true, "back on the desktop: tall strip again (" + Math.round(bar.height) + " px)")
         check(popup.active === false && popup.item === null && panelMain.parent === panel, "back on the desktop: popup gone, conversation back inside the applet")
         check(bar.containmentMask !== null && bar.contains(Qt.point(2, 2)) === false && bar.contains(Qt.point(card.x + 5, 5)) === true, "back on the desktop: hit mask active again")
+        polishStage.start()
+    } }
+
+    // ---- polish: Do it disabled on an empty / whitespace field (40 %, no hover, Enter ignored; the mic stays live)
+    Timer { id: polishStage; interval: 200; onTriggered: {
+        bar.configured = true; bar.aiEnabled = true; bar.daemonUp = true; bar.voiceHint = ""
+        field.text = ""
+        check(go.canSend === false && goArea.hoverEnabled === false && goArea.cursorShape === Qt.ArrowCursor, "empty field: Do it is not clickable — no hover, arrow cursor")
+        field.text = "   "
+        var s0 = bar.serial
+        bar.submit()
+        check(go.canSend === false && bar.sending === false && bar.serial === s0, "whitespace only: still disabled; Enter / submit() posts nothing")
+        check(micButton.active === true, "the mic stays enabled while Do it is disabled")
+        goOpacity.start()
+    } }
+    Timer { id: goOpacity; interval: 300; onTriggered: {   // the 160 ms opacity animation has settled
+        check(Math.abs(go.opacity - 0.4) < 0.02, "disabled Do it sits at 40 % opacity (" + go.opacity.toFixed(2) + ")")
+        field.text = "draw a kite"
+        check(go.canSend === true && goArea.hoverEnabled === true && goArea.cursorShape === Qt.PointingHandCursor, "text typed: Do it is live again (hover + hand cursor)")
+        goOpacity2.start()
+    } }
+    Timer { id: goOpacity2; interval: 300; onTriggered: {
+        check(Math.abs(go.opacity - 1) < 0.02, "live Do it at 100 % (" + go.opacity.toFixed(2) + ")")
+        field.text = ""
+        // ---- cloud hint chip: only with the built-in model; dismissal lasts the session; never with a cloud provider
+        h.cardBefore = card.height
+        var st = { mode: "auto", provider: "local", provider_ready: true, ai_enabled: true, tasks: {}, pending_approvals: 0 }
+        bar.onStatus(st)
+        check(bar.provider === "local" && bar.cloudHint === true && cloudHint.visible, "local provider: the cloud hint chip shows under the field")
+        check(cloudHintText.text === "Using the built-in model. For the best results use a cloud model", "chip wording")
+        chipGeometry.start()                                     // the ColumnLayout re-polishes on the next event-loop pass
+    } }
+    property real cardBefore: 0
+    Timer { id: chipGeometry; interval: 150; onTriggered: {
+        var cy = cloudHint.mapToItem(card, 0, 0).y, fy = field.mapToItem(card, 0, 0).y
+        check(cy >= fy + field.height && cy + cloudHint.height <= card.height, "chip sits under the field, inside the card (card " + Math.round(h.cardBefore) + " -> " + Math.round(card.height) + " px; chip y " + Math.round(cy) + ", field bottom " + Math.round(fy + field.height) + ")")
+        check(panel.y === card.y + card.height + 8, "the panel still starts 8 px under the card")
+        var st = { mode: "auto", provider: "local", provider_ready: true, ai_enabled: true, tasks: {}, pending_approvals: 0 }
+        cloudChoose.clicked()
+        check(bar.lastOpenArgs === "--settings provider", "Choose opens Fab AI Controls on Settings › AI provider (" + bar.lastOpenArgs + ")")
+        bar.dismissCloudHint()
+        check(bar.cloudHint === false && !cloudHint.visible, "dismiss hides the chip")
+        bar.onStatus(st)
+        check(!cloudHint.visible, "the dismissal is remembered for the session: the next /status does not bring it back")
+        bar.cloudHintDismissed = false
+        st.provider = "claude"
+        bar.onStatus(st)
+        check(bar.provider === "claude" && bar.cloudHint === false && !cloudHint.visible, "a cloud provider never shows the chip")
+        imageStage.start()
+    } }
+
+    // ---- image cards: the generate_image step -> card after the real `[ -f ]` check; missing file -> none; no duplicates
+    readonly property string imgPath: "/tmp/Pictures/Fab OS/askbar-test.png"     // HOME=/tmp inside the image; written by mkpng.py
+    readonly property string imgPrompt: "a red kite over a green hill at sunrise"
+    function imageTask(phase) {
+        var steps = [{ id: 700, task_id: 40, kind: "tool_call", name: "generate_image", input: JSON.stringify({ prompt: h.imgPrompt }),
+                       output: phase >= 2 ? JSON.stringify({ path: "~/Pictures/Fab OS/askbar-test.png", width: 640, height: 400, provider: "local", prompt: h.imgPrompt }) : "",
+                       risk: "LOW", decision: "auto-approved", narration: "Painting your picture now." }]
+        if (phase >= 2) {
+            steps.push({ id: 701, task_id: 40, kind: "tool_call", name: "generate_image", input: JSON.stringify({ prompt: "a second one" }),
+                         output: JSON.stringify({ path: "/tmp/Pictures/Fab OS/never-written.png", width: 640, height: 400, provider: "local", prompt: "a second one" }), risk: "LOW", decision: "auto-approved" })
+            steps.push({ id: 702, task_id: 40, kind: "final", name: "", input: "",
+                         output: "Here is your kite — saved to $HOME/Pictures/Fab OS/askbar-test.png. The second try (~/Pictures/Fab OS/never-written.png) did not come out.", risk: "", decision: "" })
+        }
+        return { id: 40, title: "Draw a kite", request: "Draw a red kite over a green hill", status: phase >= 2 ? "done" : "running", result: phase >= 2 ? "Here is your kite" : null, steps: steps, approvals: [], questions: [] }
+    }
+    function imageDelegate() { var ds = delegates(); for (var i = 0; i < ds.length; i++) if (ds[i].kind === "image") return ds[i]; return null }
+    Timer { id: imageStage; interval: 100; onTriggered: {
+        bar.resetConversation(); bar.rootTaskId = 40; bar.taskId = 40; bar.taskRequest = "Draw a red kite over a green hill"
+        convo.append(bar.row({ kind: "user", key: "u40", text: bar.taskRequest, status: "request" }))
+        bar.panelMode = "open"
+        bar.ingest(imageTask(1))
+        check(kinds() === "user,tools,step" && rowAt(2).running === "Creating an image" && rowAt(2).icon === "image-x-generic" && rowAt(2).subtitle === h.imgPrompt, "generate_image step card while it runs: 'Creating an image' + the prompt (" + kinds() + ")")
+        var finalText = imageTask(2).steps[2].output
+        var found = Agent.imagePathsInText(finalText)
+        check(found.length === 2 && found[0] === "$HOME/Pictures/Fab OS/askbar-test.png" && found[1] === "~/Pictures/Fab OS/never-written.png", "the path regex under the QML engine finds both mentions: " + JSON.stringify(found))
+        var s0 = bar.serial
+        bar.ingest(imageTask(2))
+        check(kinds() === "user,tools,step,step,assistant", "done: the step flips, the final text lands; no card yet — the file check is asked first (" + kinds() + ")")
+        check(bar.serial === s0 + 4, "four mentions (two steps, two paths in the text) => four `[ -f ]` checks (" + (bar.serial - s0) + "; offered: " + JSON.stringify(Object.keys(bar.imageSeen)) + ")")
+        imageWait.start()
+    } }
+    Timer { id: imageWait; interval: 1500; onTriggered: {   // four sh processes have answered by now
+        var imgs = 0, idx = -1
+        for (var i = 0; i < convo.count; i++) if (rowAt(i).kind === "image") { imgs++; idx = i }
+        check(imgs === 1 && idx === convo.count - 1, "exactly ONE image card: the real file once (step + text mention), the missing file none (" + kinds() + ")")
+        check(idx >= 0 && rowAt(idx).text === h.imgPath && rowAt(idx).subtitle === h.imgPrompt && rowAt(idx).name === "local" && rowAt(idx).title === "640 × 400", "card row: absolute path (~ expanded by the shell), caption = prompt, provider, size")
+        check(Object.keys(bar.imagePending).length === 0, "no file check left pending")
+        imageRender.start()
+    } }
+    Timer { id: imageRender; interval: 900; onTriggered: {   // thumbnail decoded + faded in
+        var d = imageDelegate(), c = d && d.children[0] ? d.children[0].item : null
+        check(c !== null && c.ready === true && c.broken === false, "thumbnail decoded (status Ready)")
+        check(c !== null && c.thumbH <= 320 && c.thumbW <= d.width && c.radius === 16, "thumbnail ≤ 320 px tall inside the row (" + (c ? c.thumbW + "x" + c.thumbH : "-") + "), card radius 16")
+        check(c !== null && Math.abs(c.thumbW / c.thumbH - 1.6) < 0.02, "aspect ratio kept (640x400)")
+        check(c !== null && c.painted === true, "the Canvas painted the rounded thumbnail")
+        check(d !== null && d.width <= list.width - list.gutter + 0.5, "card clear of the scrollbar gutter")
+        list.positionViewAtEnd()
+        thumbRect.start()
+    } }
+    Timer { id: thumbRect; interval: 150; onTriggered: {   // after positionViewAtEnd settled: where the thumbnail sits in the panel render
+        var d = imageDelegate(), c = d && d.children[0] ? d.children[0].item : null
+        var p = c.mapToItem(panel, c.children[1].x, c.children[1].y)          // children[1] = the hidden Image; the Canvas shares its box
+        console.log("THUMB " + Math.round(p.x) + " " + Math.round(p.y) + " " + Math.round(c.thumbW) + " " + Math.round(c.thumbH))
+        panel.grabToImage(function (r) { r.saveToFile("/out/askbar-image-card.png"); console.log("PASS grabbed image-card (panel with the generated-image card)"); viewerStage.start() })
+    } }
+    Timer { id: viewerStage; interval: 100; onTriggered: {
+        var d = imageDelegate()
+        check(viewer.active === false && viewer.item === null, "no viewer window before the tap")
+        d.openImage(d.text, d.subtitle, d.name)                       // what the card's MouseArea emits on a tap
+        check(viewer.active && viewer.item !== null && viewer.item.visible, "tap: the enlarge viewer (PlasmaCore.Dialog) opens")
+        var vi = viewer.item.viewer
+        check(vi.width === Math.round(Screen.width * 0.8) && vi.height === Math.round(Screen.height * 0.8), "viewer is 80 % of the screen (" + vi.width + "x" + vi.height + " of " + Screen.width + "x" + Screen.height + ")")
+        check(vi.path === h.imgPath && vi.prompt === h.imgPrompt && vi.provider === "local", "viewer carries path, prompt and provider")
+        viewerWait.start()
+    } }
+    Timer { id: viewerWait; interval: 1500; onTriggered: {   // the binary probe (one sh) and the big decode have finished
+        var vi = viewer.item.viewer
+        check(vi.imageReady && vi.big.status === Image.Ready, "the big picture decoded in the viewer (" + vi.sizeLabel + ")")
+        check(vi.binsKnown, "the binary probe answered: " + JSON.stringify(vi.bins))
+        check(vi.hasWallpaper && vi.wallBtn.active, "plasma-apply-wallpaperimage is in the image: Set as wallpaper enabled")
+        check(vi.hasOpen && vi.openBtn.active && vi.bins["gwenview"] === true, "gwenview is in the image: Open in Fab Photos enabled")
+        check(!vi.hasCopy && !vi.copyBtn.active && vi.copyBtn.reason.indexOf("wl-clipboard") >= 0 && Math.abs(vi.copyBtn.opacity - 0.4) < 0.02, "no wl-copy in the image: Copy image disabled at 40 % with the reason (" + vi.copyBtn.reason + ")")
+        check(vi.saveBtn.active && vi.regenBtn.active && vi.closeBtn !== null, "Save as, Regenerate and Close are present and live")
+        check(vi.fileDialogReady === true, "QtQuick.Dialogs FileDialog loaded for Save as")
+        check(vi.activeFocus === true, "the viewer holds keyboard focus (Esc reaches its handler)")
+        vi.saveCopy()                                                  // the Save as FALLBACK path, for real: a copy into ~/Pictures
+        vi.grabToImage(function (r) { r.saveToFile("/out/askbar-image-viewer.png"); console.log("PASS grabbed image-viewer (80 % dialog: picture on the scrim + control row)"); saveWait.start() })
+    } }
+    Timer { id: saveWait; interval: 900; onTriggered: {
+        var vi = viewer.item.viewer
+        check(vi.toast.indexOf("Saved to /tmp/Pictures/askbar-test") === 0, "Save as fallback copied the file into ~/Pictures and says where (" + vi.toast + ")")
+        bar.daemonUp = true; bar.configured = true; bar.aiEnabled = true
+        var s0 = bar.serial
+        vi.regenBtn.clicked()
+        check(!viewer.active && viewer.item === null && bar.viewerImage === null, "Regenerate closes the viewer")
+        check(bar.sending && bar.pendingRequest === "regenerate the image with the same prompt" && bar.serial === s0 + 1, "…and posts the follow-up 'regenerate the image with the same prompt'")
+        check(bar.followUp === true && bar.rootTaskId === 40, "the follow-up threads under root task 40 (parent_id)")
+        bar.openImage(h.imgPath, h.imgPrompt, "local")
+        check(viewer.active && viewer.item.visible, "the viewer opens again from a card")
+        viewer.item.viewer.closeRequested()                            // what Close and the Esc handler emit
+        check(!viewer.active && viewer.item === null, "Close / Esc closes it")
+        regenWait.start()
+    } }
+    Timer { id: regenWait; interval: 1800; onTriggered: {
+        check(bar.sending === false && field.text === "regenerate the image with the same prompt", "no daemon here: the regenerate request came back to the bar like any failed submit")
+        field.text = ""
         console.log("HARNESS DONE failures=" + h.failures)
         killer.connectSource("kill -TERM $PPID 2>/dev/null || pkill -x plasmawindowed")
     } }
