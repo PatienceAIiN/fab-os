@@ -1,0 +1,14 @@
+brave-browser=1.95.101
+brave-keyring=1.20
+coreutils=9.7-3ubuntu2.1
+fabos-agent=1.0-4
+fabos-ai=1.0-4
+fabos-branding=1.0-4
+fabos-desktop=1.0-4
+fabos-desktop-meta=1.0-4
+fabos-feedback=1.0-4
+fabos-firstboot=1.0-4
+fabos-updates=1.0-4
+fabos-voice=1.0-4
+fabos-welcome=1.0-4
+libftdi1=1.6~rc1-1build1
