@@ -98,8 +98,8 @@ cores> --parallel 1 --cache-ram 256 --cache-reuse 256 --temp 0.2 --top-p 0.9 --r
 | Configuration | Peak RSS (`VmHWM`) | When |
 |---|---|---|
 | repacking on (≥ 6 GiB machines), 6 threads | **2.13 GB** | after the capability probe (json_schema plan, forced tool call, 200-token generation) |
-| `--no-repack` (the 4 GB machine), free-form loop | **1.86 GB** | after the full L1+L2 ladder (BEFORE run, the daemon of the pushed main) |
-| `--no-repack`, stepwise driver | **1.65 GB** | after the full L1+L2 ladder with the shipped driver (shorter prompts touch fewer KV cells) |
+\g<1>1.86 GB** | after the full L1+L2+held-out run (BEFORE run, the daemon of the pushed main) |
+\g<1>1.72 GB** | after the full L1+L2+held-out run with the shipped driver (shorter prompts touch fewer KV cells) |
 
 All of it stays under the unit's `MemoryHigh=2200M` / `MemoryMax=3G` (ADR-0011); 8192 tokens of context cost 224 MiB of
 KV cache (llama-server's own log line). Speed on the build host (6 physical cores): generation **31.9 tok/s with 6 threads
@@ -110,34 +110,42 @@ against 25.7 with all 12** (SMT), prompt processing 97 vs 121 tok/s — so the w
 strict JSON, one tool call per turn, each step verified (exit codes, files on disk, processes) and retried with the error
 shown, output a step produced saved to files by the driver itself (`save_result`) rather than retyped by the model, then a
 short summary — instead of the free-form loop the cloud providers use. Graded with the ladder's own checks
-(tests/ladder/checks.py, answer key the agent cannot see) on the ladder's own L1/L2 task texts, inside the image:
+(tests/ladder/checks.py, answer key the agent cannot see) on the ladder's own L1/L2 task texts, inside the image — **plus four
+held-out tasks** the harness generates itself (`tests/local-driver-test.py`, level `h`): the same shapes as l1-b/l2-a/l2-b/l2-c with
+other names (the `qty` column of two CSVs, `.log` → `.bak` where a `.md` file must stay, the *smallest* file under another tree, the
+count of another folder). They exist because the driver's executor prompt carries worked one-line examples of exactly the idioms
+l2-a, l2-b and l2-c need (a named-column CSV sum, `${f%.txt}.md`, `find -printf '%s %f'`) and the planner is told to count files with
+`list_dir` (l1-b) — so **the L1/L2 score is partly a test of those examples**, and the held-out row is the measurement the prompt
+cannot have memorised (ADR-0020 §3):
 
 | Task | What the ladder asks | before (2026-09-15) | after (2026-09-15) |
 |---|---|---|---|
-| l1-a | create ~/Ladder/one/hello.txt with the exact text | **FAIL** 52.2s · list_dir:1 · task done | **PASS** 36.1s · run_shell:1 · task done |
-| l1-b | count the files in /tmp/ladder/notes, answer FILE COUNT: n | **PASS** 46.2s · list_dir:1 · task done | **PASS** 22.1s · run_shell:1 · task done |
-| l1-c | open Fab Terminal and leave it running | **PASS** 46.2s · open_app:1 · task done | **PASS** 22.1s · open_app:1 · task done |
-| l1-d | today's date (ISO) as the first line of ~/Ladder/one/date.txt | **FAIL** 6.0s · read_file:1 · task done | **PASS** 30.1s · run_shell:1 write_file:1 · task done |
-| l1-e | copy /tmp/ladder/notes to ~/Ladder/notes-copy | **FAIL** 48.2s · open_app:1 · task done | **PASS** 58.3s · run_shell:2 · task done |
-| l1-f | open Fab Editor, type hello (open_app then type_text) | **FAIL** 6.0s · open_app:1 · task done | **PASS** 26.1s · open_app:1 type_text:1 · task done |
-| l2-a | sum the amount column of three CSVs into ~/Ladder/total.txt | **FAIL** 56.2s · read_file:1 · task done | **PASS** 64.4s · run_shell:1 write_file:2 · task done |
-| l2-b | rename every .txt in ~/Ladder/notes-copy to .md | **FAIL** 50.2s · list_dir:1 · task done | **FAIL** 60.4s · run_shell:3 · task failed |
-| l2-c | largest file under /tmp/ladder, base name into ~/Ladder/largest.txt | **FAIL** 48.2s · list_dir:1 · task done | **PASS** 24.4s · run_shell:1 · task done |
-| l2-d | open Fab Editor, type a sentence, save it as ~/Ladder/typed.txt | **FAIL** 58.3s · open_app:1 · task done | **PASS** 46.2s · open_app:1 type_text:1 write_file:1 · task done |
-| l2-e | web_fetch the daemon's /health, save the JSON unchanged | **FAIL** 58.3s · web_fetch:1 · task done | **PASS** 38.2s · web_fetch:1 write_file:1 · task done |
+| l1-a | create ~/Ladder/one/hello.txt with the exact text | **FAIL** 52.2s · list_dir:1 · task done | **PASS** 32.1s · run_shell:1 · task done |
+| l1-b | count the files in /tmp/ladder/notes, answer FILE COUNT: n | **PASS** 46.2s · list_dir:1 · task done | **PASS** 12.0s · run_shell:1 · task done |
+| l1-c | open Fab Terminal and leave it running | **PASS** 46.2s · open_app:1 · task done | **PASS** 14.0s · open_app:1 · task done |
+| l1-d | today's date (ISO) as the first line of ~/Ladder/one/date.txt | **FAIL** 6.0s · read_file:1 · task done | **PASS** 32.1s · run_shell:1 write_file:2 · task done |
+| l1-e | copy /tmp/ladder/notes to ~/Ladder/notes-copy | **FAIL** 48.2s · open_app:1 · task done | **PASS** 14.0s · run_shell:1 · task done |
+| l1-f | open Fab Editor, type hello (open_app then type_text) | **FAIL** 6.0s · open_app:1 · task done | **PASS** 26.1s · notify_user:1 open_app:1 type_text:1 · task done |
+| l2-a | sum the amount column of three CSVs into ~/Ladder/total.txt | **FAIL** 56.2s · read_file:1 · task done | **PASS** 44.1s · run_shell:1 write_file:2 · task done |
+| l2-b | rename every .txt in ~/Ladder/notes-copy to .md | **FAIL** 50.2s · list_dir:1 · task done | **PASS** 124.5s · run_shell:2 · task failed |
+| l2-c | largest file under /tmp/ladder, base name into ~/Ladder/largest.txt | **FAIL** 48.2s · list_dir:1 · task done | **PASS** 16.0s · run_shell:1 · task done |
+| l2-d | open Fab Editor, type a sentence, save it as ~/Ladder/typed.txt | **FAIL** 58.3s · open_app:1 · task done | **PASS** 54.2s · open_app:1 type_text:1 write_file:2 · task done |
+| l2-e | web_fetch the daemon's /health, save the JSON unchanged | **FAIL** 58.3s · web_fetch:1 · task done | **PASS** 50.2s · web_fetch:1 write_file:1 · task done |
 | l2-f | type a hi note in Fab Editor and mail it (needs a mail account) | SKIP (optional) | SKIP (optional) |
-| **Score** | L1 of 6 · L2 of 5 | **L1 2/6 · L2 0/5** | **L1 6/6 · L2 4/5** |
-| llama-server peak RSS (`VmHWM`) | after the whole run | 1.86 GB | 1.65 GB |
+| h-a | held-out: sum the qty column of two CSVs into ~/Ladder/qty-total.txt | — | **FAIL** 60.3s · run_shell:2 write_file:1 · task done |
+| h-b | held-out: rename every .log in ~/Ladder/logs-copy to .bak (a .md file stays) | — | **FAIL** 94.4s · run_shell:2 · task failed |
+| h-c | held-out: smallest file under /tmp/heldout/tree, base name into ~/Ladder/smallest.txt | — | **FAIL** 108.5s · run_shell:4 · task done |
+| h-d | held-out: count the files in /tmp/heldout/logs, answer FILE COUNT: n | — | **PASS** 24.2s · run_shell:1 · task done |
+| **Score** | L1 of 6 · L2 of 5 · held-out of 4 | **L1 2/6 · L2 0/5 · held-out not run** | **L1 6/6 · L2 5/5 · held-out 1/4** |
+| llama-server peak RSS (`VmHWM`) | after the whole run | 1.86 GB | 1.72 GB |
 
-What failed in the shipped run, in the checker's own words (`tests/ladder/checks.py`):
+What failed in the shipped run, in the checker's own words (`tests/ladder/checks.py`; `check_heldout()` in tests/local-driver-test.py for the held-out rows):
 
-- **l2-b** — 8 .txt files are still there: ['fact_alpha.txt', 'fact_beta.txt', 'fact_gamma.txt', 'note_01.txt', 'note_02.txt', 'note_03.txt'] (task status: failed)
+- **h-a** — qty-total.txt '0 0' does not contain the exact total 11059 (task status: done)
+- **h-b** — renamed set is ['app-01.log.bak', 'app-02.log.bak', 'app-03.log.bak', 'app-04.log.bak', 'app-05.log.bak', 'notes.md'], expected ['app-01.bak', 'app-02.bak', 'app-03.bak', 'app-04.bak', 'app-05.bak', 'notes.md'] (notes.md must stay) (task status: failed)
+- **h-c** — smallest.txt names ['big.bin'], expected only tiny.cfg (content: 'big.bin') (task status: done)
 
-The honest reading — **L1 6/6, L2 4/5** (2/11 before the driver; the cloud providers score 21/21 on the same checks): the stepwise driver turns a model that "did one thing and said done" into one that finishes short, concrete desktop tasks — in the shipped run it creates a folder and a file with the exact text, counts the files of a folder and answers in the asked form, opens Fab Terminal, writes today's date from the clock, copies a folder (source intact), opens Fab Editor and types where you can watch, sums a column across three CSV files, names the largest file under a tree, types a sentence into Fab Editor and saves it and fetches a local URL and saves the body unchanged — and, when it cannot, **fails with the step named** instead of claiming success. What still failed: l2-b (renames a folder of notes to another extension; the agent reported the failure itself). It is not a cloud model: a 1.5B model still needs the driver's deterministic checks to catch commands that exit 0 without doing the work, its plans need the request-derived repairs described in ADR-0020, and one run is a sample, not a guarantee — run-to-run variance at temperature 0.2 is real. Tasks took 22–64 s each. For hard tasks a cloud provider is one dropdown away. Rerun: `tests/local-driver-image.sh --label after --extra-args --no-repack`
-(this tree) and `--label before --agent-src build/baseline --llama-start build/baseline/llama-start.sh` after extracting
-the previous daemon and wrapper there (`git show <rev>:packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py >
-build/baseline/fabos_agentd.py`, same for `packages/fabos-ai/usr/lib/fabos/ai/llama-start.sh`); then
-`python3 tests/local-driver-table.py build/local-driver-before.json build/local-driver-after.json` renders the table.
+The honest reading — **L1 6/6, L2 5/5, held-out 1/4** (before the driver: L1 2/6, L2 0/5, held-out not run; the cloud providers score 21/21 on the ladder's checks): the stepwise driver turns a model that "did one thing and said done" into one that finishes short, concrete desktop tasks — in the shipped run it creates a folder and a file with the exact text, counts the files of a folder and answers in the asked form, opens Fab Terminal, writes today's date from the clock, copies a folder (source intact), opens Fab Editor and types where you can watch, sums a column across three CSV files, renames a folder of notes to another extension, names the largest file under a tree, types a sentence into Fab Editor and saves it, fetches a local URL and saves the body unchanged and counts the files of another folder (held-out) — and, when it cannot, **fails with the step named** instead of claiming success. What still failed: h-a (sums the qty column of two CSVs (held-out); the agent claimed success); h-b (renames .log files to .bak and leaves the .md file alone (held-out); the agent reported the failure itself); h-c (names the smallest file under another tree (held-out); the agent claimed success). Three of the five L2 tasks (l2-a, l2-b, l2-c) and l1-b match worked examples or hints in the driver's prompt, so the L1/L2 score is partly a test of those examples; the **held-out 1/4** row is the one the prompt cannot have memorised (ADR-0020 §3). It is not a cloud model: a 1.5B model still needs the driver's deterministic checks to catch commands that exit 0 without doing the work, its plans need the request-derived repairs described in ADR-0020, and one run is a sample, not a guarantee — run-to-run variance at temperature 0.2 is real. Tasks took 12–124 s each. For hard tasks a cloud provider is one dropdown away. Rerun: `tests/local-driver-image.sh --label after --extra-args --no-repack` (this tree; L1, L2 and the held-out tasks) and `--label before --agent-src build/baseline --llama-start build/baseline/llama-start.sh` after extracting the previous daemon and wrapper there (`git show <rev>:packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py > build/baseline/fabos_agentd.py`, same for `packages/fabos-ai/usr/lib/fabos/ai/llama-start.sh`); then `python3 tests/local-driver-docs.py` splices the table, the failures and this paragraph into the three documents.
 
 ## Minimum requirements
 

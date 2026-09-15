@@ -107,8 +107,8 @@ class Narration(unittest.TestCase):
         n = fa.narration_for
         self.assertEqual(n("open_app", {"app": "dolphin"}), "Opening Fab Files for you now.")
         self.assertEqual(n("open_app", {"app": "/usr/bin/kate", "args": ["x"]}), "Opening Fab Editor for you now.")
-        self.assertEqual(n("open_app", {"app": "brave-browser", "args": ["https://fabos.patienceai.in"]}), "Opening Brave for you now.")   # Brave replaced Firefox
-        self.assertEqual(fa.narration_done_for("open_app", {"app": "brave"}, {}), "Done, Brave is open.")
+        self.assertEqual(n("open_app", {"app": "firefox", "args": ["https://fabos.patienceai.in"]}), "Opening Firefox for you now.")   # Firefox is back (ADR-0018)
+        self.assertEqual(fa.narration_done_for("open_app", {"app": "firefox"}, {}), "Done, Firefox is open.")
         self.assertEqual(n("type_text", {"text": "hi"}), "Typing that in now.")
         self.assertEqual(n("run_shell", {"command": "ls -la"}), "Running a command for you.")
         self.assertEqual(n("run_shell", {"command": "ls -la"}, show_raw=True), "Running: ls -la")
@@ -151,9 +151,9 @@ class Narration(unittest.TestCase):
             # persona: on by default (indian-english), appended to the system prompt; "off" removes it
             sp = fa.build_system_prompt(st, "auto", [{"name": "Fab Files"}])
             self.assertIn("warm, helpful colleague from India", sp); self.assertIn("Shall I go ahead?", sp); self.assertTrue(sp.startswith("You are the Fab OS agent"))
-            # "Show your work": open the app first, type, save with write_file, then the follow-up (send_email) — and Brave, not Firefox
+            # "Show your work": open the app first, type, save with write_file, then the follow-up (send_email) — and Firefox, not Brave (ADR-0018)
             i_open, i_type, i_save, i_send = (sp.index(k) for k in ("(1) open_app", "(2) type_text", "(3) save with write_file", "(4) then do the follow-up"))
-            self.assertTrue(i_open < i_type < i_save < i_send); self.assertIn("Show your work.", sp); self.assertIn("brave-browser = Brave", sp); self.assertNotIn("Firefox", sp)
+            self.assertTrue(i_open < i_type < i_save < i_send); self.assertIn("Show your work.", sp); self.assertIn("firefox = Firefox", sp); self.assertNotIn("Brave", sp)
             self.assertIn("never ask for a password", sp)
             self.assertIn("Show your work", [t for t in fa.TOOLS if t["name"] == "type_text"][0]["description"]); self.assertNotIn("Brevo", json.dumps(fa.TOOLS))
             st.set_setting("ui.persona", "off")
@@ -850,9 +850,14 @@ class Daemon(unittest.TestCase):
         # test_25 proves none of it reaches a shell step.
         cls.agent_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); cls.agent_sock.bind(os.path.join(cls.tmp, "openssh_agent")); cls.agent_sock.listen(1)
         env = dict(os.environ, XDG_RUNTIME_DIR=cls.tmp, FABOS_AGENT_DATA=os.path.join(cls.tmp, "data"), XDG_CONFIG_HOME=os.path.join(cls.tmp, "cfg"),
-                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT="18790", HOME=os.path.join(cls.tmp, "home"), PATH="/usr/bin:/bin",
+                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT="18790", HOME=os.path.join(cls.tmp, "home"), PATH=os.path.join(cls.tmp, "bin") + ":/usr/bin:/bin",
                    ANTHROPIC_API_KEY="sk-ant-LEAKTEST-0000", MY_SERVICE_TOKEN="LEAKTEST-token", SSH_AUTH_SOCK=os.path.join(cls.tmp, "openssh_agent"))
         os.makedirs(env["HOME"]); cls.env = env
+        # wtype shim: there is no Wayland seat in a unit test; the text type_text would have typed is appended to typed.log (as tests/local-driver-image.sh does)
+        os.makedirs(os.path.join(cls.tmp, "bin")); cls.typed_log = os.path.join(cls.tmp, "typed.log")
+        with open(os.path.join(cls.tmp, "bin", "wtype"), "w") as f:
+            f.write('#!/bin/sh\n[ "$1" = "-k" ] && { printf "\\n" >> %s; exit 0; }\nprintf "%%s" "$*" >> %s\n' % (cls.typed_log, cls.typed_log))
+        os.chmod(os.path.join(cls.tmp, "bin", "wtype"), 0o755)
         cls.proc = subprocess.Popen([sys.executable, DAEMON], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for _ in range(50):
             try:
@@ -1411,9 +1416,26 @@ class Daemon(unittest.TestCase):
         self.assertFalse(os.path.exists(d)); self.assertIn("%s but it does not exist after the plan" % d, t["error"]); self.assertIn("looks like a folder", t["error"])
         self.assertTrue(any("nothing can be written there" in v["output"] for v in self.kinds(t, "verify", "outcome")), self.kinds(t, "verify"))
 
+    def test_33n_stepwise_write_a_note_shows_the_work(self):
+        """Owner's rule (6), show your work: a request to WRITE text the user will read is typed where they can watch, then saved — even
+        when the planner (the small model's habit) returns the bare write_file: plan_sanity puts open_app and type_text in front of it."""
+        path = os.path.join(self.env["HOME"], "Documents", "note.txt")
+        t = self.stepwise("stepwise: write a short note saying hi to Priya and save it as %s" % path)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["open_app", "type_text", "write_file"])
+        self.assertEqual(open(path).read(), "hi to Priya\n")
+        self.assertIn("hi to Priya", open(self.typed_log).read())                                              # the text really went through the keyboard path
+        notes = [v["output"] for v in self.kinds(t, "verify", "plan")]
+        self.assertTrue(any("added open_app and type_text before write_file" in n and "show your work" in n for n in notes), notes)
+        plan = [s for s in self.kinds(t, "assistant") if s["output"].startswith("Plan:")][0]["output"]
+        self.assertIn("1. [open_app] open Fab Editor (kate) with the file path %s" % path, plan); self.assertIn("2. [type_text]", plan); self.assertIn("3. [write_file]", plan)
+
     def test_33_status_reports_driver_and_network(self):
         st = self.cli("status"); self.assertEqual(st["driver"], "freeform")                        # the fake provider defaults to the cloud loop
         self.assertEqual(set(st["network"]), {"online", "target", "checked", "age_s"})
+        # every stepwise task so far (tests 26-33m, alphabetically before this one) named no web page or URL, so the daemon has never
+        # probed: /status reports the cached value only, and a poll is never a network request (README, legal/PRIVACY.md)
+        self.assertIsNone(st["network"]["online"], st["network"]); self.assertEqual(st["network"]["target"], "")
         self.cli("settings", "agent.driver", "stepwise")
         try:
             self.assertEqual(self.cli("status")["driver"], "stepwise"); self.assertEqual(self.cli("settings")["agent.driver"], "stepwise")
@@ -1469,6 +1491,24 @@ class StepwiseUnits(unittest.TestCase):
         self.assertEqual(fa.plan_sanity("Copy the folder /tmp/a to ~/b (file types unchanged)", plan), []); self.assertEqual(len(plan), 1)   # no open_app, no typing
         plan = [{"tool": "open_app", "goal": "open konsole"}]
         self.assertEqual(fa.plan_sanity("Open the Fab Terminal and leave it open", plan), []); self.assertEqual(len(plan), 1)
+        # show your work (owner's rule): a request to WRITE/COMPOSE text the user will read keeps its open_app/type_text steps although it
+        # has no open/type word, and a bare write_file plan gets open_app (with the file path) + type_text in front of it
+        note = "Write a short note saying hi to Priya and save it as ~/Documents/note.txt"
+        plan = [{"tool": "open_app", "goal": "open Fab Editor"}, {"tool": "type_text", "goal": "type the note"}, {"tool": "write_file", "goal": "save it to ~/Documents/note.txt"}]
+        self.assertEqual(fa.plan_sanity(note, plan), []); self.assertEqual([s["tool"] for s in plan], ["open_app", "type_text", "write_file"])
+        plan = [{"tool": "write_file", "goal": "write the letter to ~/Documents/landlord.txt"}]
+        notes = fa.plan_sanity("Write a letter to my landlord about the leaking tap and save it as ~/Documents/landlord.txt", plan)
+        self.assertEqual([s["tool"] for s in plan], ["open_app", "type_text", "write_file"]); self.assertEqual(len(notes), 1); self.assertIn("show your work", notes[0])
+        self.assertIn("with the file path ~/Documents/landlord.txt", plan[0]["goal"])
+        for txt in ("Create the folder ~/Ladder/one and, inside it, a file called hello.txt whose entire content is exactly this text: Hello",
+                    "Read today's date from this computer's own clock and write it in ISO form YYYY-MM-DD as the first line of ~/Ladder/one/date.txt.",
+                    "Add the amount column up across all three files and write only the grand total, as a plain integer, into ~/Ladder/total.txt",
+                    "Find the single largest file anywhere under /tmp/ladder and write just its file name into ~/Ladder/largest.txt",
+                    "Copy the folder /tmp/a to ~/b so that ~/b holds the same files"):
+            self.assertFalse(fa.COMPOSE_RE.search(txt.lower()), txt)                                                          # file operations: no window
+        for txt in ("Write a hi note and send it to x@example.com", "Compose a mail body thanking the team", "Draft a message to Ravi about Monday",
+                    "Write a Python script ~/Projects/a.py that prints hi", "write me a letter of two paragraphs"):
+            self.assertTrue(fa.COMPOSE_RE.search(txt.lower()), txt)
         # a repeated goal (case, spacing and a final full stop aside) is dropped, the first occurrence stays, the plan is never emptied
         plan = [{"tool": "run_shell", "goal": "copy the folder /tmp/a to ~/b"}, {"tool": "save_result", "goal": "Copy the  folder /tmp/a to ~/b."}, {"tool": "reply", "goal": "say done"}]
         notes = fa.plan_sanity("Copy the folder /tmp/a to ~/b", plan)
@@ -1486,6 +1526,13 @@ class StepwiseUnits(unittest.TestCase):
         self.assertIn("`rmdir`", fa.destructive_command_reason(copy, "sudo rmdir /tmp/x"))
         self.assertIsNone(fa.destructive_command_reason(copy, "cp -r /tmp/ladder/notes ~/Ladder/notes-copy"))
         self.assertIsNone(fa.destructive_command_reason(copy, "mkdir -p ~/x && echo hi > ~/x/rm.txt"))         # rm inside a name is not a command
+        self.assertIsNone(fa.destructive_command_reason(copy, "echo rename")); self.assertIsNone(fa.destructive_command_reason(copy, "cat f | grep mv"))   # a word IN a command is not a command word
+        self.assertIn("`--delete`", fa.destructive_command_reason(copy, "rsync -a --delete a/ b/")); self.assertIn("`--delete-after`", fa.destructive_command_reason(copy, "rsync -a --delete-after a/ b/"))
+        self.assertIn("`shutil.rmtree`", fa.destructive_command_reason(copy, "python3 -c 'import shutil; shutil.rmtree(\"a\")'"))
+        self.assertIn("`os.remove`", fa.destructive_command_reason(copy, "python3 -c \"import os; os.remove('a')\""))
+        self.assertIn("`rm`", fa.destructive_command_reason(copy, "find a -execdir rm {} \\;")); self.assertIn("`rm`", fa.destructive_command_reason(copy, "if true; then rm a; fi"))
+        self.assertIn("`rm`", fa.destructive_command_reason(copy, "time rm a")); self.assertIn("`rm`", fa.destructive_command_reason(copy, "$(rm -rf a)")); self.assertIn("`rm`", fa.destructive_command_reason(copy, "{ rm a; }"))
+        self.assertIsNone(fa.destructive_command_reason(copy, "ls --delete-me"))                                              # not an rsync flag
         self.assertIsNone(fa.destructive_command_reason("Rename every file that ends in .txt inside ~/x so it ends in .md", "for f in ~/x/*.txt; do mv \"$f\" \"${f%.txt}.md\"; done"))
         self.assertIsNone(fa.destructive_command_reason("Delete the folder ~/tmp-old", "rm -rf ~/tmp-old")); self.assertIsNone(fa.destructive_command_reason("Move a to b", "mv a b"))
         # plan_sanity drops a rename/move step the request never asked for; the plan is never emptied
@@ -1517,6 +1564,10 @@ class StepwiseUnits(unittest.TestCase):
         self.assertEqual(fa.expected_app("Open the Fab Terminal application so a terminal window is running"), "konsole")
         self.assertEqual(fa.expected_app("Type the word hello into a new Fab Editor window"), "kate"); self.assertEqual(fa.expected_app("open Fab Files"), "dolphin")
         self.assertIsNone(fa.expected_app("Copy the folder /tmp/a to ~/b")); self.assertIsNone(fa.expected_app("open Fab Editor and then the browser"))   # none / several
+        self.assertEqual(fa.expected_app("Open the browser and go to example.com"), "firefox"); self.assertEqual(fa.expected_app("Open Firefox"), "firefox")   # ADR-0018
+        self.assertEqual(fa.BROWSER, "firefox"); self.assertIn(fa.BROWSER, fa.APP_NAMES); self.assertNotIn("brave-browser", fa.APP_NAMES)
+        self.assertEqual(fa.step_check("open_app", {"app": "no-such-app-fabos"}, {"launched": "x"}, False)[1],
+                         "no-such-app-fabos is not running after open_app (is the name right? kate, konsole, dolphin, firefox)")
         self.assertTrue(fa.NO_FILES_RE.search("count the files. do not create or change any file.")); self.assertTrue(fa.NO_FILES_RE.search("without writing any files"))
         self.assertFalse(fa.NO_FILES_RE.search("create the file ~/a.txt")); self.assertFalse(fa.NO_FILES_RE.search("do not stop until the file exists"))
         self.assertTrue(fa.ANSWER_RE.search("count how many files are there")); self.assertTrue(fa.ANSWER_RE.search("end your reply with a line FILE COUNT: <n>"))
@@ -1547,12 +1598,17 @@ class StepwiseUnits(unittest.TestCase):
         self.assertIsNone(fa.plan_reject_reason("Add the amounts", [web[0], {"tool": "run_shell", "goal": "sum the column"}]))       # one local step: not rejected
         self.assertEqual(fa.plan_schema(["run_shell"], 4)["properties"]["steps"]["maxItems"], 4)
         plan = [{"tool": "web_fetch", "goal": "fetch the page"}, {"tool": "write_file", "goal": "write a summary to ~/s.txt"}]
-        self.assertEqual(fa.plan_sanity("Fetch http://x and write a two-line summary to ~/s.txt", plan), []); self.assertEqual(plan[1]["tool"], "write_file")   # no verbatim wording: untouched
+        notes = fa.plan_sanity("Fetch http://x and write a two-line summary to ~/s.txt", plan)
+        self.assertEqual([s["tool"] for s in plan], ["web_fetch", "open_app", "type_text", "write_file"]); self.assertEqual(len(notes), 1); self.assertIn("show your work", notes[0])   # no verbatim wording: write_file stays write_file; a summary is text the user reads
+        plan = [{"tool": "web_fetch", "goal": "fetch the page"}, {"tool": "write_file", "goal": "write the size to ~/s.txt"}]
+        self.assertEqual(fa.plan_sanity("Fetch http://x and write its size in bytes to ~/s.txt", plan), []); self.assertEqual([s["tool"] for s in plan], ["web_fetch", "write_file"])   # a value, not prose: untouched
 
     def test_goal_paths_and_result_rendering(self):
         self.assertEqual(fa.goal_paths("Write the date into ~/Ladder/one/date.txt (source: /tmp/ladder/notes); see http://127.0.0.1:8790/health and ~/Ladder/total.txt."),
                          ["~/Ladder/one/date.txt", "/tmp/ladder/notes", "~/Ladder/total.txt"])
         self.assertEqual(fa.goal_paths("count the regular files in the folder"), [])
+        self.assertEqual(fa.goal_paths("the largest file, name only, into ~/big.txt"), ["~/big.txt"]); self.assertEqual(fa.goal_paths("look in /tmp and /dev/null"), ["/dev/null"])   # ~/x counts; a bare /tmp does not
+        self.assertIn("~/big.txt = " + os.path.expanduser("~/big.txt"), fa.task_paths_line("write it into ~/big.txt")); self.assertEqual(fa.missing_goal_paths("write into ~/no-such-fabos-file.txt"), ["~/no-such-fabos-file.txt"])
         self.assertEqual(fa.missing_goal_paths("Copy /tmp to ~/no-such-dir-fabos/x"), ["~/no-such-dir-fabos/x"])
         self.assertEqual(fa.missing_goal_paths("Delete ~/no-such-dir-fabos/x"), []); self.assertEqual(fa.missing_goal_paths("Move ~/no-such-dir-fabos/x to ~/y"), [])
         self.assertEqual(fa.missing_goal_paths("Rename every .txt in ~/no-such-dir-fabos to .md"), []); self.assertEqual(fa.missing_goal_paths("List /tmp"), [])
@@ -1617,6 +1673,13 @@ class StepwiseUnits(unittest.TestCase):
         for must in ("ONE tool call", "Never say a step is done", "Show your work", "web_fetch", "run_shell", "write_file", "save_result", "open_app", "type_text", "Internet: ONLINE", "never need it", "Permission mode: auto", fa.HOME):
             self.assertIn(must, s)
         self.assertIn("Internet: OFFLINE", fa.local_system_prompt("ask", {"online": False})); self.assertIn("Internet: unknown", fa.local_system_prompt("ask", {"online": None}))
+        self.assertIn("Internet: not checked — this task names no web page or URL", fa.local_system_prompt("ask", dict(fa.NET_SKIPPED)))
+        self.assertIn("browser = firefox", s); self.assertIn("|firefox|", s); self.assertNotIn("brave", s.lower()); self.assertIn("firefox = the browser", fa.PLAN_SYSTEM.format(app="x", home="/h", browser=fa.BROWSER))   # ADR-0018
+        self.assertIn("t=sum(float(r['amount'])", s); self.assertIn("Show your work", fa.PLAN_SYSTEM); self.assertIn("WRITE or COMPOSE", fa.PLAN_SYSTEM)
+        # the held-out tasks of tests/local-driver-test.py (h-a..h-d) are named in no prompt: their row is the measurement the prompt cannot have memorised (ADR-0020 §3)
+        prompts = (fa.LOCAL_SYSTEM_PROMPT + fa.PLAN_SYSTEM + fa.CHECK_SYSTEM + fa.FINISH_SYSTEM).lower()
+        for w in ("qty", "stock-", ".log", ".bak", "smallest", "heldout", "logs-copy", "tiny.cfg"):
+            self.assertNotIn(w, prompts, w)
         self.assertLess(len(fa.PLAN_SYSTEM), 2500); self.assertIn("reply", fa.PLAN_SYSTEM)     # measured with the model tokenizer (build/tokens.sh, ADR-0020): ~4.2 chars per token, so ~550 tokens
         sch = fa.plan_schema(["run_shell", "reply"]); self.assertEqual(sch["properties"]["steps"]["items"]["properties"]["tool"]["enum"], ["run_shell", "reply"]); self.assertEqual(sch["properties"]["steps"]["maxItems"], fa.PLAN_MAX_STEPS)
 
@@ -1645,23 +1708,54 @@ class StepwiseUnits(unittest.TestCase):
             calls = []
             fa._net_probe = lambda host: calls.append(host) or True
             with fa._net_lock:
-                fa._net.update(online=None, target="", checked=0.0, refreshing=False)
-            d = fa.network_status(st, block=True); self.assertEqual((d["online"], d["target"], d["age_s"]), (True, "1.1.1.1:443", 0)); self.assertEqual(calls, ["1.1.1.1"])
+                fa._net.update(online=None, target="", checked=0.0)
+            self.assertEqual(fa.network_cached(), {"online": None, "target": "", "checked": 0.0, "age_s": None}); self.assertEqual(calls, [])   # /status's view: never a probe
+            d = fa.network_status(st); self.assertEqual((d["online"], d["target"], d["age_s"]), (True, "1.1.1.1:443", 0)); self.assertEqual(calls, ["1.1.1.1"])
             fa._net_probe = lambda host: calls.append(host) or False
-            d = fa.network_status(st, block=True); self.assertTrue(d["online"]); self.assertEqual(len(calls), 1)     # cached for NET_CACHE_S: no second probe
+            d = fa.network_status(st); self.assertTrue(d["online"]); self.assertEqual(len(calls), 1)             # cached for NET_CACHE_S: no second probe
+            self.assertTrue(fa.network_cached()["online"]); self.assertEqual(len(calls), 1)
             with fa._net_lock:
                 fa._net["checked"] = time.time() - fa.NET_CACHE_S - 1
-            d = fa.network_status(st, block=False); self.assertTrue(d["online"]); self.assertGreaterEqual(d["age_s"], fa.NET_CACHE_S)   # stale value returned at once
-            for _ in range(50):
-                if not fa._net.get("refreshing"): break
-                time.sleep(0.05)
-            self.assertEqual(len(calls), 2); self.assertFalse(fa.network_status(st, block=True)["online"])          # the background refresh landed
+            self.assertGreaterEqual(fa.network_cached()["age_s"], fa.NET_CACHE_S); self.assertEqual(len(calls), 1)   # stale, and still no probe from the cached view
+            self.assertFalse(fa.network_status(st)["online"]); self.assertEqual(len(calls), 2)                     # a task that needs the web refreshes it
+            with fa._net_lock:                                                                                     # a managed allow-list without the target: no probe, stale value returned
+                fa._net["checked"] = time.time() - fa.NET_CACHE_S - 1
+            saved_pol = fa.POLICY.data; fa.POLICY.data = dict(saved_pol, hosts_allowed=["example.com"])
+            try:
+                self.assertFalse(fa.network_status(st)["online"]); self.assertEqual(len(calls), 2)
+            finally:
+                fa.POLICY.data = saved_pol
+            self.assertTrue(fa.NET_SKIPPED["skipped"]); self.assertIsNone(fa.NET_SKIPPED["online"])
+            self.assertTrue(fa.WEB_WORDS_RE.search("use your web fetch tool on http://127.0.0.1:8790/health")); self.assertFalse(fa.WEB_WORDS_RE.search("copy the folder /tmp/a to ~/b"))
         finally:
             fa._net_probe = real
             if saved_env is not None: os.environ["FABOS_AGENT_PROVIDER"] = saved_env
             with fa._net_lock:
-                fa._net.update(online=None, target="", checked=0.0, refreshing=False)
+                fa._net.update(online=None, target="", checked=0.0)
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_net_probe_counts_an_http_level_failure_as_online(self):
+        """RemoteDisconnected / BadStatusLine arrive AFTER a TCP connect (the network is there); DNS, refused and timeouts are offline."""
+        import http.client as hc, ssl as _ssl
+
+        class Conn:
+            exc = None
+
+            def __init__(self, host, port, timeout=None): pass
+            def request(self, *a, **k): raise Conn.exc
+            def getresponse(self): pass
+            def close(self): pass
+
+        class Client: HTTPException, HTTPSConnection = hc.HTTPException, Conn
+
+        class Stub: client = Client
+        saved = fa.http; fa.http = Stub
+        try:
+            for exc, want in ((hc.RemoteDisconnected("closed"), True), (hc.BadStatusLine("x"), True), (_ssl.SSLError("cert"), True),
+                              (ConnectionRefusedError(), False), (socket.timeout(), False), (OSError("dns"), False), (ValueError("odd"), True)):
+                Conn.exc = exc; self.assertEqual(fa._net_probe("h"), want, exc)
+        finally:
+            fa.http = saved
 
     def test_openai_compat_complete_and_step_options(self):
         """The local provider sends temperature 0.2 + top_p 0.9, response_format json_schema for schema calls (falling back to the

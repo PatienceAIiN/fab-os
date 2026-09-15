@@ -37,7 +37,8 @@ the Google refresh token mail_oauth_refresh. The feedback relay (fabos-feedback)
 Every tool step carries a one-sentence "narration" (Indian English) that UIs display and the voice daemon speaks.
 Drivers (ADR-0020): cloud providers run the free-form tool loop; the built-in `local` model (or setting agent.driver=stepwise)
 runs PLAN -> one tool per turn -> VERIFY -> FINISH with a compact prompt written for a 1.5B model. /status carries `driver`
-and `network` ({online, target, checked, age_s}: one HTTPS HEAD to the provider host or 1.1.1.1:443, 2 s timeout, cached 60 s).
+and `network` ({online, target, checked, age_s}: the LAST probe's result, never a new one). The probe — one HTTPS HEAD to the provider
+host or 1.1.1.1:443, 2 s timeout, no payload — runs only when a stepwise task names a web page or URL (legal/PRIVACY.md).
 FABOS_AGENT_PROVIDER=fake runs a scripted provider for tests.
 """
 import base64, hashlib, hmac, io, json, os, re, secrets as _secrets, shlex, shutil, signal, socket, sqlite3, subprocess, sys, threading, time, uuid, wave, urllib.request, urllib.error, urllib.parse
@@ -394,7 +395,7 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}, "append": {"type": "boolean", "default": False}}, "required": ["path", "content"]}},
     {"name": "list_dir", "description": "List a directory.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
     {"name": "open_app",
-     "description": "Open a desktop application, file or URL in the user's graphical session (e.g. app='kate' (Fab Editor) with args=['/path/file.txt'], app='dolphin' (Fab Files), app='brave-browser' (Brave) with args=['https://...'], app='libreoffice' with args=['--writer'], app='xdg-open' with args=['https://...']). Returns immediately.",
+     "description": "Open a desktop application, file or URL in the user's graphical session (e.g. app='kate' (Fab Editor) with args=['/path/file.txt'], app='dolphin' (Fab Files), app='firefox' (Firefox) with args=['https://...'], app='libreoffice' with args=['--writer'], app='xdg-open' with args=['https://...']). Returns immediately.",
      "input_schema": {"type": "object", "properties": {"app": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}}, "required": ["app"]}},
     {"name": "type_text",
      "description": "Type text into the currently focused window through the Wayland virtual keyboard, so the user watches it appear. Use it right after open_app when the user asked you to write or compose something (note, letter, mail body, document, code) — see 'Show your work'. Save afterwards with write_file to the same path.",
@@ -1110,7 +1111,7 @@ How to work:
 - Show your work. When the user asks you to WRITE or COMPOSE something they will read (a note, a letter, a mail body, a document, code they will look at), do it where they can watch, in this order: (1) open_app the right app first — kate (Fab Editor) with the target file path for notes, text and code; libreoffice --writer for documents; a mail body is composed in Fab Editor too; (2) type_text the content so it appears on screen (delay_ms 1500 right after opening); (3) save with write_file to the same path (there is no keyboard-shortcut tool, so say "saving the file for you"); (4) then do the follow-up — send_email, run the code — and narrate every step in one short sentence. Pure file or system operations (copy, rename, count, install, configure) need no window: do them directly.
 - For coding tasks: create a project under ~/Projects/<name>, write the code and tests, run them with run_shell, fix failures, then summarise what was built and how it was verified.
 - For email: send_email to send (the user's own account, signed in under Settings → Mail; if it is not configured say so and stop, never ask for a password); check_email to read. To wait for a reply after sending, call schedule_watch(kind="email_reply", from_contains=<recipient address>, ...) so the user is notified and, if asked, a follow-up task runs automatically. Then finish; never poll in a loop.
-- Applications: every installed app (system, Flatpak, user) is available to you the moment it is installed. Use list_apps to discover names, launch commands and supported file types, open_app to launch them (kate = Fab Editor, dolphin = Fab Files, konsole = Fab Terminal, brave-browser = Brave for the web), and their CLI or D-Bus interfaces via run_shell (KDE apps: qdbus6 / kdialog / kioclient). Installed now ({app_count} apps): {app_names}.
+- Applications: every installed app (system, Flatpak, user) is available to you the moment it is installed. Use list_apps to discover names, launch commands and supported file types, open_app to launch them (kate = Fab Editor, dolphin = Fab Files, konsole = Fab Terminal, firefox = Firefox for the web), and their CLI or D-Bus interfaces via run_shell (KDE apps: qdbus6 / kdialog / kioclient). Installed now ({app_count} apps): {app_names}.
 - System administration (packages, services, kernel modules, sysctl, disks, files under /etc or /usr) is done with run_shell(as_root=true). It is CRITICAL risk: the user approves it unless their mode is bypass. Never put sudo in the command; as_root already runs it as root. Verify the result afterwards (e.g. systemctl is-active, dpkg -s, lsmod).
 - Every tool call passes a deterministic policy check (risk LOW/MEDIUM/HIGH/CRITICAL against the user's permission mode). A denied call returns an error: respect it, explain, and find an allowed way or stop.
 - Never fabosate results. Report exactly what happened, including partial failures. Keep the final message short: what was done, where outputs are, what the user should look at.
@@ -1153,7 +1154,7 @@ def _base(path):
 def _app_name(inp):
     app = str(inp.get("app") or "").split("/")[-1]
     return {"kate": "Fab Editor", "dolphin": "Fab Files", "konsole": "Fab Terminal", "xdg-open": "the default app", "open": "the default app",
-            "brave-browser": "Brave", "brave": "Brave", "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos",
+            "firefox": "Firefox", "firefox-esr": "Firefox", "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos",
             "okular": "Fab Documents", "kcalc": "Fab Calculator", "spectacle": "Fab Screenshot", "systemsettings": "Fab Settings"}.get(app, app or "the app")
 
 
@@ -1319,7 +1320,10 @@ STEP_RETRIES = 2                                          # attempts after the f
 RESULT_LIMIT_STEP, RESULT_LIMIT_EARLIER = 1500, 300       # chars of the last / earlier verified results in a stepwise turn
 CHECK_SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}, "reason": {"type": "string", "maxLength": 120}},
                 "required": ["ok", "reason"], "additionalProperties": False}
-# Network probe for /status.network and the local prompt's "Internet:" line: one HTTPS HEAD, 2 s, cached 60 s.
+# The desktop's browser executable (ADR-0018: Firefox, Mozilla's own build) — every prompt and check below derives from this one name.
+BROWSER = "firefox"
+# Network probe for the local prompt's "Internet:" line: one HTTPS HEAD, 2 s, cached 60 s — run ONLY when a stepwise task names a web
+# page or URL (a copy, a count or a note never touches the network; legal/PRIVACY.md). /status reports the cached value, never probes.
 NET_PROBE_HOST, NET_PROBE_PORT, NET_CACHE_S, NET_TIMEOUT_S = "1.1.1.1", 443, 60, 2.0
 _net = {"online": None, "target": "", "checked": 0.0}
 _net_lock = threading.Lock()
@@ -1336,20 +1340,20 @@ Tools and their JSON arguments:
 - run_shell {{"command": "<bash>"}} -> {{"exit_code", "stdout", "stderr"}}. Files, folders, copy, rename, count, sum, dates, downloads (curl).
 - write_file {{"path": "...", "content": "..."}} creates folders and writes the content exactly (nothing added).
 - save_result {{"path": "..."}} writes the previous tool call's output (stdout, fetched text, typed text) to that file unchanged; never retype data.
-- read_file {{"path"}} · list_dir {{"path"}} · web_fetch {{"url"}} -> the page text (needs internet) · open_app {{"app": "kate|konsole|dolphin|brave-browser|libreoffice", "args": ["/path"]}} · type_text {{"text": "...", "delay_ms": 1500}} types into the window opened in the previous step · notify_user {{"message"}} · send_email {{"to", "subject", "body"}}.
+- read_file {{"path"}} · list_dir {{"path"}} · web_fetch {{"url"}} -> the page text (needs internet) · open_app {{"app": "kate|konsole|dolphin|{browser}|libreoffice", "args": ["/path"]}} · type_text {{"text": "...", "delay_ms": 1500}} types into the window opened in the previous step · notify_user {{"message"}} · send_email {{"to", "subject", "body"}}.
 Worked examples (step -> the one call):
 - save the word hi into ~/Documents/a.txt -> write_file {{"path": "{home}/Documents/a.txt", "content": "hi\\n"}}
 - count the regular files in /tmp/x -> run_shell {{"command": "find /tmp/x -maxdepth 1 -type f | wc -l"}}
-- total of the column amount in a.csv and b.csv -> run_shell {{"command": "python3 -c \\"import csv,sys; print(sum(int(float(r['amount'])) for f in sys.argv[1:] for r in csv.DictReader(open(f))))\\" a.csv b.csv"}}
+- total of the column amount in a.csv and b.csv -> run_shell {{"command": "python3 -c \\"import csv,sys; t=sum(float(r['amount']) for f in sys.argv[1:] for r in csv.DictReader(open(f))); print(int(t) if t==int(t) else round(t,2))\\" a.csv b.csv"}}
 - rename every .txt in ~/x to .md (same base names) -> run_shell {{"command": "for f in ~/x/*.txt; do mv \"$f\" \"${{f%.txt}}.md\"; done"}}
 - the largest file under /tmp/x, name only, into ~/big.txt -> run_shell {{"command": "find /tmp/x -type f -printf '%s %f\\n' | sort -n | tail -1 | cut -d' ' -f2- > {home}/big.txt"}}
 - open Fab Editor and type hello -> open_app {{"app": "kate"}} ; then the next step -> type_text {{"text": "hello", "delay_ms": 1500}}
 - save what the previous step fetched or printed into ~/Documents/out.json -> save_result {{"path": "{home}/Documents/out.json"}}
-Apps: Fab Editor = kate, Fab Terminal = konsole, Fab Files = dolphin, browser = brave-browser. Permission mode: {mode}."""
+Apps: Fab Editor = kate, Fab Terminal = konsole, Fab Files = dolphin, browser = {browser}. Permission mode: {mode}."""
 
 PLAN_SYSTEM = """You plan a desktop task for the {app} agent as a short numbered list of steps; each step is done by ONE tool call. Home: {home}. The task's files and folders are on this computer.
-Tools: run_shell (a bash command: files, folders, copy, rename, count, sum, dates, curl), write_file (create a text file with exact content the user gave), save_result (write the previous step's output to a file exactly as it is), read_file, list_dir, web_fetch (fetch a URL's text), open_app (kate = Fab Editor, konsole = Fab Terminal, dolphin = Fab Files, brave-browser, libreoffice), type_text (type into the app opened in the previous step), send_email, notify_user, reply (the final answer text, only when the user asked a question or for a report line).
-Rules: as few steps as possible; ONE run_shell step when a command does the whole job, including writing a computed value into a file with '>' (dates: date +%F; copying (cp — the source stays), renaming, largest file: find/cp/mv/sort; a column total in CSV files: python3 with the csv module by column name). To count or list the files of a folder use list_dir: it returns the total and the names. Use web_fetch only when the task names a web page or URL; never invent a URL. Tool names are not shell commands. If the user names the tools or the order (open X, then type Y), plan exactly those steps in that order. Each step does one thing: web_fetch and read_file only return text, so saving what they return is a separate save_result step right after. write_file is for text the user gave literally; save_result for output a previous step produced. When the user wants to watch text being written or asks to open an app and type: open_app, then type_text, then write_file if it must be saved. No step for checking: verification is automatic. Never create a file the task does not name; a count, a question or a report line ends with a reply step, not a file. Do not invent facts, values or paths. Do not answer the task yourself.
+Tools: run_shell (a bash command: files, folders, copy, rename, count, sum, dates, curl), write_file (create a text file with exact content the user gave), save_result (write the previous step's output to a file exactly as it is), read_file, list_dir, web_fetch (fetch a URL's text), open_app (kate = Fab Editor, konsole = Fab Terminal, dolphin = Fab Files, {browser} = the browser, libreoffice), type_text (type into the app opened in the previous step), send_email, notify_user, reply (the final answer text, only when the user asked a question or for a report line).
+Rules: as few steps as possible; ONE run_shell step when a command does the whole job, including writing a computed value into a file with '>' (dates: date +%F; copying: cp, the source stays; a column total in CSV files: python3's csv module by column name). To count or list the files of a folder use list_dir: it returns the total and the names. Use web_fetch only when the task names a web page or URL; never invent a URL. Tool names are not shell commands. If the user names the tools or the order (open X, then type Y), plan exactly those steps in that order. Each step does one thing: web_fetch and read_file only return text, so saving what they return is a separate save_result step right after. write_file is for text the user gave literally; save_result for output a previous step produced. Show your work: when the user asks to WRITE or COMPOSE text they will read (a note, a letter, a mail body, a message, a document, code) or wants to watch it typed: open_app kate with the file path, then type_text, then write_file the same text to that path. Pure file or system operations (copy, rename, count, a value into a file) need no window. No step for checking: verification is automatic. Never create a file the task does not name; a count, a question or a report line ends with a reply step, not a file. Do not invent facts, values or paths. Do not answer the task yourself.
 Example — "How big is ~/Pictures? Reply SIZE: <bytes>" -> {{"steps": [{{"tool": "run_shell", "goal": "print the total size of ~/Pictures in bytes"}}, {{"tool": "reply", "goal": "SIZE: the number printed"}}]}}
 Return only JSON: {{"steps": [{{"tool": "...", "goal": "what the step must achieve, in words, with the exact paths and values — never a command"}}]}}"""
 
@@ -1407,46 +1411,49 @@ def _net_probe(host):
         c.getresponse()
         c.close()
         return True
-    except ssl.SSLError:
-        return True                              # the socket connected; only the certificate/protocol disagreed
+    except (ssl.SSLError, http.client.HTTPException):
+        return True                              # the socket connected; only the certificate, the protocol or the HTTP answer disagreed (RemoteDisconnected, BadStatusLine)
     except (OSError, socket.timeout):
         return False                             # DNS failure, unreachable, refused, timed out
     except Exception:
         return True                              # a malformed HTTP answer still came over the network
 
 
-def network_status(store=None, block=True):
-    """{"online": bool|None, "target": "host:443", "checked": epoch, "age_s": n}. Cached NET_CACHE_S seconds. With block=False a
-    stale value is returned at once and refreshed in the background (the UIs poll /status often; a task waits for the truth)."""
+def network_cached():
+    """The LAST probe's result without touching the network: {"online": bool|None, "target": "host:443", "checked": epoch, "age_s": n}
+    (online None = never probed). What /status reports — the UIs poll it every few seconds, and a poll must never be a network request."""
     with _net_lock:
-        now = time.time()
-        fresh = _net["online"] is not None and now - _net["checked"] < NET_CACHE_S
-        if fresh or (not block and _net.get("refreshing")):
-            d = {k: _net[k] for k in ("online", "target", "checked")}
-            d["age_s"] = int(now - _net["checked"]) if _net["checked"] else None
-            return d
-        _net["refreshing"] = True
-    host = net_probe_target(store)
-
-    def probe():
-        online = _net_probe(host)
-        with _net_lock:
-            _net.update(online=online, target="%s:%d" % (host, NET_PROBE_PORT), checked=time.time(), refreshing=False)
-    if block:
-        probe()
-        return network_status(store, block=False)
-    with _net_lock:                                  # snapshot the stale value BEFORE the refresh starts (it may land at once)
         d = {k: _net[k] for k in ("online", "target", "checked")}
-        d["age_s"] = int(now - _net["checked"]) if _net["checked"] else None
-    threading.Thread(target=probe, daemon=True, name="net-probe").start()
+    d["age_s"] = int(time.time() - d["checked"]) if d["checked"] else None
     return d
+
+
+def network_status(store=None):
+    """Probe once (one HTTPS HEAD, NET_TIMEOUT_S, no payload) unless the cached value is younger than NET_CACHE_S, and return it.
+    Called ONLY at the start of a stepwise task whose request names a web page or URL (the only tasks web_fetch can appear in);
+    a managed computer's hosts_allowed list binds the probe as it binds web_fetch (no probe when the target is not allowed)."""
+    d = network_cached()
+    if d["online"] is not None and d["age_s"] is not None and d["age_s"] < NET_CACHE_S:
+        return d
+    host = net_probe_target(store)
+    if not POLICY.host_allowed(host):
+        return d
+    online = _net_probe(host)
+    with _net_lock:
+        _net.update(online=online, target="%s:%d" % (host, NET_PROBE_PORT), checked=time.time())
+    return network_cached()
+
+
+NET_SKIPPED = {"online": None, "target": "", "checked": 0.0, "age_s": None, "skipped": True}     # the task names no web page or URL: no probe
 
 
 def local_system_prompt(mode, net):
     online = net.get("online")
     line = ("ONLINE — web_fetch works, but only for tasks that name a web page or URL; the clock, files, folders and apps are local and never need it"
-            if online else "OFFLINE right now (no web_fetch; the clock, files, folders and apps still work)" if online is False else "unknown")
-    return LOCAL_SYSTEM_PROMPT.format(app=APP, user=os.environ.get("USER", "user"), home=HOME, date=datetime.now().strftime("%Y-%m-%d"), net=line, mode=mode)
+            if online else "OFFLINE right now (no web_fetch; the clock, files, folders and apps still work)" if online is False
+            else "not checked — this task names no web page or URL, so nothing in it needs the internet; the clock, files, folders and apps are local" if net.get("skipped")
+            else "unknown")
+    return LOCAL_SYSTEM_PROMPT.format(app=APP, user=os.environ.get("USER", "user"), home=HOME, date=datetime.now().strftime("%Y-%m-%d"), net=line, mode=mode, browser=BROWSER)
 
 
 def parse_plan(text, allowed):
@@ -1514,7 +1521,7 @@ def step_check(tool, inp, out, err):
             for args in (["pgrep", "-x", name], ["pgrep", "-f", name]):
                 if subprocess.run(args, capture_output=True).returncode == 0:
                     return True, "%s is running" % name
-            return False, "%s is not running after open_app (is the name right? kate, konsole, dolphin, brave-browser)" % name
+            return False, "%s is not running after open_app (is the name right? kate, konsole, dolphin, %s)" % (name, BROWSER)
         return True, "launched"
     if tool == "type_text":
         n = int(out.get("typed_chars") or 0)
@@ -1533,16 +1540,21 @@ def step_check(tool, inp, out, err):
     return True, "done"
 
 
-GOAL_PATH_RE = re.compile(r"(?<![\w:/])(~?/[\w.@+-]+(?:/[\w.@+-]+)+)")     # ~/Ladder/one/date.txt, /tmp/ladder/notes — not URLs, not bare names
+GOAL_PATH_RE = re.compile(r"(?<![\w:/])(~/[\w.@+-]+(?:/[\w.@+-]+)*|/[\w.@+-]+(?:/[\w.@+-]+)+)")   # ~/big.txt, ~/Ladder/one/date.txt, /tmp/ladder/notes — not URLs, not /tmp alone, not bare names
 NO_FILES_RE = re.compile(r"\b(do not|don't|never|without) (create|creating|change|changing|modify|modifying|write|writing|touch|touching|alter|altering)\b[^.]{0,40}\bfiles?\b")
 ANSWER_RE = re.compile(r"(how many|how much|what is|which |tell me|end your (reply|answer)|reply with|answer with|report the|\?)")
 WEB_WORDS_RE = re.compile(r"(https?://|www\.|\b(web|url|page|site|website|online|internet|download|fetch|http)\b)")
 OPEN_WORDS_RE = re.compile(r"\b(open|opens|typ(e|es|ed|ing)|window|editor|terminal|browser|app|application|watch|show|screen)\b")
+# The owner's show-your-work rule in the SYSTEM_PROMPT's own words: text the user will READ (a note, a letter, a mail body, a message,
+# a document, code) that the request asks to write, compose or draft is typed in Fab Editor where they can watch, then saved. A verb and a
+# content noun together — "write the total into total.txt" or "create a file whose content is X" are file operations and stay windowless.
+COMPOSE_RE = re.compile(r"\b(write|writes|writing|compose|composes|composing|draft|drafts|drafting|pen|jot down)\b(?:(?!\binto\b)[^.;]){0,60}?"
+                        r"\b(note|notes|letter|letters|mail|e-?mail|message|memo|document|essay|poem|story|paragraph|summary|report|reply|body|code|script|program)\b")
 SAVE_VERBATIM_RE = re.compile(r"\b(unchanged|exactly as|as[- ]is|verbatim|without (any )?changes?|what (it|you) (got|returned|fetched)|the (json|text|body|output) you get)\b")
 # The desktop's brand names -> the executable open_app must start. When the task names exactly one of them, an open_app step
 # that starts something else is a failed step (measured: "Open the Fab Terminal" opened dolphin).
 APP_NAMES = {"konsole": ("fab terminal", "terminal", "konsole"), "kate": ("fab editor", "text editor", "kate"),
-             "dolphin": ("fab files", "file manager", "dolphin"), "brave-browser": ("browser", "brave")}
+             "dolphin": ("fab files", "file manager", "dolphin"), BROWSER: ("browser", BROWSER)}
 
 
 def expected_app(request):
@@ -1559,9 +1571,15 @@ GOAL_DELETE_RE = re.compile(r"\b(delete|remove|rm|erase|clean|clear|unlink|trash
 CHANGE_WORDS_RE = re.compile(r"\b(delete|deletes|deleting|remove|removes|removing|rm|erase|erasing|clean|cleans|cleaning|clear|clears|clearing|unlink|trash|"
                              r"empty|empties|purge|move|moves|moving|mv|rename|renames|renaming|replace|replaces|replacing|overwrite|overwrites|overwriting|"
                              r"tidy|sort out|organi[sz]e|get rid of|throw away|discard)\b")
-# The command words that move, rename or delete, as the first word of a simple command (after ;, &&, |, (, a backtick, sudo or
-# xargs), plus find's -delete and -exec mv/rm.
-DESTRUCTIVE_CMD_RE = re.compile(r"(?:^|[\s;&|(`])(?:sudo\s+|xargs\s+(?:-\S+\s+)*)?(mv|rm|rmdir|shred|unlink|rename)(?=\s|$)|\s(-delete)(?=\s|$)|-exec\s+(mv|rm)\s")
+# The command words that move, rename or delete, as the FIRST word of a simple command (at the start, after ; & | ( ` { $( or the
+# keywords do/then/else, optionally behind sudo, xargs, nice, time, command or env) — `echo rename` is not a command; plus find's
+# -delete / -exec[dir] mv|rm, rsync's --delete / --remove-source-files, and Python's shutil.rmtree/move and os.remove/unlink/rename/rmdir.
+# A word list, not a parser: the common forms (ADR-0020 says so); the risk classifier and the sandbox stay in front of everything else.
+DESTRUCTIVE_CMD_RE = re.compile(r"(?:^|[;&|(`{]|\$\(|\b(?:do|then|else)\s)\s*(?:sudo\s+(?:-\S+\s+)*|xargs\s+(?:-\S+\s+|\d+\s+)*|nice\s+(?:-n\s*\d+\s+)?|time\s+|command\s+|env\s+(?:\S+=\S*\s+)*)?"
+                                r"(mv|rm|rmdir|shred|unlink|rename)(?=\s|$)"
+                                r"|\s(-delete|--delete(?:-(?:before|after|during|delay|excluded))?|--remove-source-files)(?=\s|$)"
+                                r"|-exec(?:dir)?\s+(mv|rm)\s"
+                                r"|\b(shutil\.(?:rmtree|move)|os\.(?:remove|unlink|rename|renames|replace|rmdir|removedirs))\s*\(")
 # A plan step whose own goal renames, moves or deletes (dropped when the request never asks for that).
 PLAN_CHANGE_RE = re.compile(r"\b(rename|renames|renaming|move|moves|moving|delete|deletes|deleting|remove|removes|removing|erase|purge|trash|rm|mv)\b")
 # "Rename every file that ends in .txt inside ~/x so it ends in .md": the two extensions and the folders, for a deterministic
@@ -1580,7 +1598,7 @@ def destructive_command_reason(request, command):
     m = DESTRUCTIVE_CMD_RE.search(command or "")
     if not m:
         return None
-    word = m.group(1) or m.group(2) or m.group(3)
+    word = next(g for g in m.groups() if g)
     return ("the task never asks to move, rename or delete anything, so `%s` may not run here (it would change or lose the user's files);"
             " do the step with cp, mkdir, cat or a > redirect instead" % word)
 
@@ -1681,7 +1699,17 @@ def plan_sanity(request, plan):
                 if s not in keep:
                     notes.append("dropped step %d [%s]: it would rename, move or delete, which the task never asks for (%s)" % (i + 1, s["tool"], s["goal"][:80]))
             plan[:] = keep
+    compose = COMPOSE_RE.search(low) is not None
     tools = [s["tool"] for s in plan]
+    if compose and "open_app" not in tools and "write_file" in tools and len(plan) + 2 <= PLAN_MAX_STEPS:
+        # Show your work (owner's rule): text the user asked to have written for them is typed where they can watch, then saved —
+        # the small model plans the bare write_file; the window and the typing go in front of it.
+        i = tools.index("write_file")
+        paths = goal_paths(plan[i]["goal"]) or goal_paths(request)
+        plan.insert(i, {"tool": "open_app", "goal": "open Fab Editor (kate)%s so the user can watch the text being written" % ((" with the file path " + paths[0]) if paths else "")})
+        plan.insert(i + 1, {"tool": "type_text", "goal": "type the text the user asked for into the editor window opened in the previous step"})
+        notes.append("added open_app and type_text before write_file: the user asked for text they will read, so it is typed where they can watch (show your work)")
+        tools = [s["tool"] for s in plan]
     if re.search(r"\btyp(e|es|ed|ing)\b", low) and "open_app" in tools and "type_text" not in tools and len(plan) < PLAN_MAX_STEPS:
         i = tools.index("open_app")
         plan.insert(i + 1, {"tool": "type_text", "goal": "type the text the user asked for into the window opened in the previous step"})
@@ -1694,10 +1722,11 @@ def plan_sanity(request, plan):
             notes.append("dropped %d file-writing step(s): the task says not to create or change files" % (len(plan) - len(keep)))
             plan[:] = keep
     # No URL or web word in the task: web_fetch has no business in the plan (measured: "Fetch the content of the 'list.txt' file" for
-    # a local folder). No open/type/window word: neither have open_app / type_text. Never empties the plan.
-    for tools_out, rx, why in (({"web_fetch"}, WEB_WORDS_RE, "the task names no web page or URL"),
-                               ({"open_app", "type_text"}, OPEN_WORDS_RE, "the task never asks to open an app or to type")):
-        if not rx.search(low):
+    # a local folder). No open/type/window word AND nothing to write or compose for the user to read (a pure file or system
+    # operation: copy, count, a computed value into a file): neither have open_app / type_text. Never empties the plan.
+    for tools_out, keep_if, why in (({"web_fetch"}, WEB_WORDS_RE.search(low), "the task names no web page or URL"),
+                                    ({"open_app", "type_text"}, OPEN_WORDS_RE.search(low) or compose, "the task never asks to open an app, to type, or to write text the user will read")):
+        if not keep_if:
             keep = [s for s in plan if s["tool"] not in tools_out]
             if keep and len(keep) < len(plan):
                 notes.append("dropped %d %s step(s): %s" % (len(plan) - len(keep), "/".join(sorted(tools_out)), why))
@@ -2105,6 +2134,12 @@ class FakeProvider:
             return [("run_shell", "compute the answer", {"command": "echo 42"}, None)]          # never writes the file the request names
         if "stepwise: type into the editor" in low:
             return [("open_app", "open Fab Editor", {"app": "kate"}, None), ("type_text", "type hello", {"text": "hello", "delay_ms": 100}, None)]
+        m = re.search(r"stepwise: write a short note saying (.+?) and save it as (\S+)", req, re.I)
+        if m:                                                                       # show your work: the window (a stand-in process) and the typing come before the file
+            text, path = m.group(1), m.group(2)
+            return [("open_app", "open Fab Editor with the file path %s" % path, {"app": "sleep", "args": ["8"]}, None),
+                    ("type_text", "type the note into the editor", {"text": text, "delay_ms": 100}, None),
+                    ("write_file", "save the note to %s" % path, {"path": path, "content": text + "\n"}, None)]
         return [("run_shell", "show the system", {"command": "uname -a"}, None)]
 
     def _stepwise_turn(self, text, tools=()):
@@ -2155,6 +2190,8 @@ class FakeProvider:
                 steps = steps + [{"tool": "save_result", "goal": steps[0]["goal"].upper() + "."}]
             if "copy folder" in req.lower():                                                      # the model's habit: a "rename the copied folder" step after the cp (measured: it ran mv on the source)
                 steps = steps + [{"tool": "run_shell", "goal": "Rename the copied folder to its final name"}]
+            if "write a short note" in req.lower():                                                 # the model's habit: the bare write_file, no window, no typing
+                steps = [st for st in steps if st["tool"] == "write_file"]
             if "count files in" in req.lower() and "do not create" in req.lower():   # the model's habit: an answer-only task planned as run_shell + save_result, no reply
                 steps = [steps[0], {"tool": "save_result", "goal": "save the count to /tmp/count.txt"}]
             return json.dumps({"steps": steps})
@@ -2640,7 +2677,7 @@ class Agent:
     # ---- the small-model driver (ADR-0020): PLAN -> EXECUTE one tool per turn -> VERIFY -> FINISH
     def _plan(self, tid, prov, request, net, usage, tools):
         allowed = [t for t in STEP_TOOLS if t == "reply" or any(x["name"] == t for x in tools) or (t == "save_result" and any(x["name"] == "write_file" for x in tools))]
-        system = PLAN_SYSTEM.format(app=APP, net="online" if net.get("online") else "offline" if net.get("online") is False else "unknown", home=HOME)
+        system = PLAN_SYSTEM.format(app=APP, home=HOME, browser=BROWSER)
         pl = task_paths_line(request)
         user = "Task from the user:\n" + request.strip() + ("\n" + pl if pl else "") + "\n\nReturn the JSON plan."
         why = None
@@ -2673,7 +2710,9 @@ class Agent:
 
     def _run_stepwise(self, tid, task, prov, usage, tools, state):
         request = task["request"]
-        net = network_status(self.store, block=True)
+        # The probe runs only when the request names a web page or URL — the only requests a web_fetch step can survive plan_sanity in.
+        # A copy, a count or a note never makes the agent touch the network (README "Nothing leaves your machine", legal/PRIVACY.md).
+        net = network_status(self.store) if WEB_WORDS_RE.search(" ".join(request.lower().split())) else dict(NET_SKIPPED)
         mode = self.mode(task)
         system = local_system_prompt(mode, net)
         self_check = self.store.setting("agent.stepwise_selfcheck", "true") == "true"
@@ -2776,7 +2815,7 @@ class Agent:
                     got = os.path.basename(str(inp.get("app") or "").split()[0]) if inp.get("app") else ""
                     if want and got and got != want and got not in ("xdg-open", "open"):
                         ok, detail = False, "the task asks for %s, which is %s — you opened %s; call open_app {\"app\": \"%s\"}" % (
-                            next(n for n in APP_NAMES[want] if n.startswith("fab ") or n == want).title().replace("Brave-Browser", "Brave"), want, got, want)
+                            next(n for n in APP_NAMES[want] if n.startswith("fab ") or n == want).title(), want, got, want)
                 if ok and c["name"] in ("run_shell", "web_fetch", "read_file", "list_dir"):
                     missing = missing_goal_paths(step["goal"])
                     if missing:
@@ -3678,7 +3717,7 @@ def make_handler(store, agent, token):
                                         # "Managed by your organisation" from it. root_path/sandbox: how root and run_shell are reached on this machine.
                                         "policy": POLICY.status(), "root_path": "polkit" if root_argv("x")[0] == "pkexec" else "sudo", "sandbox": agent.sandbox_name(),
                                         # driver: how this provider's tasks run (ADR-0020); network: the cached online probe (non-blocking here)
-                                        "driver": driver_name(store, prov), "network": network_status(store, block=False),
+                                        "driver": driver_name(store, prov), "network": network_cached(),
                                         "provider_label": PROVIDERS[prov]["label"] if prov in PROVIDERS else prov,
                                         "provider_model": store.setting(prov + ".model", PROVIDERS[prov]["model"]) if prov in PROVIDERS else "",
                                         "ui_show_raw": store.setting("ui.show_raw", "false") == "true",

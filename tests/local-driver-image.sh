@@ -6,7 +6,7 @@
 #
 #   tests/local-driver-image.sh --label after                       # this tree's daemon + wrapper
 #   tests/local-driver-image.sh --label before --agent-src build/baseline --llama-start build/baseline/llama-start.sh
-#   options: --levels 1,2  --only l1-a  --driver default|stepwise|freeform  --extra-args "--no-repack"  --image localhost/fabos:vm
+#   options: --levels 1,2,h (h = the four held-out tasks)  --only l1-a  --driver default|stepwise|freeform  --extra-args "--no-repack"  --image localhost/fabos:vm
 #            --model /path/to/qwen2.5-1.5b-instruct-q4_k_m.gguf  --timeout-scale 1.0
 #   outputs: build/local-driver-<label>.json, build/local-driver-<label>.log (daemon + server logs appended)
 #
@@ -68,7 +68,7 @@ fi
 
 # ---------------------------------------------------------------- host side
 LABEL=run; AGENT_SRC=$ROOT/packages/fabos-agent/usr/lib/fabos/agent; LLAMA_START=$ROOT/packages/fabos-ai/usr/lib/fabos/ai/llama-start.sh
-LEVELS=1,2; ONLY=""; DRIVER=default; EXTRA=""; IMG=localhost/fabos:vm; SCALE=1.0
+LEVELS=1,2,h; ONLY=""; DRIVER=default; EXTRA=""; IMG=localhost/fabos:vm; SCALE=1.0
 MODEL=${MODEL:-$ROOT/build/cache/qwen2.5-1.5b-instruct-q4_k_m.gguf}
 [ -f "$MODEL" ] || MODEL=/home/harsh/Downloads/fabric-os/build/cache/qwen2.5-1.5b-instruct-q4_k_m.gguf
 while [ $# -gt 0 ]; do

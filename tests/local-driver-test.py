@@ -6,11 +6,15 @@
 they cannot drift), the ladder's own checks (tests/ladder/checks.py imported as a module, answer key from
 tests/ladder/expected.json), a fresh ~/Ladder, PASS/FAIL per task decided by the checker — never by what the agent says.
 
+Plus four HELD-OUT tasks (level "h", HELDOUT below) of the same shapes as the L2 tasks whose idioms appear as worked examples in
+the driver's executor prompt (a CSV column sum, a rename by extension, a largest/smallest file, a file count) — a different column
+name, extension, tree and folder, generated here and named in no prompt, so the table has rows the prompt cannot have memorised.
+
 Runs anywhere a daemon (FABOS_AGENT_PROVIDER=local) and a llama-server /v1 endpoint are reachable; the intended
 place is the Fab OS image, driven by tests/local-driver-image.sh (which also starts both processes and a wtype shim, since a
 container has no Wayland seat). Standard library only.
 
-  python3 tests/local-driver-test.py --home /tmp/ldr/home --label after [--levels 1,2] [--only l1-a] [--driver stepwise|freeform|default]
+  python3 tests/local-driver-test.py --home /tmp/ldr/home --label after [--levels 1,2,h] [--only l1-a] [--driver stepwise|freeform|default]
       [--daemon http://127.0.0.1:8790] [--token-file $XDG_RUNTIME_DIR/fabos-agent/token] [--base-url http://127.0.0.1:8081/v1]
       [--server-pid PID] [--out build/local-driver-after.json] [--timeout-scale 1.0]
 
@@ -32,8 +36,113 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LADDER_SH = os.path.join(ROOT, "tests", "agent-ladder-vm.sh")
 LADDER_DIR = os.path.join(ROOT, "tests", "ladder")
-TIMEOUTS = {1: 120, 2: 240}                    # T1 / T2 in tests/agent-ladder-vm.sh
+TIMEOUTS = {1: 120, 2: 240, "h": 240}          # T1 / T2 in tests/agent-ladder-vm.sh; held-out tasks get T2
 ANSWER = "yes, go ahead"
+
+# ---------------------------------------------------------------- held-out tasks: L2 shapes, different names — in no prompt, not in the ladder
+HELDOUT_FIX = "/tmp/heldout"
+HELDOUT = [
+    ("h-a", "The files /tmp/heldout/stock-a.csv and /tmp/heldout/stock-b.csv each have a column called qty. Add the qty column up across both files "
+            "and write only the total, as a plain integer with no separators, into ~/Ladder/qty-total.txt"),
+    ("h-b", "Rename every file that ends in .log inside ~/Ladder/logs-copy so it ends in .bak instead. Keep the base names and the file contents unchanged."),
+    ("h-c", "Find the single smallest file anywhere under /tmp/heldout/tree and write just its file name (the base name, no directory path) into ~/Ladder/smallest.txt"),
+    ("h-d", "Count how many files are in the folder /tmp/heldout/logs (regular files only). Do not create or change any file. "
+            "End your reply with a line in exactly this form: FILE COUNT: <number>"),
+]
+HELDOUT_WHAT = {"h-a": "held-out: sum the qty column of two CSVs into ~/Ladder/qty-total.txt", "h-b": "held-out: rename every .log in ~/Ladder/logs-copy to .bak (a .md file stays)",
+                "h-c": "held-out: smallest file under /tmp/heldout/tree, base name into ~/Ladder/smallest.txt", "h-d": "held-out: count the files in /tmp/heldout/logs, answer FILE COUNT: n"}
+
+
+def prepare_heldout():
+    """Deterministic fixtures under /tmp/heldout (seeded, byte-for-byte reproducible); returns the answer key."""
+    import csv
+    import hashlib
+    import random
+    rnd = random.Random(20260915)
+    shutil.rmtree(HELDOUT_FIX, ignore_errors=True)
+    os.makedirs(os.path.join(HELDOUT_FIX, "logs"))
+    key = {"qty_total": 0, "logs": [], "logs_sha": {}, "smallest": None, "tree_files": []}
+    for name, nrows in (("stock-a.csv", 23), ("stock-b.csv", 31)):
+        with open(os.path.join(HELDOUT_FIX, name), "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["sku", "warehouse", "qty"], lineterminator="\n")
+            w.writeheader()
+            for i in range(nrows):
+                q = rnd.randrange(3, 480)
+                key["qty_total"] += q
+                w.writerow({"sku": "SKU-%04d" % (1000 + i * 7), "warehouse": ("north", "south", "east")[i % 3], "qty": q})
+    for i in range(1, 6):
+        body = "".join("%s line %d of app-%02d: request %d served in %d ms\n" % ("2026-03-%02d" % (10 + i), j, i, 100 * i + j, rnd.randrange(3, 900)) for j in range(1, 6 + i))
+        p = os.path.join(HELDOUT_FIX, "logs", "app-%02d.log" % i)
+        with open(p, "w") as f:
+            f.write(body)
+        key["logs"].append("app-%02d.log" % i)
+        key["logs_sha"]["app-%02d.log" % i] = hashlib.sha256(body.encode()).hexdigest()
+    with open(os.path.join(HELDOUT_FIX, "logs", "notes.md"), "w") as f:              # must survive the rename untouched
+        f.write("# Notes\nThese logs come from the staging box.\n")
+    key["logs"].append("notes.md")
+    key["logs_sha"]["notes.md"] = hashlib.sha256(open(os.path.join(HELDOUT_FIX, "logs", "notes.md"), "rb").read()).hexdigest()
+    tree = {"readme.txt": 120, "a/big.bin": 4096, "a/b/mid.txt": 300, "c/tiny.cfg": 11, "c/d/data.json": 900}         # tiny.cfg is the unique smallest
+    for rel, size in tree.items():
+        p = os.path.join(HELDOUT_FIX, "tree", rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(bytes((i * 7 + len(rel)) % 251 for i in range(size)))
+        key["tree_files"].append(os.path.basename(rel))
+    key["smallest"] = "tiny.cfg"
+    return key
+
+
+def check_heldout(name, key, home, task, numbers):
+    """(ok, evidence) for a held-out task — decided from the disk and the answer key, never from the agent's words (except the FILE COUNT line h-d asks for)."""
+    ladder = os.path.join(home, "Ladder")
+
+    def read(p):
+        try:
+            with open(p, errors="replace") as f:
+                return f.read()
+        except OSError as e:
+            return None if isinstance(e, FileNotFoundError) else ""
+    if name == "h-a":
+        text = read(os.path.join(ladder, "qty-total.txt"))
+        if text is None:
+            return False, "~/Ladder/qty-total.txt was not created"
+        if str(key["qty_total"]) not in numbers(text):
+            return False, "qty-total.txt %r does not contain the exact total %d" % (" ".join(text.split())[:120], key["qty_total"])
+        return True, "qty-total.txt contains the exact total %d (recomputed from the two CSVs)" % key["qty_total"]
+    if name == "h-b":
+        d = os.path.join(ladder, "logs-copy")
+        if not os.path.isdir(d):
+            return False, "~/Ladder/logs-copy is gone"
+        got = sorted(n for n in os.listdir(d) if os.path.isfile(os.path.join(d, n)))
+        want = sorted([n[:-4] + ".bak" for n in key["logs"] if n.endswith(".log")] + ["notes.md"])
+        left = [n for n in got if n.endswith(".log")]
+        if left:
+            return False, "%d .log files are still there: %s" % (len(left), left[:6])
+        if got != want:
+            return False, "renamed set is %s, expected %s (notes.md must stay)" % (got[:12], want[:12])
+        import hashlib
+        for n in got:
+            src = n[:-4] + ".log" if n.endswith(".bak") else n
+            if hashlib.sha256(open(os.path.join(d, n), "rb").read()).hexdigest() != key["logs_sha"][src]:
+                return False, "the content of %s changed" % n
+        return True, "all %d logs renamed to .bak, 0 .log left, notes.md untouched, contents unchanged" % (len(got) - 1)
+    if name == "h-c":
+        text = read(os.path.join(ladder, "smallest.txt"))
+        if text is None:
+            return False, "~/Ladder/smallest.txt was not created"
+        mentioned = sorted({n for n in key["tree_files"] if n in text})
+        if mentioned != [key["smallest"]]:
+            return False, "smallest.txt names %s, expected only %s (content: %r)" % (mentioned or "nothing", key["smallest"], " ".join(text.split())[:120])
+        return True, "smallest.txt names exactly %s (11 bytes, smallest of %d files)" % (key["smallest"], len(key["tree_files"]))
+    if name == "h-d":
+        real = sorted(n for n in os.listdir(os.path.join(HELDOUT_FIX, "logs")) if os.path.isfile(os.path.join(HELDOUT_FIX, "logs", n)))
+        if real != sorted(key["logs"]):
+            return False, "/tmp/heldout/logs was changed: %s" % real
+        said = task.get("result") or ""
+        if not re.search(r"FILE COUNT:\s*%d([^0-9]|$)" % len(real), said):
+            return False, "agent text has no 'FILE COUNT: %d' (said: %s)" % (len(real), " ".join(said[:160].split()))
+        return True, "agent answered 'FILE COUNT: %d'; /tmp/heldout/logs really contains %d files and is unchanged" % (len(real), len(real))
+    return False, "no such held-out task"
 
 
 def die(msg, code=3):
@@ -198,7 +307,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--home", required=True, help="the HOME the daemon runs with (fixtures and ~/Ladder live there)")
     ap.add_argument("--label", default="run")
-    ap.add_argument("--levels", default="1,2")
+    ap.add_argument("--levels", default="1,2,h", help="ladder levels 1 and/or 2, plus h for the held-out tasks")
     ap.add_argument("--only", help="one task or a comma list, e.g. l1-d,l2-e")
     ap.add_argument("--driver", default="default", choices=["default", "stepwise", "freeform"], help="sets agent.driver on the daemon before the run")
     ap.add_argument("--daemon", default="http://127.0.0.1:%s" % os.environ.get("FABOS_AGENT_PORT", "8790"))
@@ -210,7 +319,7 @@ def main():
     a = ap.parse_args()
     out_path = a.out % a.label if "%s" in a.out else a.out
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    levels = {int(x) for x in a.levels.split(",") if x.strip()}
+    levels = {x.strip() if x.strip() == "h" else int(x) for x in a.levels.split(",") if x.strip()}
 
     try:
         with open(a.token_file) as f:
@@ -245,6 +354,7 @@ def main():
         die("fixtures not intact")
     tasks = ladder_tasks(expected, a.daemon)
     notes_n = expected["notes"]["count"]
+    heldout_key = prepare_heldout() if "h" in levels else None
 
     rows = []
     log = lambda s: print(s, flush=True)   # noqa: E731
@@ -322,6 +432,23 @@ def main():
             ok, ev = False, "not graded here"
         verdict(name, level, "PASS" if ok else "FAIL", ev if ok else ev + " | task=" + str(t["status"]), t)
 
+    for name, text in HELDOUT if "h" in levels else []:
+        if a.only and name not in a.only.split(","):
+            continue
+        if name == "h-b" and not os.path.isdir(os.path.join(a.home, "Ladder", "logs-copy")):
+            shutil.copytree(os.path.join(HELDOUT_FIX, "logs"), os.path.join(a.home, "Ladder", "logs-copy"))          # the same precondition shape as l2-b
+            print("    precondition: seeded ~/Ladder/logs-copy from /tmp/heldout/logs", flush=True)
+        print("\n=== %s [auto · local · %s · held-out]: %s" % (name, a.label, text), flush=True)
+        t = d.run_task(text, int(TIMEOUTS["h"] * a.timeout_scale), log)
+        print("    -> status=%s in %ss steps=%d tools=[%s] approvals=+%d" % (t["status"], t["seconds"], len(t.get("steps") or []), tool_counts(t), t["approved"]), flush=True)
+        for st_ in t.get("steps") or []:
+            if st_.get("kind") in ("tool_call", "verify", "assistant", "error"):
+                body = st_.get("input") if st_.get("kind") == "tool_call" else st_.get("output")
+                print("       %-9s %-16s %s" % (st_.get("kind"), st_.get("name") or "", " ".join(str(body or "")[:220].split())), flush=True)
+        print("    result: %s" % " ".join(((t.get("result") or t.get("error") or ""))[:400].split()), flush=True)
+        ok, ev = check_heldout(name, heldout_key, a.home, t, checks.numbers)
+        verdict(name, "h", "PASS" if ok else "FAIL", ev if ok else ev + " | task=" + str(t["status"]), t, note="held-out")
+
     rss_kb = 0
     if a.server_pid:
         try:
@@ -330,14 +457,14 @@ def main():
         except (OSError, IndexError, ValueError):
             pass
     summary = {}
-    for lv in sorted(levels):
+    for lv in sorted(levels, key=str):
         core = [r for r in rows if r["level"] == lv and r["status"] != "SKIP"]
-        summary["l%d" % lv] = "%d/%d" % (sum(1 for r in core if r["status"] == "PASS"), len(core))
-    report = {"label": a.label, "driver": a.driver, "status": st, "server_vmhwm_kb": rss_kb, "levels": sorted(levels), "tasks": rows, "summary": summary,
+        summary["h" if lv == "h" else "l%d" % lv] = "%d/%d" % (sum(1 for r in core if r["status"] == "PASS"), len(core))
+    report = {"label": a.label, "driver": a.driver, "status": st, "server_vmhwm_kb": rss_kb, "levels": sorted(levels, key=str), "tasks": rows, "summary": summary,
               "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "model_ids": [x.get("id") for x in models.get("data", [])]}
     with open(out_path, "w") as f:
         json.dump(report, f, indent=1)
-    print("\n### %s: %s%s — %s" % (a.label, " ".join("L%s %s" % (k[1:], v) for k, v in sorted(summary.items())),
+    print("\n### %s: %s%s — %s" % (a.label, " ".join(("held-out %s" % v) if k == "h" else "L%s %s" % (k[1:], v) for k, v in sorted(summary.items())),
                                     (" · llama-server VmHWM %.2f GB" % (rss_kb / 1e6)) if rss_kb else "", out_path))
     failed = [r for r in rows if r["status"] == "FAIL"]
     return 1 if failed else 0
