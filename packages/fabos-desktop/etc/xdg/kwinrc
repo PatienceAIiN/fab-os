@@ -1,4 +1,4 @@
-# Window frame: the Fab OS Aurorae (SVG) decoration — radius-20 title bar, bold 3 px buttons, colours from the
+# Window frame: the Fab OS Aurorae (SVG) decoration — radius-14 title bar (the same circle as the corner effect below), bold 3 px buttons, colours from the
 # system scheme through KSvg. Rendered by the Aurorae v2 engine (org.kde.kwin.aurorae.v2, kwin-style-aurorae 6.6):
 # unlike v1 it lists SVG themes (by their metadata.desktop) in Settings > Window Decorations, so the frame can be
 # re-selected there. `FabOS` carries a light caption for dark schemes; the light look-and-feel selects
@@ -30,6 +30,57 @@ slidingpopupsEnabled=true
 # Snap Assist (KWin script in /usr/share/kwin/scripts/fabos-snap-assist, ADR-0011): after a window is tiled to one half,
 # the other windows are shown in Window View so one can be picked for the remaining half.
 fabos-snap-assistEnabled=true
+# Rounded corners on every window (ADR-0019): the KDE-Rounded-Corners effect, package fabos-rounded-corners (built from the
+# v0.10.0 source in image/Containerfile). The plugin id is the file name of the plugin,
+# /usr/lib/x86_64-linux-gnu/qt6/plugins/kwin/effects/plugins/kwin4_effect_shapecorners.so (KPlugin metadata in its
+# src/metadata.json; its KCM is X-KDE-ConfigModule=kwin_shapecorners_config). Needs OpenGL compositing (Effect::supported()).
+kwin4_effect_shapecornersEnabled=true
+
+# KDE-Rounded-Corners settings. Group name and every key below are from the effect's src/kcm/options.kcfg (v0.10.0,
+# <kcfgfile name="kwinrc"/>, <group name="Round-Corners">); tests/branding-check.sh asserts the radius and the switch.
+# The radius equals the Aurorae frame's top radius (brand/gen/aurorae_theme.py R = 14): the effect masks the whole frame,
+# decoration included, so the visible corner is the intersection of the two arcs and they must be the same circle —
+# hence circular arcs (UseSquircleShape=false; the default squircle would leave a sliver of outline in the frame's
+# transparent notch). Maximised, full-screen and snapped/tiled windows stay square (they abut the screen edge or each
+# other); dialogs are rounded like normal windows; panels, popups, menus, tooltips and notifications are other window
+# types (isNormalWindow/isDialog false in Window::hasEffect) and keep the Plasma theme's radius 24.
+# Outline: one 1 px hairline in QPalette::WindowText (role 0; resolveColor() in the effect's WindowConfig.cpp reads KWin's
+# palette, which follows the colour scheme through the KDE platform theme) at 22 % (56/255) active, 14 % inactive — dark on
+# Fab Light, light on Fab Dark. The second (white) and outer outlines are off.
+# Shadow: the Aurorae shadow is kept (UseNativeDecorationShadows=true; the shader bends it around the arcs); ShadowSize /
+# InactiveShadowSize only apply if someone turns native shadows off in the KCM, so they are set to a sane 24 / 16.
+# AnimationDuration is the effect's own active/inactive transition (it does not read AnimationDurationFactor): 160 ms, the
+# design system's short motion token. Defaults we keep are written out too so the KCM and this file say the same thing.
+[Round-Corners]
+Size=14
+InactiveCornerRadius=14
+UseSquircleShape=false
+AnimationDuration=160
+UseNativeDecorationShadows=true
+ShadowSize=24
+InactiveShadowSize=16
+OutlineThickness=1
+InactiveOutlineThickness=1
+ActiveOutlineUsePalette=true
+ActiveOutlineUseCustom=false
+ActiveOutlinePalette=0
+ActiveOutlineAlpha=56
+InactiveOutlineUsePalette=true
+InactiveOutlineUseCustom=false
+InactiveOutlinePalette=0
+InactiveOutlineAlpha=36
+SecondOutlineThickness=0
+InactiveSecondOutlineThickness=0
+OuterOutlineThickness=0
+InactiveOuterOutlineThickness=0
+IncludeNormalWindows=true
+IncludeDialogs=true
+DisableRoundMaximize=true
+DisableOutlineMaximize=true
+DisableRoundFullScreen=true
+DisableOutlineFullScreen=true
+DisableRoundTile=true
+DisableOutlineTile=true
 
 # Multitasking: top-left hot corner opens the Overview (all windows + desktops, like GNOME/Fedora); Meta+W does the same.
 [Effect-overview]

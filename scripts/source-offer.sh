@@ -22,5 +22,12 @@ awk '{print $2}' "$OUT/source-uris.txt" | sed -E 's/_[^_]+$//' | sort -u > build
 awk -F= 'NR==FNR{r[$1]=1; next} !($1 in r)' build/resolved-src.txt build/srcpkgs.txt > "$OUT/unresolved-sources.txt"
 [ -s "$OUT/source-uris.txt" ] || echo "WARNING: no source URIs resolved — check deb-src availability / network" >&2
 printf 'Image: %s\nProfile: %s\nGenerated: %s\nBinary packages: %s\nSource files: %s\nUnresolved source packages: %s (see unresolved-sources.txt)\nOffer: see legal/SOURCE-OFFER.md\n' "$ID" "$PROFILE" "$(date -u +%FT%TZ)" "$(wc -l < "$OUT/manifest.txt")" "$(wc -l < "$OUT/source-uris.txt")" "$(wc -l < "$OUT/unresolved-sources.txt")" > "$OUT/README.txt"
+# Components that are not Ubuntu archive packages (SOURCE-OFFER.md item 4): the image build compiles fabos-rounded-corners from a
+# sha256-pinned upstream tarball (image/rounded-corners-build.sh, ADR-0019); that tarball is its corresponding source — record it,
+# and mirror it with --download next to the Ubuntu sources (hash verified).
+RC_URL=$(sed -n 's/^URL=//p' image/rounded-corners-build.sh); RC_SHA=$(sed -n 's/^SHA=//p' image/rounded-corners-build.sh)
+[ -n "$RC_URL" ] && [ -n "$RC_SHA" ] && printf 'Non-archive component source (fabos-rounded-corners): %s sha256 %s\n' "$RC_URL" "$RC_SHA" >> "$OUT/README.txt"
 cat "$OUT/README.txt"
-if [ "$DL" = --download ]; then mkdir -p "build/sources-$ID"; awk '{print $1}' "$OUT/source-uris.txt" | (cd "build/sources-$ID" && xargs -n1 -P4 curl -sSfLO); echo "sources mirrored to build/sources-$ID"; fi
+if [ "$DL" = --download ]; then mkdir -p "build/sources-$ID"; awk '{print $1}' "$OUT/source-uris.txt" | (cd "build/sources-$ID" && xargs -n1 -P4 curl -sSfLO)
+  if [ -n "$RC_URL" ]; then curl -sSfL -o "build/sources-$ID/KDE-Rounded-Corners-$(basename "$RC_URL")" "$RC_URL" && echo "$RC_SHA  build/sources-$ID/KDE-Rounded-Corners-$(basename "$RC_URL")" | sha256sum -c -; fi
+  echo "sources mirrored to build/sources-$ID"; fi

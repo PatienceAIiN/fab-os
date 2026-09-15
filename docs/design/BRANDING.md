@@ -57,7 +57,7 @@ Icon theme `index.theme`: `[Icon Theme]` keeps `FollowsColorScheme=true`; `Direc
 
 | Surface | Radius | Where it comes from |
 |---------|--------|---------------------|
-| Window title bar, top corners | **20** | Aurorae decoration `decoration.svg` (`brand/gen/aurorae_theme.py`, `R = 20`); the bottom corners are square because side/bottom borders are 0 (`BorderSize=None`) |
+| Application windows, all four corners | **14** | KDE-Rounded-Corners KWin effect (`/etc/xdg/kwinrc` `[Round-Corners] Size=14`, package `fabos-rounded-corners`, ADR-0019), light and dark; the Aurorae decoration's own top arc is the same circle (`brand/gen/aurorae_theme.py`, `R = 14`), so the frame is right even where the effect is off (no OpenGL compositing); maximised, full-screen and tiled windows are square |
 | Popups, dialogs, notifications, tray popup | **24** | FabOS Plasma theme `dialogs/background.svg` (`brand/gen/plasma_theme.py`, `RADIUS["popup"]`) |
 | Panels, cards, widget backgrounds | **20** | Plasma theme `widgets/panel-background.svg`, `widgets/background.svg` (`RADIUS["panel"]`) |
 | Tooltips | **14** | Plasma theme `widgets/tooltip.svg` (`RADIUS["tooltip"]`) |
