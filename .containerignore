@@ -1,5 +1,6 @@
 build/*
 !build/bin
+!build/moz-key.asc
 brand/out
 *.img
 *.ext4

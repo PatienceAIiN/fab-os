@@ -11,6 +11,12 @@ if [ -f build/secrets/feedback.env ]; then cp build/secrets/feedback.env image/o
 # Google OAuth desktop client for the Gmail sign-in (build/secrets/google-oauth.env, never committed). World-readable in the
 # image on purpose: the agent daemon runs as the user, and Google treats desktop-app client secrets as non-confidential.
 if [ -f build/secrets/google-oauth.env ]; then install -m 0644 build/secrets/google-oauth.env image/overlay/$PROFILE/etc/fabos/google-oauth.env; echo "== google-oauth.env staged into image"; else rm -f image/overlay/$PROFILE/etc/fabos/google-oauth.env; fi
+# Mozilla's apt signing key is fetched HERE on the host (never inside podman build: under the resource guard the build
+# container could not reach packages.mozilla.org tonight, twice) and copied into the pkgs stage, which verifies its
+# fingerprint offline. A previously fetched copy is reused when the network is down.
+if curl -fsSL -4 -m 60 -o build/moz-key.asc.new https://packages.mozilla.org/apt/repo-signing-key.gpg 2>/dev/null; then mv build/moz-key.asc.new build/moz-key.asc; else rm -f build/moz-key.asc.new; [ -s build/moz-key.asc ] || { echo "ERROR: cannot fetch Mozilla's signing key and no cached build/moz-key.asc"; exit 1; }; fi
+gpg --show-keys --with-fingerprint --with-colons build/moz-key.asc 2>/dev/null | grep -q '^fpr:::::::::35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3:' || { echo "ERROR: Mozilla key fingerprint mismatch in build/moz-key.asc"; exit 1; }
+echo "== Mozilla signing key staged (fingerprint verified)"
 echo "== podman build ($PROFILE)"
 PREV_ID=$(podman image inspect --format '{{.Id}}' "$TAG" 2>/dev/null || echo none)
 tools/rg --profile heavy -- podman build ${NO_CACHE:+--no-cache} --build-arg PROFILE="$PROFILE" --build-arg MIRROR="${MIRROR:-http://archive.ubuntu.com/ubuntu}" --target rootfs -f image/Containerfile -t "$TAG" . 2>&1 | tee build/podman-build-$PROFILE.log | grep -E '^(STEP|COMMIT|Successfully|Error|error|E:)' || true
