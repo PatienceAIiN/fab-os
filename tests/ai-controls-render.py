@@ -608,6 +608,10 @@ def main():
             assert card.isVisible() and card.caption.text() == img_prompt and card.meta.text() == "Test provider · 640 × 400", (card.caption.text(), card.meta.text())
             pm = card.thumb.pixmap()
             assert pm is not None and not pm.isNull() and pm.height() <= 320 and pm.width() <= card.width(), (pm.width(), pm.height(), card.width())
+            spin(app)
+            assert card.width() == pm.width() + cc.ImageCard.PAD_X, "the card hugs its picture, border included (card %d, thumbnail %d)" % (card.width(), pm.width())
+            assert card.thumb.width() == pm.width() and card.caption.x() == card.thumb.x() and card.meta.x() == card.thumb.x(), \
+                "caption and provider line sit under the picture's left edge (thumb %d/%d wide at x %d, caption x %d, meta x %d)" % (card.thumb.width(), pm.width(), card.thumb.x(), card.caption.x(), card.meta.x())
             assert abs(pm.width() / pm.height() - 1.6) < 0.02, "the 640x400 file keeps its aspect ratio (%dx%d)" % (pm.width(), pm.height())
             assert cc.image_paths_in_text("see ~/Pictures/Fab OS/a b.png, file:///home/u/Pictures/Fab%20OS/c.jpg and /tmp/x.png") == ["~/Pictures/Fab OS/a b.png", "/home/u/Pictures/Fab OS/c.jpg"]
             assert cc.image_from_step({"kind": "tool_call", "name": "generate_image", "decision": "auto-approved", "input": "{}", "output": json.dumps({"path": "/p/k.png", "provider": "x"})}) == {"path": "/p/k.png", "prompt": "", "provider": "x", "width": 0, "height": 0}
@@ -681,6 +685,11 @@ def main():
             assert vpx.save(os.path.join(OUT, "ai-controls-image-viewer%s.png" % ("" if name == "dark" else "-light")))
             results["image-viewer-" + name] = (vpx.width(), vpx.height())
             regen_posts = []
+            # a second click on the card while its viewer is open only raises the same viewer — and must not wire Regenerate
+            # a second time (that once posted TWO follow-ups from ONE click)
+            assert turn_fu.open_image(card) is viewer and turn_fu.open_image(card) is viewer, "an open viewer is reused, not re-created"
+            regen_emits = []
+            turn_fu.regenerate_requested.connect(lambda tid: regen_emits.append(tid))
 
             def regen_api(method, path, body=None, *a, _o=real_api, **k):
                 if method == "POST" and path == "/tasks":
@@ -694,6 +703,7 @@ def main():
                 sync(w)
             finally:
                 cc.api = real_api
+            assert regen_emits == [fu], "ONE Regenerate click after three card clicks must emit once: %r" % regen_emits
             assert regen_posts == [{"request": cc.REGENERATE_REQUEST, "parent_id": root}], regen_posts
             assert not viewer.isVisible(), "Regenerate must close the viewer"
             assert card.viewer is None, "the card forgot its closed viewer"
@@ -1074,6 +1084,9 @@ def main():
             w.update_header()
             spin(app)
             assert w.cloud_hint.isVisible() and w.cloud_hint_label.text() == "Using the built-in model. For the best results use a cloud model", w.cloud_hint_label.text()
+            w.toast.timer.stop(); w.toast.hide()                       # the "still working" toast from the transcript check must not sit over the chip
+            spin(app)
+            assert not w.toast.isVisible()
             hp = w.grab()
             assert hp.save(os.path.join(OUT, "ai-controls-cloud-hint-%s.png" % name))
             results[name + "-cloud-hint"] = (hp.width(), hp.height())

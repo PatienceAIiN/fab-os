@@ -12,13 +12,16 @@
 #      the 6 px overlay bar sits in the 14 px right gutter with no row under it, the header row stays fixed at y = 0,
 #      the view follows new rows only while at the end; renders build/askbar-scroll-{bottom,top}.png), then shrinks the
 #      window to a panel thickness to exercise the compact form for real (PlasmaCore.Dialog appears, the mic hint moves
-#      into the placeholder), and finally the polish stages: Do it disabled on an empty / whitespace field (40 %, no
+#      into the placeholder, the cloud hint chip becomes the popup's first header row — the 36 px card has no room;
+#      renders build/askbar-compact-hint.png), and
+#      finally the polish stages: Do it disabled on an empty / whitespace field (40 %, no
 #      hover, Enter ignored, mic still live), the cloud hint chip for the built-in model (dismissal remembered, never with
 #      a cloud provider), and the image cards — a generate_image step pointing at a REAL PNG written inside the image by
 #      mkpng.py (no python3-pil there) renders a card once the `[ -f ]` check answered, a missing file renders none, the
 #      final text mentioning the same file adds no second card, a tap opens the 80 % viewer with its control row
 #      (Copy image disabled with a reason: no wl-copy in the image; wallpaper / Fab Photos enabled: their binaries are
-#      there), Regenerate posts the follow-up, Save as falls back to a real copy in ~/Pictures; renders
+#      there), Regenerate posts the follow-up (and while that POST is in flight a second Regenerate closes the viewer and
+#      says so — never a silent no-op), Save as falls back to a real copy in ~/Pictures; renders
 #      build/askbar-image-{card,viewer}.png.
 #   tests/askbar-qml-test.sh [image]        (default localhost/fabos:vm)
 set -u
@@ -40,7 +43,7 @@ p = sys.argv[1]; s = open(p).read().rstrip("\n")
 assert s.endswith("}"), "main.qml must end with the root's closing brace"
 s = s[:-1] + ('    Loader { source: Qt.resolvedUrl("../harness/Driver.qml"); onLoaded: { item.bar = root; item.convo = convo; item.card = card; item.panel = panel; '
               'item.panelMain = panelMain; item.popup = popupLoader; item.statusText = statusText; item.field = field; item.vbar = vbar; item.panelHeader = panelHeader; item.panelFoot = panelFoot; '
-              'item.go = go; item.goArea = goArea; item.micButton = micButton; item.cloudHint = cloudHint; item.cloudHintText = cloudHintText; item.cloudChoose = cloudChoose; item.viewer = viewerLoader; item.list = list } }\n}\n')
+              'item.go = go; item.goArea = goArea; item.micButton = micButton; item.cloudHint = cloudHint; item.cloudHintText = cloudHint.label; item.cloudChoose = cloudHint.chooseItem; item.compactHint = compactHint; item.viewer = viewerLoader; item.list = list } }\n}\n')
 open(p, "w").write(s)
 EOF
 fail=0
@@ -63,12 +66,12 @@ if [ -n "$thumb" ] && python3 "$ROOT/tests/askbar-qml-harness/pngcheck.py" "$OUT
 else echo "FAIL: thumbnail pixels not as expected (rect '$thumb')"; fail=1; fi
 python3 - "$OUT" <<'EOF'
 import struct, sys, os
-for n in ("bar", "panel", "feed", "scroll-bottom", "scroll-top", "image-card", "image-viewer"):   # PNG IHDR: width, height right after the 8-byte signature + 8-byte chunk header
+for n in ("bar", "panel", "feed", "scroll-bottom", "scroll-top", "compact-hint", "image-card", "image-viewer"):   # PNG IHDR: width, height right after the 8-byte signature + 8-byte chunk header
     p = os.path.join(sys.argv[1], "askbar-%s.png" % n)
     try:
         with open(p, "rb") as f: w, h = struct.unpack(">II", f.read(24)[16:24])
         print("render askbar-%s.png %dx%d" % (n, w, h))
     except OSError: print("render askbar-%s.png MISSING" % n)
 EOF
-echo "askbar-qml-test: $([ $fail = 0 ] && echo PASS || echo FAIL)  checks=$checks  (renders: $OUT/askbar-{bar,panel,feed,scroll-bottom,scroll-top,image-card,image-viewer}.png)"
+echo "askbar-qml-test: $([ $fail = 0 ] && echo PASS || echo FAIL)  checks=$checks  (renders: $OUT/askbar-{bar,panel,feed,scroll-bottom,scroll-top,compact-hint,image-card,image-viewer}.png)"
 exit $fail

@@ -420,7 +420,7 @@ QToolButton#icon:pressed { background: %(press)s; }
 QToolButton#icon:checked { background: %(hisoft)s; }
 QToolButton#iconAccent { background: %(hi)s; border: none; border-radius: 18px; padding: 0; }
 QToolButton#iconAccent:hover { background: %(hihover)s; }
-QToolButton#iconAccent:disabled { background: %(hidim)s; }
+QToolButton#iconAccent:disabled { background: %(senddim)s; }
 QToolButton#micBtn { background: transparent; border: 1px solid %(line)s; border-radius: 18px; padding: 0; }
 QToolButton#micBtn:hover { background: %(hover)s; }
 QToolButton#micBtn:disabled { border-color: %(tint4)s; }
@@ -517,7 +517,7 @@ QToolButton#viewerIcon { background: transparent; border: none; border-radius: 1
 QToolButton#viewerIcon:hover { background: rgba(255, 255, 255, 0.14); }
 """ % dict(text=text.name(), win=win.name(), card=card, alt=alt.name(), hi=hi.name(), hit=hit.name(), line=line, hover=hover, muted=muted, tint4=tint4, tint8=tint8,
            press=rgba(text, 0.12), hisoft=rgba(hi, 0.16 if dark else 0.14), hihover=hi.lighter(112).name() if dark else hi.darker(108).name(),
-           hidim=rgba(hi, 0.40), scroll=rgba(text, 0.18), scrollh=rgba(text, 0.30), errbg=rgba(QColor(RED), 0.14), warnbg=rgba(QColor("#E0A64B"), 0.16),
+           hidim=rgba(hi, 0.35), senddim=rgba(hi, 0.40), scroll=rgba(text, 0.18), scrollh=rgba(text, 0.30), errbg=rgba(QColor(RED), 0.14), warnbg=rgba(QColor("#E0A64B"), 0.16),
            codebg=rgba(text, 0.08), mutedline=rgba(text, 0.35), rctl=R_CONTROL, rfield=R_FIELD, rcard=R_CARD, rpopup=R_POPUP, rsmall=R_SMALL)
 
 
@@ -606,7 +606,7 @@ class IconButton(QToolButton):
         if not self.accent:
             col.setAlphaF(1.0 if (self._hovered or self.isChecked()) else self.dim)
         elif not self.isEnabled():
-            col.setAlphaF(0.4)                 # the disabled Send: 40 % glyph on the 40 % accent disc (build_style hidim)
+            col.setAlphaF(0.4)                 # the disabled Send: 40 % glyph on the 40 % accent disc (build_style senddim)
         self.setIcon(glyph_icon(self.glyph, col, self._icon_size))
 
     def enterEvent(self, e):
@@ -1918,8 +1918,12 @@ WorkedChip = ActionFeed     # historical name
 
 class ImageCard(QFrame):
     """A generated picture in the chat: rounded thumbnail (radius 12 inside a radius-16 card, ≤ 320 px tall, fitted to the
-    content width), the prompt as caption, a small provider line. The whole card is a click target for ImageViewer."""
+    content width), the card exactly as wide as the picture so the caption and provider line read as its own, the prompt as
+    caption. The whole card is a click target for ImageViewer. `regenerate_requested` relays the viewer's Regenerate — wired
+    once, when the viewer is created (a second click on the card while the viewer is open only raises it)."""
     clicked = pyqtSignal()
+    regenerate_requested = pyqtSignal()
+    PAD_X = 8 + 1 + 1 + 8          # horizontal chrome around the thumbnail: the layout's 8 px margins + the 1 px stylesheet border, each side
 
     def __init__(self, info, parent=None):
         super().__init__(parent)
@@ -1936,7 +1940,7 @@ class ImageCard(QFrame):
         v.setContentsMargins(8, 8, 8, 10)
         v.setSpacing(6)
         self.thumb = QLabel()
-        self.thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumb.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         v.addWidget(self.thumb)
         self.caption = QLabel(info.get("prompt") or os.path.basename(self.path))
         self.caption.setObjectName("imageCaption")
@@ -1961,8 +1965,9 @@ class ImageCard(QFrame):
         if self._image.isNull():
             self.thumb.setText("This image is no longer at %s" % os.path.basename(self.path))
             return
-        scaled = self._image.scaled(w - 16, 320, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        scaled = self._image.scaled(w - self.PAD_X, 320, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         self.thumb.setPixmap(rounded_pixmap(QPixmap.fromImage(scaled), 12))
+        self.setMaximumWidth(max(220, min(w, scaled.width() + self.PAD_X)))     # the card hugs the picture (border included): caption + meta sit under it, not beside empty card
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
@@ -1970,7 +1975,8 @@ class ImageCard(QFrame):
         super().mouseReleaseEvent(e)
 
     def open_viewer(self):
-        """The enlarge viewer (non-modal, one per card); returns it so callers can wire Regenerate."""
+        """The enlarge viewer (non-modal, one per card). An open viewer is raised, never re-created and never re-wired:
+        its Regenerate is connected to the card's `regenerate_requested` exactly once, here, when it is built."""
         if self.viewer is not None:
             try:
                 self.viewer.raise_()
@@ -1979,6 +1985,7 @@ class ImageCard(QFrame):
             except RuntimeError:
                 self.viewer = None
         self.viewer = ImageViewer(self.info, self.window())
+        self.viewer.regenerate_requested.connect(self.regenerate_requested)
         self.viewer.finished.connect(lambda _r: setattr(self, "viewer", None))
         self.viewer.show()
         return self.viewer
@@ -2249,15 +2256,14 @@ class Turn(QWidget):
             card = ImageCard(info)
             card.set_max_width(max(240, int(self.max_w * 1.38)))
             card.clicked.connect(lambda c=card: self.open_image(c))
+            card.regenerate_requested.connect(lambda: self.regenerate_requested.emit(self.task_id))   # once per card, not per click
             self.image_cards[info["path"]] = card
             self.lay.insertWidget(self.lay.count() - 1, card)      # before the status row
             if animate:
                 fade_in(card)
 
     def open_image(self, card):
-        viewer = card.open_viewer()
-        viewer.regenerate_requested.connect(lambda: self.regenerate_requested.emit(self.task_id))
-        return viewer
+        return card.open_viewer()       # Regenerate is wired on the card (see _sync_images), so repeated clicks add no connections
 
     def begin_edit(self):
         self.editing = True

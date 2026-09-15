@@ -24,7 +24,7 @@ import "../ui/agent.js" as Agent
 // (PlasmaCore.Dialog) whose controls follow the binaries found (no wl-copy in the image => Copy image disabled with a
 // reason; gwenview + plasma-apply-wallpaperimage present => enabled), Save as falls back to a real copy in ~/Pictures,
 // Regenerate posts the follow-up and closes the viewer.
-// Prints PASS/FAIL lines and "HARNESS DONE failures=N", renders /out/askbar-{bar,panel,feed,scroll-bottom,scroll-top,
+// Prints PASS/FAIL lines and "HARNESS DONE failures=N", renders /out/askbar-{bar,panel,feed,scroll-bottom,scroll-top,compact-hint,
 // image-card,image-viewer}.png, then stops plasmawindowed.
 Item {
     id: h
@@ -44,6 +44,7 @@ Item {
     property var micButton: null
     property var cloudHint: null     // the cloud hint chip, its text and its Choose action
     property var cloudHintText: null
+    property var compactHint: null   // the same chip as the popup's first header row in the compact form
     property var cloudChoose: null
     property var viewer: null        // the image viewer's Loader (main.qml id viewerLoader)
     property var list: null
@@ -54,7 +55,7 @@ Item {
     function rowAt(i) { return convo.get(i) }
     // plasmawindowed opens the applet at its Layout.minimum size (396x128 here) while the desktop layout gives the strip
     // sh*0.66: the harness sizes the applet like a small home screen before the checks (700x640; Screen is 800x600 offscreen)
-    onListChanged: if (bar && convo && card && panel && panelMain && popup && statusText && field && vbar && panelHeader && panelFoot && go && goArea && micButton && cloudHint && cloudHintText && cloudChoose && viewer && list) {
+    onListChanged: if (bar && convo && card && panel && panelMain && popup && statusText && field && vbar && panelHeader && panelFoot && go && goArea && micButton && cloudHint && cloudHintText && cloudChoose && compactHint && viewer && list) {
         bar.Layout.minimumWidth = 700; bar.Layout.minimumHeight = 640     // plasmawindowed sizes its window from these hints
         var w = h.Window.window; if (w) { w.minimumWidth = 700; w.minimumHeight = 640; w.width = 700; w.height = 640 }
         startTimer.start()
@@ -479,6 +480,32 @@ Item {
         check(bar.hoverTip === "No microphone found on this computer.", "compact: the card's tooltip carries the voice reason")
         bar.voiceHint = ""
         check(field.placeholderText === "Ask me to do anything…", "compact: placeholder back to the prompt once the hint expires")
+        // the cloud hint in the compact form: the 36 px card has no room for a chip, so it is the popup's first header row
+        h.savedGates = [bar.configured, bar.aiEnabled, bar.daemonUp, bar.provider]
+        bar.configured = true; bar.aiEnabled = true; bar.daemonUp = true
+        bar.provider = "local"
+        check(bar.cloudHint === true && compactHint.visible && !cloudHint.visible, "compact + built-in model: the cloud hint shows in the popup, not in the card (" + compactHint.visible + "/" + cloudHint.visible + ")")
+        check(compactHint.label.text === "Using the built-in model. For the best results use a cloud model", "compact chip wording")
+        compactHintTimer.start()                                 // the popup's height follows on the next passes (200 ms growth)
+    } }
+    property var savedGates: []
+    Timer { id: compactHintTimer; interval: 400; onTriggered: {
+        var cyp = compactHint.mapToItem(panelMain, 0, 0).y, hyp = panelHeader.mapToItem(panelMain, 0, 0).y
+        check(compactHint.Window.window === popup.item && compactHint.height > 0 && hyp >= cyp + compactHint.height + 6 - 0.5, "compact chip lives in the popup window above the header row (chip y " + Math.round(cyp) + " h " + Math.round(compactHint.height) + ", header y " + Math.round(hyp) + ")")
+        check(popup.item.mainItem.height >= compactHint.height + 6 + panelHeader.implicitHeight + 6 + 16, "the popup grew to hold the chip (mainItem " + Math.round(popup.item.mainItem.height) + " px)")
+        // render the popup with the chip as its first header row (the grab is asynchronous: the rest of the stage follows in compactHintTail)
+        if (!popup.item.mainItem.grabToImage(function (r) { r.saveToFile("/out/askbar-compact-hint.png"); console.log("PASS grabbed compact-hint (the compact popup: cloud hint chip above the header row)"); compactHintTail.start() }))
+            { check(false, "grabToImage on the compact popup"); compactHintTail.start() }
+    } }
+    Timer { id: compactHintTail; interval: 50; onTriggered: {
+        compactHint.chooseItem.clicked()
+        check(bar.lastOpenArgs === "--settings provider", "compact chip Choose opens Fab AI Controls on Settings › AI provider (" + bar.lastOpenArgs + ")")
+        compactHint.dismiss()
+        check(bar.cloudHintDismissed === true && !compactHint.visible, "compact chip × dismisses (remembered for the session)")
+        bar.cloudHintDismissed = false
+        bar.provider = "claude"
+        check(!compactHint.visible && !cloudHint.visible, "compact + cloud provider: no chip anywhere")
+        bar.configured = h.savedGates[0]; bar.aiEnabled = h.savedGates[1]; bar.daemonUp = h.savedGates[2]; bar.provider = h.savedGates[3]
         // grow back to the home-screen strip
         bar.Layout.minimumHeight = 640; bar.Layout.preferredHeight = 640
         var w = h.Window.window; if (w) { w.minimumHeight = 640; w.height = 640 }
@@ -517,6 +544,7 @@ Item {
         var st = { mode: "auto", provider: "local", provider_ready: true, ai_enabled: true, tasks: {}, pending_approvals: 0 }
         bar.onStatus(st)
         check(bar.provider === "local" && bar.cloudHint === true && cloudHint.visible, "local provider: the cloud hint chip shows under the field")
+        check(!compactHint.visible && compactHint.height === 0, "desktop form: the popup's copy of the chip stays hidden and takes no height")
         check(cloudHintText.text === "Using the built-in model. For the best results use a cloud model", "chip wording")
         chipGeometry.start()                                     // the ColumnLayout re-polishes on the next event-loop pass
     } }
@@ -626,6 +654,12 @@ Item {
         check(!viewer.active && viewer.item === null && bar.viewerImage === null, "Regenerate closes the viewer")
         check(bar.sending && bar.pendingRequest === "regenerate the image with the same prompt" && bar.serial === s0 + 1, "…and posts the follow-up 'regenerate the image with the same prompt'")
         check(bar.followUp === true && bar.rootTaskId === 40, "the follow-up threads under root task 40 (parent_id)")
+        // a second Regenerate while that POST is still in flight is not a silent no-op
+        bar.openImage(h.imgPath, h.imgPrompt, "local")
+        var s1 = bar.serial
+        viewer.item.viewer.regenBtn.clicked()
+        check(!viewer.active && bar.serial === s1 && bar.sending === true, "Regenerate while sending: the viewer closes and nothing else is posted")
+        check(bar.status === "Still sending your last request — try Regenerate again in a moment" && bar.showStatus && statusText.visible, "…and the status line says why (" + bar.status + ")")
         bar.openImage(h.imgPath, h.imgPrompt, "local")
         check(viewer.active && viewer.item.visible, "the viewer opens again from a card")
         viewer.item.viewer.closeRequested()                            // what Close and the Esc handler emit

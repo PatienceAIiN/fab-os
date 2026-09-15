@@ -58,11 +58,12 @@ PlasmoidItem {
     property bool sending: false
     property string pendingRequest: ""
     readonly property bool showStatus: !configured || !aiEnabled || !daemonUp || (busy && panelMode === "closed") || sending || status.length > 0
-    // cloud hint: with the built-in (local) model a dismissible chip under the field suggests a cloud model; the dismissal
-    // lasts the session (a plain property, not Plasmoid.configuration) and the chip never shows with a cloud provider
+    // cloud hint: with the built-in (local) model a dismissible chip suggests a cloud model — under the field inside the card
+    // on the desktop, the first row of the popup's header in the compact (panel) form (CloudHintChip.qml, one component in
+    // two places). The dismissal lasts the session (a plain property, not Plasmoid.configuration); never with a cloud provider
     property string provider: ""              // GET /status provider id ("local" = the built-in model)
     property bool cloudHintDismissed: false
-    readonly property bool cloudHint: onDesktop && provider === "local" && !cloudHintDismissed && configured && aiEnabled && daemonUp
+    readonly property bool cloudHint: provider === "local" && !cloudHintDismissed && configured && aiEnabled && daemonUp
     property string lastOpenArgs: ""          // arguments of the last `fabos-command-center` launch (the harness reads it)
 
     // ---- generated images: one card per file, appended once `[ -f ]` confirmed the file (see offerImage); the viewer below
@@ -264,10 +265,11 @@ PlasmoidItem {
         if (follow) body.parent_id = root.rootTaskId
         root.api(follow ? "follow" : "create", 0, "POST", "/tasks", body)
     }
-    // the viewer's Regenerate: a follow-up in the same conversation (the daemon has the prompt in the task context)
+    // the viewer's Regenerate: a follow-up in the same conversation (the daemon has the prompt in the task context). Never a
+    // silent no-op: while the previous POST is still in flight the viewer closes and the status line says why
     function regenerateImage() {
         root.closeImage()
-        if (root.sending) return
+        if (root.sending) { root.say("Still sending your last request — try Regenerate again in a moment"); return }
         root.wake()
         if (!root.daemonUp || !root.configured || !root.aiEnabled) { root.say("The Fab OS agent cannot take requests right now — click here to open Fab AI Controls"); return }
         root.postRequest("regenerate the image with the same prompt", root.rootTaskId > 0)
@@ -687,36 +689,14 @@ PlasmoidItem {
                                 onClicked: root.openControls(root.configured && root.aiEnabled ? "" : "--settings" + (field.text.trim().length ? " --prefill " + root.shellQuote(field.text.trim()) : "")) }
                 }
             }
-            Rectangle {   // cloud hint chip (built-in model only): "Using the built-in model…" · Choose (Fab AI Controls › Settings › AI provider) · dismiss
+            CloudHintChip {   // cloud hint chip (built-in model only): "Using the built-in model…" · Choose (Fab AI Controls › Settings › AI provider) · dismiss
                 id: cloudHint
                 Layout.fillWidth: true
                 Layout.leftMargin: (root.compact ? 22 : 32) + Kirigami.Units.smallSpacing * 2
-                visible: root.cloudHint
-                implicitHeight: 30
-                radius: 12
-                color: Kirigami.Theme.alternateBackgroundColor
-                border.color: root.hairline; border.width: 1
-                RowLayout {
-                    anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 4
-                    spacing: 8
-                    Kirigami.Icon { Layout.preferredWidth: 14; Layout.preferredHeight: 14; source: "dialog-information"; isMask: true; color: Kirigami.Theme.highlightColor }
-                    Text {
-                        id: cloudHintText
-                        Layout.fillWidth: true
-                        text: "Using the built-in model. For the best results use a cloud model"
-                        color: Kirigami.Theme.textColor; opacity: 0.8; font.family: "Inter"; font.pixelSize: 12; elide: Text.ElideRight
-                    }
-                    Text {
-                        id: cloudChoose
-                        text: "Choose"
-                        color: Kirigami.Theme.highlightColor; font.family: "Inter"; font.pixelSize: 12; font.weight: Font.DemiBold
-                        opacity: chooseArea.containsMouse ? 1.0 : 0.85
-                        signal clicked()
-                        onClicked: root.openControls("--settings provider")
-                        MouseArea { id: chooseArea; anchors.fill: parent; anchors.margins: -6; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: cloudChoose.clicked() }
-                    }
-                    IconButton { id: cloudHintClose; icon: "window-close"; tip: "Dismiss for now"; size: 22; iconSize: 14; onClicked: root.dismissCloudHint() }
-                }
+                hairline: root.hairline
+                visible: root.cloudHint && root.onDesktop      // the 36 px compact card has no room: there the chip is compactHint in the popup
+                onChoose: root.openControls("--settings provider")
+                onDismiss: root.dismissCloudHint()
             }
         }
         QQC2.ToolTip.visible: root.compact && root.hoverTip.length > 0 && hoverHandler.hovered
@@ -740,7 +720,7 @@ PlasmoidItem {
         // content height: fixed header + list + fixed foot (typing dots while working) capped by the strip; the one-line
         // pill when minimised. Below the cap the panel grows with its rows (200 ms, no scrollbar); at the cap the list
         // scrolls and the 6 px overlay bar appears (`overflowing`).
-        readonly property real wanted: panelHeader.implicitHeight + 6 + list.contentHeight + panelFoot.height + 16
+        readonly property real wanted: (compactHint.visible ? compactHint.height + 6 : 0) + panelHeader.implicitHeight + 6 + list.contentHeight + panelFoot.height + 16
         readonly property real contentTarget: root.panelMode === "min" ? minPill.implicitHeight : Math.min(root.maxPanelHeight, wanted)
         readonly property bool overflowing: root.panelMode === "open" && wanted > root.maxPanelHeight + 0.5
         property real panelHeight: contentTarget
@@ -771,9 +751,20 @@ PlasmoidItem {
                 opacity: root.panelMode === "open" ? root.openProgress : 0
                 Behavior on opacity { NumberAnimation { duration: 200 } }
 
+                CloudHintChip {   // compact (panel) form only: the card is 36 px tall, so the cloud hint is the popup's first header row
+                    id: compactHint
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.leftMargin: 6; anchors.rightMargin: root.listGutter
+                    hairline: root.hairline
+                    visible: root.compact && root.cloudHint
+                    height: visible ? implicitHeight : 0
+                    onChoose: root.openControls("--settings provider")
+                    onDismiss: root.dismissCloudHint()
+                }
                 RowLayout {   // status line left, icon controls right
                     id: panelHeader
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: compactHint.bottom
+                    anchors.topMargin: compactHint.visible ? 6 : 0
                     spacing: 2
                     Spinner { visible: root.taskActive; running: root.panelMode === "open"; Layout.preferredWidth: 14; Layout.preferredHeight: 14; Layout.leftMargin: 6 }
                     Kirigami.Icon { visible: !root.taskActive && root.taskStatus === "done"; source: "checkmark"; isMask: true; color: Kirigami.Theme.positiveTextColor; Layout.preferredWidth: 16; Layout.preferredHeight: 16; Layout.leftMargin: 6 }
