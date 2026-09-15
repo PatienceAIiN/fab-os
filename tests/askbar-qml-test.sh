@@ -7,8 +7,12 @@
 #      PlasmaCore.Dialog on the desktop, no pointer handler on the transparent strip, the containment hit mask so a
 #      right-click on the empty strip is the desktop's), the remembered conversation incl. the service-not-up retry, runs a real
 #      `fabos-voice listen-once` for the mic feedback, instantiates every ConvoDelegate kind / AiMark state and renders
-#      build/askbar-{bar,panel,feed}.png (bar = the whole strip: card + panel stack), then shrinks the window to a panel
-#      thickness to exercise the compact form for real (PlasmaCore.Dialog appears, the mic hint moves into the placeholder).
+#      build/askbar-{bar,panel,feed}.png (bar = the whole strip: card + panel stack), feeds a 40-row conversation with
+#      long lines and one-line code to check the scroll geometry (panel grows to its max with the bottom anchored, then
+#      the 6 px overlay bar sits in the 14 px right gutter with no row under it, the header row stays fixed at y = 0,
+#      the view follows new rows only while at the end; renders build/askbar-scroll-{bottom,top}.png), then shrinks the
+#      window to a panel thickness to exercise the compact form for real (PlasmaCore.Dialog appears, the mic hint moves
+#      into the placeholder).
 #   tests/askbar-qml-test.sh [image]        (default localhost/fabos:vm)
 set -u
 IMG=${1:-localhost/fabos:vm}
@@ -27,7 +31,7 @@ import sys
 p = sys.argv[1]; s = open(p).read().rstrip("\n")
 assert s.endswith("}"), "main.qml must end with the root's closing brace"
 s = s[:-1] + ('    Loader { source: Qt.resolvedUrl("../harness/Driver.qml"); onLoaded: { item.bar = root; item.convo = convo; item.card = card; item.panel = panel; '
-              'item.panelMain = panelMain; item.popup = popupLoader; item.statusText = statusText; item.field = field; item.list = list } }\n}\n')
+              'item.panelMain = panelMain; item.popup = popupLoader; item.statusText = statusText; item.field = field; item.vbar = vbar; item.panelHeader = panelHeader; item.panelFoot = panelFoot; item.list = list } }\n}\n')
 open(p, "w").write(s)
 EOF
 fail=0
@@ -46,12 +50,12 @@ grep -qE "\.(qml|js):[0-9]+" "$T/in.patienceai.fabos.askbartest.log" && { echo "
 checks=$(grep -cE "^qml: (PASS|FAIL) " "$T/in.patienceai.fabos.askbartest.log")
 python3 - "$OUT" <<'EOF'
 import struct, sys, os
-for n in ("bar", "panel", "feed"):   # PNG IHDR: width, height right after the 8-byte signature + 8-byte chunk header
+for n in ("bar", "panel", "feed", "scroll-bottom", "scroll-top"):   # PNG IHDR: width, height right after the 8-byte signature + 8-byte chunk header
     p = os.path.join(sys.argv[1], "askbar-%s.png" % n)
     try:
         with open(p, "rb") as f: w, h = struct.unpack(">II", f.read(24)[16:24])
         print("render askbar-%s.png %dx%d" % (n, w, h))
     except OSError: print("render askbar-%s.png MISSING" % n)
 EOF
-echo "askbar-qml-test: $([ $fail = 0 ] && echo PASS || echo FAIL)  checks=$checks  (renders: $OUT/askbar-{bar,panel,feed}.png)"
+echo "askbar-qml-test: $([ $fail = 0 ] && echo PASS || echo FAIL)  checks=$checks  (renders: $OUT/askbar-{bar,panel,feed,scroll-bottom,scroll-top}.png)"
 exit $fail

@@ -15,7 +15,9 @@ import "../ui" as Ask
 // remembered conversation (incl. the service-not-up-yet retry) and finally the compact form for real: the window is
 // shrunk to a panel thickness so `compact` flips, the PlasmaCore.Dialog appears and the mic hint moves into the
 // placeholder / tooltip, then grown back. Every ConvoDelegate kind and every AiMark state are instantiated too.
-// Prints PASS/FAIL lines and "HARNESS DONE failures=N", renders /out/askbar-{bar,panel,feed}.png, then stops plasmawindowed.
+// A 40-row conversation with long lines and one-line code then checks the scroll geometry (see the scroll stage below).
+// Prints PASS/FAIL lines and "HARNESS DONE failures=N", renders /out/askbar-{bar,panel,feed,scroll-bottom,scroll-top}.png,
+// then stops plasmawindowed.
 Item {
     id: h
     property var bar: null
@@ -26,6 +28,9 @@ Item {
     property var popup: null
     property var statusText: null
     property var field: null
+    property var vbar: null          // the list's overlay ScrollBar (main.qml id vbar)
+    property var panelHeader: null   // fixed control row above the list
+    property var panelFoot: null     // fixed foot (typing dots) below the list
     property var list: null
     property int failures: 0
     property int grabsPending: 0
@@ -34,7 +39,7 @@ Item {
     function rowAt(i) { return convo.get(i) }
     // plasmawindowed opens the applet at its Layout.minimum size (396x128 here) while the desktop layout gives the strip
     // sh*0.66: the harness sizes the applet like a small home screen before the checks (700x640; Screen is 800x600 offscreen)
-    onListChanged: if (bar && convo && card && panel && panelMain && popup && statusText && field && list) {
+    onListChanged: if (bar && convo && card && panel && panelMain && popup && statusText && field && vbar && panelHeader && panelFoot && list) {
         bar.Layout.minimumWidth = 700; bar.Layout.minimumHeight = 640     // plasmawindowed sizes its window from these hints
         var w = h.Window.window; if (w) { w.minimumWidth = 700; w.minimumHeight = 640; w.width = 700; w.height = 640 }
         startTimer.start()
@@ -290,7 +295,108 @@ Item {
     Timer { id: feedTimer; interval: 100; onTriggered: { list.follow = false; list.positionViewAtBeginning(); feedGrab.start() } }
     Timer { id: feedGrab; interval: 400; onTriggered: {
         check(list.atYBeginning, "list scrolled to the top for the feed render")
-        panel.grabToImage(function (r) { r.saveToFile("/out/askbar-feed.png"); console.log("PASS grabbed feed (top: request, chip, live step cards)"); closeTimer.start() })
+        panel.grabToImage(function (r) { r.saveToFile("/out/askbar-feed.png"); console.log("PASS grabbed feed (top: request, chip, live step cards)"); scrollStage.start() })
+    } }
+
+    // ---- scroll geometry and growth: a fresh conversation grows the panel row by row (no scrollbar, bottom anchored
+    // while the height animates), then a 40-row task with long lines and one-line code pushes it to the strip's max:
+    // the 6 px overlay bar appears in the 14 px right gutter with every row clear of it, the header row stays fixed at
+    // y = 0, the fixed foot stays under the list, the view follows the newest row only while the user is at the end.
+    // Renders /out/askbar-scroll-{bottom,top}.png.
+    readonly property string longLine: "This is a deliberately long assistant line that must wrap inside the content width minus the gutter and never run under the scrollbar; it keeps going so that it wraps several times — "
+    readonly property string codeLine: "for f in $(ls ~/Notes/very/long/path/that/keeps/going/and/going/to/force/horizontal/scrolling/inside/the/card); do printf '%s\\n' \"$f\"; done  # one line, no wrap"
+    function longTask(id, turns, firstStep) {
+        var steps = [], sid = firstStep
+        for (var i = 0; i < turns; i++) {
+            steps.push({ id: sid++, task_id: id, kind: "tool_call", name: "run_shell", input: JSON.stringify({ command: "ls ~/Notes" }), output: JSON.stringify({ stdout: "a.txt" }), risk: "LOW", decision: "auto-approved", narration: "Looking at what is in the folder." })
+            steps.push({ id: sid++, task_id: id, kind: "assistant", name: "fake", input: "", output: "Turn " + (i + 1) + ": " + h.longLine + h.longLine + "\n\n```bash\n" + h.codeLine + "\n" + h.codeLine + "\n```", risk: "", decision: "" })
+        }
+        return { id: id, title: "Long one", request: "Tell me everything about my Notes folder, in detail", status: "running", result: null, steps: steps, approvals: [], questions: [] }
+    }
+    function shortTask(id, n, firstStep) {   // n short assistant rows
+        var steps = []
+        for (var i = 0; i < n; i++) steps.push({ id: firstStep + i, task_id: id, kind: "assistant", name: "fake", input: "", output: "Short line " + (i + 1) + ".", risk: "", decision: "" })
+        return { id: id, title: "Long one", request: "Tell me everything about my Notes folder, in detail", status: "running", result: null, steps: steps, approvals: [], questions: [] }
+    }
+    function delegates() { var d = []; for (var i = 0; i < list.contentItem.children.length; i++) { var c = list.contentItem.children[i]; if (c.kind !== undefined && c.width > 0) d.push(c) } return d }
+    // originY: with 40+ rows the ListView estimates the extent of rows it has not created yet and moves its origin
+    function bottomAnchored() { return Math.abs((list.contentY - list.originY) - Math.max(0, list.contentHeight - list.height)) <= 1.5 }
+    property real smallHeight: 0
+    Timer { id: scrollStage; interval: 100; onTriggered: {
+        bar.resetConversation()
+        bar.rootTaskId = 30; bar.taskId = 30; bar.taskRequest = "Tell me everything about my Notes folder, in detail"
+        convo.append(bar.row({ kind: "user", key: "u30", text: bar.taskRequest, status: "request" }))
+        bar.taskStatus = "queued"
+        check(list.follow === true, "a fresh conversation follows the end")
+        check(panelHeader.y === 0 && panelHeader.parent !== list && panelHeader.parent !== list.contentItem, "header row is outside the scroll area, at y = 0")
+        check(panelFoot.parent !== list && panelFoot.parent !== list.contentItem && panelFoot.parent === panelHeader.parent, "foot is outside the scroll area, a sibling of the header")
+        scrollSmall.start()
+    } }
+    Timer { id: scrollSmall; interval: 450; onTriggered: {
+        h.smallHeight = panel.height
+        check(Math.abs(panel.height - panel.contentTarget) <= 1 && panel.height < bar.maxPanelHeight - 40, "one row: the panel shrank to its content, far below the max (" + Math.round(panel.height) + " of " + bar.maxPanelHeight + " px)")
+        check(!panel.overflowing && !vbar.visible, "below the max: no scrollbar")
+        check(panelFoot.height === 26 && list.y + list.height <= panelFoot.y + 0.5, "working: the 26 px foot with the typing dots sits under the list (foot.y " + Math.round(panelFoot.y) + ", list bottom " + Math.round(list.y + list.height) + ")")
+        bar.ingest(shortTask(30, 3, 400))
+        scrollMid.start()
+    } }
+    Timer { id: scrollMid; interval: 90; onTriggered: {
+        check(panel.height > h.smallHeight && panel.height < panel.contentTarget - 1, "three rows in: the panel is mid-growth (" + Math.round(panel.height) + " -> " + Math.round(panel.contentTarget) + " px)")
+        check(bottomAnchored(), "mid-growth the newest row stays anchored at the bottom edge (contentY " + (list.contentY - list.originY).toFixed(1) + ", contentHeight - height " + (list.contentHeight - list.height).toFixed(1) + ")")
+        check(!vbar.visible, "mid-growth: still no scrollbar")
+        scrollBig.start()
+    } }
+    Timer { id: scrollBig; interval: 400; onTriggered: {
+        check(Math.abs(panel.height - panel.contentTarget) <= 1 && panel.height < bar.maxPanelHeight && panel.height > h.smallHeight + 40, "grew to fit the new rows, still under the max (" + Math.round(panel.height) + " px)")
+        check(!vbar.visible && list.atYEnd, "fits: no scrollbar, view at the end")
+        bar.ingest(longTask(30, 13, 500))
+        check(convo.count >= 40, "40-row conversation ingested (" + convo.count + " rows)")
+        scrollEnd.start()
+    } }
+    Timer { id: scrollEnd; interval: 700; onTriggered: {
+        var right = list.width - list.gutter
+        check(Math.abs(panel.height - bar.maxPanelHeight) <= 1 && panel.overflowing, "at the max height the panel stops growing (" + Math.round(panel.height) + " px) and the list scrolls")
+        check(vbar.visible && vbar.size < 1 && vbar.width === 6, "scrollbar appears once at max: overlay, 6 px wide (size " + vbar.size.toFixed(2) + ")")
+        check(vbar.x >= right - 0.5 && vbar.x + vbar.width <= list.width + 0.5, "scrollbar x (" + Math.round(vbar.x) + ") >= content right edge (" + Math.round(right) + ") inside the 14 px gutter")
+        var ds = delegates(), wideOk = true, underBar = 0, widest = 0
+        for (var i = 0; i < ds.length; i++) { widest = Math.max(widest, ds[i].width); if (ds[i].width > right + 0.5) wideOk = false; if (ds[i].x + ds[i].width > vbar.x + 0.5) underBar++ }
+        check(ds.length >= 3 && wideOk && underBar === 0, ds.length + " live delegates: none wider than list.width - gutter (widest " + Math.round(widest) + " of " + Math.round(right) + "), none under the bar")
+        check(list.atYEnd && bottomAnchored(), "the view followed the newest row to the end (contentY - originY " + (list.contentY - list.originY).toFixed(1) + ", contentHeight - height " + (list.contentHeight - list.height).toFixed(1) + ")")
+        check(panelHeader.y === 0 && panelHeader.visible && panelHeader.height > 0 && list.y >= panelHeader.height, "header row still at y = 0 above the list after following to the end")
+        check(list.y + list.height <= panelFoot.y + 0.5 && panelFoot.y + panelFoot.height <= panelFoot.parent.height + 0.5, "fixed foot under the list, inside the panel")
+        // long text wraps inside the row; code keeps its line and scrolls sideways inside its own card
+        var textBlocks = 0, codeCards = 0, wrapped = 0, wideCards = 0, cardsFit = 0
+        for (var d = 0; d < ds.length; d++) {
+            if (ds[d].kind !== "assistant" || !ds[d].children[0] || !ds[d].children[0].item) continue
+            var col = ds[d].children[0].item
+            for (var c = 0; c < col.children.length; c++) {
+                var it = col.children[c].item
+                if (!it) continue
+                if (it.wide !== undefined) { codeCards++; if (it.wide && it.overflow > 0) wideCards++; if (it.width <= ds[d].width + 0.5) cardsFit++ }
+                else if (it.lineCount !== undefined) { textBlocks++; if (it.contentWidth <= it.width + 0.5 && it.contentHeight > it.font.pixelSize * 2 && it.width <= ds[d].width + 0.5) wrapped++ }   // RichText has no lineCount: judge by the laid-out size
+            }
+        }
+        check(textBlocks > 0 && wrapped === textBlocks, "long assistant text wraps inside the row width (" + wrapped + "/" + textBlocks + " blocks: contentWidth <= width, several lines tall)")
+        check(codeCards > 0 && wideCards === codeCards && cardsFit === codeCards, "one-line code overflows sideways inside its card (" + wideCards + "/" + codeCards + " cards), none widens the row")
+        panel.grabToImage(function (r) { r.saveToFile("/out/askbar-scroll-bottom.png"); console.log("PASS grabbed scroll-bottom (40 rows, bar in the gutter, header fixed)"); scrollTop.start() })
+    } }
+    Timer { id: scrollTop; interval: 100; onTriggered: { list.follow = false; list.positionViewAtBeginning(); scrollTopCheck.start() } }
+    Timer { id: scrollTopCheck; interval: 300; onTriggered: {
+        check(list.atYBeginning && !list.atYEnd, "scrolled to the top")
+        check(panelHeader.y === 0 && Math.abs(panel.height - bar.maxPanelHeight) <= 1, "header still at y = 0, panel height unchanged by scrolling")
+        var ds = delegates(), underBar = 0
+        for (var i = 0; i < ds.length; i++) if (ds[i].x + ds[i].width > vbar.x + 0.5) underBar++
+        check(ds.length >= 3 && underBar === 0, "at the top: " + ds.length + " live delegates, none under the bar")
+        bar.ingest(shortTask(30, 1, 600))     // a new row while the user reads the top
+        scrollKeep.start()
+    } }
+    Timer { id: scrollKeep; interval: 300; onTriggered: {
+        check(list.atYBeginning && !list.atYEnd && !list.follow, "a new row does not yank the view while the user is scrolled up")
+        panel.grabToImage(function (r) { r.saveToFile("/out/askbar-scroll-top.png"); console.log("PASS grabbed scroll-top (request pill clear of the gutter, header fixed)"); list.positionViewAtEnd(); list.follow = true; bar.ingest(shortTask(30, 1, 601)); scrollFollow.start() })
+    } }
+    Timer { id: scrollFollow; interval: 300; onTriggered: {
+        check(list.atYEnd && list.follow, "back at the end the view follows new rows again")
+        closeTimer.start()
     } }
     Timer { id: closeTimer; interval: 200; onTriggered: {
         // Edit prompt while the panel shrinks: the next submit must be a fresh task, and a task created inside the

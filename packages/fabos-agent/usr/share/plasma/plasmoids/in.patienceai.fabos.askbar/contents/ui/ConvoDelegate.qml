@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
+import QtQuick.Templates as T
 import org.kde.kirigami as Kirigami
 import "agent.js" as Agent
 
@@ -59,7 +60,8 @@ Item {
     NumberAnimation { id: revealAnim; target: del; property: "reveal"; from: 0; to: del.typedCapped.length; duration: Math.min(8000, 25 * Math.max(1, del.typedCapped.length)) }
     Component.onCompleted: if (kind === "step" && typed.length && (status === "running" || status === "pending")) { typewriter = true; revealAnim.start() }
 
-    width: ListView.view ? ListView.view.width : 600
+    // the list's right gutter (14 px) is the overlay scrollbar's lane: every row stops short of it, so nothing is ever under the bar
+    width: ListView.view ? ListView.view.width - (ListView.view.gutter || 0) : 600
     implicitHeight: collapsed ? 0 : (loader.item ? loader.item.implicitHeight + 8 : 0)
     height: implicitHeight
     clip: kind === "step"
@@ -133,19 +135,50 @@ Item {
             HoverHandler { cursorShape: parent.hoveredLink.length ? Qt.PointingHandCursor : Qt.ArrowCursor }
         }
     }
+    // Code keeps its lines: a long line scrolls sideways INSIDE the card (own 6 px overlay bar under the text) and never
+    // widens the row or the list. Vertical wheel / drag over a card that fits (or in the vertical direction) still scrolls the chat.
     Component {
         id: codeBlock
         Rectangle {
+            id: codeCard
             radius: 12
             color: del.codeBg
-            implicitHeight: codeText.implicitHeight + 20
-            TextEdit {
-                id: codeText
+            clip: true
+            readonly property bool wide: codeText.implicitWidth > codeFlick.width + 0.5      // needs the sideways scroll
+            readonly property real overflow: Math.max(0, codeText.implicitWidth - codeFlick.width)
+            implicitHeight: codeText.implicitHeight + 20 + (wide ? 10 : 0)                     // room for the bar under the last line
+            Flickable {
+                id: codeFlick
                 anchors.fill: parent; anchors.margins: 10
-                readOnly: true; selectByMouse: true
-                text: block.text; wrapMode: TextEdit.Wrap; textFormat: TextEdit.PlainText
-                color: Kirigami.Theme.textColor; selectionColor: Kirigami.Theme.highlightColor; selectedTextColor: Kirigami.Theme.highlightedTextColor
-                font.family: del.mono; font.pixelSize: 13
+                contentWidth: Math.max(width, codeText.implicitWidth); contentHeight: height
+                flickableDirection: Flickable.HorizontalFlick
+                boundsBehavior: Flickable.StopAtBounds
+                maximumFlickVelocity: 2000
+                interactive: codeCard.wide
+                clip: true
+                TextEdit {
+                    id: codeText
+                    width: Math.max(codeFlick.width, implicitWidth)
+                    readOnly: true; selectByMouse: true
+                    text: block.text; wrapMode: TextEdit.NoWrap; textFormat: TextEdit.PlainText
+                    color: Kirigami.Theme.textColor; selectionColor: Kirigami.Theme.highlightColor; selectedTextColor: Kirigami.Theme.highlightedTextColor
+                    font.family: del.mono; font.pixelSize: 13
+                }
+                QQC2.ScrollBar.horizontal: T.ScrollBar {
+                    id: hbar
+                    policy: codeCard.wide ? T.ScrollBar.AsNeeded : T.ScrollBar.AlwaysOff
+                    visible: policy !== T.ScrollBar.AlwaysOff && size > 0 && size < 1
+                    implicitHeight: 6; height: 6
+                    minimumSize: 0.1
+                    padding: 0
+                    hoverEnabled: true
+                    contentItem: Rectangle {
+                        implicitHeight: 6; radius: 3
+                        color: Kirigami.Theme.textColor
+                        opacity: hbar.pressed ? 0.6 : (hbar.hovered || codeFlick.moving ? 0.5 : 0.28)
+                        Behavior on opacity { NumberAnimation { duration: 160 } }
+                    }
+                }
             }
         }
     }
