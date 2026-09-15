@@ -17,6 +17,27 @@
   one provider the user selected. The System-Wide AI switch turns the agent
   off entirely; the permission mode (Ask / Auto / Bypass) governs which actions
   need the user's approval before they run.
+- Pictures (ADR-0021). When a task asks for an image, the agent's
+  `generate_image` tool sends the image prompt — the description, nothing
+  else — to the one image provider chosen by the rules in that ADR: the
+  active provider when it is OpenAI or Gemini, the OpenAI or Gemini key the
+  user added otherwise, or an image server on the user's own machine
+  (`images.local_endpoint`); `fabos settings images.provider` pins it. When
+  that provider differs from the chat provider, the step's result names it
+  and `/status` says so in advance. The picture is written to
+  `~/Pictures/Fab OS/` on this computer and is never uploaded anywhere; the
+  activity log records provider, model, size and the file path — whose name
+  is derived from the first 40 characters of the prompt — but not the prompt
+  itself.
+  Providers without an image API (Claude, DeepSeek, the built-in model) send
+  nothing: the agent says that it cannot draw.
+- Ollama (ADR-0022) is the user's own installation, never bundled or
+  downloaded by Fab OS. With it selected, prompts and tool results go to
+  `127.0.0.1:11434` on this machine only, like the built-in model's; the
+  agent reads Ollama's model list from the same loopback address. `fabos
+  ollama install --yes` runs Ollama's official installer, which downloads its
+  software from ollama.com, only after the user's explicit confirmation and
+  password.
 - One connectivity probe, only when a task needs the web (ADR-0020). When the
   built-in model runs a task whose request names a web page or URL, the agent
   first checks whether the internet is reachable so the model is told

@@ -12,6 +12,8 @@
 # Env:  ANTHROPIC_API_KEY (required unless --provider local)
 #       MAIL_ADDRESS + MAIL_APP_PASSWORD + MAIL_TO [MAIL_PROVIDER=gmail|outlook|yahoo|zoho|icloud|other] — the user's OWN mail
 #       account (ADR-0014) for L2-f and L4-e; without them those two are recorded as optional SKIPs that do not fail the run
+#       OPENAI_API_KEY — optional: L2-g (generate_image, ADR-0021) sets images.provider=openai for that one task; without it, and
+#       with an active provider that has no image API (Claude, DeepSeek, the built-in model), L2-g is an optional SKIP
 #       MODEL (default claude-opus-5)  VM_MEM (default 2048)  INJECT=1 (push working-tree agent files first)
 #       LOCAL_BASE_URL (default http://127.0.0.1:8080/v1 for --provider local)
 # Out:  build/agent-ladder-vm.out        full log
@@ -484,6 +486,32 @@ if want l2-f; then   # SHOW YOUR WORK + MAIL: "write a hi note and send it to X"
       if [ $rc -eq 0 ] && check "hi-note.txt holds the note" "$CK l2f"; then verdict PASS l2-f "$ORDER_EV | $mailev | $EV"; else verdict FAIL l2-f "$ORDER_EV | $mailev | $EV | task=$TASK_STATUS"; fi
     else verdict FAIL l2-f "$ORDER_EV | task=$TASK_STATUS"; fi
   fi
+fi
+
+if want l2-g; then   # IMAGE (ADR-0021): a generate_image step AND a real PNG under ~/Pictures/Fab OS/ (checks.py l2g reads the IHDR).
+  task_defaults      # The built-in model has no image API: with OPENAI_API_KEY exported the ladder points images.provider at OpenAI for
+                     # this task only; otherwise, when /status says images.ready=false, the task is an optional SKIP.
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    vm "printf '%s\n' '$OPENAI_API_KEY' | fabos set-key openai >/dev/null 2>&1; fabos settings images.provider openai >/dev/null"
+  fi
+  IMG_CAP=$(api GET /status | python3 -c 'import json,sys; d=json.load(sys.stdin).get("images") or {}; print(("ready" if d.get("ready") else "no") + " " + str(d.get("provider") or "") + " " + str(d.get("detail") or ""))' 2>/dev/null)
+  echo "    image capability: $IMG_CAP"
+  case "$IMG_CAP" in
+    ready*)
+      vm 'touch ~/.ladder-l2g-start'
+      run_task l2-g $T2 auto "Draw a simple picture of a blue circle and tell me where you saved it."
+      if step_order generate_image; then
+        if check "PNG saved under ~/Pictures/Fab OS" "$CK l2g"; then
+          grep -qiE "Pictures|\.png" build/ladder-last-result.txt || NOTE="the agent did not name the saved path in its reply"
+          verdict PASS l2-g "$ORDER_EV | $EV"
+        else verdict FAIL l2-g "$ORDER_EV | $EV | task=$TASK_STATUS"; fi
+      else verdict FAIL l2-g "$ORDER_EV | task=$TASK_STATUS"; fi
+      [ -n "${OPENAI_API_KEY:-}" ] && vm "fabos settings images.provider '' >/dev/null"
+      vm 'rm -f ~/.ladder-l2g-start';;
+    *)
+      NOTE="optional: the active provider cannot generate images (${IMG_CAP#no }) — export OPENAI_API_KEY, or add a Gemini key / images.local_endpoint"
+      verdict SKIP l2-g "$NOTE";;
+  esac
 fi
 
 ################################################################################################################

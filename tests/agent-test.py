@@ -1443,6 +1443,64 @@ class Daemon(unittest.TestCase):
             self.cli("settings", "agent.driver", "")
         self.assertEqual(self.cli("status")["driver"], "freeform")
 
+    # ---- images (ADR-0021) and Ollama (ADR-0022) through the running daemon and the CLI
+    def test_34_draw_a_cat_generates_an_image_file(self):
+        """The FakeProvider scenario for the ask-bar harness and the ladder's L2-g: 'draw a cat' -> ONE generate_image step (MEDIUM, auto-approved
+        in auto mode) -> a real PNG under ~/Pictures/Fab OS -> the closing line names the saved path (read from the tool result, never invented)."""
+        st = self.cli("status"); self.assertEqual(st["images"], {"provider": "fake", "ready": True, "detail": "the test provider draws a placeholder"})
+        r = self.cli("do", "--mode", "auto", "draw a cat"); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        steps = [s for s in t["steps"] if s["kind"] == "tool_call"]; self.assertEqual([s["name"] for s in steps], ["generate_image"])
+        self.assertEqual((steps[0]["risk"], steps[0]["decision"], steps[0]["narration"], steps[0]["narration_done"]),
+                         ("MEDIUM", "auto-approved", "Generating the image now.", "Done, the image is saved in Pictures."))
+        out = json.loads(steps[0]["output"]); folder = os.path.join(self.env["HOME"], "Pictures", "Fab OS")
+        self.assertEqual(out["provider"], "fake"); self.assertTrue(out["path"].startswith(folder + os.sep), out["path"])
+        self.assertRegex(os.path.basename(out["path"]), r"^\d{4}-\d{2}-\d{2}-cat-1\.png$")
+        with open(out["path"], "rb") as f:
+            head = f.read(24)
+        self.assertEqual(head[:8], b"\x89PNG\r\n\x1a\n"); self.assertEqual((out["width"], out["height"]), (512, 512))
+        self.assertIn(out["path"], t["result"]); self.assertIn("image_generated", [e["kind"] for e in self.cli("log")])
+        # in ask mode the MEDIUM step waits for the user's approval first
+        r = self.cli("do", "--mode", "ask", "draw a red square"); t = self.wait(r["id"], ("waiting_approval", "done", "failed")); self.assertEqual(t["status"], "waiting_approval", t)
+        a = self.cli("approvals")[0]; self.assertEqual((a["tool"], a["risk"]), ("generate_image", "MEDIUM")); self.cli("approve", str(a["id"]))
+        t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        self.assertEqual(len([n for n in os.listdir(folder) if n.endswith(".png")]), 2)
+
+    def test_35_stepwise_image_task_and_the_ladder_l2g_check(self):
+        """The same on the small-model driver: one generate_image step + a reply that names the path; tests/ladder/checks.py l2g (the ladder's
+        objective check for L2-g) accepts the file."""
+        t = self.stepwise("stepwise: draw a blue circle and tell me where you saved it", mode="auto")
+        self.assertEqual(t["status"], "done", t); self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["generate_image"])
+        ver = self.kinds(t, "verify", "generate_image"); self.assertEqual(len(ver), 1, ver); self.assertTrue(ver[0]["output"].startswith("ok: image saved: "), ver)
+        out = json.loads(self.kinds(t, "tool_call")[0]["output"]); self.assertEqual(t["result"], "Done, the image is saved at %s." % out["path"])
+        env = dict(self.env, LADDER_EXPECTED=os.path.join(ROOT, "tests/ladder/expected.json"))
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "tests/ladder/checks.py"), "l2g"], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr); self.assertIn("is a 256x256 PNG", r.stdout)
+
+    def test_35b_stepwise_image_task_without_a_provider_fails_once_with_the_setting_to_change(self):
+        """images.provider names a key that is not stored: the generate_image step fails on configuration, which no retry can change — the
+        task ends after ONE attempt with the tool's own sentence, not after STEP_RETRIES identical tries (reviewed 2026-09-16)."""
+        self.cli("settings", "images.provider", "openai")
+        try:
+            self.assertFalse(self.cli("status")["images"]["ready"])
+            t = self.stepwise("stepwise: draw a red square", mode="auto")
+        finally:
+            self.cli("settings", "images.provider", "")
+        self.assertEqual(t["status"], "failed", t); self.assertEqual(len(self.kinds(t, "tool_call")), 1, t)
+        self.assertEqual(t["error"], "images.provider is openai but no OpenAI key is stored: add it in Settings")
+        self.assertTrue(any("not retried" in s["output"] for s in self.kinds(t, "verify", "generate_image")), t)
+
+    def test_36_ollama_cli_never_installs_silently(self):
+        """`fabos ollama install` prints the official command and runs nothing without --yes; `fabos ollama status` reports without a traceback
+        whether or not an Ollama is running on this machine."""
+        r = subprocess.run([sys.executable, CLI, "ollama", "install"], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr); self.assertIn("curl -fsSL https://ollama.com/install.sh | sh", r.stdout); self.assertIn("--yes", r.stdout); self.assertIn("not part of Fab OS", r.stdout)
+        self.assertFalse(any(e["kind"].startswith("ollama_install") for e in self.cli("log")))
+        st = self.cli("ollama", "status"); self.assertEqual(set(st) >= {"installed", "running", "models", "model", "ram_gib", "max_parameters_b", "install_command", "bundled"}, True, st); self.assertFalse(st["bundled"])
+        r = subprocess.run([sys.executable, CLI, "ollama", "status"], env=self.env, capture_output=True, text=True, timeout=40)
+        self.assertIn("Ollama:", r.stdout); self.assertIn("RAM", r.stdout); self.assertEqual(r.returncode, 0 if st["running"] else 1)
+        s = self.cli("settings"); self.assertEqual(s["providers"]["ollama"]["label"], "Ollama (on this computer)"); self.assertEqual(s["ollama.model"], ""); self.assertEqual(s["images.provider"], "")
+        self.assertEqual(self.cli("set-key", "ollama", "--remove"), {"ok": True, "removed": True})       # set-key knows the ollama_api_key the PROVIDERS table declares
+
 
 class StepwiseUnits(unittest.TestCase):
     """In-process checks of the small-model driver's pieces (ADR-0020): plan parsing, deterministic step checks, the compact
@@ -1592,6 +1650,11 @@ class StepwiseUnits(unittest.TestCase):
         self.assertEqual(fa.plan_max_steps("Copy /tmp/a to ~/b so that ~/b holds the same files."), 3)                                # 1 sentence -> 3
         self.assertEqual(fa.plan_max_steps("Count the files in /tmp/x (regular files only). Do not change any file. End your reply with FILE COUNT: <n>"), 5)
         self.assertEqual(fa.plan_max_steps(". ".join(["Do this"] * 12) + "."), fa.PLAN_MAX_STEPS)
+        # one sentence that lists its steps with dashes / "then" gets room for them (measured on the held-out h-f, 2026-09-16: 3 steps squeezed the index step out)
+        self.assertEqual(fa.plan_max_steps("Create the folder ~/Ladder/pack, write two files inside it — a.txt containing apple and b.txt containing banana — then list the names into ~/Ladder/pack/index.txt, one per line."), 5)
+        self.assertEqual(fa.plan_max_steps("Make ~/a; then make ~/b; then make ~/c; then make ~/d; finally list them"), fa.PLAN_MAX_STEPS)
+        # a semicolon is a sentence break, counted once (reviewed 2026-09-16: it was also a clause break, so two clauses got room for 6 steps)
+        self.assertEqual(fa.plan_max_steps("Make ~/a; then make ~/b"), 5); self.assertEqual(fa.plan_max_steps("Copy a to b; list them."), 4)
         web = [{"tool": "run_shell", "goal": "web_fetch 'https://example.com/api/grand_total'"}, {"tool": "save_result", "goal": "save the api answer"}]
         self.assertIn("every step uses the web", fa.plan_reject_reason("Add the amount column of /tmp/a.csv and /tmp/b.csv into ~/total.txt", web))
         self.assertIsNone(fa.plan_reject_reason("Fetch https://example.com/api and save it", web))                                    # the task names a URL
@@ -1669,8 +1732,8 @@ class StepwiseUnits(unittest.TestCase):
 
     def test_local_prompt_budget_and_content(self):
         s = fa.local_system_prompt("auto", {"online": True})
-        self.assertLess(len(s), 3000, len(s))            # measured with the model's tokenizer in the image (tests/local-driver-image.sh prints it at every run, ADR-0020): 803 tokens for 2 930 chars, ~3.6 chars per token, so 3 000 chars stays under the 900-token budget
-        for must in ("ONE tool call", "Never say a step is done", "Show your work", "web_fetch", "run_shell", "write_file", "save_result", "open_app", "type_text", "Internet: ONLINE", "never need it", "Permission mode: auto", fa.HOME):
+        self.assertLess(len(s), 3200, len(s))            # measured with the model's tokenizer in the image (tests/local-driver-image.sh prints it at every run, ADR-0020/0021): 849 tokens for 3 104 chars on 2026-09-16, ~3.65 chars per token, so 3 200 chars stays under the 900-token budget
+        for must in ("ONE tool call", "Never say a step is done", "Show your work", "web_fetch", "run_shell", "write_file", "save_result", "open_app", "type_text", "generate_image", "Internet: ONLINE", "never need it", "Permission mode: auto", fa.HOME):
             self.assertIn(must, s)
         self.assertIn("Internet: OFFLINE", fa.local_system_prompt("ask", {"online": False})); self.assertIn("Internet: unknown", fa.local_system_prompt("ask", {"online": None}))
         self.assertIn("Internet: not checked — this task names no web page or URL", fa.local_system_prompt("ask", dict(fa.NET_SKIPPED)))
@@ -1680,13 +1743,21 @@ class StepwiseUnits(unittest.TestCase):
         prompts = (fa.LOCAL_SYSTEM_PROMPT + fa.PLAN_SYSTEM + fa.CHECK_SYSTEM + fa.FINISH_SYSTEM).lower()
         for w in ("qty", "stock-", ".log", ".bak", "smallest", "heldout", "logs-copy", "tiny.cfg"):
             self.assertNotIn(w, prompts, w)
-        self.assertLess(len(fa.PLAN_SYSTEM), 2500); self.assertIn("reply", fa.PLAN_SYSTEM)     # measured with the model tokenizer (build/tokens.sh, ADR-0020): ~4.2 chars per token, so ~550 tokens
+        self.assertLess(len(fa.PLAN_SYSTEM), 2800); self.assertIn("reply", fa.PLAN_SYSTEM)     # measured with the model tokenizer (build/tokens.sh, 2026-09-16): 637 tokens for the rendered prompt of 2 662 chars, so 2 800 chars stays around 700 tokens
         sch = fa.plan_schema(["run_shell", "reply"]); self.assertEqual(sch["properties"]["steps"]["items"]["properties"]["tool"]["enum"], ["run_shell", "reply"]); self.assertEqual(sch["properties"]["steps"]["maxItems"], fa.PLAN_MAX_STEPS)
 
     def test_driver_selection(self):
         tmp = tempfile.mkdtemp(prefix="fabos-drv-"); st = fa.Store(os.path.join(tmp, "a.db"))
         try:
             self.assertEqual(fa.driver_name(st, "local"), "stepwise"); self.assertEqual(fa.driver_name(st, "claude"), "freeform"); self.assertEqual(fa.driver_name(st, "fake"), "freeform")
+            self.assertEqual(fa.driver_name(st, "ollama"), "stepwise")                                                             # no live provider: the small-model answer
+
+            class P:
+                name, text_tools, param_b = "ollama", False, 8.0
+            self.assertEqual(fa.driver_name(st, "ollama", P()), "freeform")                                                        # 8B with native tools: the cloud loop
+            P.text_tools = True; self.assertEqual(fa.driver_name(st, "ollama", P()), "stepwise")                                    # no tools API: stepwise + JSON-in-text
+            P.text_tools, P.param_b = False, 3.0; self.assertEqual(fa.driver_name(st, "ollama", P()), "stepwise")                  # small: stepwise
+            P.param_b = None; self.assertEqual(fa.driver_name(st, "ollama", P()), "stepwise")                                       # unknown size: stepwise
             st.set_setting("agent.driver", "freeform"); self.assertEqual(fa.driver_name(st, "local"), "freeform")
             st.set_setting("agent.driver", "Stepwise "); self.assertEqual(fa.driver_name(st, "claude"), "stepwise")
             st.set_setting("agent.driver", "bogus"); self.assertEqual(fa.driver_name(st, "local"), "stepwise")
@@ -1803,6 +1874,398 @@ class StepwiseUnits(unittest.TestCase):
                 return {"content": [{"type": "text", "text": '{"ok": true, "reason": "fine"}'}], "stop_reason": "end_turn"}
         out = fa.provider_complete(P(), "sys", "Goal: x", schema=fa.CHECK_SCHEMA, max_tokens=60)
         self.assertEqual(json.loads(out)["ok"], True); self.assertIn("matching this schema", P.seen[0]); self.assertEqual(P.seen[1], []); self.assertEqual(P.seen[2]["max_tokens"], 60)
+
+
+def tiny_png(w=2, h=3, colour=(59, 110, 245)):
+    """A real w x h PNG made with zlib only: the image tests' payload (its IHDR is what generate_image reports as width/height)."""
+    import struct
+    import zlib
+    raw = b"".join(b"\x00" + bytes(colour) * w for _ in range(h))
+
+    def chunk(k, d):
+        return struct.pack(">I", len(d)) + k + d + struct.pack(">I", zlib.crc32(k + d) & 0xffffffff)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+
+class Images(unittest.TestCase):
+    """generate_image (ADR-0021): the OpenAI and Gemini REST shapes with urlopen monkeypatched, a real PNG on disk under ~/Pictures/Fab OS,
+    the friendly error for providers without an image API, folder creation, the local endpoint, and the request-side helpers."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="fabos-img-"); self.st = fa.Store(os.path.join(self.tmp, "agent.db"))
+        self.real = urllib.request.urlopen; self.real_conf, self.real_home = fa.CONF_DIR, fa.HOME
+        fa.CONF_DIR = os.path.join(self.tmp, "conf"); fa.HOME = os.path.join(self.tmp, "home"); os.makedirs(fa.HOME)
+        self.env_prov = os.environ.pop("FABOS_AGENT_PROVIDER", None)
+        self.tools = fa.Tools(self.st, fa.Agent.__new__(fa.Agent))
+
+    def tearDown(self):
+        urllib.request.urlopen = self.real; fa.CONF_DIR, fa.HOME = self.real_conf, self.real_home; shutil.rmtree(self.tmp, ignore_errors=True)
+        if self.env_prov is not None:
+            os.environ["FABOS_AGENT_PROVIDER"] = self.env_prov
+
+    def folder(self):
+        return os.path.join(fa.HOME, "Pictures", "Fab OS")
+
+    def test_openai_path_writes_a_real_png(self):
+        self.st.set_setting("provider", "openai"); fa.set_secret("openai_api_key", "sk-img")
+        png = tiny_png(2, 3)
+        fake = FakeHTTP([("api.openai.com/v1/images/generations", (200, {"data": [{"b64_json": base64.b64encode(png).decode()}]}))]); urllib.request.urlopen = fake
+        self.assertFalse(os.path.isdir(self.folder()))
+        out = self.tools.t_generate_image(7, {"prompt": "A blue circle, please!", "size": "1024x1024"})
+        self.assertEqual((out["provider"], out["model"], out["width"], out["height"], out["count"]), ("openai", "gpt-image-1", 2, 3, 1))   # width/height from the PNG's IHDR, not the request
+        self.assertTrue(out["path"].startswith(self.folder() + os.sep), out["path"]); self.assertEqual(out["folder"], self.folder())
+        self.assertRegex(os.path.basename(out["path"]), r"^\d{4}-\d{2}-\d{2}-a-blue-circle-please-1\.png$")
+        with open(out["path"], "rb") as f:
+            self.assertEqual(f.read(), png)
+        body = json.loads(fake.calls[0]["data"]); self.assertEqual((body["model"], body["prompt"], body["n"], body["size"]), ("gpt-image-1", "A blue circle, please!", 1, "1024x1024"))
+        self.assertEqual(fake.calls[0]["headers"]["Authorization"], "Bearer sk-img"); self.assertNotIn("response_format", body); self.assertEqual(fake.calls[0]["timeout"], fa.IMAGE_TIMEOUT)
+        # the same prompt again on the same day gets a -2 suffix, never an overwrite; landscape maps to gpt-image-1's 1536x1024
+        out2 = self.tools.t_generate_image(7, {"prompt": "A blue circle, please!"}); self.assertNotEqual(out2["path"], out["path"]); self.assertTrue(out2["path"].endswith("-1-2.png"), out2["path"])
+        self.tools.t_generate_image(7, {"prompt": "wide", "size": "1920x1080"}); self.assertEqual(json.loads(fake.calls[-1]["data"])["size"], "1536x1024")
+        log = json.dumps(self.st.all("SELECT detail FROM activity WHERE kind='image_generated'")); self.assertIn("openai/gpt-image-1", log); self.assertNotIn("sk-img", log)
+
+    def test_openai_falls_back_to_dall_e_3_when_gpt_image_1_is_refused(self):
+        self.st.set_setting("provider", "openai"); fa.set_secret("openai_api_key", "sk")
+        png = tiny_png(); seen = []
+
+        def fake(req, timeout=None):
+            body = json.loads(req.data); seen.append(body)
+            if body["model"] == "gpt-image-1":
+                raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, io.BytesIO(json.dumps({"error": {"message": "Your organization must be verified to use the model `gpt-image-1`."}}).encode()))
+            return _Resp(200, {"data": [{"b64_json": base64.b64encode(png).decode()}]})
+        urllib.request.urlopen = fake
+        out = self.tools.t_generate_image(1, {"prompt": "a cat", "n": 2, "size": "1024x1536"})
+        self.assertEqual((out["model"], out["count"], len(out["paths"])), ("dall-e-3", 2, 2))
+        self.assertEqual([b["model"] for b in seen], ["gpt-image-1", "dall-e-3", "dall-e-3"])                       # the fallback model takes n=1 per request
+        self.assertEqual((seen[1]["response_format"], seen[1]["size"], seen[1]["n"]), ("b64_json", "1024x1792", 1))
+        urllib.request.urlopen = FakeHTTP([("images/generations", (401, {}))])                                     # a rejected key is not a model problem: no fallback
+        with self.assertRaises(RuntimeError) as cm:
+            self.tools.t_generate_image(1, {"prompt": "x"})
+        self.assertIn("rejected the key", str(cm.exception)); self.assertIn("HTTP 401", str(cm.exception))
+        urllib.request.urlopen = FakeHTTP([("images/generations", urllib.error.URLError("name resolution failed"))])
+        with self.assertRaises(RuntimeError) as cm:
+            self.tools.t_generate_image(1, {"prompt": "x"})
+        self.assertIn("cannot reach OpenAI", str(cm.exception))
+
+    def test_gemini_path(self):
+        self.st.set_setting("provider", "gemini"); fa.set_secret("gemini_api_key", "gk")
+        png = tiny_png(3, 2)
+        fake = FakeHTTP([("models/gemini-2.5-flash-image:generateContent", (200, {"candidates": [{"content": {"parts": [{"text": "Here it is"}, {"inlineData": {"mimeType": "image/png", "data": base64.b64encode(png).decode()}}]}}]}))])
+        urllib.request.urlopen = fake
+        out = self.tools.t_generate_image(1, {"prompt": "a green tree", "size": "1536x1024"})
+        self.assertEqual((out["provider"], out["model"], out["width"], out["height"]), ("gemini", "gemini-2.5-flash-image", 3, 2))
+        with open(out["path"], "rb") as f:
+            self.assertEqual(f.read(), png)
+        c = fake.calls[0]; body = json.loads(c["data"])
+        self.assertEqual(c["url"], "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent")   # the native API, not the /openai shim
+        self.assertEqual(c["headers"]["X-goog-api-key"], "gk"); self.assertNotIn("key=", c["url"])
+        self.assertEqual(body["contents"][0]["parts"][0]["text"], "a green tree"); self.assertEqual(body["generationConfig"]["responseModalities"], ["TEXT", "IMAGE"])
+        self.assertEqual(body["generationConfig"]["imageConfig"]["aspectRatio"], "3:2")                                             # 1536x1024 is exactly 3:2, a documented Gemini ratio
+        self.assertEqual((fa._aspect(1920, 1080), fa._aspect(1080, 1920), fa._aspect(1024, 1024), fa._aspect(1536, 1024, fa.IMAGEN_ASPECTS)), ("16:9", "9:16", "1:1", "4:3"))
+        # Imagen models take the predict endpoint
+        self.st.set_setting("images.gemini_model", "imagen-4.0-generate-001")
+        fake = FakeHTTP([("models/imagen-4.0-generate-001:predict", (200, {"predictions": [{"bytesBase64Encoded": base64.b64encode(png).decode()}]}))]); urllib.request.urlopen = fake
+        out = self.tools.t_generate_image(1, {"prompt": "a lake"}); self.assertEqual(out["model"], "imagen-4.0-generate-001")
+        body = json.loads(fake.calls[0]["data"]); self.assertEqual(body["instances"][0]["prompt"], "a lake"); self.assertEqual(body["parameters"], {"sampleCount": 1, "aspectRatio": "1:1"})
+        # no image in the answer (blocked): a clear error and no file
+        self.st.set_setting("images.gemini_model", ""); n_before = len(os.listdir(self.folder()))
+        urllib.request.urlopen = FakeHTTP([("generateContent", (200, {"candidates": [{"content": {"parts": [{"text": "I cannot draw that."}]}}], "promptFeedback": {"blockReason": "SAFETY"}}))])
+        with self.assertRaises(RuntimeError) as cm:
+            self.tools.t_generate_image(1, {"prompt": "x"})
+        self.assertIn("no image", str(cm.exception)); self.assertIn("SAFETY", str(cm.exception)); self.assertEqual(len(os.listdir(self.folder())), n_before)
+
+    def test_provider_without_images_gets_the_friendly_error(self):
+        urllib.request.urlopen = FakeHTTP([])                        # nothing may be called
+        for kind in ("claude", "deepseek", "local", "ollama"):
+            self.st.set_setting("provider", kind)
+            with self.assertRaises(RuntimeError) as cm:
+                self.tools.t_generate_image(1, {"prompt": "a cat"})
+            self.assertEqual(str(cm.exception), fa.IMAGE_NO_PROVIDER, kind)
+        self.assertFalse(os.path.isdir(os.path.join(fa.HOME, "Pictures")))
+        self.assertEqual(fa.image_capability(self.st), {"provider": "", "ready": False, "detail": fa.IMAGE_NO_PROVIDER})
+        # automatic choice: a Claude user with an OpenAI key stored draws through OpenAI; images.provider=gemini without a Gemini key names the missing key
+        self.st.set_setting("provider", "claude"); fa.set_secret("openai_api_key", "sk")
+        self.assertEqual(fa.image_provider(self.st)[0], "openai"); self.assertTrue(fa.image_capability(self.st)["ready"]); self.assertIn("cannot generate images; using the OpenAI key", fa.image_capability(self.st)["detail"])
+        real_get, reads = fa.get_secret, []
+        fa.get_secret = lambda name: reads.append(name) or None                  # the key exists on disk but cannot be decrypted right now
+        try:
+            self.assertTrue(fa.image_capability(self.st)["ready"]); self.assertEqual(reads, [])        # /status polls this: a stat (has_secret), never systemd-creds
+            with self.assertRaises(RuntimeError) as cm:
+                self.tools.t_generate_image(1, {"prompt": "a cat"})
+            self.assertIn("could not be read", str(cm.exception)); self.assertEqual(reads, ["openai_api_key"]); self.assertIsNotNone(fa.image_config_error({"error": "RuntimeError: " + str(cm.exception)}))
+        finally:
+            fa.get_secret = real_get
+        self.st.set_setting("images.provider", "gemini")
+        with self.assertRaises(RuntimeError) as cm:
+            self.tools.t_generate_image(1, {"prompt": "a cat"})
+        self.assertIn("no Gemini key is stored", str(cm.exception))
+        self.st.set_setting("images.provider", "")
+        with self.assertRaises(RuntimeError):                        # an empty prompt never reaches a provider
+            self.tools.t_generate_image(1, {"prompt": "   "})
+        self.assertEqual(urllib.request.urlopen.calls, [])
+        old = fa.POLICY.data; fa.POLICY.data = {"cloud_allowed": False}                                            # a managed computer without cloud: no cloud image provider even with a key
+        try:
+            self.assertIsNone(fa.image_provider(self.st)[0])
+        finally:
+            fa.POLICY.data = old
+
+    def test_local_endpoint_and_folder_creation(self):
+        self.st.set_setting("provider", "local"); self.st.set_setting("images.local_endpoint", "http://127.0.0.1:7860/v1")
+        png = tiny_png(4, 4)
+        fake = FakeHTTP([("127.0.0.1:7860/v1/images/generations", (200, {"data": [{"b64_json": base64.b64encode(png).decode()}]}))]); urllib.request.urlopen = fake
+        self.assertFalse(os.path.exists(self.folder()))
+        out = self.tools.t_generate_image(1, {"prompt": "a cat", "size": "512x512"})
+        self.assertTrue(os.path.isdir(self.folder())); self.assertEqual((out["provider"], out["model"], out["width"]), ("local", "local", 4))
+        body = json.loads(fake.calls[0]["data"]); self.assertEqual((body["prompt"], body["size"], body["response_format"]), ("a cat", "512x512", "b64_json")); self.assertNotIn("model", body)
+        self.st.set_setting("images.local_model", "sd-turbo"); self.tools.t_generate_image(1, {"prompt": "a dog"}); self.assertEqual(json.loads(fake.calls[-1]["data"])["model"], "sd-turbo")
+        self.st.set_setting("images.local_endpoint", "http://127.0.0.1:7860/v1/images/generations"); self.tools.t_generate_image(1, {"prompt": "x"})
+        self.assertEqual(fake.calls[-1]["url"], "http://127.0.0.1:7860/v1/images/generations")                                      # a full URL is accepted too
+        self.st.set_setting("provider", "ollama"); self.assertEqual(fa.image_provider(self.st)[0], "local")                         # Ollama users get the local endpoint as well
+        urllib.request.urlopen = FakeHTTP([("7860", urllib.error.URLError("connection refused"))])
+        with self.assertRaises(RuntimeError) as cm:
+            self.tools.t_generate_image(1, {"prompt": "x"})
+        self.assertIn("cannot reach the local image endpoint", str(cm.exception))
+
+    def test_save_images_moves_on_when_the_name_is_taken(self):
+        folder = self.folder(); os.makedirs(folder); day = time.strftime("%Y-%m-%d")
+        for n in ("-1.png", "-1-2.png"):
+            with open(os.path.join(folder, day + "-a-cat" + n), "wb") as f:
+                f.write(b"taken")
+        out = fa.save_images([tiny_png(), tiny_png()], "a cat", (2, 3))
+        self.assertTrue(out[0]["path"].endswith(day + "-a-cat-1-3.png"), out); self.assertTrue(out[1]["path"].endswith(day + "-a-cat-2.png"), out)
+        for n in ("-1.png", "-1-2.png"):
+            with open(os.path.join(folder, day + "-a-cat" + n), "rb") as f:
+                self.assertEqual(f.read(), b"taken")
+        with open(out[0]["path"], "rb") as f:
+            self.assertEqual(fa.png_size(f.read()), (2, 3))
+
+    def test_image_helpers_and_the_tool_contract(self):
+        self.assertEqual(fa.classify("generate_image", {"prompt": "x"}), ("MEDIUM", "creates an image file"))
+        self.assertEqual(fa.narration_for("generate_image", {}), "Generating the image now."); self.assertEqual(fa.narration_done_for("generate_image", {}, {}), "Done, the image is saved in Pictures.")
+        self.assertIn("generate an image", fa.approval_narration("generate_image", {}))
+        tool = [t for t in fa.TOOLS if t["name"] == "generate_image"][0]; self.assertEqual(tool["input_schema"]["required"], ["prompt"]); self.assertEqual(tool["input_schema"]["properties"]["size"]["default"], "1024x1024")
+        self.assertIn("generate_image", fa.SYSTEM_PROMPT); self.assertIn("~/Pictures/Fab OS", fa.SYSTEM_PROMPT); self.assertIn("generate_image", fa.STEP_TOOLS); self.assertIn("generate_image", fa.PLAN_SYSTEM)
+        self.assertEqual(fa.image_size("1536x1024"), (1536, 1024)); self.assertEqual(fa.image_size("nonsense"), (1024, 1024)); self.assertEqual(fa.image_size("10x10"), (1024, 1024)); self.assertEqual(fa.image_size("512 X 768"), (512, 768))
+        self.assertEqual(fa.image_slug("Draw a Cat!! on the moon"), "draw-a-cat-on-the-moon"); self.assertEqual(fa.image_slug("!!!"), "image"); self.assertLessEqual(len(fa.image_slug("word " * 30)), 40)
+        self.assertEqual(fa.png_size(tiny_png(5, 7)), (5, 7)); self.assertIsNone(fa.png_size(b"\xff\xd8\xffJFIF")); self.assertEqual(fa.image_ext(b"\xff\xd8\xff\xe0"), ".jpg"); self.assertEqual(fa.image_ext(tiny_png()), ".png")
+        for t in ("draw a cat", "Draw a simple picture of a blue circle and tell me where you saved it", "make me a logo for my bakery", "generate a wallpaper of mountains", "create a picture of a dog", "I want a poster for the fest",
+                  "make a cute cat picture", "I need a new wallpaper", "generate 3 pictures of cats", "create icons for the app", "design a banner for the fest", "render an illustration of a fox",
+                  "Generate a 1920x1080 mountain wallpaper", "sketch a bicycle", "make a picture of the folder icon"):
+            self.assertTrue(fa.IMAGE_RE.search(t.lower()), t)
+        # ordinary file tasks that name pictures must NOT match (reviewed 2026-09-16: the old 40-character gap between verb and noun matched the
+        # first eight and the stepwise plan got a generate_image step in front of the user's real task)
+        for t in ("create a folder named pictures in my home", "make a list of the images in ~/Pictures into ~/list.txt", "create a folder called icons under ~/Documents",
+                  "make a folder for my posters", "generate a report of the photos taken this month", "give me the number of pictures in ~/Pictures",
+                  "produce a list of the images in the folder", "create an icon-sized thumbnail of ~/a.png", "make a backup of my pictures", "give me the pictures in ~/Pictures",
+                  "create a copy of the logo file", "make the logo bigger",
+                  "open the picture folder", "take a screenshot", "copy the image files to ~/x", "draw up a plan", "count the images in ~/Pictures", "write a note saying hi", "make an image viewer", "change my wallpaper to ~/Pictures/x.jpg"):
+            self.assertFalse(fa.IMAGE_RE.search(t.lower()), t)
+        for req in ("create a folder named pictures in my home", "Make a list of the images in ~/Pictures into ~/list.txt"):     # and plan_sanity leaves their plans alone
+            plan = [{"tool": "run_shell", "goal": "mkdir -p ~/pictures"}, {"tool": "reply", "goal": "say so"}]
+            self.assertEqual(fa.plan_sanity(req, plan), []); self.assertEqual([x["tool"] for x in plan], ["run_shell", "reply"])
+        # no image provider configured (images_ready=False): a generate_image step goes in only when the plan itself draws — then it fails once
+        # with the friendly error instead of painting with shell tools; a plan that does not draw is left as planned, with a note
+        plan = [{"tool": "run_shell", "goal": "convert -size 100x100 xc:blue ~/circle.png"}]
+        notes = fa.plan_sanity("draw a blue circle", plan, images_ready=False)
+        self.assertEqual([x["tool"] for x in plan], ["generate_image"]); self.assertTrue(any("no image provider is configured" in n for n in notes), notes)
+        plan = [{"tool": "reply", "goal": "explain that I cannot draw"}]
+        notes = fa.plan_sanity("draw a blue circle", plan, images_ready=False)
+        self.assertEqual([x["tool"] for x in plan], ["reply"]); self.assertEqual(len(notes), 1); self.assertIn("left as planned", notes[0])
+        plan = [{"tool": "reply", "goal": "explain"}]
+        fa.plan_sanity("draw a blue circle", plan, images_ready=True); self.assertEqual([x["tool"] for x in plan], ["generate_image", "reply"])
+        # a configuration failure of the tool (no provider / no key / rejected key) is what the driver stops on; a provider outage is not
+        self.assertEqual(fa.image_config_error({"error": "RuntimeError: " + fa.IMAGE_NO_PROVIDER}), fa.IMAGE_NO_PROVIDER)
+        self.assertEqual(fa.image_config_error({"error": "RuntimeError: images.provider is gemini but no Gemini key is stored: add it in Settings"}), "images.provider is gemini but no Gemini key is stored: add it in Settings")
+        self.assertEqual(fa.image_config_error({"error": "ImageHTTPError: the OpenAI image API rejected the key (HTTP 401): bad key"}), "the OpenAI image API rejected the key (HTTP 401): bad key")
+        self.assertTrue(fa.image_config_error({"error": "RuntimeError: %s: the OpenAI image API may not reach api.openai.com. Allowed hosts: x." % fa.MANAGED_MSG}).startswith(fa.MANAGED_MSG))
+        self.assertIsNone(fa.image_config_error({"error": "ImageHTTPError: the OpenAI image API error HTTP 500: busy"})); self.assertIsNone(fa.image_config_error({"path": "/x"})); self.assertIsNone(fa.image_config_error(None))
+        # the stepwise pieces: plan_sanity turns a drawing command into a generate_image step, step_check wants the file, render_result names it
+        plan = [{"tool": "run_shell", "goal": "draw a blue circle with ImageMagick convert into ~/circle.png"}, {"tool": "reply", "goal": "say where it is"}]
+        notes = fa.plan_sanity("Draw a simple picture of a blue circle and tell me where you saved it", plan)
+        self.assertEqual([s["tool"] for s in plan], ["generate_image", "reply"]); self.assertTrue(any("generate_image" in n for n in notes), notes)
+        plan = [{"tool": "generate_image", "goal": "make it"}]; self.assertEqual(fa.plan_sanity("draw a cat", plan), []); self.assertEqual(len(plan), 1)
+        plan = [{"tool": "run_shell", "goal": "copy the image files"}]; self.assertEqual(fa.plan_sanity("copy the image files to ~/x", plan), []); self.assertEqual(plan[0]["tool"], "run_shell")
+        p = os.path.join(fa.HOME, "x.png")
+        with open(p, "wb") as f:
+            f.write(tiny_png())
+        self.assertEqual(fa.step_check("generate_image", {"prompt": "x"}, {"path": p, "width": 2, "height": 3, "provider": "openai"}, False), (True, "image saved: %s (2x3, openai)" % p))
+        self.assertFalse(fa.step_check("generate_image", {}, {"path": p + ".nope"}, False)[0]); self.assertEqual(fa.render_result("generate_image", {"path": p, "width": 2, "height": 3, "provider": "openai"}), "image saved to %s (2x3, made by openai)" % p)
+        self.assertIsNone(fa.raw_result("generate_image", {"path": p}))
+        self.assertEqual(fa.parse_plan('{"steps": [{"tool": "generate_image", "goal": "draw"}]}', fa.STEP_TOOLS)[0][0]["tool"], "generate_image")
+        model, blobs = fa.fake_images("a blue circle", (128, 96), 2); self.assertEqual((model, len(blobs)), ("fake-disc", 2)); self.assertEqual(fa.png_size(blobs[0]), (128, 96))   # the offline placeholder is a real PNG
+
+
+OLLAMA_TAGS = {"models": [
+    {"name": "llama3.1:8b", "size": 4_900_000_000, "details": {"parameter_size": "8.0B", "quantization_level": "Q4_K_M", "family": "llama"}, "modified_at": "2026-09-01T00:00:00Z"},
+    {"name": "qwen2.5:3b", "size": 1_900_000_000, "details": {"parameter_size": "3.1B", "quantization_level": "Q4_K_M", "family": "qwen2"}},
+    {"name": "qwen2.5:1.5b", "size": 986_000_000, "details": {"parameter_size": "1.5B", "quantization_level": "Q4_K_M", "family": "qwen2"}},
+]}
+
+
+class Ollama(unittest.TestCase):
+    """The Ollama provider (ADR-0022): the model list from /api/tags, the RAM-fitted default, /api/show capabilities deciding the tool protocol
+    and the driver, the JSON-in-text tool protocol and its parser, the connection check, the HTTP endpoints and the install path (stubbed)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="fabos-oll-"); self.st = fa.Store(os.path.join(self.tmp, "agent.db"))
+        self.real = urllib.request.urlopen; self.real_conf = fa.CONF_DIR; fa.CONF_DIR = os.path.join(self.tmp, "conf")
+        self.env_prov = os.environ.pop("FABOS_AGENT_PROVIDER", None); fa._ollama_cache.update(at=0.0, base="", models=None, error="")
+
+    def tearDown(self):
+        urllib.request.urlopen = self.real; fa.CONF_DIR = self.real_conf; shutil.rmtree(self.tmp, ignore_errors=True); fa._ollama_cache.update(at=0.0, base="", models=None, error="")
+        if self.env_prov is not None:
+            os.environ["FABOS_AGENT_PROVIDER"] = self.env_prov
+
+    def test_models_pick_and_status(self):
+        fake = FakeHTTP([("127.0.0.1:11434/api/tags", (200, OLLAMA_TAGS))]); urllib.request.urlopen = fake
+        models = fa.ollama_models()
+        self.assertEqual([m["name"] for m in models], ["llama3.1:8b", "qwen2.5:3b", "qwen2.5:1.5b"])                                   # largest first
+        self.assertEqual((models[0]["parameter_size"], models[0]["quantization"], models[0]["parameter_b"], models[0]["size"]), ("8.0B", "Q4_K_M", 8.0, 4_900_000_000))
+        self.assertEqual(fake.calls[0]["url"], "http://127.0.0.1:11434/api/tags")
+        gib = lambda g: int(g * 2 ** 30)   # noqa: E731
+        self.assertEqual([fa.ollama_max_params_b(gib(g)) for g in (3.8, 7.7, 15.5, 31, 64)], [3.0, 8.0, 14.0, 34.0, 72.0])           # the RAM table (README, ADR-0022)
+        self.assertEqual(fa.ollama_pick_model(models, gib(3.8)), "qwen2.5:3b"); self.assertEqual(fa.ollama_pick_model(models, gib(7.7)), "llama3.1:8b"); self.assertEqual(fa.ollama_pick_model(models, gib(32)), "llama3.1:8b")
+        self.assertEqual(fa.ollama_pick_model(models + [{"name": "qwen3:14b", "parameter_b": 14.8, "size": 9}], gib(15.5)), "qwen3:14b")   # "14B" means the 14B class (Ollama says 14.8B)
+        self.assertEqual(fa.ollama_pick_model(models + [{"name": "mid:4b", "parameter_b": 4.0, "size": 3}], gib(3.8)), "qwen2.5:3b")        # 4B is not the 3B class
+        self.assertEqual(fa.ollama_pick_model([{"name": "big:70b", "parameter_b": 70.6, "size": 1}], gib(3.8)), "big:70b")            # nothing fits: the smallest installed, not nothing
+        self.assertIsNone(fa.ollama_pick_model([], gib(8)))
+        self.assertEqual((fa.parse_param_b("7.6B"), fa.parse_param_b("137M"), fa.parse_param_b("")), (7.6, 0.137, None))
+        fa.ollama_models_cached(); n = len(fake.calls); fa.ollama_models_cached(); self.assertEqual(len(fake.calls), n)                  # 30 s cache
+        fa.ollama_models_cached(refresh=False); self.assertEqual(len(fake.calls), n); fa.ollama_models_cached(force=True); self.assertEqual(len(fake.calls), n + 1)
+        st = fa.ollama_status(self.st); self.assertTrue(st["running"]); self.assertEqual(st["model"], fa.ollama_pick_model(models)); self.assertIn("largest installed", st["model_source"])
+        self.assertFalse(st["bundled"]); self.assertEqual(st["install_command"], fa.OLLAMA_INSTALL_CMD); self.assertEqual(st["native_url"], "http://127.0.0.1:11434")
+        self.st.set_setting("ollama.model", "qwen2.5:1.5b"); self.assertEqual(fa.ollama_status(self.st)["model_source"], "setting ollama.model"); self.assertEqual(fa.ollama_default_model(self.st), "qwen2.5:1.5b")
+        urllib.request.urlopen = FakeHTTP([("11434", urllib.error.URLError("connection refused"))]); fa._ollama_cache.update(at=0.0)
+        with self.assertRaises(RuntimeError) as cm:
+            fa.ollama_models()
+        self.assertIn("cannot reach Ollama", str(cm.exception)); self.assertIn("fabos ollama install", str(cm.exception))
+        st = fa.ollama_status(self.st); self.assertFalse(st["running"]); self.assertEqual(st["models"], []); self.assertIn("cannot reach Ollama", st["error"])
+
+    def test_capabilities_decide_the_tool_protocol_and_the_driver(self):
+        show = {"capabilities": ["completion"], "details": {"parameter_size": "3.1B"}}
+        fake = FakeHTTP([("/api/tags", (200, OLLAMA_TAGS)), ("/api/show", (200, show))]); urllib.request.urlopen = fake
+        self.assertEqual(fa.ollama_capabilities("qwen2.5:3b"), (False, 3.1)); self.assertEqual(json.loads(fake.calls[-1]["data"]), {"model": "qwen2.5:3b"})
+        show["capabilities"] = ["completion", "tools"]; show["details"]["parameter_size"] = "8.0B"; self.assertEqual(fa.ollama_capabilities("llama3.1:8b"), (True, 8.0))
+        del show["capabilities"]; self.assertIsNone(fa.ollama_capabilities("llama3.1:8b")[0])                                          # an older server: unknown -> the native tools API is tried
+        self.st.set_setting("provider", "ollama"); agent = fa.Agent(self.st)
+        show["capabilities"] = ["completion"]; show["details"]["parameter_size"] = "3.1B"; self.st.set_setting("ollama.model", "qwen2.5:3b")
+        prov = agent.provider(); self.assertEqual((prov.name, prov.model, prov.text_tools, prov.param_b, prov.base), ("ollama", "qwen2.5:3b", True, 3.1, "http://127.0.0.1:11434/v1"))
+        self.assertEqual(agent.driver_for(prov), "stepwise"); self.assertEqual(prov.result_limit, fa.RESULT_LIMIT_LOCAL); self.assertEqual(prov.sampling, {"temperature": 0.2, "top_p": 0.9})
+        show["capabilities"] = ["completion", "tools"]; show["details"]["parameter_size"] = "8.0B"; self.st.set_setting("ollama.model", "llama3.1:8b")
+        prov = agent.provider(); self.assertFalse(prov.text_tools); self.assertEqual(agent.driver_for(prov), "freeform"); self.assertEqual(prov.result_limit, fa.RESULT_LIMIT_CLOUD)
+        self.st.set_setting("agent.driver", "stepwise"); self.assertEqual(agent.driver_for(prov), "stepwise"); self.st.set_setting("agent.driver", "")
+        self.st.set_setting("ollama.model", ""); fa._ollama_cache.update(at=0.0)
+        prov = agent.provider(); self.assertEqual(prov.model, fa.ollama_pick_model(fa.ollama_models()))                                  # the RAM-fitted default, no key needed
+        self.assertEqual(fa.driver_name(self.st, "ollama"), "stepwise")                                                                # /status without a live provider
+        urllib.request.urlopen = FakeHTTP([("/api/tags", (200, {"models": []}))]); fa._ollama_cache.update(at=0.0)
+        with self.assertRaises(RuntimeError) as cm:
+            agent.provider()
+        self.assertIn("ollama pull", str(cm.exception))
+
+    def test_text_tool_protocol_parser(self):
+        p = fa.parse_text_tool_call
+        self.assertEqual(p('{"tool": "run_shell", "args": {"command": "ls"}}', ["run_shell"])[:2], ("run_shell", {"command": "ls"}))
+        self.assertEqual(p('Sure.\n```json\n{"tool": "run_shell", "args": {"command": "ls"}}\n```\nDone', ["run_shell"])[:2], ("run_shell", {"command": "ls"}))
+        self.assertEqual(p('{"name": "write_file", "arguments": "{\\"path\\": \\"/tmp/a\\", \\"content\\": \\"x\\"}"}', ["write_file"])[:2], ("write_file", {"path": "/tmp/a", "content": "x"}))
+        self.assertEqual(p('{"function": {"name": "web_fetch", "arguments": {"url": "http://x"}}}', ["web_fetch"])[:2], ("web_fetch", {"url": "http://x"}))
+        self.assertEqual(p('{"tool": "run_shell", "command": "echo hi"}', ["run_shell"])[:2], ("run_shell", {"command": "echo hi"}))        # flat arguments
+        self.assertEqual(p('{"tool_name": "list_dir", "input": {"path": "~"}}', ["list_dir"])[:2], ("list_dir", {"path": "~"}))
+        self.assertIsNone(p('{"tool": "teleport", "args": {}}', ["run_shell"]))                                                        # unknown tool
+        self.assertIsNone(p('I am done. {"x": 1}', ["run_shell"])); self.assertIsNone(p("plain text", ["run_shell"])); self.assertIsNone(p("", ["run_shell"]))
+        self.assertEqual(p('{"a": 1} then {"tool": "run_shell", "args": {"command": "pwd"}}', ["run_shell"])[:2], ("run_shell", {"command": "pwd"}))   # the first object naming a tool
+        self.assertEqual(p('{"tool": "run_shell", "args": "not json {"}', ["run_shell"])[1], {"_raw": "not json {"})                     # unparseable arguments are flagged, not guessed
+        self.assertEqual(p('Here: {"tool": "run_shell", "args": {"command": "ls"}} ok', ["run_shell"])[2], (6, 54))
+        self.assertEqual(p('{"tool": "anything", "args": {}}')[0], "anything")                                                           # no names given: any tool
+        proto = fa.text_tool_protocol([t for t in fa.TOOLS if t["name"] == "run_shell"], required=True)
+        self.assertIn('{"tool": "<name>", "args": {...}}', proto); self.assertIn('run_shell {"command": <string>, "cwd": <string>?', proto); self.assertIn("REQUIRED", proto)
+
+    def test_text_tools_provider_step(self):
+        bodies = []
+        replies = [{"content": 'I will look.\n```json\n{"tool": "run_shell", "args": {"command": "ls ~"}}\n```'}, {"content": "All done, the folder is empty."}, {"content": "", "tool_calls": []}]
+
+        def fake(req, timeout=None):
+            bodies.append(json.loads(req.data))
+            return _Resp(200, {"choices": [{"message": dict(role="assistant", **replies[min(len(bodies) - 1, 2)])}], "usage": {"prompt_tokens": 5, "completion_tokens": 3}})
+        urllib.request.urlopen = fake
+        prov = fa.OpenAICompatProvider("http://127.0.0.1:11434/v1", None, "qwen2.5:3b", name="ollama", text_tools=True, param_b=3.1)
+        used = []
+        resp = prov.step("SYS", [{"role": "user", "content": "list my home"}], [fa.TOOLS[0]], lambda i, o: used.append((i, o)), tool_choice="required")
+        b = bodies[0]
+        self.assertNotIn("tools", b); self.assertNotIn("tool_choice", b); self.assertEqual(b["model"], "qwen2.5:3b"); self.assertEqual(b["top_p"], 0.9); self.assertNotIn("repeat_penalty", b)
+        self.assertTrue(b["messages"][0]["content"].startswith("SYS\nTOOLS (this model has no tool-calling API"), b["messages"][0]["content"][:120]); self.assertIn("REQUIRED", b["messages"][0]["content"])
+        self.assertEqual(resp["stop_reason"], "tool_use"); self.assertEqual([c["type"] for c in resp["content"]], ["text", "tool_use"])
+        self.assertEqual(resp["content"][0]["text"], "I will look."); self.assertEqual((resp["content"][1]["name"], resp["content"][1]["input"]), ("run_shell", {"command": "ls ~"})); self.assertEqual(used, [(5, 3)])
+        msgs = [{"role": "user", "content": "list my home"}, {"role": "assistant", "content": resp["content"]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": resp["content"][1]["id"], "content": '{"exit_code": 0, "stdout": ""}'}]}]
+        resp2 = prov.step("SYS", msgs, [fa.TOOLS[0]])                                                       # the earlier call and its result travel as plain text turns
+        b = bodies[1]; self.assertEqual([m["role"] for m in b["messages"]], ["system", "user", "assistant", "user"])
+        self.assertIn('{"tool": "run_shell", "args": {"command": "ls ~"}}', b["messages"][2]["content"]); self.assertTrue(b["messages"][3]["content"].startswith("Tool result:\n"))
+        self.assertEqual(resp2["stop_reason"], "end_turn"); self.assertEqual(resp2["content"][0]["text"], "All done, the folder is empty.")
+        prov2 = fa.OpenAICompatProvider("http://127.0.0.1:11434/v1", None, "llama3.1:8b", name="ollama", text_tools=False, param_b=8.0)
+        prov2.step("SYS", [{"role": "user", "content": "x"}], [fa.TOOLS[0]], tool_choice="required"); b = bodies[-1]      # with native tools the same class sends the tools API
+        self.assertEqual(len(b["tools"]), 1); self.assertEqual(b["tool_choice"], "required"); self.assertEqual(b["messages"][0]["content"], "SYS")
+
+    def test_provider_test_and_the_endpoints(self):
+        models = {"data": [{"id": "llama3.1:8b"}, {"id": "qwen2.5:3b"}]}
+        urllib.request.urlopen = FakeHTTP([("127.0.0.1:11434/v1/models", (200, models)), ("/api/tags", (200, OLLAMA_TAGS))])
+        r = fa.test_provider(self.st, "ollama"); self.assertTrue(r["ok"], r); self.assertEqual(r["detail"], "Connected"); self.assertIn("qwen2.5:3b", r["models_sample"])
+        self.assertEqual(r["model"], fa.ollama_pick_model(fa.ollama_models()))                                                        # no key needed
+        urllib.request.urlopen = FakeHTTP([("127.0.0.1:11434/v1/models", (200, {"data": []})), ("/api/tags", (200, {"models": []}))]); fa._ollama_cache.update(at=0.0)
+        r = fa.test_provider(self.st, "ollama"); self.assertTrue(r["ok"]); self.assertIn("no models are installed", r["detail"]); self.assertIn("ollama pull", r["detail"])
+        urllib.request.urlopen = FakeHTTP([("11434", urllib.error.URLError("connection refused"))]); fa._ollama_cache.update(at=0.0)
+        r = fa.test_provider(self.st, "ollama"); self.assertFalse(r["ok"]); self.assertIn("cannot reach Ollama", r["detail"]); self.assertIn("fabos ollama install", r["detail"])
+        agent = fa.Agent(self.st); srv = fa.ThreadingHTTPServer(("127.0.0.1", 0), fa.make_handler(self.st, agent, "tok")); srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+        def call(method, path, body=None):
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+            c.request(method, path, body=json.dumps(body) if body is not None else None, headers={"Authorization": "Bearer tok", "Content-Type": "application/json"})
+            r = c.getresponse(); data = json.loads(r.read() or b"{}"); c.close()
+            return r.status, data
+        try:
+            urllib.request.urlopen = FakeHTTP([("/api/tags", (200, OLLAMA_TAGS))]); fa._ollama_cache.update(at=0.0)
+            st, lst = call("GET", "/providers/ollama/models")
+            self.assertEqual(st, 200); self.assertEqual([m["name"] for m in lst], ["llama3.1:8b", "qwen2.5:3b", "qwen2.5:1.5b"]); self.assertTrue(set(lst[0]) >= {"name", "size", "parameter_size", "quantization"})
+            st, s = call("GET", "/providers/ollama/status"); self.assertEqual(st, 200); self.assertTrue(s["running"]); self.assertFalse(s["bundled"]); self.assertIn("max_parameters_b", s)
+            st, s = call("GET", "/settings"); self.assertEqual((s["ollama.model"], s["ollama.base_url"]), ("", "http://127.0.0.1:11434/v1")); self.assertEqual(s["providers"]["ollama"]["label"], "Ollama (on this computer)")
+            self.assertEqual(s["images.provider"], ""); self.assertEqual(s["images.openai_model"], "gpt-image-1"); self.assertIn("images", s)
+            st, r = call("PUT", "/settings", {"provider": "ollama"}); self.assertEqual(st, 200)
+            st, s = call("GET", "/status"); self.assertEqual(s["provider"], "ollama"); self.assertTrue(s["provider_ready"]); self.assertEqual(s["driver"], "stepwise")
+            self.assertEqual(s["provider_model"], fa.ollama_pick_model(lst)); self.assertFalse(s["images"]["ready"])
+            st, r = call("PUT", "/settings", {"images.provider": "dalle"}); self.assertEqual(st, 400)
+            st, r = call("PUT", "/settings", {"images.local_endpoint": "ftp://x"}); self.assertEqual(st, 400)
+            st, r = call("PUT", "/settings", {"images.provider": "local", "images.local_endpoint": "http://127.0.0.1:7860/v1"}); self.assertEqual(st, 200)
+            st, s = call("GET", "/status"); self.assertEqual(s["images"], {"provider": "local", "ready": True, "detail": "images.provider=local"})
+            call("PUT", "/settings", {"images.provider": "", "images.local_endpoint": "", "provider": "claude"})
+            urllib.request.urlopen = FakeHTTP([("11434", urllib.error.URLError("refused"))]); fa._ollama_cache.update(at=0.0)
+            st, r = call("GET", "/providers/ollama/models?refresh=1"); self.assertEqual(st, 503); self.assertIn("cannot reach Ollama", r["error"])
+            # install: nothing runs without confirm=true; with it the daemon goes through run_as_root (pkexec) — a stub here records the call
+            st, r = call("POST", "/providers/ollama/install", {}); self.assertEqual(st, 400); self.assertEqual(r["command"], fa.OLLAMA_INSTALL_CMD)
+            ran = []
+            agent.tools.run_as_root = lambda task_id, command, cwd, timeout: (ran.append((command, timeout)) or {"exit_code": 0, "stdout": ">>> Installed", "stderr": ""})
+            real_which = shutil.which; shutil.which = lambda name, *a, **k: None if name == "ollama" else real_which(name, *a, **k)
+            try:
+                st, r = call("POST", "/providers/ollama/install", {"confirm": True})
+            finally:
+                shutil.which = real_which
+            self.assertEqual(st, 200); self.assertTrue(r["ok"], r); self.assertEqual(ran, [(fa.OLLAMA_INSTALL_CMD, fa.OLLAMA_INSTALL_TIMEOUT)])
+            kinds = [e["kind"] for e in self.st.all("SELECT kind FROM activity ORDER BY id")]; self.assertIn("ollama_install_requested", kinds); self.assertIn("ollama_install_done", kinds)
+            # a managed computer: hosts_allowed without ollama.com, or cloud_allowed=false, refuses the root download (403, nothing runs, audited);
+            # hosts_allowed that lists ollama.com lets it through
+            del ran[:]; old_policy = fa.POLICY.data
+            try:
+                for data in ({"hosts_allowed": ["example.com"]}, {"cloud_allowed": False}):
+                    fa.POLICY.data = data
+                    st, r = call("POST", "/providers/ollama/install", {"confirm": True, "force": True}); self.assertEqual(st, 403, r)
+                    self.assertTrue(r["error"].startswith(fa.MANAGED_MSG), r); self.assertFalse(r["ok"]); self.assertEqual(r["command"], fa.OLLAMA_INSTALL_CMD)
+                self.assertEqual(ran, [])
+                fa.POLICY.data = {"hosts_allowed": ["ollama.com", "example.com"]}
+                st, r = call("POST", "/providers/ollama/install", {"confirm": True, "force": True}); self.assertEqual(st, 200, r); self.assertEqual(len(ran), 1)
+            finally:
+                fa.POLICY.data = old_policy
+            kinds = [e["kind"] for e in self.st.all("SELECT kind FROM activity ORDER BY id")]; self.assertEqual(kinds.count("ollama_install_refused"), 2)
+        finally:
+            srv.shutdown(); srv.server_close()
 
 
 class SecurityUnits(unittest.TestCase):
@@ -2202,6 +2665,14 @@ class PolicyDaemon(unittest.TestCase):
         r = self.cli("do", "--mode", "auto", "fetch https://fabos.patienceai.in/docs/"); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
         out = json.loads([s for s in t["steps"] if s["name"] == "web_fetch"][0]["output"])
         self.assertIn(fa.MANAGED_MSG, out["error"]); self.assertIn("web_fetch may not reach fabos.patienceai.in", out["error"]); self.assertIn("Allowed hosts: example.com", out["error"])
+
+    def test_05b_ollama_installer_is_refused_by_the_host_policy(self):
+        """The installer is a root download from ollama.com: hosts_allowed=[example.com] refuses it over the API (403, audited, nothing runs)
+        and `fabos ollama install --yes` exits 1 with the policy's own sentence."""
+        r = self.cli("ollama", "install", "--yes", "--force"); self.assertEqual(r.get("http"), 403, r); self.assertIn(fa.MANAGED_MSG, r["error"]); self.assertIn("ollama.com", r["error"])
+        h = subprocess.run([sys.executable, CLI, "ollama", "install", "--yes", "--force"], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(h.returncode, 1, h.stdout + h.stderr); self.assertIn(fa.MANAGED_MSG, h.stderr); self.assertIn("Allowed hosts: example.com", h.stderr)
+        kinds = [e["kind"] for e in self.cli("log")]; self.assertIn("ollama_install_refused", kinds); self.assertNotIn("ollama_install_requested", kinds)
 
     def test_06_audit_export_goes_to_the_policy_dir(self):
         e = self.cli("audit", "export", "--since", "1h"); self.assertTrue(e["path"].startswith(os.path.join(self.tmp, "audit-out"))); self.assertGreater(e["rows"], 0); self.assertTrue(e["verify"]["ok"])

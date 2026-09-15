@@ -202,6 +202,34 @@ def c_l2f():
     ok("hi-note.txt holds the note %r (%d chars)" % (want, len(text)))
 
 
+def c_l2g():
+    """L2-g (ADR-0021): a real PNG saved by generate_image under ~/Pictures/Fab OS during this task — the newest .png there, written after
+    the marker ~/.ladder-l2g-start when the harness left one (else within the last 20 minutes), with a valid signature and IHDR."""
+    import struct
+    import time
+    folder = os.path.join(HOME, "Pictures", "Fab OS")
+    if not os.path.isdir(folder):
+        bad("%s does not exist" % folder)
+    marker = os.path.join(HOME, ".ladder-l2g-start")
+    since = os.path.getmtime(marker) - 1 if os.path.exists(marker) else time.time() - 1200
+    pngs = sorted((os.path.getmtime(os.path.join(folder, n)), n) for n in os.listdir(folder) if n.lower().endswith(".png") and os.path.isfile(os.path.join(folder, n)))
+    fresh = [(t, n) for t, n in pngs if t >= since]
+    if not fresh:
+        bad("no PNG written under %s during the task (%d older PNGs there)" % (folder, len(pngs)))
+    t, name = fresh[-1]
+    p = os.path.join(folder, name)
+    with open(p, "rb") as f:
+        head = f.read(24)
+    if head[:8] != b"\x89PNG\r\n\x1a\n" or len(head) < 24:
+        bad("%s is not a PNG (starts with %r)" % (p, head[:8]))
+    w, h = struct.unpack(">II", head[16:24])
+    if w < 64 or h < 64:
+        bad("%s is only %dx%d" % (p, w, h))
+    if not re.match(r"^\d{4}-\d{2}-\d{2}-[a-z0-9-]+-\d+(-\d+)?\.png$", name):
+        bad("%s does not follow <yyyy-mm-dd>-<slug>-<n>.png" % name)
+    ok("%s is a %dx%d PNG (%d bytes) saved during the task" % (p, w, h, os.path.getsize(p)))
+
+
 def c_l2e():
     text = read(os.path.join(LADDER, "health.json"))
     how = "strict"
