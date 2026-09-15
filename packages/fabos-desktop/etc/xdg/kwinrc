@@ -47,8 +47,29 @@ kwin4_effect_shapecornersEnabled=true
 # Outline: one 1 px hairline in QPalette::WindowText (role 0; resolveColor() in the effect's WindowConfig.cpp reads KWin's
 # palette, which follows the colour scheme through the KDE platform theme) at 22 % (56/255) active, 14 % inactive — dark on
 # Fab Light, light on Fab Dark. The second (white) and outer outlines are off.
-# Shadow: the Aurorae shadow is kept (UseNativeDecorationShadows=true; the shader bends it around the arcs); ShadowSize /
-# InactiveShadowSize only apply if someone turns native shadows off in the KCM, so they are set to a sane 24 / 16.
+# Shadow (2026-09-16, ADR-0019 amendment): ONE shadow source — the effect's own (UseNativeDecorationShadows=false). The Aurorae
+# frame is flat (brand/gen/aurorae_theme.py paints no shadow; it only reserves a 32 px padding filled with an alpha-1/255 carrier,
+# because the shader shades only pixels with alpha > 0 inside the padding the decoration reserves: shapecorners_shadows.glsl
+# `isDrawingShadows() { return hasExpandedSize() && (usesNativeShadows || shadowColor.a > 0.0); }`, `run()`: `if (tex.a == 0.0)
+# return tex;`). Until 1.0-5 the frame's own rectangular gradient shadow was kept (UseNativeDecorationShadows=true) and the
+# shader's getNativeShadow() only re-interpolated the 2 px next to the window box, so a shadow built for a square window sat behind
+# a rounded one: a hard step where the straight edge met the arc and square shadow corners at the bottom.
+# getCustomShadow() is centred on the corner arcs (top: r+sqrt(size) inside both ways, bottom: r inside), so it follows all four
+# radius-14 corners with a downward bias. ShadowSize is a falloff radius, not a reach: the visible reach outside a straight edge is
+# ShadowSize - 14 - sqrt(ShadowSize) at the top and the sides and ShadowSize - 14 at the bottom, and Shader.cpp clamps ShadowSize to
+# the length of (PaddingLeft, PaddingTop) = 32*sqrt(2) = 45.25. 40 -> 20 px at the top/sides (alpha 0.24 at the edge), 26 px at
+# the bottom (0.39); inactive 36 -> 16 / 22 px (0.10 / 0.18). The literal 24 / 16 of 1.0-5 would reach 5 px / nothing. 40 rather
+# than 45 (the first draft) so that 8 px out on a corner diagonal is the plain background again (alpha 0.0000 top / 0.0066 bottom;
+# 45 left 0.028 at the biased bottom corners, a faint square smudge 13/255 deep on a light backdrop in the live KWin render):
+# nothing of the shadow may read as a rectangle at the corners. Measured as KWin draws it: tests/corners-live-test.sh.
+# Colour: black at 128/255 active, 64/255 inactive (ActiveShadowAlpha / InactiveShadowAlpha). ShadowColor / InactiveShadowColor
+# are used whenever *ShadowUsePalette=false (WindowConfig.cpp resolveColor(): usePalette ? palette role : custom colour; KConfig
+# writes colours as r,g,b). The *ShadowUseCustom keys are not read by the effect at all — they only back the KCM's second radio
+# button of the colour pair (KCM.ui: QRadioButton kcfg_ActiveShadowUsePalette / kcfg_ActiveShadowUseCustom), so they are true here
+# to make the KCM show the state that is in force: custom colour, black. The palette option (*ShadowUsePalette=true with the QPalette
+# role in *ShadowPalette, 11 = QPalette::Shadow) is OFF on purpose: measured through the KDE platform theme in the image,
+# QPalette::Shadow resolves to #738cce on Fab Dark and #9db5ef on Fab Light (KColorScheme tints it with the accent), which would
+# make a blue glow, not a shadow. A shadow is an absence of light: black in both schemes.
 # AnimationDuration is the effect's own active/inactive transition (it does not read AnimationDurationFactor): 160 ms, the
 # design system's short motion token. Defaults we keep are written out too so the KCM and this file say the same thing.
 [Round-Corners]
@@ -56,9 +77,19 @@ Size=14
 InactiveCornerRadius=14
 UseSquircleShape=false
 AnimationDuration=160
-UseNativeDecorationShadows=true
-ShadowSize=24
-InactiveShadowSize=16
+UseNativeDecorationShadows=false
+ShadowSize=40
+InactiveShadowSize=36
+ShadowColor=0,0,0
+InactiveShadowColor=0,0,0
+ActiveShadowAlpha=128
+InactiveShadowAlpha=64
+ActiveShadowUsePalette=false
+InactiveShadowUsePalette=false
+ActiveShadowUseCustom=true
+InactiveShadowUseCustom=true
+ActiveShadowPalette=11
+InactiveShadowPalette=11
 OutlineThickness=1
 InactiveOutlineThickness=1
 ActiveOutlineUsePalette=true

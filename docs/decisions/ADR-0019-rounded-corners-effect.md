@@ -160,3 +160,155 @@ Build (all commands run; logs kept with the round's report):
   should it not, the hairline is a 22 % `WindowText` of the default palette — dark, visible on Fab Light and nearly
   invisible on Fab Dark, never wrong. `tests/corners-vm.sh` prints the sampled values so this is observable.
 - Plasma's own surfaces (panels, popups, notifications, the ask bar) keep their radius 24 from the Plasma theme.
+
+## Amendment (2026-09-16): one shadow source — the effect's own shadow; the Aurorae frame is flat
+
+**Status:** accepted (2026-09-16) · amends Decision 2 above and ADR-0012 (the frame no longer paints a shadow) · the kwinrc
+and theme files are in packages 1.0-5's successor; not yet published.
+
+### Context
+
+The owner, on the 1.0-5 desktop: "there is a shadow of a sharp edge like a rectangle; before the curve a visible sharp edge in
+each app; remove the side edges." Two shadow shapes were on every window: the Aurorae frame's own 28 px gradient shadow, built
+for a square window (L-shaped top-corner paths multiplied by a taper mask — measured through KSvg: 0.37 along the straight
+edges, 0.11 four pixels from the box corner, 0.02 at the corner — and square radial bottom corners), and, around it, the
+effect, which with `UseNativeDecorationShadows=true` keeps that texture and only re-interpolates the pixels within 2 px of the
+window box (`getNativeShadow`, `margin_edge = 2.0`). So the shadow stopped where the arc began (a step "before the curve") and
+kept the box's square silhouette at the bottom (the rectangle). The fix is one shadow, drawn by the component that knows the
+real corner geometry: the effect.
+
+### Facts verified (2026-09-16; every quote is from a file read that day)
+
+- **Keys** (the effect's `src/kcm/options.kcfg`, v0.10.0, tarball sha256 `f3f03d96…ae276db` re-downloaded and verified;
+  `<kcfgfile name="kwinrc"/>`, `<group name="Round-Corners">`): `UseNativeDecorationShadows` Bool default true; `ShadowSize`
+  UInt default 60, min 0; `InactiveShadowSize` UInt default 40; `ShadowColor` / `InactiveShadowColor` Color default black;
+  `ActiveShadowAlpha` Int default 128 (0–255); `InactiveShadowAlpha` Int default 64; `ActiveShadowPalette` /
+  `InactiveShadowPalette` UInt default 11; `ActiveShadowUsePalette` / `InactiveShadowUsePalette` /
+  `ActiveShadowUseCustom` / `InactiveShadowUseCustom` Bool default false. The KCM's widget names
+  (`kcfg_ShadowSize`, `kcfg_InactiveShadowColor`, `kcfg_ActiveShadowUsePalette`, …) were also read out of the installed
+  `kwin_shapecorners_config.so` in the image. All 39 keys Fab OS now writes exist in the kcfg (script check, 0 missing).
+- **Where the effect can paint a shadow** (`src/shaders/variables.glsl`, `shapecorners_shadows.glsl`, `shapecorners.glsl`):
+  `bool hasExpandedSize() { return windowTopLeft.x >= 1.0 && windowTopLeft.y >= 1.0; }`;
+  `bool isDrawingShadows() { return hasExpandedSize() && (usesNativeShadows || shadowColor.a > 0.0); }`; and `run()` starts
+  with `if (tex.a == 0.0) { return tex; }`. The window is rendered into a texture the size of KWin's `expandedGeometry`
+  (frame + the decoration's shadow padding: `windowExpandedSize`, `windowTopLeft` uniforms, `Shader.cpp` lines 103–114). So
+  (a) without a decoration shadow padding there is no room and no shadow at all, and (b) a fully transparent pixel is returned
+  untouched — the effect's shadow appears only where the decoration left alpha > 0. `getShadow()` with `usesNativeShadows`
+  false returns `getCustomShadow(coord0, r)`, which ignores the texture and computes the colour from the geometry; in
+  `shapeCorner()` every pixel outside the arc ends in `mix(…, coord_shadowColor, antialiasing)`, i.e. the whole padding is
+  rewritten with the custom shadow.
+- **Shape of the custom shadow** (`getCustomShadow`): `shadowShiftX = shadowShiftTop = sqrt(shadowSize)`; falloff centres are
+  `(r + shift, r + shift)` for the top corners, `(r + shift, windowSize.y - r)` for the bottom corners, and the straight
+  sections use the same offsets; `getShadowByDistance` gives `percent = clamp(1 - distance/shadowSize)` through
+  `parametricBlend(t) = t² / (2(t² − t) + 1)`, times the configured colour and alpha. It therefore **does follow the bottom
+  radius** (circles about the arc centres), with a downward bias. The reach outside a straight edge is
+  `ShadowSize − r − √ShadowSize` at the top/sides and `ShadowSize − r` at the bottom. `Shader.cpp`: `const qreal
+  max_shadow_size = frameOffset.length(); const auto shadowSize = std::min(window.currentConfig.shadowSize * scale,
+  max_shadow_size);` — ShadowSize is clamped to the length of (PaddingLeft, PaddingTop).
+  Simulated with these formulas (host python): Size 40 → reach 19.7 px top/sides, 26 px bottom, alpha at the edge 0.24 /
+  0.39 (alpha 128); Size 45 → 24.3 / 31 px, 0.291 / 0.417; Size 36 at alpha 64 → 16 / 22 px, 0.098 / 0.179; the literal
+  **24 / 16 of 1.0-5 → 5.1 px / none** (top reach −2 px for 16). Hence padding 32 (`32·√2 = 45.25`: room for any size up to
+  45) and Sizes **40** / 36 — 40, not the first draft's 45, because of the brief's 8 px corner rule (second pass below).
+- **Colour** (`src/WindowConfig.cpp` `resolveColor()`): `usePalette ? palette.color(group, role) : customColor`, then
+  `setAlpha(alpha)` — the `*UseCustom` keys only drive the KCM's radio buttons. Measured in the image through the KDE platform
+  theme (PyQt6, `QT_QPA_PLATFORMTHEME=kde`, kdeglobals `ColorScheme=`): `QPalette::Shadow` (role 11) = `#738cce` on Fab Dark,
+  `#9db5ef` on Fab Light; `QPalette::Dark` (4) = `#5774ba` / `#c1cff4`. KColorScheme tints those roles with the accent, so a
+  palette-following shadow would be a blue glow. The shadow stays black; `ShadowColor=0,0,0` is KConfig's serialisation
+  (`kwriteconfig6 --type color` writes `0,0,0`).
+- **Aurorae v2** (`aurorae/v2/decoration.cpp` and `decorationtheme.cpp`, tag v6.6.6 from invent.kde.org; the image has
+  kwin-style-aurorae 6.6.6-0ubuntu0.1, source package `aurorae`): `updateShadow()` returns early when `m_theme->padding()
+  .isNull()`; otherwise it paints the frame, cuts `innerRect` with `QPainter::CompositionMode_DestinationOut`, and sets a
+  `KDecoration3::DecorationShadow` with `setPadding(m_theme->padding())`; `paint()` paints the frame at
+  `(-padding.left, -padding.top)`. `DecorationTheme::borders()`: `if (borderSize == KDecoration3::BorderSize::None) { left =
+  0; right = 0; bottom = 0; }` (and `NoSides` zeroes left/right only), so with kwinrc `BorderSize=None`, `BorderSizeAuto=false`
+  (already set) and the theme's `BorderLeft/Right/Bottom=0` there is no side or bottom border; `updateResizeOnlyBorders()`
+  adds invisible `largeSpacing` grab zones for `None`. The title bar keeps its radius-14 arcs (`A14 14 0 0 1 46 32`,
+  `A14 14 0 0 1 68 46` in the regenerated SVG).
+- **The regenerated frame** (`brand/gen/aurorae_theme.py` → `FabOS` + `FabOSLight`): `grep -c` for `linearGradient`,
+  `radialGradient`, `<mask`, `url(#`, `stop-color`, `taper` in `decoration.svg` = 0 each; 16 carrier rects at
+  `fill-opacity:0.004`; `PaddingLeft/Right/Top/Bottom=32` in both rc files. Rendered through KSvg in the image
+  (`tests/decoration-render-test.sh`, Fab Dark and Fab Light, active and inactive): the 40 704 padding-ring pixels and the 42
+  notch pixels are all alpha 0.0039 (min = max), title bar 1.0000, client 0.0000, the pixel 2 px outside the arc on the
+  diagonal 0.0039 and 2 px inside 1.0000; previews `build/decoration-preview-{dark,light}.png` show a flat rounded bar and no
+  halo. The harness needed the scheme's `[Colors:*]` groups appended to kdeglobals: KColorScheme reads the groups, not the
+  `ColorScheme=` name (the first run rendered Breeze Light's `#dee0e2` header).
+- **Sampler** (`tests/corners-sample.py --selftest`, host): the effect's shadow modelled with the formulas above passes; the
+  1.0-5 square-cornered 0.37 band fails on "corner ratio" (diagonal equal to the edge) and "background at 12 px"; a square
+  window fails the corner check.
+
+### Decision
+
+1. `/etc/xdg/kwinrc [Round-Corners]`: `UseNativeDecorationShadows=false ShadowSize=40 InactiveShadowSize=36
+   ShadowColor=0,0,0 InactiveShadowColor=0,0,0 ActiveShadowAlpha=128 InactiveShadowAlpha=64 ActiveShadowUsePalette=false
+   InactiveShadowUsePalette=false ActiveShadowUseCustom=true InactiveShadowUseCustom=true ActiveShadowPalette=11
+   InactiveShadowPalette=11` (`*UsePalette` / `*Palette` are the kcfg defaults; `*UseCustom=true` is read by the KCM only —
+   `KCM.ui` pairs `kcfg_ActiveShadowUsePalette` and `kcfg_ActiveShadowUseCustom` as one radio group — so its "custom colour"
+   radio shows the state that is in force instead of neither radio checked). Everything else
+   in the group is unchanged (radius 14, circular, 1 px outline, square when maximised / tiled / full-screen).
+2. The Aurorae frame paints **no shadow**: no gradients, masks, filters or shadow paths; padding 32 on all sides filled, together
+   with the two top notches, by one uniform alpha-1/255 carrier (`fill-opacity:0.004`), which is what lets the effect paint its
+   shadow there. Border sizes stay 0 / `BorderSize=None`. `FabOSLight` keeps its symlinks to the same SVGs.
+3. Tests: `tests/decoration-render-test.sh` renders dark + light and asserts the uniform carrier over every padding and notch
+   pixel; `tests/corners-vm.sh` wraps every ssh/scp call in `timeout 60` and uses `tests/corners-sample.py` (12 px corner
+   diagonals weaker than the edge and clearly so at the corner, a 2 px-out walk from each corner past the arc start without a
+   step, 2..6 px outside each edge as a soft gradient, shadow present) in Fab Dark and Fab Light; `tests/branding-check.sh`
+   widens its three frame checks to accept the flat frame and appends five strict source-tree checks (kwinrc shadow block,
+   flat SVG, padding 32, the hardened VM test, docs).
+4. Docs: `docs/design/DESIGN_SYSTEM.md` (both Windows sections), `docs/design/BRANDING.md` (two phrases), this amendment.
+
+### Consequences
+
+- Every normal window and dialog has one soft black shadow that follows all four radius-14 corners: 20 px reach at the top and
+  sides, 26 px at the bottom (active); 16 / 22 px (inactive); from 8 px out on every corner diagonal the backdrop is untouched.
+  The 1 px outline is unchanged.
+- Without OpenGL compositing (the effect not loaded) windows have **no shadow** at all now (before: the frame's rectangular
+  one). Accepted: KWin's QPainter fallback is not a supported Fab OS configuration.
+- `expandedGeometry` grows by 4 px per side (padding 28 → 32): a slightly larger offscreen texture per window; negligible.
+- The effect's KCM will show "Use Custom Shadows" selected with sizes 40 / 36; a user who re-enables native shadows gets no
+  shadow (the frame is flat) — the KCM state is honest about that.
+- Observed, not inferred (second pass below): the whole chain — carrier → KWin's decoration-shadow texture → the effect's
+  offscreen texture → `tex.a != 0` → `getCustomShadow` — was watched in a real composited kwin_wayland 6.6.6 inside the image
+  (`tests/corners-live-test.sh`). Still pending: the booted-VM run of `tests/corners-vm.sh` (the orchestrator's VM step, on
+  the rebuilt image) — same sampler, real wallpaper, Fab Editor instead of the probe window.
+
+### Second pass (2026-09-16, after review)
+
+The review's one major point: the visible outcome rested on a chain nobody had watched in a composited KWin — if KWin
+flattened a 1/255-alpha decoration shadow anywhere, every window would ship with no shadow at all. Resolved by observing it:
+
+- **`tests/corners-live-test.sh`** (new; harness `tests/corners-live-harness/`): inside `localhost/fabos:vm` (fabos-rounded-corners
+  0.10.0-0fabos1, kwin-wayland 4:6.6.6-0ubuntu0.1, kwin-style-aurorae 6.6.6-0ubuntu0.1) a real `kwin_wayland --virtual` composites
+  with OpenGL through GBM on the host's DRM render node (`podman --device /dev/dri/renderD128`; the container copies
+  `/usr/bin/kwin_wayland` to drop its file capability, spectacle is let through with the screenshot plugin's own
+  `KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1` knob). THIS checkout's kwinrc and Aurorae theme are placed in the session's `~/.config`
+  and `~/.local/share/aurorae/themes` (KConfig cascade / Aurorae v2 lookup order), one colour scheme per run (`kdeglobals` with
+  the scheme's `[Colors:*]` groups). A frameless maximised light-gradient window is the backdrop, a 600×400 magenta client gets
+  the Fab OS frame (active), a small window then steals focus (inactive); `spectacle -b -n -f -o` after each step, and
+  `tests/corners-sample.py` — the same sampler `tests/corners-vm.sh` runs in the VM — compares each shot with the bare backdrop.
+  Run 2026-09-16 (`build/corners-live.out`): **8 PASS / 0 FAIL** — `Compositing Type: OpenGL` (AMD Radeon renoir, Mesa 26.0.8),
+  `shapecorners loaded=1 supported=true`, KWin reads `UseNativeDecorationShadows=false ShadowSize=40 InactiveShadowSize=36 Size=14`,
+  probe frame 600×436 at (340, 182). Shadow present: 2 px outside the top / bottom edge the backdrop darkens by **75 / 124** RGB
+  units active, **28 / 55** inactive (identical in Fab Dark and Fab Light — the frame's colour does not matter to the effect's
+  shadow). Corners: `d(corner, inside)` 205–333, `d(corner, outside)` 5–21 (round, not square). Diagonals: weaker than the edge at
+  every k, corner ratio 0.17–0.35 at k = 1, 2, **background from k = 8 on (max dev 0 at the top corners, 3 at the bottom ones)**,
+  max step 10, max rise 0. Along the edges from each corner past the arc start: max step ≤ 7, max drop 0 (no step "before the
+  curve"). 2..6 px outside each edge midpoint: steps ≤ 9, monotone. `build/corners-live/{dark,light}-corners.png` (4× crops of
+  all four corners, active / inactive / reference) were looked at: one soft shadow hugging every arc, no ledge.
+- **Negative control** (`--control`: the carrier's `fill-opacity:0.004` set to 0 in the theme under test, nothing else changed):
+  same session, same effect loaded, **no shadow at all** — 2 px outside top / bottom dev **0 / 0**, active and inactive
+  (`build/corners-live-control.out`, 4 PASS). That is the shader's `if (tex.a == 0.0) return tex;` observed: the carrier is what
+  gives the effect pixels to paint into, and a decoration with no padding alpha ships no shadow.
+- **8 px corner rule, ShadowSize 45 → 40** (review minor: the brief said 8 px along each corner diagonal must equal the background;
+  the sampler had been relaxed to 12 px). Measured with `--set Round-Corners/ShadowSize=45` on Fab Light: the biased bottom
+  corners read dev **13 / 11** at k = 8..12 (the model's alpha 0.028 — a faint square smudge), and the sampler now fails it;
+  with 40 the same points read 3 (model 0.0066; top corners 0.0000). `tests/corners-sample.py`: `BG_FROM = 8`, `dev ≤ 10` (the
+  screenshot noise floor) for every k = 8..12; the "inside" reference pixel of the top corners moved to (r, 3) — inside the arc
+  but above the window icon, which sits exactly at (r, r) and was read on the first real render. Self-test models Size 40.
+- **KCM radios** (review minor): `ActiveShadowUseCustom=true`, `InactiveShadowUseCustom=true` (KCM-only keys; rendering unchanged).
+- **`tests/branding-check.sh`** (review minor: three widened labels no longer said what they assert): the three labels now name
+  both accepted alternatives; nothing removed. The track's own appended kwinrc check follows the shipped 40 and the UseCustom keys
+  (it was written in this unpublished branch, so amending it breaks no published baseline); three checks appended (live gate,
+  8 px rule, records).
+- **Packaging**: `brand/brand.conf PKG_REVISION` 5 → 6 (fabos-desktop content changed: kwinrc, FabOSrc/FabOSLightrc,
+  decoration.svg); the image-side "all 10 fabos packages at 1.0-5 in the manifest" check moves to 1.0-6 when that image exists
+  (precedent: round 4b). `docs/QA.md` has this track's entry.
