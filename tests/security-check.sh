@@ -56,7 +56,12 @@ assert a.get(\\\"id\\\") == \\\"in.patienceai.fabos.rootexec\\\", a.get(\\\"id\\
 assert d == {\\\"allow_any\\\": \\\"no\\\", \\\"allow_inactive\\\": \\\"no\\\", \\\"allow_active\\\": \\\"auth_admin_keep\\\"}, d
 assert [x.text for x in a.findall(\\\"annotate\\\") if x.get(\\\"key\\\") == \\\"org.freedesktop.policykit.exec.path\\\"] == [\\\"/usr/lib/fabos/agent/rootexec\\\"]
 \"'"
+# The vm TEST profile ships exactly one rule (49-fabos-vm-test.rules) granting the action to the headless test user; the ISO must have none.
+if [ "$PROFILE" = vm ]; then
+chk "root: only the vm test rule touches in.patienceai.fabos.rootexec" "[ \"\$(R 'grep -rl in.patienceai.fabos.rootexec /etc/polkit-1/rules.d /usr/share/polkit-1/rules.d 2>/dev/null')\" = /etc/polkit-1/rules.d/49-fabos-vm-test.rules ]"
+else
 chk "root: no polkit rule weakens in.patienceai.fabos.rootexec" "img_nomatch 'grep -rl in.patienceai.fabos.rootexec /etc/polkit-1/rules.d /usr/share/polkit-1/rules.d'"
+fi
 chk "root: daemon invokes pkexec rootexec (no sudo -n literal)"  "R 'grep -q \"\\[\\\"pkexec\\\", ROOTEXEC, aid\\]\" $AGENTD && ! grep -q \"\\\"sudo\\\", \\\"-n\\\", \\\"/usr/lib/fabos/agent/rootexec\\\"\" $AGENTD'"
 chk "root: rootexec checks PKEXEC_UID, record id, sha256, owner, age; root-owned 0755" "R 'grep -q PKEXEC_UID /usr/lib/fabos/agent/rootexec && grep -q command_sha256 /usr/lib/fabos/agent/rootexec && grep -q \"st_uid != uid\" /usr/lib/fabos/agent/rootexec && grep -q MAX_AGE_S /usr/lib/fabos/agent/rootexec && [ \$(stat -c %U:%a /usr/lib/fabos/agent/rootexec) = root:755 ]'"
 chk "root: rootexec honours a sudo launcher only when policy.json sets require_password_for_root false" "R 'grep -q \"def sudo_path_allowed\" /usr/lib/fabos/agent/rootexec && grep -q \"refusing the sudo launcher\" /usr/lib/fabos/agent/rootexec'"
