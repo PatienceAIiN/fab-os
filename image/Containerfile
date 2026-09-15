@@ -136,7 +136,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends systemd-zram-ge
 # build log. /etc/xdg/kwinrc (fabos-desktop) switches it on:
 # kwin4_effect_shapecornersEnabled=true, [Round-Corners] Size=14 = the Aurorae frame's own top radius (ADR-0019).
 # Placed after the model and voice layers on purpose so their 1.2 GB of downloads stay cached across rebuilds.
-RUN --mount=type=bind,source=image/rounded-corners-build.sh,target=/tmp/rounded-corners-build.sh bash /tmp/rounded-corners-build.sh
+COPY image/rounded-corners-build.sh /tmp/rounded-corners-build.sh
+# (a plain COPY, not --mount=type=bind: on an SELinux host a bind-mounted file is unreadable inside podman build -> bash exit 126)
+RUN bash /tmp/rounded-corners-build.sh && rm -f /tmp/rounded-corners-build.sh
 # FabOS packages (identity, desktop experience, AI stack)
 COPY --from=pkgs /out/*.deb /tmp/debs/
 RUN apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update && apt-get install -y /tmp/debs/fabos-branding_*.deb /tmp/debs/fabos-desktop_*.deb /tmp/debs/fabos-ai_*.deb /tmp/debs/fabos-agent_*.deb /tmp/debs/fabos-feedback_*.deb /tmp/debs/fabos-updates_*.deb /tmp/debs/fabos-firstboot_*.deb /tmp/debs/fabos-welcome_*.deb /tmp/debs/fabos-voice_*.deb /tmp/debs/fabos-desktop-meta_*.deb \
