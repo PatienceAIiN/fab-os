@@ -1181,7 +1181,7 @@ class Daemon(unittest.TestCase):
         else:
             self.assertIn("AGENT-SOCKET-VISIBLE", env_text)                                    # fallback: only the variable is gone (documented)
 
-    # ---- the small-model driver (ADR-0018), scripted by FakeProvider: agent.driver=stepwise makes any provider run it
+    # ---- the small-model driver (ADR-0020), scripted by FakeProvider: agent.driver=stepwise makes any provider run it
     def stepwise(self, text, mode="bypass", timeout=60):
         self.cli("settings", "agent.driver", "stepwise")
         try:
@@ -1368,6 +1368,49 @@ class Daemon(unittest.TestCase):
         plan = [s for s in self.kinds(t, "assistant") if s["output"].startswith("Plan:")]
         self.assertEqual(len(plan), 1); self.assertNotIn("2. [", plan[0]["output"])
 
+    def test_33k_stepwise_copy_task_never_runs_mv_on_the_source(self):
+        """A copy request: the planner's extra "rename the copied folder" step is dropped, and the executor's first attempt — `mv` of the
+        source (measured on the ladder's l1-e, which lost the user's folder) — is refused before it runs; the retry copies. The
+        source is still there, the copy exists, exactly one shell command ran."""
+        src = os.path.join(self.env["HOME"], "sw-src"); dst = os.path.join(self.env["HOME"], "sw-dst")
+        shutil.rmtree(src, ignore_errors=True); shutil.rmtree(dst, ignore_errors=True); os.makedirs(src)
+        with open(os.path.join(src, "a.txt"), "w") as f:
+            f.write("a\n")
+        t = self.stepwise("stepwise: copy folder %s to %s" % (src, dst))
+        self.assertEqual(t["status"], "done", t)
+        self.assertTrue(os.path.isfile(os.path.join(src, "a.txt")), "the source must survive a copy"); self.assertTrue(os.path.isfile(os.path.join(dst, "a.txt")))
+        calls = self.kinds(t, "tool_call"); self.assertEqual([c["name"] for c in calls], ["run_shell"]); self.assertIn("cp -r", str(calls[0]["input"]))
+        refused = [v for v in self.kinds(t, "verify", "run_shell") if "may not run here" in v["output"]]
+        self.assertEqual(len(refused), 1, self.kinds(t, "verify")); self.assertIn("`mv`", refused[0]["output"]); self.assertIn("never asks to move, rename or delete", refused[0]["output"])
+        notes = [v["output"] for v in self.kinds(t, "verify", "plan")]
+        self.assertTrue(any(n.startswith("dropped step 2 [run_shell]: it would rename, move or delete") for n in notes), notes)
+
+    def test_33l_stepwise_rename_by_extension_is_checked_on_disk(self):
+        """"Rename every .txt to .md inside DIR": a command that exits 0 but renames nothing (measured: sed -i on the contents) fails the
+        step deterministically — the leftovers are named and the mv idiom shown — and the retry renames them."""
+        d = os.path.join(self.env["HOME"], "sw-ren"); shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
+        for n in ("a.txt", "b.txt"):
+            with open(os.path.join(d, n), "w") as f:
+                f.write(n + "\n")
+        t = self.stepwise("stepwise: rename ext in %s so every file that ends in .txt ends in .md instead" % d)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual(sorted(os.listdir(d)), ["a.md", "b.md"])
+        ver = self.kinds(t, "verify", "run_shell"); self.assertEqual(len(ver), 2, ver)
+        self.assertIn("2 files in %s still end in .txt (a.txt, b.txt): nothing was renamed" % d, ver[0]["output"]); self.assertIn("${f%.txt}.md", ver[0]["output"])
+        self.assertTrue(ver[1]["output"].startswith("ok:"), ver[1])
+        self.assertEqual([c["name"] for c in self.kinds(t, "tool_call")], ["run_shell", "run_shell"])
+
+    def test_33m_stepwise_missing_folder_fails_honestly_instead_of_writing_a_file(self):
+        """The request names a folder no step created: the outcome check must not "repair" it with write_file (measured: three attempts
+        to write a file onto a folder path) — the task fails and says which path is missing."""
+        d = os.path.join(self.env["HOME"], "sw-never", "made")
+        shutil.rmtree(os.path.dirname(d), ignore_errors=True)
+        t = self.stepwise("stepwise: folder missing %s" % d)
+        self.assertEqual(t["status"], "failed", t)
+        self.assertEqual([c["name"] for c in self.kinds(t, "tool_call")], ["run_shell"])
+        self.assertFalse(os.path.exists(d)); self.assertIn("%s but it does not exist after the plan" % d, t["error"]); self.assertIn("looks like a folder", t["error"])
+        self.assertTrue(any("nothing can be written there" in v["output"] for v in self.kinds(t, "verify", "outcome")), self.kinds(t, "verify"))
+
     def test_33_status_reports_driver_and_network(self):
         st = self.cli("status"); self.assertEqual(st["driver"], "freeform")                        # the fake provider defaults to the cloud loop
         self.assertEqual(set(st["network"]), {"online", "target", "checked", "age_s"})
@@ -1380,7 +1423,7 @@ class Daemon(unittest.TestCase):
 
 
 class StepwiseUnits(unittest.TestCase):
-    """In-process checks of the small-model driver's pieces (ADR-0018): plan parsing, deterministic step checks, the compact
+    """In-process checks of the small-model driver's pieces (ADR-0020): plan parsing, deterministic step checks, the compact
     turn text, the prompt budget, driver selection, the online probe, and the OpenAI-compatible provider's schema call."""
 
     def test_parse_plan(self):
@@ -1432,6 +1475,43 @@ class StepwiseUnits(unittest.TestCase):
         self.assertEqual([s["tool"] for s in plan], ["run_shell", "reply"]); self.assertEqual(len(notes), 1); self.assertIn("repeats an earlier step's goal", notes[0])
         plan = [{"tool": "run_shell", "goal": "count"}, {"tool": "run_shell", "goal": "count"}]
         self.assertEqual(len(fa.plan_sanity("count twice", plan)), 1); self.assertEqual(len(plan), 1)
+
+    def test_destructive_and_rename_guards(self):
+        """The user's own words decide: a request without move/rename/delete words never lets mv/rm run (as a command word, after sudo or
+        xargs, find -delete / -exec rm); a rename-by-extension request yields a deterministic post-condition."""
+        copy = "Copy the folder /tmp/ladder/notes to ~/Ladder/notes-copy so that ~/Ladder/notes-copy ends up holding the same files."
+        self.assertIn("`mv` may not run here", fa.destructive_command_reason(copy, "mv /tmp/ladder/notes ~/Ladder/notes-copy"))
+        self.assertIn("`rm`", fa.destructive_command_reason(copy, "cp -r a b && rm -rf a")); self.assertIn("`-delete`", fa.destructive_command_reason(copy, "find a -name '*.tmp' -delete"))
+        self.assertIn("`rm`", fa.destructive_command_reason(copy, "find a -type f -exec rm {} \\;")); self.assertIn("`mv`", fa.destructive_command_reason(copy, "ls | xargs -n 1 mv"))
+        self.assertIn("`rmdir`", fa.destructive_command_reason(copy, "sudo rmdir /tmp/x"))
+        self.assertIsNone(fa.destructive_command_reason(copy, "cp -r /tmp/ladder/notes ~/Ladder/notes-copy"))
+        self.assertIsNone(fa.destructive_command_reason(copy, "mkdir -p ~/x && echo hi > ~/x/rm.txt"))         # rm inside a name is not a command
+        self.assertIsNone(fa.destructive_command_reason("Rename every file that ends in .txt inside ~/x so it ends in .md", "for f in ~/x/*.txt; do mv \"$f\" \"${f%.txt}.md\"; done"))
+        self.assertIsNone(fa.destructive_command_reason("Delete the folder ~/tmp-old", "rm -rf ~/tmp-old")); self.assertIsNone(fa.destructive_command_reason("Move a to b", "mv a b"))
+        # plan_sanity drops a rename/move step the request never asked for; the plan is never emptied
+        plan = [{"tool": "run_shell", "goal": "copy the folder /tmp/a to ~/b"}, {"tool": "run_shell", "goal": "Rename the copied folder to ~/b"}]
+        notes = fa.plan_sanity(copy, plan); self.assertEqual(len(plan), 1); self.assertEqual(len(notes), 1); self.assertIn("would rename, move or delete", notes[0])
+        plan = [{"tool": "run_shell", "goal": "move a to b"}]
+        self.assertEqual(fa.plan_sanity("Copy a to b", plan), []); self.assertEqual(len(plan), 1)
+        plan = [{"tool": "run_shell", "goal": "rename each .txt to .md"}]
+        self.assertEqual(fa.plan_sanity("Rename every .txt in ~/x to .md", plan), []); self.assertEqual(len(plan), 1)
+        # rename_expectation: the two extensions and the existing folder(s) the request names; None without a rename word, with
+        # extensions only inside file names, or when the folder does not exist
+        d = tempfile.mkdtemp(prefix="fabos-ren-")
+        try:
+            for n in ("a.txt", "b.txt", "c.md"):
+                with open(os.path.join(d, n), "w") as f:
+                    f.write("x")
+            exp = fa.rename_expectation("Rename every file that ends in .txt inside %s so it ends in .md instead. Keep the base names unchanged." % d)
+            self.assertEqual(exp, (".txt", ".md", [d])); self.assertEqual(fa.rename_leftovers(exp), ["a.txt", "b.txt"])
+            self.assertIn("for f in %s/*.txt; do mv \"$f\" \"${f%%.txt}.md\"; done" % d, fa.rename_hint(exp))
+            os.rename(os.path.join(d, "a.txt"), os.path.join(d, "a.md")); os.rename(os.path.join(d, "b.txt"), os.path.join(d, "b.md"))
+            self.assertEqual(fa.rename_leftovers(exp), [])
+            self.assertIsNone(fa.rename_expectation("Copy every .txt file inside %s to .md" % d))
+            self.assertIsNone(fa.rename_expectation("Rename the file %s/report.txt to final.txt" % d))
+            self.assertIsNone(fa.rename_expectation("Rename every .txt to .md inside /nonexistent/folder/here"))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
     def test_expected_app_and_the_request_regexes(self):
         self.assertEqual(fa.expected_app("Open the Fab Terminal application so a terminal window is running"), "konsole")
@@ -1533,11 +1613,11 @@ class StepwiseUnits(unittest.TestCase):
 
     def test_local_prompt_budget_and_content(self):
         s = fa.local_system_prompt("auto", {"online": True})
-        self.assertLess(len(s), 2800, len(s))            # measured with the model's tokenizer in the image (build/tokens.sh, see ADR-0018): ~3.7 chars per token, so 2800 chars stays under the 900-token budget
+        self.assertLess(len(s), 3000, len(s))            # measured with the model's tokenizer in the image (tests/local-driver-image.sh prints it at every run, ADR-0020): 803 tokens for 2 930 chars, ~3.6 chars per token, so 3 000 chars stays under the 900-token budget
         for must in ("ONE tool call", "Never say a step is done", "Show your work", "web_fetch", "run_shell", "write_file", "save_result", "open_app", "type_text", "Internet: ONLINE", "never need it", "Permission mode: auto", fa.HOME):
             self.assertIn(must, s)
         self.assertIn("Internet: OFFLINE", fa.local_system_prompt("ask", {"online": False})); self.assertIn("Internet: unknown", fa.local_system_prompt("ask", {"online": None}))
-        self.assertLess(len(fa.PLAN_SYSTEM), 2500); self.assertIn("reply", fa.PLAN_SYSTEM)     # measured with the model tokenizer (build/tokens.sh, ADR-0018): ~4.2 chars per token, so ~550 tokens
+        self.assertLess(len(fa.PLAN_SYSTEM), 2500); self.assertIn("reply", fa.PLAN_SYSTEM)     # measured with the model tokenizer (build/tokens.sh, ADR-0020): ~4.2 chars per token, so ~550 tokens
         sch = fa.plan_schema(["run_shell", "reply"]); self.assertEqual(sch["properties"]["steps"]["items"]["properties"]["tool"]["enum"], ["run_shell", "reply"]); self.assertEqual(sch["properties"]["steps"]["maxItems"], fa.PLAN_MAX_STEPS)
 
     def test_driver_selection(self):

@@ -35,7 +35,7 @@ Mail: the user's OWN account (Gmail, Outlook/Hotmail, Yahoo, Zoho, iCloud preset
 mail.provider / mail.address / mail.from_name, secret mail_password (an app password where the provider requires one) or
 the Google refresh token mail_oauth_refresh. The feedback relay (fabos-feedback) is a separate channel and is not used here.
 Every tool step carries a one-sentence "narration" (Indian English) that UIs display and the voice daemon speaks.
-Drivers (ADR-0018): cloud providers run the free-form tool loop; the built-in `local` model (or setting agent.driver=stepwise)
+Drivers (ADR-0020): cloud providers run the free-form tool loop; the built-in `local` model (or setting agent.driver=stepwise)
 runs PLAN -> one tool per turn -> VERIFY -> FINISH with a compact prompt written for a 1.5B model. /status carries `driver`
 and `network` ({online, target, checked, age_s}: one HTTPS HEAD to the provider host or 1.1.1.1:443, 2 s timeout, cached 60 s).
 FABOS_AGENT_PROVIDER=fake runs a scripted provider for tests.
@@ -1299,7 +1299,7 @@ def compact_messages(messages, limit):
     return n
 
 
-# ----------------------------------------------------------------------------- small-model driver (ADR-0018)
+# ----------------------------------------------------------------------------- small-model driver (ADR-0020)
 # The built-in 1.5B model cannot carry the 60-turn free-form conversation the cloud models run: measured on the graded
 # ladder it calls one tool and declares the task done. So the `local` provider (or the setting agent.driver=stepwise) runs
 # every task as PLAN (strict-JSON plan, schema enforced by llama-server's response_format) -> EXECUTE one tool call per turn,
@@ -1329,6 +1329,7 @@ _net_lock = threading.Lock()
 LOCAL_SYSTEM_PROMPT = """You are the {app} agent on this Linux desktop (KDE Plasma, Wayland), working as user {user}. Home: {home}. Date: {date}. Internet: {net}.
 You get ONE step of a plan at a time. Do exactly that step with ONE tool call, then stop. Rules:
 - Never count, add or compute in your head: run a command and use its output. Paths are absolute; ~ means {home}.
+- Copy means cp and the source stays: never mv, rm or delete anything unless the task itself asks to move, rename or delete it.
 - Never say a step is done before its result is verified. If the last result shows an error, change the command or the arguments and try again.
 - Show your work: text the user will read (a note, a letter, a mail body) is typed where they can watch it: open_app kate with the file path, then type_text the text, then write_file the same text to the same path.
 Tools and their JSON arguments:
@@ -1348,7 +1349,7 @@ Apps: Fab Editor = kate, Fab Terminal = konsole, Fab Files = dolphin, browser = 
 
 PLAN_SYSTEM = """You plan a desktop task for the {app} agent as a short numbered list of steps; each step is done by ONE tool call. Home: {home}. The task's files and folders are on this computer.
 Tools: run_shell (a bash command: files, folders, copy, rename, count, sum, dates, curl), write_file (create a text file with exact content the user gave), save_result (write the previous step's output to a file exactly as it is), read_file, list_dir, web_fetch (fetch a URL's text), open_app (kate = Fab Editor, konsole = Fab Terminal, dolphin = Fab Files, brave-browser, libreoffice), type_text (type into the app opened in the previous step), send_email, notify_user, reply (the final answer text, only when the user asked a question or for a report line).
-Rules: as few steps as possible; ONE run_shell step when a command does the whole job, including writing a computed value into a file with '>' (dates: date +%F; copying, renaming, largest file: find/cp/mv/sort; a column total in CSV files: python3 with the csv module by column name). To count or list the files of a folder use list_dir: it returns the total and the names. Use web_fetch only when the task names a web page or URL; never invent a URL. Tool names are not shell commands. If the user names the tools or the order (open X, then type Y), plan exactly those steps in that order. Each step does one thing: web_fetch and read_file only return text, so saving what they return is a separate save_result step right after. write_file is for text the user gave literally; save_result for output a previous step produced. When the user wants to watch text being written or asks to open an app and type: open_app, then type_text, then write_file if it must be saved. No step for checking: verification is automatic. Never create a file the task does not name; a count, a question or a report line ends with a reply step, not a file. Do not invent facts, values or paths. Do not answer the task yourself.
+Rules: as few steps as possible; ONE run_shell step when a command does the whole job, including writing a computed value into a file with '>' (dates: date +%F; copying (cp — the source stays), renaming, largest file: find/cp/mv/sort; a column total in CSV files: python3 with the csv module by column name). To count or list the files of a folder use list_dir: it returns the total and the names. Use web_fetch only when the task names a web page or URL; never invent a URL. Tool names are not shell commands. If the user names the tools or the order (open X, then type Y), plan exactly those steps in that order. Each step does one thing: web_fetch and read_file only return text, so saving what they return is a separate save_result step right after. write_file is for text the user gave literally; save_result for output a previous step produced. When the user wants to watch text being written or asks to open an app and type: open_app, then type_text, then write_file if it must be saved. No step for checking: verification is automatic. Never create a file the task does not name; a count, a question or a report line ends with a reply step, not a file. Do not invent facts, values or paths. Do not answer the task yourself.
 Example — "How big is ~/Pictures? Reply SIZE: <bytes>" -> {{"steps": [{{"tool": "run_shell", "goal": "print the total size of ~/Pictures in bytes"}}, {{"tool": "reply", "goal": "SIZE: the number printed"}}]}}
 Return only JSON: {{"steps": [{{"tool": "...", "goal": "what the step must achieve, in words, with the exact paths and values — never a command"}}]}}"""
 
@@ -1551,6 +1552,75 @@ def expected_app(request):
     hits = [exe for exe, names in APP_NAMES.items() if any(n in low for n in names)]
     return hits[0] if len(hits) == 1 else None
 GOAL_DELETE_RE = re.compile(r"\b(delete|remove|rm|erase|clean|clear|unlink|trash|empty|purge|move|mv|rename)\b", re.I)
+# The user's own words that ask for something to be moved, renamed, deleted or replaced. A request without any of them (a copy,
+# a count, a sum) never justifies an mv/rm in a shell step — measured on "Copy the folder /tmp/ladder/notes to ~/Ladder/notes-copy":
+# the plan's second step, "Rename the copied folder", ran `mv /tmp/ladder/notes ~/Ladder/notes-copy` and the user's source folder
+# was gone (the ladder's check still passed, which is why this is a deterministic guard and not a check).
+CHANGE_WORDS_RE = re.compile(r"\b(delete|deletes|deleting|remove|removes|removing|rm|erase|erasing|clean|cleans|cleaning|clear|clears|clearing|unlink|trash|"
+                             r"empty|empties|purge|move|moves|moving|mv|rename|renames|renaming|replace|replaces|replacing|overwrite|overwrites|overwriting|"
+                             r"tidy|sort out|organi[sz]e|get rid of|throw away|discard)\b")
+# The command words that move, rename or delete, as the first word of a simple command (after ;, &&, |, (, a backtick, sudo or
+# xargs), plus find's -delete and -exec mv/rm.
+DESTRUCTIVE_CMD_RE = re.compile(r"(?:^|[\s;&|(`])(?:sudo\s+|xargs\s+(?:-\S+\s+)*)?(mv|rm|rmdir|shred|unlink|rename)(?=\s|$)|\s(-delete)(?=\s|$)|-exec\s+(mv|rm)\s")
+# A plan step whose own goal renames, moves or deletes (dropped when the request never asks for that).
+PLAN_CHANGE_RE = re.compile(r"\b(rename|renames|renaming|move|moves|moving|delete|deletes|deleting|remove|removes|removing|erase|purge|trash|rm|mv)\b")
+# "Rename every file that ends in .txt inside ~/x so it ends in .md": the two extensions and the folders, for a deterministic
+# post-condition (no *.txt may remain) — measured: `sed -i 's/.txt/.md/g'` on the files' CONTENTS exited 0, renamed nothing, and
+# the model's self-check said yes.
+RENAME_EXT_RE = re.compile(r"\brenam\w*\b")
+EXT_RE = re.compile(r"(?<![\w/])\.([a-z0-9]{1,5})\b")
+
+
+def destructive_command_reason(request, command):
+    """Why this shell command may not run for this request, or None: it moves, renames or deletes (mv, rm, rmdir, shred, unlink,
+    rename, find -delete / -exec rm) while the user's words never asked for anything to be moved, renamed, deleted or replaced."""
+    low = " ".join((request or "").lower().split())
+    if CHANGE_WORDS_RE.search(low):
+        return None
+    m = DESTRUCTIVE_CMD_RE.search(command or "")
+    if not m:
+        return None
+    word = m.group(1) or m.group(2) or m.group(3)
+    return ("the task never asks to move, rename or delete anything, so `%s` may not run here (it would change or lose the user's files);"
+            " do the step with cp, mkdir, cat or a > redirect instead" % word)
+
+
+def rename_expectation(request):
+    """(old_ext, new_ext, [folders]) when the request asks to rename files from one extension to another inside folders it names
+    (and they exist), else None. The rename step's deterministic post-condition: no file with old_ext may remain there."""
+    low = " ".join((request or "").lower().split())
+    if not RENAME_EXT_RE.search(low):
+        return None
+    exts = []
+    for m in EXT_RE.finditer(low):
+        e = "." + m.group(1)
+        if e not in exts:
+            exts.append(e)
+    if len(exts) != 2:
+        return None
+    folders = [p for p in goal_paths(request) if os.path.isdir(os.path.expanduser(p))]
+    if not folders:
+        return None
+    return exts[0], exts[1], folders
+
+
+def rename_leftovers(exp):
+    """Files still ending in the old extension inside the expectation's folders (names only, sorted)."""
+    old, _new, folders = exp
+    left = []
+    for d in folders:
+        fp = os.path.expanduser(d)
+        try:
+            names = sorted(os.listdir(fp))
+        except OSError:
+            continue
+        left += [n for n in names if n.lower().endswith(old) and os.path.isfile(os.path.join(fp, n))]
+    return left
+
+
+def rename_hint(exp):
+    old, new, folders = exp
+    return "rename each one with mv, e.g. for f in %s/*%s; do mv \"$f\" \"${f%%%s}%s\"; done" % (folders[0], old, old, new)
 
 
 def goal_paths(goal):
@@ -1602,6 +1672,15 @@ def plan_sanity(request, plan):
         keep.append(s)
     if keep and len(keep) < len(plan):
         plan[:] = keep
+    # The request never asks to move, rename or delete: a step whose own goal would is dropped — measured: "Copy the folder A to B"
+    # planned as cp, then "Rename the copied folder to B", which ran mv on the source. Never empties the plan.
+    if not CHANGE_WORDS_RE.search(low):
+        keep = [s for s in plan if s["tool"] == "reply" or not PLAN_CHANGE_RE.search(s["goal"].lower())]
+        if keep and len(keep) < len(plan):
+            for i, s in enumerate(plan):
+                if s not in keep:
+                    notes.append("dropped step %d [%s]: it would rename, move or delete, which the task never asks for (%s)" % (i + 1, s["tool"], s["goal"][:80]))
+            plan[:] = keep
     tools = [s["tool"] for s in plan]
     if re.search(r"\btyp(e|es|ed|ing)\b", low) and "open_app" in tools and "type_text" not in tools and len(plan) < PLAN_MAX_STEPS:
         i = tools.index("open_app")
@@ -2005,6 +2084,16 @@ class FakeProvider:
                     ("save_result", "save the previous output to the folder %s" % m.group(1), {"path": m.group(1)}, {"path": m.group(1)})]
         if "stepwise: duplicate step" in low:
             return [("run_shell", "copy the folder a to b", {"command": "echo copied"}, None)]
+        m = re.search(r"stepwise: copy folder (\S+) to (\S+)", req, re.I)
+        if m:                                                                       # first attempt reaches for mv (measured); the retry copies
+            return [("run_shell", "copy the folder %s to %s" % (m.group(1), m.group(2)), {"command": "mv %s %s" % (m.group(1), m.group(2))},
+                     {"command": "cp -r %s %s" % (m.group(1), m.group(2))})]
+        m = re.search(r"stepwise: rename ext in (\S+)", req, re.I)
+        if m:                                                                       # first attempt exits 0 and renames nothing (measured: sed -i on the contents)
+            return [("run_shell", "rename each .txt file in %s to .md" % m.group(1), {"command": "true"},
+                     {"command": "for f in %s/*.txt; do mv \"$f\" \"${f%%.txt}.md\"; done" % m.group(1)})]
+        if "stepwise: folder missing" in low:                                       # the request names a folder that no step creates
+            return [("run_shell", "print hello", {"command": "echo hello"}, None)]
         if "stepwise: broken json" in low:
             return [("run_shell", "print pong", {"_raw": "{\"command\": \"echo | . | . | . |"}, {"command": "echo pong"})]
         if "stepwise: no tool" in low:
@@ -2064,6 +2153,8 @@ class FakeProvider:
             steps = [{"tool": t, "goal": g} for t, g, _i, _r in self.fake_plan(req)]
             if "duplicate step" in req.lower():                                                   # the model's habit: the same goal planned twice
                 steps = steps + [{"tool": "save_result", "goal": steps[0]["goal"].upper() + "."}]
+            if "copy folder" in req.lower():                                                      # the model's habit: a "rename the copied folder" step after the cp (measured: it ran mv on the source)
+                steps = steps + [{"tool": "run_shell", "goal": "Rename the copied folder to its final name"}]
             if "count files in" in req.lower() and "do not create" in req.lower():   # the model's habit: an answer-only task planned as run_shell + save_result, no reply
                 steps = [steps[0], {"tool": "save_result", "goal": "save the count to /tmp/count.txt"}]
             return json.dumps({"steps": steps})
@@ -2327,7 +2418,7 @@ class Agent:
             return getattr(prov, "result_limit", RESULT_LIMIT_CLOUD)
 
     def driver_for(self, prov):
-        """'stepwise' (small-model driver, ADR-0018) or 'freeform' (the cloud loop) for this provider — see driver_name()."""
+        """'stepwise' (small-model driver, ADR-0020) or 'freeform' (the cloud loop) for this provider — see driver_name()."""
         return driver_name(self.store, getattr(prov, "name", ""))
 
     def model_step(self, tid, prov, system, messages, usage, tools=None, **opts):
@@ -2546,7 +2637,7 @@ class Agent:
             final += "\n\n(stopped: reached the turn limit)"
         return final
 
-    # ---- the small-model driver (ADR-0018): PLAN -> EXECUTE one tool per turn -> VERIFY -> FINISH
+    # ---- the small-model driver (ADR-0020): PLAN -> EXECUTE one tool per turn -> VERIFY -> FINISH
     def _plan(self, tid, prov, request, net, usage, tools):
         allowed = [t for t in STEP_TOOLS if t == "reply" or any(x["name"] == t for x in tools) or (t == "save_result" and any(x["name"] == "write_file" for x in tools))]
         system = PLAN_SYSTEM.format(app=APP, net="online" if net.get("online") else "offline" if net.get("online") is False else "unknown", home=HOME)
@@ -2591,6 +2682,7 @@ class Agent:
         if any(t["name"] == "write_file" for t in exec_tools):
             exec_tools.append(SAVE_RESULT_TOOL)             # driver-only: the previous output reaches the file verbatim, the model never retypes it
         results, reply_text, repaired = {}, None, []
+        rename_exp = rename_expectation(request)            # "rename … .txt … .md inside <folder>": no *.txt may remain afterwards
         last_output = None                                  # {"raw", "from"}: the most recent tool call that produced data, ok or not
         idx = 0
         while idx < len(plan):
@@ -2662,6 +2754,16 @@ class Agent:
                     c = {"id": c["id"], "name": "write_file", "input": {"path": str(c["input"].get("path") or ""), "content": last_output["raw"]}}
                     self.store.step(tid, "verify", "save_result", step["goal"][:300], "writing the output of %s (%d chars) to %s, unchanged"
                                     % (last_output["from"], len(last_output["raw"]), c["input"]["path"]))
+                if c["name"] == "run_shell":
+                    # Deterministic, before the risk gate: the user's words never asked for anything to be moved, renamed or deleted, so
+                    # mv/rm may not run (measured: a copy task's second step moved the source folder away).
+                    reason = destructive_command_reason(request, str(c["input"].get("command") or ""))
+                    if reason:
+                        sig = json.dumps(c["input"], sort_keys=True)
+                        error = ("you sent exactly the same call again and it was refused the same way; change the command. " if sig in failed_sigs else "") + reason
+                        failed_sigs.add(sig)
+                        self.store.step(tid, "verify", "run_shell", step["goal"][:300], "failed: " + error + ("" if attempt == STEP_RETRIES else "; retrying with the reason shown"))
+                        continue
                 out, err, inp = self._run_call(tid, task, c)
                 res_text = json.dumps(out)
                 raw = raw_result(c["name"], out, inp)
@@ -2698,6 +2800,13 @@ class Agent:
                                     detail += "; %s now holds %d entries: %s%s" % (p, len(names), ", ".join(names[:12]), ", ..." if len(names) > 12 else "")
                             except OSError:
                                 pass
+                if ok and c["name"] == "run_shell" and rename_exp and (RENAME_EXT_RE.search(step["goal"].lower()) or rename_exp[0] in step["goal"].lower()):
+                    left = rename_leftovers(rename_exp)          # the user's own words: no file may still end in the old extension
+                    if left:
+                        ok = False
+                        detail += "; but %d file%s in %s still end%s in %s (%s): nothing was renamed — %s" % (
+                            len(left), "" if len(left) == 1 else "s", " and ".join(rename_exp[2]), "s" if len(left) == 1 else "", rename_exp[0],
+                            ", ".join(left[:6]) + (", ..." if len(left) > 6 else ""), rename_hint(rename_exp))
                 if ok and self_check and c["name"] not in ("open_app", "type_text"):
                     sc_ok, why = self._self_check(prov, step, c["name"], inp, res_text, detail, usage, request)
                     if not sc_ok:
@@ -2724,15 +2833,30 @@ class Agent:
             if idx == len(plan) and not reply_text:
                 # OUTCOME CHECK before finishing: every path the user's request names must exist now (deletes/moves excepted).
                 # A small model often does the work and never writes the file; one repair step per missing path, at most two.
+                if rename_exp and "rename" not in repaired:
+                    left = rename_leftovers(rename_exp)
+                    if left:                                     # the user's rename is not done: one repair step; the step's own check then decides
+                        repaired.append("rename")
+                        plan.append({"tool": "run_shell", "goal": "Rename the %d file%s in %s that still end in %s so they end in %s instead (mv each one, same base names): %s"
+                                     % (len(left), "" if len(left) == 1 else "s", " and ".join(rename_exp[2]), rename_exp[0], rename_exp[1], ", ".join(left[:6]))})
+                        self.store.step(tid, "verify", "outcome", " and ".join(rename_exp[2]), "%d file(s) still end in %s after the plan (%s); adding a run_shell step to rename them"
+                                        % (len(left), rename_exp[0], ", ".join(left[:6])))
                 for p in missing_goal_paths(request)[:2]:
-                    if p not in repaired:
-                        repaired.append(p)
-                        if last_output and last_output["raw"].strip():
-                            # an earlier step produced the value: the driver copies it, the model only confirms the path
-                            plan.append({"tool": "save_result", "goal": "Save the output above to %s exactly (the task names it and it does not exist yet)" % p})
-                        else:
-                            plan.append({"tool": "write_file", "goal": "Create %s exactly as the task asks, using the results above (it does not exist yet)" % p})
-                        self.store.step(tid, "verify", "outcome", p, "the task names %s but it does not exist after the plan; adding a %s step to create it" % (p, plan[-1]["tool"]))
+                    if p in repaired:
+                        continue
+                    repaired.append(p)
+                    if not os.path.splitext(os.path.basename(p))[1]:
+                        # It looks like a folder (no extension). No step's output can stand in for a folder, and writing a FILE at its path
+                        # would be wrong (measured: three write_file attempts onto the copied folder) — the task fails, honestly.
+                        done = ", ".join("%d. %s" % (i + 1, s["goal"]) for i, s in enumerate(plan) if i in results) or "nothing"
+                        self.store.step(tid, "verify", "outcome", p, "the task names %s but it does not exist after the plan, and it looks like a folder: nothing can be written there" % p)
+                        raise RuntimeError("The task names %s but it does not exist after the plan (it looks like a folder, which no step's output can stand in for). Done: %s" % (p, done))
+                    if last_output and last_output["raw"].strip():
+                        # an earlier step produced the value: the driver copies it, the model only confirms the path
+                        plan.append({"tool": "save_result", "goal": "Save the output above to %s exactly (the task names it and it does not exist yet)" % p})
+                    else:
+                        plan.append({"tool": "write_file", "goal": "Create %s exactly as the task asks, using the results above (it does not exist yet)" % p})
+                    self.store.step(tid, "verify", "outcome", p, "the task names %s but it does not exist after the plan; adding a %s step to create it" % (p, plan[-1]["tool"]))
         if reply_text:
             return reply_text
         lines = ["Task: " + " ".join(request.split()), "Steps done and verified:"]
@@ -3553,7 +3677,7 @@ def make_handler(store, agent, token):
                                         # "policy": the administrator's /etc/fabos/policy.json as loaded (managed=true when any key is set) — UIs show
                                         # "Managed by your organisation" from it. root_path/sandbox: how root and run_shell are reached on this machine.
                                         "policy": POLICY.status(), "root_path": "polkit" if root_argv("x")[0] == "pkexec" else "sudo", "sandbox": agent.sandbox_name(),
-                                        # driver: how this provider's tasks run (ADR-0018); network: the cached online probe (non-blocking here)
+                                        # driver: how this provider's tasks run (ADR-0020); network: the cached online probe (non-blocking here)
                                         "driver": driver_name(store, prov), "network": network_status(store, block=False),
                                         "provider_label": PROVIDERS[prov]["label"] if prov in PROVIDERS else prov,
                                         "provider_model": store.setting(prov + ".model", PROVIDERS[prov]["model"]) if prov in PROVIDERS else "",
@@ -3571,7 +3695,7 @@ def make_handler(store, agent, token):
                 s.setdefault("ai.enabled", "true")
                 s.setdefault("ui.show_raw", "false")     # Fab AI Controls: show commands / raw tool output in chats
                 s.setdefault("ui.persona", PERSONA_DEFAULT)
-                s.setdefault("agent.driver", "")         # "" = the provider decides (local -> stepwise), or stepwise | freeform (ADR-0018)
+                s.setdefault("agent.driver", "")         # "" = the provider decides (local -> stepwise), or stepwise | freeform (ADR-0020)
                 for k, d in VOICE_DEFAULTS.items():
                     s.setdefault(k, d)
                 for k, v in PROVIDERS.items():

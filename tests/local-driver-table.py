@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Fab OS — render the BEFORE/AFTER table of tests/local-driver-test.py runs as Markdown (for docs/LOW-RAM.md and ADR-0018).
+# Fab OS — render the BEFORE/AFTER table of tests/local-driver-test.py runs as Markdown (for docs/LOW-RAM.md and ADR-0020).
 # Copyright (c) 2026 Patience AI. Licensed under the Apache License, Version 2.0.
 # SPDX-License-Identifier: Apache-2.0
 """python3 tests/local-driver-table.py build/local-driver-before.json build/local-driver-after.json

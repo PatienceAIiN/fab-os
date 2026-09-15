@@ -34,15 +34,15 @@ fi
 mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
 # Context: the KV cache for this model is 224 MiB at 8192 tokens (llama-server's own line: "CPU KV buffer size = 224.00 MiB",
 # 28 layers, f16 K and V), so 8192 fits the 4 GB machine next to the desktop; allow 16384 on machines with >= 7.5 GiB.
-# The stepwise driver (ADR-0018) never needs more than ~1.5k tokens per turn, so 8192 is also plenty of room for a long free-form chat.
+# The stepwise driver (ADR-0020) never needs more than ~1.5k tokens per turn, so 8192 is also plenty of room for a long free-form chat.
 if [ -n "${FABOS_LLAMA_CTX:-}" ]; then CTX=$FABOS_LLAMA_CTX
 elif [ "${mem_kb:-0}" -ge 7864320 ]; then CTX=16384
 else CTX=8192
 fi
 
 # Threads: one per physical core, capped at 8 so the desktop stays fluid. Measured in the Fab OS image on 2026-09-15 (6 physical
-# cores / 12 threads, ctx 8192): generation 33.8 tok/s with 6 threads against 28.6 tok/s with all 12 (SMT siblings compete for the
-# same vector units), prompt processing 103 vs 121 tok/s — the generation rate is what the user waits on, so physical cores win.
+# cores / 12 threads, ctx 8192): generation 31.9 tok/s with 6 threads against 25.7 tok/s with all 12 (SMT siblings compete for the
+# same vector units), prompt processing 97 vs 121 tok/s — the generation rate is what the user waits on, so physical cores win.
 if [ -n "${FABOS_LLAMA_THREADS:-}" ]; then THREADS=$FABOS_LLAMA_THREADS
 else
   cores=$(awk -F': *' '/^physical id/ {p=$2} /^core id/ {c[p ":" $2]=1} END {n=0; for (k in c) n++; print n}' /proc/cpuinfo 2>/dev/null || echo 0)
@@ -69,7 +69,7 @@ echo "fabos-llama: serving $MODEL on 127.0.0.1:$PORT (ctx=$CTX threads=$THREADS 
 #   -cram, --cache-ram N          set the maximum cache size in MiB (default: 8192, -1 - no limit, 0 - disable)   -> 256 MiB prompt cache
 #   --cache-reuse N               min chunk size to attempt reusing from the cache via KV shifting, requires prompt caching to be
 #                                 enabled (default: 0)   -> 256: the stepwise driver sends the same ~700-token system prompt every
-#                                 turn; measured 2026-09-15: second request with the same prefix processed 6 new tokens, 433 reused
+#                                 turn; measured 2026-09-15: second request with the same prefix processed 57 new tokens, 798 reused (llama-server's timings.cache_n; tests/local-model-speed.sh)
 #   --temp, --temperature N       temperature (default: 0.80)    -> 0.2: server default for tool turns (the daemon also sends it per request)
 #   --top-p N                     top-p sampling (default: 0.95, 1.0 = disabled)   -> 0.9 (same: server default + per request)
 #   --repeat-penalty N            penalize repeat sequence of tokens (default: 1.00, 1.0 = disabled)   -> 1.05, Qwen2.5's own

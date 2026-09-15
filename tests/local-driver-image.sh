@@ -37,6 +37,19 @@ if [ "${1:-}" = "--inner" ]; then
   if ! MAINPID=$SPID "$LLAMA_START" --wait-healthy 120; then echo "llama-server did not become healthy"; cat /tmp/ldr/llama.log; exit 3; fi
   echo "== $(grep -m1 'fabos-llama: serving' /tmp/ldr/llama.log)"
   echo "== llama-server argv: $(tr '\0' ' ' < /proc/$SPID/cmdline)"
+  # The executor's system prompt measured with the model's own tokenizer (budget < 900 tokens, ADR-0020); the baseline daemon has no such prompt
+  python3 - "$AGENT_SRC" <<'PY' 2>&1 | tail -n 1
+import json, sys, urllib.request
+sys.path.insert(0, sys.argv[1])
+try:
+    import fabos_agentd as fa
+    p = fa.local_system_prompt("auto", {"online": True})
+except (ImportError, AttributeError) as e:
+    print("== executor system prompt: not in this daemon (%s)" % e); sys.exit(0)
+req = urllib.request.Request("http://127.0.0.1:8081/tokenize", data=json.dumps({"content": p}).encode(), headers={"Content-Type": "application/json"})
+n = len(json.loads(urllib.request.urlopen(req, timeout=30).read())["tokens"])
+print("== executor system prompt: %d tokens, %d chars (budget < 900 tokens)" % (n, len(p)))
+PY
   dbus-run-session -- python3 "$AGENT_SRC/fabos_agentd.py" > /tmp/ldr/agent.log 2>&1 &
   DPID=$!
   for i in $(seq 1 60); do curl -fsS -o /dev/null http://127.0.0.1:8790/health 2>/dev/null && break; sleep 0.5; done

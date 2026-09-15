@@ -97,28 +97,43 @@ cores> --parallel 1 --cache-ram 256 --cache-reuse 256 --temp 0.2 --top-p 0.9 --r
 
 | Configuration | Peak RSS (`VmHWM`) | When |
 |---|---|---|
-| repacking on (≥ 6 GiB machines), 6 threads | **2.03–2.06 GB** | after the capability probe (json_schema plan, forced tool call, 200-token generation) |
-| `--no-repack` (the 4 GB machine), free-form loop | **1.85 GB** | after the full L1+L2 ladder (BEFORE run, the daemon of the pushed main) |
-| `--no-repack`, stepwise driver | **1.53–1.65 GB** | after the L1+L2 ladder with the new driver (shorter prompts touch fewer KV cells) |
+| repacking on (≥ 6 GiB machines), 6 threads | **2.13 GB** | after the capability probe (json_schema plan, forced tool call, 200-token generation) |
+| `--no-repack` (the 4 GB machine), free-form loop | **1.86 GB** | after the full L1+L2 ladder (BEFORE run, the daemon of the pushed main) |
+| `--no-repack`, stepwise driver | **1.65 GB** | after the full L1+L2 ladder with the shipped driver (shorter prompts touch fewer KV cells) |
 
 All of it stays under the unit's `MemoryHigh=2200M` / `MemoryMax=3G` (ADR-0011); 8192 tokens of context cost 224 MiB of
-KV cache (llama-server's own log line). Speed on the build host (6 physical cores): generation **33.8 tok/s with 6 threads
-against 28.6 with all 12** (SMT), prompt processing 103 vs 121 tok/s — so the wrapper keeps physical cores. With
-`--cache-reuse 256` the second request sharing the driver's system prompt processed 6 new tokens and reused 433.
+KV cache (llama-server's own log line). Speed on the build host (6 physical cores): generation **31.9 tok/s with 6 threads
+against 25.7 with all 12** (SMT), prompt processing 97 vs 121 tok/s — so the wrapper keeps physical cores. With
+`--cache-reuse 256` the second request sharing the driver's system prompt processed 57 new tokens and reused 798 (llama-server's own `timings.cache_n`).
 
-**What the model does with the agent's tasks.** The built-in model runs the agent's *stepwise driver* (ADR-0018): plan as
+**What the model does with the agent's tasks.** The built-in model runs the agent's *stepwise driver* (ADR-0020): plan as
 strict JSON, one tool call per turn, each step verified (exit codes, files on disk, processes) and retried with the error
 shown, output a step produced saved to files by the driver itself (`save_result`) rather than retyped by the model, then a
 short summary — instead of the free-form loop the cloud providers use. Graded with the ladder's own checks
 (tests/ladder/checks.py, answer key the agent cannot see) on the ladder's own L1/L2 task texts, inside the image:
 
-RESULTS_TABLE_PLACEHOLDER
+| Task | What the ladder asks | before (2026-09-15) | after (2026-09-15) |
+|---|---|---|---|
+| l1-a | create ~/Ladder/one/hello.txt with the exact text | **FAIL** 52.2s · list_dir:1 · task done | **PASS** 36.1s · run_shell:1 · task done |
+| l1-b | count the files in /tmp/ladder/notes, answer FILE COUNT: n | **PASS** 46.2s · list_dir:1 · task done | **PASS** 22.1s · run_shell:1 · task done |
+| l1-c | open Fab Terminal and leave it running | **PASS** 46.2s · open_app:1 · task done | **PASS** 22.1s · open_app:1 · task done |
+| l1-d | today's date (ISO) as the first line of ~/Ladder/one/date.txt | **FAIL** 6.0s · read_file:1 · task done | **PASS** 30.1s · run_shell:1 write_file:1 · task done |
+| l1-e | copy /tmp/ladder/notes to ~/Ladder/notes-copy | **FAIL** 48.2s · open_app:1 · task done | **PASS** 58.3s · run_shell:2 · task done |
+| l1-f | open Fab Editor, type hello (open_app then type_text) | **FAIL** 6.0s · open_app:1 · task done | **PASS** 26.1s · open_app:1 type_text:1 · task done |
+| l2-a | sum the amount column of three CSVs into ~/Ladder/total.txt | **FAIL** 56.2s · read_file:1 · task done | **PASS** 64.4s · run_shell:1 write_file:2 · task done |
+| l2-b | rename every .txt in ~/Ladder/notes-copy to .md | **FAIL** 50.2s · list_dir:1 · task done | **FAIL** 60.4s · run_shell:3 · task failed |
+| l2-c | largest file under /tmp/ladder, base name into ~/Ladder/largest.txt | **FAIL** 48.2s · list_dir:1 · task done | **PASS** 24.4s · run_shell:1 · task done |
+| l2-d | open Fab Editor, type a sentence, save it as ~/Ladder/typed.txt | **FAIL** 58.3s · open_app:1 · task done | **PASS** 46.2s · open_app:1 type_text:1 write_file:1 · task done |
+| l2-e | web_fetch the daemon's /health, save the JSON unchanged | **FAIL** 58.3s · web_fetch:1 · task done | **PASS** 38.2s · web_fetch:1 write_file:1 · task done |
+| l2-f | type a hi note in Fab Editor and mail it (needs a mail account) | SKIP (optional) | SKIP (optional) |
+| **Score** | L1 of 6 · L2 of 5 | **L1 2/6 · L2 0/5** | **L1 6/6 · L2 4/5** |
+| llama-server peak RSS (`VmHWM`) | after the whole run | 1.86 GB | 1.65 GB |
 
-The honest reading: the stepwise driver turns a model that "did one thing and said done" into one that finishes short,
-concrete desktop tasks and, when it cannot, **fails with the step named** instead of claiming success. It is not a cloud
-model: multi-command shell pipelines and tabular arithmetic still fail more often than not, the self-check approves wrong
-results, and run-to-run variance at temperature 0.2 is real (the same task can pass one run and fail the next). For hard
-tasks a cloud provider is one dropdown away. Rerun: `tests/local-driver-image.sh --label after --extra-args --no-repack`
+What failed in the shipped run, in the checker's own words (`tests/ladder/checks.py`):
+
+- **l2-b** — 8 .txt files are still there: ['fact_alpha.txt', 'fact_beta.txt', 'fact_gamma.txt', 'note_01.txt', 'note_02.txt', 'note_03.txt'] (task status: failed)
+
+The honest reading — **L1 6/6, L2 4/5** (2/11 before the driver; the cloud providers score 21/21 on the same checks): the stepwise driver turns a model that "did one thing and said done" into one that finishes short, concrete desktop tasks — in the shipped run it creates a folder and a file with the exact text, counts the files of a folder and answers in the asked form, opens Fab Terminal, writes today's date from the clock, copies a folder (source intact), opens Fab Editor and types where you can watch, sums a column across three CSV files, names the largest file under a tree, types a sentence into Fab Editor and saves it and fetches a local URL and saves the body unchanged — and, when it cannot, **fails with the step named** instead of claiming success. What still failed: l2-b (renames a folder of notes to another extension; the agent reported the failure itself). It is not a cloud model: a 1.5B model still needs the driver's deterministic checks to catch commands that exit 0 without doing the work, its plans need the request-derived repairs described in ADR-0020, and one run is a sample, not a guarantee — run-to-run variance at temperature 0.2 is real. Tasks took 22–64 s each. For hard tasks a cloud provider is one dropdown away. Rerun: `tests/local-driver-image.sh --label after --extra-args --no-repack`
 (this tree) and `--label before --agent-src build/baseline --llama-start build/baseline/llama-start.sh` after extracting
 the previous daemon and wrapper there (`git show <rev>:packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py >
 build/baseline/fabos_agentd.py`, same for `packages/fabos-ai/usr/lib/fabos/ai/llama-start.sh`); then
