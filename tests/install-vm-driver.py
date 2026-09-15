@@ -8,7 +8,12 @@ Everything the guest needs from a human comes from here, over QEMU's QMP socket:
   * input-send-event -> absolute pointer moves + clicks on the usb-tablet (to focus the passphrase field / the encryption
                    checkbox at the coordinates OCR found for their placeholder/label text)
 The guest side (image/overlay/iso/usr/lib/fabos/live-autoinstall.sh) launches Calamares, follows its session log and
-reports over the serial console; this driver reads that log. Page recognition uses the page BODY texts of Calamares 3.3.14
+reports over the serial console; this driver reads that log. Success = the guest's INSTALL_RESULT=ok, which the helper
+derives from the finished page being reached (any of the three Config::doNotify lines of the finished module - as root
+the desktop notification itself can never be sent, so "completion: succeeded" alone is NOT waited for) with no
+ViewManager::onInstallationFailed line ("Installation failed:" / "- message:") before it. The Calamares session log
+arrives gzip+base64-encoded between CALAMARES_LOG_BEGIN/END with a sha256 (decode_log_block verifies it).
+Page recognition uses the page BODY texts of Calamares 3.3.14
 (src/modules/*: "Welcome to the %1 installer", "Region:"/"Zone:", "Keyboard Model", "Select storage device:",
 "What is your name?", "This is an overview of what will happen", "Continue with Installation?"), never the sidebar.
 
@@ -319,20 +324,49 @@ def fail_install(ser, a, q=None):
     save_guest_evidence(ser, a)
     log("STAGE_RESULT install failed"); return 1
 
+def decode_log_block(header, body):
+    """Decodes what live-autoinstall.sh's dump_log sent: header = the *_BEGIN line ("... encoding=gzip+base64 bytes=N
+    kept=N gz=N sha256=HEX"), body = the lines between BEGIN and END. Returns (text, status, info) with status
+    'ok' (sha256 of the received compressed bytes matches, gunzip succeeded), 'plain' (older helper: raw text lines),
+    'empty', or an error description; the text is the best available content in every case."""
+    import base64, gzip, hashlib
+    kv = dict(p.split("=", 1) for p in header.split()[1:] if "=" in p)
+    if kv.get("encoding") != "gzip+base64":
+        return "\n".join(body) + ("\n" if body else ""), ("empty" if not body else "plain"), kv
+    b64 = "".join(l.strip() for l in body if re.fullmatch(r"[A-Za-z0-9+/=]+", l.strip() or "x"))
+    try:
+        raw = base64.b64decode(b64)
+    except Exception as e:
+        return "\n".join(body) + "\n", "base64-error: %s" % e, kv
+    digest = hashlib.sha256(raw).hexdigest()
+    integrity = "ok" if kv.get("sha256") == digest else "sha256-mismatch (received %d bytes, expected gz=%s)" % (len(raw), kv.get("gz"))
+    try:
+        text = gzip.decompress(raw).decode("utf-8", "replace")
+    except Exception as e:
+        return "\n".join(body) + "\n", "gunzip-error: %s; %s" % (e, integrity), kv
+    if kv.get("kept") and kv.get("bytes") and kv["kept"] != kv["bytes"] and integrity == "ok":
+        integrity = "ok (newest %s of %s bytes; the full log is in the ESP under /fabos-install/)" % (kv["kept"], kv["bytes"])
+    return text, integrity, kv
+
 def save_guest_evidence(ser, a):
     ser.poll(); lines = ser.lines
     def block(begin, end):
         try:
             i = max(i for i, l in enumerate(lines) if l.startswith(begin)); j = next(k for k in range(i + 1, len(lines)) if lines[k].startswith(end))
-            return lines[i + 1:j]
-        except (ValueError, StopIteration): return []
-    sess = block("CALAMARES_LOG_BEGIN", "CALAMARES_LOG_END")
-    with open(os.path.join(a.outdir, "session.log"), "w") as f: f.write("\n".join(sess) + "\n")
+            return lines[i], lines[i + 1:j]
+        except (ValueError, StopIteration): return "", []
+    head, body = block("CALAMARES_LOG_BEGIN", "CALAMARES_LOG_END")
+    text, status, kv = decode_log_block(head, body) if head else ("", "missing (no CALAMARES_LOG_BEGIN/END block on the serial console)", {})
+    with open(os.path.join(a.outdir, "session.log"), "w") as f: f.write(text)
+    if head and body and not status.startswith(("ok", "plain")):
+        with open(os.path.join(a.outdir, "session.log.raw-serial"), "w") as f: f.write(head + "\n" + "\n".join(body) + "\n")
+    nlines = text.count("\n")
     ev = [l for l in lines if l.startswith(("LSBLK:", "ESP:", "LUKS ", "AUTOINSTALL", "INSTALL_RESULT", "CALAMARES_JOB:", "INSTALL_FAIL", "CALSTDERR|"))]
-    tail = block("INSTALL_FAIL_TAIL_BEGIN", "INSTALL_FAIL_TAIL_END")
+    ev.append("SESSION_LOG_DECODE=%s lines=%d bytes=%d serial_lines=%d" % (status.split(" ")[0], nlines, len(text.encode()), len(body)))
+    _, tail = block("INSTALL_FAIL_TAIL_BEGIN", "INSTALL_FAIL_TAIL_END")
     with open(os.path.join(a.outdir, "guest-evidence.txt"), "w") as f: f.write("\n".join(ev + (["--- failure tail (last 40 session-log lines) ---"] + tail if tail else [])) + "\n")
-    log("saved %s (%d lines) and guest-evidence.txt (%d lines)" % (os.path.join(a.outdir, "session.log"), len(sess), len(ev)))
-    for l in [x for x in lines if x.startswith(("LSBLK:", "ESP:", "LUKS "))][:40]: log("evidence: " + l)
+    log("session log: %s -> %s (%d lines, %d bytes); guest-evidence.txt (%d lines)" % (status, os.path.join(a.outdir, "session.log"), nlines, len(text.encode()), len(ev)))
+    for l in [x for x in lines if x.startswith(("LSBLK:", "ESP:", "LUKS ", "AUTOINSTALL_JOBS", "AUTOINSTALL_FINISHED_LINE", "AUTOINSTALL_LOG_COPY"))][:44]: log("evidence: " + l)
 
 # ---------------------------------------------------------------- stage 2: boot the installed disk
 def stage_boot(a):
@@ -357,14 +391,20 @@ def stage_boot(a):
             log("GRUB dropped to a shell"); log("STAGE_RESULT boot failed (grub shell)"); shutdown(q, hard=True); return 1
         if a.variant == "luks":
             # the Plymouth prompt ("Please unlock disk luks-...:"), but not the login screen's password box (it shows the user)
-            prompt = ("unlock" in text or "passphrase" in text or "password" in text) and "fab tester" not in text and "fabtest" not in text
+            login_seen = "fab tester" in text or "fabtest" in text
+            prompt = ("unlock" in text or "passphrase" in text or "password" in text) and not login_seen
             elapsed = time.time() - (T0)
             blind_due = not typed and elapsed > a.blind_after
-            retry_due = typed and time.time() - typed[-1] > 60 and len(typed) < 4 and prompt
-            if (prompt and (not typed or retry_due)) or blind_due:
-                why = "prompt seen" if prompt else "blind (no prompt recognised after %ds)" % a.blind_after
+            # retry every 90 s (at most 4 attempts) while the prompt is still visible OR nothing recognisable is on screen
+            # yet (OCR of the Plymouth prompt is not guaranteed: light text on a dark, animated background); once the
+            # login screen shows the test user the volume is open and typing stops
+            retry_due = typed and time.time() - typed[-1] > 90 and len(typed) < 4 and (prompt or not login_seen) and not unlocked_hint
+            if (prompt and (not typed or retry_due)) or blind_due or retry_due:
+                why = "prompt seen" if prompt else ("blind (no prompt recognised after %ds)" % a.blind_after if not typed else "retry, no login screen recognised yet")
                 log("typing the LUKS passphrase (%s)" % why); type_text(q, PASSPHRASE, delay=0.11); q.send_keys(["ret"]); typed.append(time.time())
                 time.sleep(4); continue
+            if login_seen and typed and not unlocked_hint:
+                unlocked_hint = True; log("login screen shows the test user: the encrypted volume is open (passphrase typed %d time(s))" % len(typed))
         time.sleep(4)
     log("no FABOS_INSTALLED_OK within %ds" % a.timeout)
     try: scr.grab("boot-timeout")

@@ -31,10 +31,18 @@ never been run end to end by a test. An offline audit of every Calamares 3.3.14 
    `try_remove`s the two live-only packages, every shellprocess line is guarded and logged, `welcome` treats the internet
    check as informative. `tests/calamares-jobs-test.sh` replays all of it in a network-less container.
 4. **Automated installation from the host** (`tests/install-vm.sh`, `tests/install-vm-driver.py`): QEMU QMP
-   `screendump` + OCR (tesseract inside the ISO image) recognises the Calamares pages by their body text, `send-key` and
-   absolute pointer events drive them; the guest helper `live-autoinstall.sh` launches Calamares and reports over the
-   serial console. The installed disk is then booted alone and must print `FABOS_INSTALLED_OK`
-   (`fabos-firstboot.service` `ExecStartPost`).
+   `screendump` + OCR (tesseract inside the ISO image — Ubuntu's `tesseract-ocr`, present as a dependency of
+   `kde-spectacle`) recognises the Calamares pages by their body text, `send-key` and absolute pointer events drive them;
+   the guest helper `live-autoinstall.sh` launches Calamares and reports over the serial console. The installed disk is
+   then booted alone and must print `FABOS_INSTALLED_OK` (`fabos-firstboot.service` `ExecStartPost`).
+5. **Success is the finished page, read from the session log** (review of 2026-09-16): the helper accepts any of the
+   three lines `finished/Config::doNotify` writes when the finished page activates, not only `completion: succeeded` —
+   that one needs a reachable `org.freedesktop.Notifications`, and Calamares runs as root on the live user's session bus,
+   which dbus-daemon refuses (replayed in the image). Failure is `ViewManager::onInstallationFailed`'s `Installation
+   failed:` / `- message:`, logged before the finished page. `tests/calamares-jobs-test.sh` checks each string against the
+   image's Calamares binaries and runs the classifier on synthetic logs, so a reworded Calamares fails the audit rather
+   than the install test. The session log travels gzip+base64 with a sha256 (a few hundred kB instead of the raw log) and
+   is also copied into the target's ESP (`/fabos-install/`).
 
 ## Consequences
 - Kernel and initramfs are readable on an unencrypted partition (as on Ubuntu); user data, system and swap file are
@@ -43,3 +51,12 @@ never been run end to end by a test. An offline audit of every Calamares 3.3.14 
 - A future GRUB with argon2 in Ubuntu's signed image would allow an encrypted `/boot` again; the layout is one file.
 - The RAM requirement of the welcome page is 1.5 GiB (README minimum: 2 GB machines are supported).
 - `xfs` is no longer offered (no `mkfs.xfs` in the image); `ext4` and `btrfs` are.
+- `/etc/default/grub.d/fabos.cfg` (fabos-branding) is authoritative for `GRUB_TIMEOUT`, `GRUB_TIMEOUT_STYLE`,
+  `GRUB_CMDLINE_LINUX_DEFAULT` and `GRUB_DISTRIBUTOR`: `grub-mkconfig` sources it after `/etc/default/grub`, so the
+  grubcfg module's writes to those keys never reach `grub.cfg`. This is harmless (the module's `cryptdevice=`/`root=` are
+  mkinitcpio parameters; initramfs-tools unlocks from `/etc/crypttab`; no `resume=` exists with a swap file), and
+  `grubcfg.conf` carries the same values so the two files agree. Should hibernation with a swap *partition* ever be
+  offered, the branding snippet must drop `GRUB_CMDLINE_LINUX_DEFAULT` so the module's `resume=` survives.
+- The `packages` job's second step, `apt-get --purge autoremove`, removes the auto-marked leftovers of casper/calamares
+  (calamares-data, libcalamares*, libyaml-cpp, libboost-python, squashfs-tools, finalrd, user-setup, localechooser-data,
+  lzma); everything the installed system needs is `apt-mark manual` in the image, and the audit checks that list.

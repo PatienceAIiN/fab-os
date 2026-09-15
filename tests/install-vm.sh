@@ -2,8 +2,11 @@
 # Automated end-to-end installation test of the Fab OS ISO in QEMU/KVM (headless):
 #   stage 1  boot the ISO with a blank 24 GB virtio disk + fw_cfg opt/fabos/autoinstall=<variant>; the live session starts
 #            Calamares (image/overlay/iso/usr/lib/fabos/live-autoinstall.sh) and this host drives every page over QMP
-#            (tests/install-vm-driver.py: screendump -> OCR -> send-key / pointer clicks) until Calamares reports the
-#            finished page in its session log; the guest prints INSTALL_RESULT=... on the serial console and powers off
+#            (tests/install-vm-driver.py: screendump -> OCR -> send-key / pointer clicks) until Calamares reaches its
+#            finished page (any Config::doNotify line of the finished module in the session log - as root the desktop
+#            notification itself is never sent - with no ViewManager::onInstallationFailed line before it); the guest
+#            prints INSTALL_RESULT=... finished_page=yes|no, AUTOINSTALL_JOBS started=n total=m, the partition table, the
+#            ESP listing, the LUKS header and the whole session log (gzip+base64, sha256) on the serial console and powers off
 #   stage 2  boot the INSTALLED disk alone (no ISO, no network) with the same OVMF variable store; for the luks variant the
 #            driver types the passphrase at the Plymouth prompt; wait for FABOS_INSTALLED_OK (fabos-firstboot.service
 #            ExecStartPost on the installed system), then power the VM down
@@ -15,6 +18,8 @@
 # Needs: qemu-system-x86_64 + /dev/kvm, OVMF, podman with the ISO image (OCR runs tesseract inside it; the host needs no
 #   tesseract), python3 (Pillow optional: PNG screenshots + 2x upscaling for OCR), >= 14 GB free under build/ per variant
 #   (unpackfs writes the 8.8 GB rootfs + a 512 MiB swap file + /boot into the sparse disk image).
+#   tesseract is not a Fab OS addition: Ubuntu's tesseract-ocr 5.5.0 + tesseract-ocr-eng (Apache-2.0) are in the image as
+#   dependencies of kde-spectacle (its screenshot OCR). This test only borrows them; nothing is downloaded.
 set -uo pipefail; HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"; . brand/brand.conf
 VARIANTS="luks"; MEM=2560; CPUS=2; KEEP=0; IMAGE=localhost/fabos:iso
 while [ $# -gt 0 ]; do case "$1" in luks|plain) VARIANTS=$1;; both) VARIANTS="luks plain";; --mem) MEM=$2; shift;; --cpus) CPUS=$2; shift;; --keep-disk) KEEP=1;; --image) IMAGE=$2; shift;; *) echo "unknown $1"; exit 2;; esac; shift; done
@@ -54,7 +59,13 @@ for V in $VARIANTS; do
   grep -q 'FABOS_LIVE_OK' build/install-vm-$V-serial-1.log && v1=PASS || v1=FAIL; verdict $v1 "install-$V: live ISO booted (FABOS_LIVE_OK) and the autoinstall helper started ($(grep -c '^AUTOINSTALL' build/install-vm-$V-serial-1.log) AUTOINSTALL lines)"
   if grep -q 'INSTALL_RESULT=ok' build/install-vm-$V-serial-1.log && [ $rc1 = 0 ]; then v2=PASS; else v2=FAIL; fi
   verdict $v2 "install-$V: Calamares finished the whole job sequence (INSTALL_RESULT=ok; guest time ${inst_s:-?} s, stage wall $((T2-T1)) s, $(grep -c '^CALAMARES_JOB:' build/install-vm-$V-serial-1.log) jobs)"
-  if [ -s "$OUT/session.log" ]; then verdict PASS "install-$V: Calamares session log kept ($OUT/session.log, $(wc -l < "$OUT/session.log") lines)"; else verdict FAIL "install-$V: Calamares session log not received from the guest"; fi
+  grep -q 'INSTALL_RESULT=ok .*finished_page=yes' build/install-vm-$V-serial-1.log && v2b=PASS || v2b=FAIL
+  verdict $v2b "install-$V: Calamares reached its finished page (finished module's doNotify line: $(grep -m1 '^AUTOINSTALL_FINISHED_LINE' build/install-vm-$V-serial-1.log | cut -c27-140 | tr -s ' ' || echo none))"
+  jobs_line=$(grep -m1 '^AUTOINSTALL_JOBS' build/install-vm-$V-serial-1.log); js=$(sed -n 's/.*started=\([0-9]*\).*/\1/p' <<<"$jobs_line"); jt=$(sed -n 's/.*total=\([0-9]*\).*/\1/p' <<<"$jobs_line")
+  if [ -n "$jt" ] && [ "$jt" -gt 0 ] && [ "$js" = "$jt" ]; then v2c=PASS; else v2c=FAIL; fi
+  verdict $v2c "install-$V: every job of the sequence started (${jobs_line:-no AUTOINSTALL_JOBS line})"
+  if [ -s "$OUT/session.log" ] && grep -q '^SESSION_LOG_DECODE=ok' "$OUT/guest-evidence.txt" 2>/dev/null; then verdict PASS "install-$V: Calamares session log received intact ($OUT/session.log, $(wc -l < "$OUT/session.log") lines; $(grep -m1 '^SESSION_LOG_DECODE' "$OUT/guest-evidence.txt"))"
+  else verdict FAIL "install-$V: Calamares session log not received intact from the guest ($(grep -m1 '^SESSION_LOG_DECODE' "$OUT/guest-evidence.txt" 2>/dev/null || echo 'no decode record'))"; fi
   if [ "$V" = luks ]; then grep -q '^LUKS .*Version:.*2' build/install-vm-$V-serial-1.log && v3=PASS || v3=FAIL; verdict $v3 "install-$V: target disk shows a LUKS2 container (luksDump on the root partition)"; fi
   grep -q '^ESP:/EFI/ubuntu/grubx64.efi' build/install-vm-$V-serial-1.log && grep -q '^ESP:/EFI/boot/bootx64.efi' build/install-vm-$V-serial-1.log && v4=PASS || v4=FAIL
   verdict $v4 "install-$V: EFI system partition holds EFI/ubuntu/grubx64.efi + EFI/boot/bootx64.efi (shim fallback)"
