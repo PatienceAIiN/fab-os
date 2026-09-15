@@ -136,10 +136,20 @@ text with an action row) with Fab OS tokens.
   the card so the pair reads as one stack, `Kirigami.Theme.backgroundColor` @ 96 % with the 12 % hairline. Because
   the applet lives in the **desktop layer**, the panel is always behind every application window (the editor the
   agent opens covers it, it never paints over another app) and is back the moment those windows are minimised or
-  closed. It grows downward — height animates from 0 to its content (280 ms OutCubic) while the content fades in;
-  content growth animates at 260 ms, capped at the strip's remaining height (the conversation scrolls inside).
-  Header: status line left, icon controls right with tooltips (Stop · Retry · Edit prompt · Copy result · Minimize ·
-  Open in Fab AI Controls = `fabos-command-center --task ID`). Minimize collapses it to a one-line status pill under
+  closed. It grows downward — height animates from 0 to its content (220 ms OutCubic) while the content fades in.
+  **Growth and scrolling**: below its maximum (the strip's remaining height) the panel grows with its rows (200 ms
+  OutCubic) and shows **no scrollbar**; at the maximum the list scrolls inside and a **6 px overlay scrollbar**
+  appears. The bar (`QtQuick.Templates` ScrollBar on the ListView, own rounded handle, text colour @ 28 % → 50 % on
+  hover) lives in a **14 px right gutter**: every row is `list.width − 14` wide, so no text, pill, icon button or step
+  card is ever under it. The transition from growing to scrolling never jumps — while the user is at the bottom the
+  newest row stays anchored to the bottom edge in every frame of the height animation (`positionViewAtEnd` on the
+  list's height change), and once at the maximum the view auto-follows new rows **only while the user was at the
+  bottom** (a drag, flick, wheel or handle drag upward stops following until they are back at the end). Wheel and touch
+  are `StopAtBounds` with a moderate `maximumFlickVelocity` (2000). Three fixed bands: the **header** (status line
+  left, icon controls right with tooltips: Stop · Retry · Edit prompt · Copy result · Minimize · Open in Fab AI
+  Controls = `fabos-command-center --task ID`) sits above the scroll area and never scrolls or meets the bar; the
+  **list** is the only scroll area; the **foot** (typing dots while the task works, 26 px, animates away when it ends)
+  is fixed under the list, clear of the gutter. Minimize collapses it to a one-line status pill under
   the card (still inside the applet) that reopens on click; **Escape** in the bar folds it, a **click on the mark**
   folds and unfolds it. Edit prompt puts the request back into the bar and closes the panel — the next Do it starts a fresh
   task even inside the 300 ms shrink (it cancels the close and re-opens the panel). Dismissing the panel forgets the
@@ -148,9 +158,13 @@ text with an action row) with Fab OS tokens.
   place the conversation can go there — and the same conversation item moves into it.
 - **Conversation** (`ConvoDelegate.qml`): user request as a right-aligned pill (radius 20, tinted, ≤ 72 % wide);
   assistant text plain (Inter 15/1.25) rendered from Markdown-lite (bold, italics, inline code, links, lists,
-  headings) with fenced code as monospace cards (JetBrains Mono 13 on a text-colour @ 8 % tint, radius 12) and an
-  action row (Copy · Try again · Open) under the final answer; new rows fade in and rise 12 px (260 ms). Typing
-  indicator: three pulsing dots while the task is queued / running / waiting.
+  headings), wrapping inside the row width (list width minus the 14 px gutter); fenced code as monospace cards
+  (JetBrains Mono 13 on a text-colour @ 8 % tint, radius 12) that **keep their lines**: a long line scrolls sideways
+  inside its own card (horizontal Flickable, `StopAtBounds`, a 6 px overlay bar under the last line that appears only
+  when the code is wider than the card) and never widens the row or the list; a card that fits is not interactive, so
+  the wheel over it still scrolls the chat; an action row (Copy · Try again · Open) under the final answer; new rows
+  fade in and rise 12 px (200 ms). Typing indicator: three pulsing dots in the fixed foot while the task is queued /
+  running / waiting.
 - **Live action feed**: one card per tool step (radius 14) appended the moment the daemon inserts the step row, with
   the app's own icon for `open_app` (scale-in), a keyboard glyph and a typewriter reveal (~25 ms/char) for `type_text`,
   terminal / file / globe / mail / bell / question / eye glyphs for the other tools; friendly labels only (raw commands
@@ -191,9 +205,15 @@ text with an action row) with Fab OS tokens.
   `PlasmaCore.Dialog` exists on the desktop, that no MouseArea lies outside card/panel, that `root.contains()` is
   false on the transparent strip and true over the card + panel stack (the hit mask), runs a real
   `fabos-voice listen-once` for the mic feedback, exercises the remembered conversation (incl. the service-not-up
-  retry), shrinks the window to a panel thickness so the compact form runs for real (Dialog appears, the mic reason
-  moves into the placeholder), and renders `build/askbar-{bar,panel,feed}.png` — bar = the whole strip with the
-  card + panel stack).
+  retry), feeds a 40-row conversation with long lines and one-line code and asserts the scroll geometry (the panel
+  grows to its maximum with the bottom anchored and no bar below it; at the maximum the 6 px bar's x ≥ the rows' right
+  edge inside the 14 px gutter, no live delegate wider than `list.width − gutter` or under the bar, the header row at
+  y = 0 after following to the end, the fixed foot under the list, long text wrapped inside the row, code overflowing
+  sideways inside its card, a new row not yanking a view the user scrolled up, following again once back at the end),
+  shrinks the window to a panel thickness so the compact form runs for real (Dialog appears, the mic reason moves into
+  the placeholder), and renders `build/askbar-{bar,panel,feed,scroll-bottom,scroll-top}.png` — bar = the whole strip
+  with the card + panel stack, scroll-bottom/top = the 40-row panel at its maximum, followed to the end and scrolled
+  to the top).
 
 ## Top bar & dock
 
