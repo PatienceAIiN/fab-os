@@ -6,9 +6,9 @@ import org.kde.kcmutils as KCM
 import "status.js" as Status
 
 // "Tiles" page of the Fab OS quick settings: every tile the pane can show, in order, with a checkbox (shown / hidden),
-// a size (Small = half a row, Wide = a full row) and up / down arrows; "Reset to default" restores the shipped layout.
-// The same model is edited in the pane itself (pencil: drag to reorder, size toggle, remove). Stored as JSON in
-// cfg_tilesJson (see status.js parseTiles / tilesJson).
+// a size (Small = one column of the three-column grid, Medium = two, Wide = the full row) and up / down arrows; "Reset
+// to default" restores the shipped layout. The same model is edited in the pane itself (pencil: drag to reorder, size
+// cycle, remove). Stored as JSON in cfg_tilesJson (see status.js parseTiles / tilesJson).
 KCM.SimpleKCM {
     id: page
     property string cfg_tilesJson
@@ -26,7 +26,7 @@ KCM.SimpleKCM {
         spacing: 8
         QQC2.Label {
             Layout.fillWidth: true
-            text: "Tiles in the pane, top to bottom. Small tiles share a row in pairs; a wide tile takes the whole row. You can also press the pencil in the pane and drag the tiles around."
+            text: "Tiles in the pane, top to bottom, in a grid of three columns: a small tile takes one column, a medium one two, a wide one the whole row. You can also press the pencil in the pane and drag the tiles around."
             wrapMode: Text.WordWrap
             opacity: 0.8
         }
@@ -46,10 +46,10 @@ KCM.SimpleKCM {
                     onToggled: page.save(Status.setTileEnabled(page.tiles, rowItem.tile.id, checked))
                 }
                 QQC2.ComboBox {
-                    model: ["Small", "Wide"]
-                    currentIndex: rowItem.tile.size === "wide" ? 1 : 0
-                    Layout.preferredWidth: 110
-                    onActivated: page.save(Status.setTileSize(page.tiles, rowItem.tile.id, currentIndex === 1 ? "wide" : "small"))
+                    model: ["Small", "Medium", "Wide"]
+                    currentIndex: Math.max(0, Status.SIZES.indexOf(rowItem.tile.size))
+                    Layout.preferredWidth: 120
+                    onActivated: page.save(Status.setTileSize(page.tiles, rowItem.tile.id, Status.SIZES[currentIndex]))
                 }
                 QQC2.ToolButton { icon.name: "arrow-up"; enabled: rowItem.index > 0; onClicked: page.save(Status.moveTile(page.tiles, rowItem.index, rowItem.index - 1)); QQC2.ToolTip.text: "Move up"; QQC2.ToolTip.visible: hovered }
                 QQC2.ToolButton { icon.name: "arrow-down"; enabled: rowItem.index < page.tiles.length - 1; onClicked: page.save(Status.moveTile(page.tiles, rowItem.index, rowItem.index + 1)); QQC2.ToolTip.text: "Move down"; QQC2.ToolTip.visible: hovered }
@@ -64,7 +64,7 @@ KCM.SimpleKCM {
         }
         QQC2.Label {
             Layout.fillWidth: true
-            text: "Brightness shows only with a controllable backlight, Battery only with a battery, Power profile only with power-profiles-daemon, Night light only when KWin offers it."
+            text: "Brightness shows only with a controllable backlight, Battery with a battery or power profiles, Power profile only with power-profiles-daemon, Night light only when KWin offers it. The footer always carries the network line (interface · IP · speed), so the Network speed tile is off by default."
             wrapMode: Text.WordWrap
             font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             opacity: 0.7

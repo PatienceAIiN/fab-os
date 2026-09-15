@@ -4,11 +4,13 @@
 #   1. loads each real applet for 25 s and fails on any QML diagnostic (file.qml:line) — compile errors, binding loops, …
 #   2. builds a temp copy of each plasmoid whose main.qml gets ONE appended Loader line that hands the root item and its
 #      ids to tests/{quicksettings,dock,clock}-qml-harness/Driver.qml; the drivers feed status text / drive hover and
-#      render build/{light,dark}/quicksettings-{bar,pane,edit}.png, notifications-pane.png, dock-{idle,hover,uniform}.png
+#      render build/{light,dark}/quicksettings-{bar,open-mid,open-end,edit,notifications}.png, dock-{rest,hover,uniform}.png
 #      and clock-bar.png — each harness runs once per Fab OS colour scheme (FabLight / FabDark copied into
-#      ~/.config/kdeglobals in the container). The quick-settings driver samples the dialog window's size and the card's
-#      y every 11 ms while the pane opens and closes (the no-blink proof); the dock driver grabs every icon box so
-#      tests/dock-qml-harness/measure.py (host python3 + Pillow) can compute the visible extents and the tile factor.
+#      ~/.config/kdeglobals in the container). The quick-settings driver samples the dialog window's size, the card's y
+#      and the tiles' stagger every 11 ms while the pane opens (480 ms) and closes (the no-blink proof); the dock driver
+#      grabs every icon box so tests/dock-qml-harness/measure.py (host python3 + Pillow) can compute the visible extents
+#      and the tile factor, prints the gaps between items (DOCK_GAPS) and the indicator geometry (INDICATORS) so the same
+#      script measures the running / active indicator pixels and the row's centring in dock-rest.png.
 #   3. `tray`: a REAL plasmashell as the session of a virtual kwin_wayland with an empty HOME runs the look-and-feel's
 #      layout script (bind-mounted over the package) and the generated plasma-org.kde.plasma.desktop-appletsrc is
 #      asserted: the system tray's extraItems without the five replaced applets, knownItems with them, the Fab OS clock
@@ -16,7 +18,17 @@
 #   Every run sets QT_QPA_PLATFORMTHEME=kde as a Plasma session does: icons go through KIconLoader (monochrome glyphs are
 #   recoloured to the scheme; without it Qt's own icon engine draws them in their file colour and they vanish on dark).
 #   tests/desktop-applets-qml-test.sh [image] [steps]   (default localhost/fabos:vm; steps = any of soak-qs harness-qs soak-dock
-#     harness-dock soak-clock harness-clock harness-dock-kwin harness-qs-kwin tray, default all)
+#     harness-dock soak-clock harness-clock harness-dock-kwin harness-qs-kwin tray shot, default all but shot)
+#   shot (opt-in, with tray): the real plasmashell session also sets a flat wallpaper and tries to screenshot itself
+#   through KWin's ScreenShot2 D-Bus interface (tests/dock-qml-harness/kwin-shot.py; the session runs with KWin's own
+#   KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 test switch), falling back to the virtual backend's last composited frame
+#   (KWIN_WAYLAND_VIRTUAL_SCREENSHOTS=1) -> build/tray/screen.png; measure.py panel then finds the dock panel and its
+#   icons and asserts the row is centred with equal room at both ends (the 1 px launcher anchor + the panel's 4 px
+#   spacing allowed). NOT YET PASSING IN THE CONTAINER (2026-09-16): the virtual kwin_wayland answered
+#   org.kde.KWin.ScreenShot2.Error.Cancelled to CaptureWorkspace and CaptureActiveScreen under both QPainter (KWIN_COMPOSE=Q)
+#   and llvmpipe GL (KWIN_COMPOSE=O) compositing, and the frame dump wrote no screenshot-N.png; the step FAILs honestly
+#   then. The proofs of the anchor fix that do stand: the appletsrc the real plasmashell writes (tray) and the offscreen
+#   dock render's measured gaps / centring (harness-dock).
 #   SCHEMES="light" (default "light dark") limits the colour schemes; the unfiltered container logs are kept in build/logs/.
 #   harness-dock-kwin runs the dock harness as the session of a virtual kwin_wayland (tests/dock-qml-harness/kwin-session.sh) so
 #   libtaskmanager has a real windowing backend and the launchers really come out of TasksModel; offscreen they cannot.
@@ -81,7 +93,7 @@ harness() {   # $1 applet id — once per colour scheme
 run_kwin() {   # $1 label, $2 applet id, $3 timeout seconds, $4 light|dark, $5 screen height — plasmawindowed as a virtual kwin_wayland session
   local scheme=${4:-light}; mkdir -p "$OUT/$scheme-kwin"
   echo "== $1 [$scheme]"
-  cp "$ROOT/tests/dock-qml-harness/kwin-session.sh" "$T/kwin-session.sh"; chmod +x "$T/kwin-session.sh"
+  cp "$ROOT/tests/dock-qml-harness/kwin-session.sh" "$T/kwin-session.sh"; chmod +x "$T/kwin-session.sh"; cp "$ROOT/tests/dock-qml-harness/kwin-shot.py" "$T/kwin-shot.py"
   podman run --rm -e XDG_DATA_DIRS="/harness/share:/usr/local/share:/usr/share" -e HARNESS_WAYLAND_DEBUG \
     -v "$T:/harness:ro,Z" -v "$OUT/$scheme-kwin:/out:Z" "${MOUNTS[@]}" "$IMG" \
     /harness/kwin-session.sh "$2" "$3" "$scheme" "${5:-400}" > "$T/$2.kwin.$scheme.log" 2>&1
@@ -112,6 +124,17 @@ measure_dock() {   # the icon extents from the light-scheme offscreen grabs (hos
     python3 "$ROOT/tests/dock-qml-harness/measure.py" "$OUT/light/measure" | tee "$OUT/logs/dock-measure.log" || { echo "FAIL: dock icon extents"; fail=1; }
   else echo "SKIP: python3 Pillow not installed on the host (pip install pillow)"; fi
 }
+measure_indicators() {   # the running / active indicators + centring, measured in the resting render of each scheme (host python3 + Pillow)
+  for scheme in $SCHEMES; do
+    local log=$T/${DK}test.$scheme.log geom=$OUT/$scheme/dock-indicators.json
+    echo "== dock indicators + spacing in $OUT/$scheme/dock-rest.png (tests/dock-qml-harness/measure.py indicators)"
+    grep -m1 '^qml: DOCK_GAPS\|DOCK_GAPS ' "$log" | sed 's/.*DOCK_GAPS //' | tee "$OUT/$scheme/dock-gaps.json"
+    grep -m1 'INDICATORS {' "$log" | sed 's/.*INDICATORS //' > "$geom"
+    if ! python3 -c "import PIL" 2>/dev/null; then echo "SKIP: python3 Pillow not installed on the host"; continue; fi
+    [ -s "$geom" ] || { echo "FAIL: no INDICATORS line in the $scheme dock harness log"; fail=1; continue; }
+    python3 "$ROOT/tests/dock-qml-harness/measure.py" indicators "$OUT/$scheme/dock-rest.png" "$geom" | tee "$OUT/logs/dock-indicators.$scheme.log" || { echo "FAIL: dock indicators ($scheme)"; fail=1; }
+  done
+}
 
 # ---- tray: a real plasmashell runs the layout script; the appletsrc it writes is the proof of what the script did
 tray() {
@@ -124,6 +147,12 @@ mkdir -p /tmp/.config /tmp/xdg && chmod 700 /tmp/xdg
 cp /usr/share/color-schemes/FabDark.colors /tmp/.config/kdeglobals
 printf '\n[Icons]\nTheme=FabOS\n\n[KDE]\nLookAndFeelPackage=in.patienceai.fabos.desktop\n' >> /tmp/.config/kdeglobals
 export KWIN_COMPOSE=Q LIBGL_ALWAYS_SOFTWARE=1 QT_QUICK_BACKEND=software QT_QPA_PLATFORMTHEME=kde XDG_MENU_PREFIX=plasma-
+# the shot step: KWin normally hands org.kde.KWin.ScreenShot2 only to a caller whose .desktop file names the interface;
+# this is KWin's own switch for test sessions (harness only, never in the image's session)
+export KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1
+# ... and the QPainter-composited virtual session cancels ScreenShot2 captures, so the virtual backend's own frame dump
+# (every composited frame as /tmp/<tmpdir>/screenshot-N.png; KWin's autotest switch) is the fallback: the last frame is the screen
+[ "${FABOS_SHOT:-0}" = 1 ] && export KWIN_WAYLAND_VIRTUAL_SCREENSHOTS=1
 cat > /tmp/session.sh <<'EOF'
 #!/bin/bash
 export QT_QPA_PLATFORM=wayland
@@ -135,6 +164,18 @@ PS=$!
 F=/tmp/.config/plasma-org.kde.plasma.desktop-appletsrc
 for i in $(seq 1 70); do sleep 1; if [ $i -ge 15 ] && grep -q "extraItems=" "$F" 2>/dev/null && grep -q "in.patienceai.fabos.quicksettings" "$F" 2>/dev/null; then break; fi; done
 echo "waited $i s; plasmashell alive: $(kill -0 $PS 2>/dev/null && echo yes || echo no)"
+if [ "${FABOS_SHOT:-0}" = 1 ]; then
+  # a flat wallpaper so the panels segment cleanly, then a real screenshot through KWin's ScreenShot2 D-Bus interface
+  # (kwin-shot.py; the permission check is off for this test session, see KWIN_SCREENSHOT_NO_PERMISSION_CHECKS above)
+  qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript 'var ds = desktops(); for (var i = 0; i < ds.length; i++) { ds[i].wallpaperPlugin = "org.kde.color"; ds[i].currentConfigGroup = ["Wallpaper", "org.kde.color", "General"]; ds[i].writeConfig("Color", "#202020") }' >/dev/null 2>&1
+  sleep 5
+  rm -f /out/screen.raw /out/screen.json /out/screen.png
+  timeout 60 python3 /harness/kwin-shot.py /out/screen.raw /out/screen.json; echo "kwin-shot exit=$?"
+  if [ ! -s /out/screen.raw ]; then
+    f=$(ls -t /tmp/*/screenshot-*.png 2>/dev/null | head -1)
+    [ -n "$f" ] && cp "$f" /out/screen.png && echo "virtual-backend frame: $f ($(ls /tmp/*/screenshot-*.png 2>/dev/null | wc -l) frames composited)"
+  fi
+fi
 echo "===== plasmashell log (errors only) ====="
 grep -iE "error|warning: .*layout|Could not|failed to load" /tmp/plasmashell.log | grep -vE "qml: |kf.plasma.quick|qt.svg|QQmlComponent|kf.windowsystem|Binding loop|xdg-desktop-portal|fuse|TypeError|ReferenceError: (Plasmoid|root)" | head -30
 echo "===== appletsrc ====="
@@ -147,8 +188,9 @@ cp /usr/bin/kwin_wayland /tmp/kwin_wayland   # the file capability on the real b
 timeout 110 dbus-run-session -- /tmp/kwin_wayland --virtual --no-lockscreen --no-global-shortcuts --width 1280 --height 720 --exit-with-session /tmp/session.sh 2>&1 | grep -vE "kwin_(core|scene|wayland|xkb|libinput|screencast)|Failed to gain real time|qt.qpa|^$|Accepting client"
 echo "kwin exit=${PIPESTATUS[0]}"
 EOS
-  chmod +x "$T/tray-session.sh"
-  podman run --rm -e HOME=/tmp -e XDG_RUNTIME_DIR=/tmp/xdg -v "$T:/harness:ro,Z" "${MOUNTS[@]}" \
+  chmod +x "$T/tray-session.sh"; cp "$ROOT/tests/dock-qml-harness/kwin-shot.py" "$T/kwin-shot.py"
+  local shot=0; want shot && shot=1
+  podman run --rm -e HOME=/tmp -e XDG_RUNTIME_DIR=/tmp/xdg -e FABOS_SHOT=$shot -v "$T:/harness:ro,Z" -v "$OUT/tray:/out:Z" "${MOUNTS[@]}" \
     -v "$ROOT/$LAYOUT:/usr/share/plasma/look-and-feel/in.patienceai.fabos.desktop/contents/layouts/org.kde.plasma.desktop-layout.js:ro,Z" \
     "$IMG" /harness/tray-session.sh > "$log" 2>&1
   cp "$log" "$OUT/logs/tray-plasmashell.log"
@@ -169,9 +211,17 @@ EOS
   tchk "top panel: Fab OS clock present, stock digital clock absent" "grep -q '^plugin=in.patienceai.fabos.clock$' $rc && ! grep -q 'plugin=org.kde.plasma.digitalclock' $rc"
   tchk "top panel: quick settings + system tray present" "grep -q '^plugin=in.patienceai.fabos.quicksettings$' $rc && grep -q '^plugin=org.kde.plasma.systemtray$' $rc"
   tchk "clock and quick settings share barSize=medium" "[ \$(grep -c '^barSize=medium' $rc) -ge 2 ]"
-  tchk "dock: Fab OS dock with start + peek, launcher menu zero-width (icon=, menuLabel=)" "grep -q '^plugin=in.patienceai.fabos.dock$' $rc && grep -q '^showStart=true' $rc && grep -q '^showPeek=true' $rc && grep -q '^icon=$' $rc && grep -q '^menuLabel=$' $rc"
+  tchk "dock: Fab OS dock with start + peek, launcher menu 1 px (icon = the dock's launcher-anchor.png, menuLabel=)" "grep -q '^plugin=in.patienceai.fabos.dock$' $rc && grep -q '^showStart=true' $rc && grep -q '^showPeek=true' $rc && grep -q '^icon=/usr/share/plasma/plasmoids/in.patienceai.fabos.dock/contents/images/launcher-anchor.png$' $rc && grep -q '^menuLabel=$' $rc"
   tchk "dock: Firefox pinned, no Brave, no icontasks / showdesktop applets" "grep -q 'applications:firefox.desktop' $rc && ! grep -qi brave $rc && ! grep -qE 'plugin=org.kde.plasma.(icontasks|showdesktop)' $rc"
   tchk "speed always on: showSpeed=true written" "grep -q '^showSpeed=true' $rc"
+  if [ "$shot" = 1 ]; then   # the real panels as KWin composited them: is the dock one evenly spaced, centred row (no blank before the Fab OS button)?
+    grep -E "kwin-shot|virtual-backend frame" "$log"
+    echo "== real dock panel in $OUT/tray/screen.png (tests/dock-qml-harness/measure.py panel)"
+    [ -s "$OUT/tray/screen.raw" ] && python3 "$ROOT/tests/dock-qml-harness/measure.py" raw2png "$OUT/tray/screen.raw" "$OUT/tray/screen.json" "$OUT/tray/screen.png"
+    if [ -s "$OUT/tray/screen.png" ] && python3 -c "import PIL" 2>/dev/null; then
+      python3 "$ROOT/tests/dock-qml-harness/measure.py" panel "$OUT/tray/screen.png" "$OUT/tray/dock-real.png" | tee "$OUT/logs/dock-panel.log" || { echo "FAIL: real dock panel geometry"; fail=1; }
+    else echo "FAIL: no screenshot (kwin-shot.py) or no Pillow on the host"; fail=1; fi
+  fi
 }
 
 make_harness $QS quicksettings-qml-harness \
@@ -184,11 +234,11 @@ make_harness $CK clock-qml-harness \
 want soak-qs && soak $QS
 want harness-qs && harness $QS
 want soak-dock && soak $DK
-want harness-dock && { harness $DK; measure_dock; }
+want harness-dock && { harness $DK; measure_dock; measure_indicators; }
 want soak-clock && soak $CK
 want harness-clock && harness $CK
 want harness-dock-kwin && harness_kwin $DK
 want harness-qs-kwin && harness_qs_kwin
 want tray && tray
-echo "desktop-applets-qml-test: $([ $fail = 0 ] && echo PASS || echo FAIL)  (renders: $OUT/{light,dark}/quicksettings-{bar,pane,edit}.png $OUT/{light,dark}/notifications-pane.png $OUT/{light,dark}/dock-{idle,hover,uniform}.png $OUT/{light,dark}/clock-bar.png $OUT/{light,dark}-kwin/dock-{idle,hover}.png $OUT/{light,dark}-kwin/quicksettings-bar-hover.png; tray proof: $OUT/tray/appletsrc)"
+echo "desktop-applets-qml-test: $([ $fail = 0 ] && echo PASS || echo FAIL)  (renders: $OUT/{light,dark}/quicksettings-{bar,open-mid,open-end,edit,notifications}.png $OUT/{light,dark}/dock-{rest,hover,uniform}.png $OUT/{light,dark}/clock-bar.png $OUT/{light,dark}-kwin/dock-{rest,hover}.png $OUT/{light,dark}-kwin/quicksettings-bar-hover.png; tray proof: $OUT/tray/appletsrc)"
 exit $fail

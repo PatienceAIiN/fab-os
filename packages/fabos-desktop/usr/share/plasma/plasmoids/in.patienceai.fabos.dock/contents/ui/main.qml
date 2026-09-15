@@ -28,7 +28,21 @@ import org.kde.taskmanager as TaskManager
 // The applet's own width does NOT follow the hover: it is the resting row plus the room one fully magnified group
 // needs (`reserve`), so the floating "fit" panel keeps its length while the pointer moves (no per-frame panel resize)
 // and the centred row grows into that reserve. With the row centred and the growth symmetric about the hovered icon,
-// a hovered interior icon keeps its centre where it rested — the pointer stays over the same icon.
+// a hovered interior icon keeps its centre where it rested — the pointer stays over the same icon. The reserve is split
+// EQUALLY to both ends of the centred row, so at rest the dock reads as one evenly spaced row with the same padding left
+// and right (never a gap on one side).
+//
+// Spacing + indicators (v3): ONE Row, 12 px between every item — the start button, the tasks and peek alike. Under each
+// running app a 6 px accent dot (two dots for a grouped app, a dimmer dot for a minimised window); under the ACTIVE
+// window a 24 × 3 px accent bar plus a rounded text-colour @ 6 % background behind its icon; launchers without a window
+// get nothing (TaskItem.qml). The bottom `dotSpace` band (8 px) holds the indicator.
+//
+// The launcher menu next door: layout.js puts the stock kickoff applet in the dock panel before this applet so the Meta
+// key and the start button (activateLauncherMenu) have a menu to open. Plasma 6.6's panel gives an applet that reports
+// Layout.minimumWidth 0 the PANEL THICKNESS as its width (org.kde.panel main.qml: findPositive(applet.Layout.minimumWidth,
+// availHeight)) — that was the blank square before the Fab OS button. Kickoff sizes its compact form from its icon, and a
+// non-square image FILE is drawn at height / aspect, so its icon is set to contents/images/launcher-anchor.png (1 × 64,
+// transparent): the applet is 1 px wide and invisible, and the menu still anchors at the dock's left end.
 PlasmoidItem {
     id: dock
     preferredRepresentation: fullRepresentation
@@ -45,10 +59,13 @@ PlasmoidItem {
     readonly property real near: magnification === "subtle" ? 1.15 : (magnification === "strong" ? 1.45 : 1.3)
     readonly property real far: magnification === "subtle" ? 1.05 : (magnification === "strong" ? 1.15 : 1.1)
     readonly property real tileScale: Plasmoid.configuration.tileScale > 0 ? Plasmoid.configuration.tileScale : 1.0
-    readonly property int dotSpace: 5                       // room under the icon for the running indicator
+    readonly property int dotSpace: 8                       // the indicator band under the icon: 6 px dot / 24 × 3 bar, 1-2 px off the bottom
+    readonly property int dotSize: 6                        // running dot (two for a group)
+    readonly property int barWidth: 24                      // active window: bar under the icon
+    readonly property int barHeight: 3
     readonly property int avail: Math.max(24, Math.round(dock.height) - dotSpace)
     readonly property int baseSize: Math.min(Plasmoid.configuration.maxIconSize, magnify ? Math.max(20, Math.floor(avail / peak)) : avail)
-    readonly property int gap: 2
+    readonly property int gap: 12                           // uniform spacing between ALL items (start button, tasks, peek)
     readonly property int startCount: Plasmoid.configuration.showStart ? 1 : 0
     readonly property int peekCount: Plasmoid.configuration.showPeek ? 1 : 0
     readonly property int count: repeater.count + startCount + peekCount   // every icon in the row (tasks + start + peek)

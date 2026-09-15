@@ -2,7 +2,8 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
 
-// Round icon button (radius 12 control) for pane headers and rows; text-colour tint on hover, tooltip on hover.
+// Round icon button (radius 12 control) for pane headers, footers and rows; text-colour tint on hover, tooltip on
+// hover. Default 28 px; the v3 pane uses 36 / 40 px instances (implicitWidth / implicitHeight).
 Item {
     id: b
     property string icon
@@ -14,7 +15,7 @@ Item {
     implicitWidth: 28; implicitHeight: 28
     opacity: active ? 1 : 0.4
     Rectangle {
-        anchors.fill: parent; radius: 12
+        anchors.fill: parent; radius: Math.min(12, width / 2)
         color: Kirigami.Theme.textColor
         opacity: ma.pressed ? 0.16 : (ma.containsMouse ? 0.09 : 0)
         Behavior on opacity { NumberAnimation { duration: 140 } }

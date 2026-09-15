@@ -226,55 +226,77 @@ t("JSON probe: a --light line refreshes the kernel readings AND the active Wi-Fi
   assert.strictEqual(oldLight.wifiActive, null); assert.strictEqual(S.mergeLight(full, oldLight).wifiSignal, 57); assert.strictEqual(S.linkChanged(full, oldLight), false);
 });
 // ---- the tile model
-t("tiles: defaults, round trip, unknown ids dropped, new ids appended, sizes validated", () => {
+t("tiles v3: defaults (three-column spans, three optional extras off), round trip, unknown ids dropped, new ids appended, sizes validated", () => {
   const d = S.defaultTiles();
-  assert.strictEqual(d.length, 12); assert.deepStrictEqual(d.map(x => x.id), ["wifi", "bluetooth", "volume", "brightness", "battery", "netspeed", "notifications", "dnd", "powerprofile", "nightlight", "screenshot", "settings"]);
-  assert.ok(d.every(x => x.enabled === true)); assert.strictEqual(d[0].size, "small"); assert.strictEqual(d[2].size, "wide");
+  assert.strictEqual(d.length, 12); assert.deepStrictEqual(d.map(x => x.id), ["wifi", "bluetooth", "volume", "brightness", "battery", "dnd", "nightlight", "screenshot", "settings", "notifications", "powerprofile", "netspeed"]);
+  assert.deepStrictEqual(d.filter(x => !x.enabled).map(x => x.id), ["notifications", "powerprofile", "netspeed"], "the footer carries the network line, the battery card the power profile");
+  assert.strictEqual(d[0].size, "medium"); assert.strictEqual(d[1].size, "small"); assert.strictEqual(d[2].size, "wide"); assert.strictEqual(d[4].size, "medium");
+  assert.strictEqual(S.spanOf("small"), 1); assert.strictEqual(S.spanOf("medium"), 2); assert.strictEqual(S.spanOf("wide"), 3); assert.strictEqual(S.COLUMNS, 3);
   assert.deepStrictEqual(S.parseTiles(S.tilesJson(d)), d, "round trip");
   assert.deepStrictEqual(S.parseTiles(""), d); assert.deepStrictEqual(S.parseTiles("{bad"), d); assert.deepStrictEqual(S.parseTiles("[]"), d);
-  const p = S.parseTiles(JSON.stringify([{ id: "dnd", size: "wide", enabled: false }, { id: "bogus" }, { id: "wifi", size: "huge" }, { id: "wifi" }]));
+  const p = S.parseTiles(JSON.stringify([{ id: "dnd", size: "wide", enabled: false }, { id: "bogus" }, { id: "wifi", size: "huge" }, { id: "wifi" }, { id: "netspeed", enabled: true }]));
   assert.strictEqual(p[0].id, "dnd"); assert.strictEqual(p[0].size, "wide"); assert.strictEqual(p[0].enabled, false);
-  assert.strictEqual(p[1].id, "wifi"); assert.strictEqual(p[1].size, "small", "invalid size -> the tile's default"); assert.strictEqual(p[1].enabled, true);
+  assert.strictEqual(p[1].id, "wifi"); assert.strictEqual(p[1].size, "medium", "invalid size -> the tile's default"); assert.strictEqual(p[1].enabled, true);
+  assert.strictEqual(p[2].id, "netspeed"); assert.strictEqual(p[2].enabled, true, "an explicit enabled wins over the default");
   assert.strictEqual(p.length, 12, "every known tile present exactly once"); assert.ok(!p.some(x => x.id === "bogus"));
-  assert.strictEqual(p[2].id, "bluetooth", "the rest appended in default order");
+  assert.strictEqual(p[3].id, "bluetooth", "the rest appended in default order"); assert.strictEqual(p.find(x => x.id === "notifications").enabled, false, "an appended optional tile keeps its default: off");
+  // a 1.0-5 layout (two sizes, twelve enabled tiles) still parses: small = one column, wide = the full row
+  const old = S.parseTiles(JSON.stringify([{ id: "wifi", size: "small", enabled: true }, { id: "volume", size: "wide", enabled: true }]));
+  assert.strictEqual(old[0].size, "small"); assert.strictEqual(old[1].size, "wide"); assert.strictEqual(old.length, 12);
 });
-t("tiles: move / size toggle / enable are pure and bounded", () => {
+t("tiles v3: move / size cycle / enable are pure and bounded", () => {
   const d = S.defaultTiles();
   const m = S.moveTile(d, 0, 3);
   assert.deepStrictEqual(m.map(x => x.id).slice(0, 4), ["bluetooth", "volume", "brightness", "wifi"]); assert.strictEqual(d[0].id, "wifi", "input untouched");
   assert.deepStrictEqual(S.moveTile(d, 5, 5), d); assert.deepStrictEqual(S.moveTile(d, -1, 2), d); assert.deepStrictEqual(S.moveTile(d, 2, 99), d);
-  assert.strictEqual(S.toggleTileSize(d, "wifi").find(x => x.id === "wifi").size, "wide");
-  assert.strictEqual(S.toggleTileSize(S.toggleTileSize(d, "wifi"), "wifi").find(x => x.id === "wifi").size, "small");
+  assert.strictEqual(S.nextSize("small"), "medium"); assert.strictEqual(S.nextSize("medium"), "wide"); assert.strictEqual(S.nextSize("wide"), "small");
+  assert.strictEqual(S.toggleTileSize(d, "wifi").find(x => x.id === "wifi").size, "wide", "medium -> wide");
+  assert.strictEqual(S.toggleTileSize(S.toggleTileSize(d, "wifi"), "wifi").find(x => x.id === "wifi").size, "small", "wide -> small");
+  assert.strictEqual(S.toggleTileSize(d, "bluetooth").find(x => x.id === "bluetooth").size, "medium", "small -> medium");
+  assert.strictEqual(S.setTileSize(d, "wifi", "huge").find(x => x.id === "wifi").size, "medium", "an unknown size is ignored");
   assert.strictEqual(S.setTileEnabled(d, "screenshot", false).find(x => x.id === "screenshot").enabled, false);
   assert.deepStrictEqual(S.toggleTileSize(d, "nope"), d);
+  assert.strictEqual(S.sizeLabel("medium"), "Medium");
 });
-t("tiles: grid geometry — two columns, wide = full row, small pairs share a row, row height = tallest, disabled skipped", () => {
-  const tiles = [{ id: "wifi", size: "small", enabled: true }, { id: "bluetooth", size: "small", enabled: true }, { id: "volume", size: "wide", enabled: true },
-                 { id: "dnd", size: "small", enabled: true }, { id: "screenshot", size: "small", enabled: false }, { id: "netspeed", size: "wide", enabled: true }];
-  const g = S.layoutTiles(tiles, 300, 8);
+t("tiles v3: grid geometry — three integer columns, spans 1/2/3, a row wraps when a tile does not fit, every tile in a row takes the row height, the last column ends at the right edge, disabled skipped", () => {
+  const tiles = [{ id: "wifi", size: "medium", enabled: true }, { id: "bluetooth", size: "small", enabled: true }, { id: "volume", size: "wide", enabled: true },
+                 { id: "battery", size: "medium", enabled: true }, { id: "dnd", size: "small", enabled: true }, { id: "screenshot", size: "small", enabled: false },
+                 { id: "settings", size: "small", enabled: true }, { id: "nightlight", size: "medium", enabled: true }, { id: "netspeed", size: "wide", enabled: true }];
+  const g = S.layoutTiles(tiles, 608, 12);   // 36 gridUnits at Medium (648) minus 2 x 20 padding; col = floor((608 - 24) / 3) = 194, the last column 196
   const by = {}; g.items.forEach(i => by[i.id] = i);
-  assert.deepStrictEqual(by.wifi, { id: "wifi", x: 0, y: 0, w: 146, h: 60 }); assert.deepStrictEqual(by.bluetooth, { id: "bluetooth", x: 154, y: 0, w: 146, h: 60 });
-  assert.deepStrictEqual(by.volume, { id: "volume", x: 0, y: 68, w: 300, h: 52 });
-  assert.deepStrictEqual(by.dnd, { id: "dnd", x: 0, y: 128, w: 146, h: 60 }, "a lone small tile keeps its half width");
+  assert.deepStrictEqual(by.wifi, { id: "wifi", x: 0, y: 0, w: 400, h: 76, span: 2, n: 0 });
+  assert.deepStrictEqual(by.bluetooth, { id: "bluetooth", x: 412, y: 0, w: 196, h: 76, span: 1, n: 1 }, "third column takes the rounding remainder: ends at 608");
+  assert.deepStrictEqual(by.volume, { id: "volume", x: 0, y: 88, w: 608, h: 64, span: 3, n: 2 });
+  assert.deepStrictEqual(by.battery, { id: "battery", x: 0, y: 164, w: 400, h: 96, span: 2, n: 3 });
+  assert.deepStrictEqual(by.dnd, { id: "dnd", x: 412, y: 164, w: 196, h: 96, span: 1, n: 4 }, "a one-column tile beside the battery card is stretched to the row height (96)");
   assert.strictEqual(by.screenshot, undefined, "disabled tile not placed");
-  assert.deepStrictEqual(by.netspeed, { id: "netspeed", x: 0, y: 196, w: 300, h: 48 });
-  assert.strictEqual(g.height, 244);
-  assert.strictEqual(S.layoutTiles([], 300, 8).height, 0);
-  const all = S.layoutTiles(S.defaultTiles(), 300, 8);
-  assert.strictEqual(all.items.length, 12); assert.ok(all.height > 400);
+  assert.deepStrictEqual(by.settings, { id: "settings", x: 0, y: 272, w: 194, h: 76, span: 1, n: 5 });
+  assert.deepStrictEqual(by.nightlight, { id: "nightlight", x: 206, y: 272, w: 402, h: 76, span: 2, n: 6 }, "a two-column tile after a one-column one fills columns 2-3");
+  assert.deepStrictEqual(by.netspeed, { id: "netspeed", x: 0, y: 360, w: 608, h: 56, span: 3, n: 7 });
+  assert.strictEqual(g.height, 416);
+  assert.strictEqual(S.layoutTiles([], 608, 12).height, 0);
+  const wrap = S.layoutTiles([{ id: "bluetooth", size: "small" }, { id: "wifi", size: "medium" }, { id: "dnd", size: "small" }, { id: "battery", size: "medium" }], 608, 12);
+  assert.strictEqual(wrap.items[2].y, 0 + 76 + 12, "small + medium fill a row; the next small starts a new row"); assert.strictEqual(wrap.items[3].x, 206, "a medium tile after a small one takes columns 2-3 of that row");
+  const all = S.layoutTiles(S.defaultTiles(), 608, 12);
+  assert.strictEqual(all.items.length, 9, "the three optional tiles are off by default"); assert.strictEqual(all.height, 76 + 12 + 64 + 12 + 64 + 12 + 96 + 12 + 76, "five rows: 76 · 64 · 64 · 96 · 76 with 12 px gaps");
+  assert.deepStrictEqual(all.items.map(i => i.id), ["wifi", "bluetooth", "volume", "brightness", "battery", "dnd", "nightlight", "screenshot", "settings"]);
+  assert.ok(all.items.every(i => i.x + i.w <= 608), "nothing past the right edge");
   for (const a of all.items) for (const b of all.items) if (a !== b) assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, "no overlap " + a.id + "/" + b.id);
+  const everything = S.layoutTiles(S.defaultTiles().map(t => ({ id: t.id, size: t.size, enabled: true })), 608, 12);
+  assert.strictEqual(everything.items.length, 12); assert.strictEqual(everything.items.map(i => i.n).join(","), "0,1,2,3,4,5,6,7,8,9,10,11", "n is the placement order (the open animation staggers by it)");
 });
-t("tiles: drag helpers — tileAt finds the slot under a point (or the nearest within a tile height), moveTileTo takes the hovered tile's slot", () => {
-  const d = S.defaultTiles(), L = S.layoutTiles(d, 300, 8);
-  assert.strictEqual(S.tileAt(L.items, 10, 10), "wifi"); assert.strictEqual(S.tileAt(L.items, 200, 10), "bluetooth");
-  assert.strictEqual(S.tileAt(L.items, 150, 90), "volume", "a wide row spans both columns");
-  assert.strictEqual(S.tileAt(L.items, 60, -20), "wifi", "a little above the grid: nearest by centre (within one tile height)");
-  assert.strictEqual(S.tileAt(L.items, 150, -30), "", "in the gap between two columns and above the grid: farther than a tile height from both centres");
+t("tiles v3: drag helpers — tileAt finds the slot under a point (or the nearest within a tile height), moveTileTo takes the hovered tile's slot; the short Bluetooth line", () => {
+  const d = S.defaultTiles(), L = S.layoutTiles(d, 608, 12);
+  assert.strictEqual(S.tileAt(L.items, 10, 10), "wifi"); assert.strictEqual(S.tileAt(L.items, 500, 10), "bluetooth");
+  assert.strictEqual(S.tileAt(L.items, 300, 100), "volume", "a wide row spans the three columns");
+  assert.strictEqual(S.tileAt(L.items, 200, -20), "wifi", "a little above the grid: nearest by centre (within one tile height)");
+  assert.strictEqual(S.tileAt(L.items, 500, -80), "", "above the grid, farther than a tile height from every centre");
   assert.strictEqual(S.tileAt(L.items, 150, -400), "", "far away: nothing");
   const m = S.moveTileTo(d, "dnd", "wifi");
   assert.deepStrictEqual(m.map(t => t.id).slice(0, 3), ["dnd", "wifi", "bluetooth"]); assert.strictEqual(d[0].id, "wifi", "input untouched");
   assert.deepStrictEqual(S.moveTileTo(d, "wifi", "wifi"), d); assert.deepStrictEqual(S.moveTileTo(d, "nope", "wifi"), d); assert.deepStrictEqual(S.moveTileTo(d, "wifi", "nope"), d);
-  assert.deepStrictEqual(S.rectFor(L, "wifi"), { id: "wifi", x: 0, y: 0, w: 146, h: 60 }); assert.strictEqual(S.rectFor(L, "nope"), null);
+  assert.deepStrictEqual(S.rectFor(L, "wifi"), { id: "wifi", x: 0, y: 0, w: 400, h: 76, span: 2, n: 0 }); assert.strictEqual(S.rectFor(L, "nope"), null);
+  assert.strictEqual(S.bluetoothShort({ btPresent: true, btPowered: true, btConnected: 1 }), "1 connected"); assert.strictEqual(S.bluetoothShort({ btPresent: true, btPowered: true, btConnected: 0 }), "On"); assert.strictEqual(S.bluetoothShort({ btPresent: false }), "No adapter");
 });
 t("night light: toggled through kwinrc NightColor/Active + a KWin reconfigure (no bus-lifetime inhibit); nothing when KWin lacks it", () => {
   assert.strictEqual(S.nightCommand({ nightEnabled: true }), "kwriteconfig6 --file kwinrc --group NightColor --key Active false && qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure");
@@ -282,19 +304,35 @@ t("night light: toggled through kwinrc NightColor/Active + a KWin reconfigure (n
   assert.strictEqual(S.nightCommand({ nightEnabled: null }), ""); assert.strictEqual(S.nightCommand({}), "");
   assert.ok(!S.nightCommand({ nightEnabled: true }).includes("'"), "no single quotes: the executable engine runs it through sh");
 });
-t("the applet's main.qml: speed always on (no idle-hide), transparent fixed-size dialog with the card animating (no window resize while sliding)", () => {
-  const qml = fs.readFileSync(path.join(__dirname, "..", "packages/fabos-desktop/usr/share/plasma/plasmoids/in.patienceai.fabos.quicksettings/contents/ui/main.qml"), "utf8");
+t("the applet's main.qml: speed always on (no idle-hide), transparent fixed-size dialog with the card animating (no window resize while sliding), v3 geometry markers", () => {
+  const base = path.join(__dirname, "..", "packages/fabos-desktop/usr/share/plasma/plasmoids/in.patienceai.fabos.quicksettings/contents/ui");
+  const qml = fs.readFileSync(path.join(base, "main.qml"), "utf8");
   assert.ok(!qml.includes("zeroSamples"), "no idle counter hides the rate");
   assert.ok(qml.includes('readonly property bool speedVisible: Plasmoid.configuration.showSpeed && st.iface !== ""'), "speed shown whenever a link is up");
   assert.ok(qml.includes("backgroundHints: PlasmaCore.Dialog.NoBackground"), "transparent dialog window");
-  assert.ok(qml.includes("y: Math.round(-height * (1 - pane.openProgress))") && qml.includes("opacity: pane.openProgress"), "the CARD animates y and opacity");
-  assert.ok(qml.includes("duration: 220; easing.type: Easing.OutCubic"), "220 ms OutCubic");
+  assert.ok(qml.includes("y: Math.round(-0.35 * height * (1 - pane.openProgress))") && qml.includes("opacity: pane.openProgress"), "the CARD animates y (from -0.35 x height) and opacity");
+  assert.ok(qml.includes("duration: root.closing ? 160 : 220; easing.type: Easing.OutCubic"), "220 ms OutCubic open, 160 ms close");
   const dialogHead = qml.split("PlasmaCore.Dialog {")[1].split("mainItem:")[0];
   assert.ok(!/Behavior on (paneHeight|height|width)/.test(dialogHead), "no animated size on the dialog itself");
   assert.ok(qml.includes("bottomLeftRadius: pane.radius; bottomRightRadius: pane.radius") && qml.includes("readonly property int radius: 24"), "radius 24 at the bottom corners");
-  assert.ok(qml.includes("Kirigami.Units.gridUnit * 28"), "notification pane 28 gridUnits wide");
+  assert.ok(qml.includes('readonly property int paneUnits: root.barSize === "small" ? 32 : (root.barSize === "large" ? 40 : 36)') && qml.includes("Kirigami.Units.gridUnit * root.paneUnits"), "pane width 36 gridUnits at Medium (32 / 40 at Small / Large)");
+  assert.ok(qml.includes("readonly property int notifWidth: root.settingsWidth"), "notification pane the same width");
+  assert.ok(qml.includes("readonly property int cardPad: 20") && qml.includes("readonly property int tileGap: 12") && qml.includes("readonly property int edge: 12"), "padding 20, 12 px gaps, 12 px right margin");
+  assert.ok(qml.includes("PauseAnimation { duration: tw.order * 30 }") && qml.includes('property: "introDy"; to: 0; duration: 160'), "tiles stagger in 30 ms apart over 160 ms");
   assert.ok(qml.includes("DragHandler") && qml.includes("Status.tileAt(") && qml.includes("Status.moveTileTo("), "edit mode drags through the pure helpers");
   assert.ok(qml.includes("Plasmoid.configuration.tilesJson = Status.tilesJson(arr)"), "the tile model is persisted in tilesJson");
+  for (const f of ["Tile.qml", "SliderTile.qml", "BatteryCard.qml", "NotificationRow.qml", "main.qml"]) {
+    const c = fs.readFileSync(path.join(base, f), "utf8");
+    assert.ok(!/color: "#|color: "(white|black|red|blue|grey|gray)"/.test(c), f + " carries no literal colour (Kirigami.Theme only)");
+  }
+  const tile = fs.readFileSync(path.join(base, "Tile.qml"), "utf8");
+  assert.ok(tile.includes("radius: 16") && tile.includes("font.pixelSize: 15; font.weight: Font.DemiBold") && tile.includes("scale: hovered ? 1.02 : 1.0") && tile.includes("duration: 120"), "tile: radius 16, Inter 15/600 title, 1.02 hover lift in 120 ms");
+  const slider = fs.readFileSync(path.join(base, "SliderTile.qml"), "utf8");
+  assert.ok(slider.includes("width: 36; height: 36") && slider.includes("height: 6; radius: 3"), "slider: 36 px thumb on a 6 px track");
+  const battery = fs.readFileSync(path.join(base, "BatteryCard.qml"), "utf8");
+  assert.ok(battery.includes("font.pixelSize: 28; font.weight: Font.Bold"), "battery: percentage in Inter 28/700");
+  const row = fs.readFileSync(path.join(base, "NotificationRow.qml"), "utf8");
+  assert.ok(row.includes("implicitHeight: Math.max(64, content.implicitHeight + 16)") && row.includes("font.pixelSize: 14; wrapMode: Text.Wrap"), "notification rows 64 px, body 14 px");
 });
 t("the shipped status.sh prints one JSON line in both modes (syntax + shape; tools absent here are simply empty)", () => {
   const { spawnSync } = require("child_process");

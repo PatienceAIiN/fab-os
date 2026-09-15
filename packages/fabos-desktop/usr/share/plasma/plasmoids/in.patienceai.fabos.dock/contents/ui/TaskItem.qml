@@ -8,9 +8,13 @@ import org.kde.taskmanager as TaskManager
 
 // One dock icon. `s` is the magnification for this item's slot in the row (from the dock's hoveredIndex); width and
 // the icon size follow it through one animated property, so the Row re-flows as neighbours grow. Bounce on launch,
-// running dot, tooltip with the window title(s), left = activate / minimise / cycle, middle = new instance, right =
-// context menu. A Fab OS tile icon (full-bleed rounded square) is drawn at dock.tileScale of the box so its visible
-// extent equals a Breeze app icon's glyph.
+// tooltip with the window title(s), left = activate / minimise / cycle, middle = new instance, right = context menu.
+// A Fab OS tile icon (full-bleed rounded square) is drawn at dock.tileScale of the box so its visible extent equals a
+// Breeze app icon's glyph.
+// Running / active indicators (Windows 11 + macOS): a 6 px accent dot centred under every running app (two dots for a
+// grouped app, a dimmer dot for a minimised window), a 24 × 3 px accent bar under the ACTIVE window's icon plus a
+// rounded text-colour @ 6 % background behind that icon; a launcher without a window shows nothing; the attention
+// colour replaces the accent while a window demands attention.
 PlasmaCore.ToolTipArea {
     id: item
     required property int index
@@ -28,6 +32,14 @@ PlasmaCore.ToolTipArea {
     property real bounce: 1.0
     property string lastAction: ""
     readonly property Item glyph: glyphItem
+    readonly property Item indicator: indicatorBand      // harness hooks
+    readonly property Item activeBackground: activeBg
+    readonly property Item activeBar: bar
+    readonly property Item dots: dotRow
+    readonly property int dotCount: dotRepeater.count
+    readonly property bool isActive: model.IsActive === true
+    readonly property bool isMinimized: model.IsMinimized === true
+    readonly property bool isGroup: model.IsGroupParent === true && item.childCount > 1
 
     width: Math.round(dock.baseSize * s)
     height: dock.height
@@ -53,6 +65,19 @@ PlasmaCore.ToolTipArea {
     onWidthChanged: publishTimer.restart()
     Component.onCompleted: publishTimer.restart()
 
+    Rectangle {   // active window: a rounded 6 % tint behind the icon (4 px around the box), following the magnification
+        id: activeBg
+        visible: item.isActive && item.running
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: dock.dotSpace - 4
+        width: Math.round(dock.baseSize * item.s) + 8
+        height: width
+        radius: Math.round(width * 0.28)
+        color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.06)
+        border.width: 1
+        border.color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.05)
+    }
     Item {   // the icon box: a tile at dock.tileScale of the slot, anything else the full slot; centred in the slot
         id: glyphItem
         anchors.horizontalCenter: parent.horizontalCenter
@@ -62,7 +87,7 @@ PlasmaCore.ToolTipArea {
         height: width
         scale: item.bounce
         transformOrigin: Item.Bottom
-        opacity: item.model.IsMinimized === true ? 0.6 : 1.0
+        opacity: item.isMinimized ? 0.7 : 1.0
         Behavior on opacity { NumberAnimation { duration: 160 } }
         SequentialAnimation on opacity {   // startup feedback: a few pulses while the app is launching — never an endless loop
             running: item.model.IsStartup === true
@@ -94,16 +119,36 @@ PlasmaCore.ToolTipArea {
             fallback: "application-x-executable"
         }
     }
-    Rectangle {   // running indicator; a wider pill for a group, accent when active, attention colour when demanding
+    Item {   // the indicator band under the icon: nothing for a plain launcher; dot(s) for a running app; the bar for the active window
+        id: indicatorBand
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
-        anchors.bottomMargin: 1
+        width: parent.width; height: dock.dotSpace
         visible: item.running
-        width: item.model.IsGroupParent === true && item.childCount > 1 ? 12 : 5
-        height: 3; radius: 1.5
-        color: item.model.IsDemandingAttention === true ? Kirigami.Theme.negativeTextColor : (item.model.IsActive === true ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor)
-        opacity: item.model.IsActive === true || item.model.IsDemandingAttention === true ? 1 : 0.6
-        Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        readonly property color accent: item.model.IsDemandingAttention === true ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.highlightColor
+        Rectangle {   // active window: 24 × 3 accent bar
+            id: bar
+            visible: item.isActive
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 2
+            width: dock.barWidth; height: dock.barHeight; radius: dock.barHeight / 2
+            color: indicatorBand.accent
+        }
+        Row {   // running, not active: one 6 px dot (two for a grouped app); a minimised window's dot is dimmer
+            id: dotRow
+            visible: !item.isActive
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 1
+            spacing: 4
+            opacity: item.isMinimized && item.model.IsDemandingAttention !== true ? 0.45 : 1
+            Repeater {
+                id: dotRepeater
+                model: item.isGroup ? 2 : 1
+                Rectangle { width: dock.dotSize; height: dock.dotSize; radius: dock.dotSize / 2; color: indicatorBand.accent }
+            }
+        }
     }
 
     HoverHandler { onHoveredChanged: if (hovered) dock.hoveredIndex = item.slot; else if (dock.hoveredIndex === item.slot) dock.hoveredIndex = -1 }

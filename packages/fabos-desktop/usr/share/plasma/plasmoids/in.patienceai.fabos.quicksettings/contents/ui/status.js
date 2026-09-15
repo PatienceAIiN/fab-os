@@ -301,6 +301,13 @@ function bluetoothLine(s) {
     return s.btConnected > 0 ? s.btConnected + (s.btConnected === 1 ? " device connected" : " devices connected") : "On"
 }
 
+// one-column tile: "On" / "Off" / "1 connected"
+function bluetoothShort(s) {
+    if (!s.btPresent) return "No adapter"
+    if (s.btPowered === false) return "Off"
+    return s.btConnected > 0 ? s.btConnected + " connected" : "On"
+}
+
 function profileLabel(p) { return p === "power-saver" ? "Power saver" : p === "performance" ? "Performance" : p === "balanced" ? "Balanced" : "" }
 function profileIcon(p) { return p === "power-saver" ? "battery-profile-powersave" : p === "performance" ? "battery-profile-performance" : "battery-profile-balanced" }
 function nextProfile(p) { var order = ["power-saver", "balanced", "performance"]; var i = order.indexOf(p); return order[(i + 1) % order.length] }
@@ -313,25 +320,32 @@ function nightLine(s, inhibited) {
 }
 
 // ---------------------------------------------------------------- the pane's tiles (Plasmoid.configuration.tilesJson)
-// Every tile the pane can show, in the default order, with its default size (small = half a row, wide = a full row).
-// Persisted as a JSON array of {id, size, enabled}; unknown ids are dropped, tiles added in a later version are
-// appended with their defaults, so an old saved layout never loses a new tile.
+// Every tile the pane can show, in the default order, with its default span in the THREE-column grid (small = one
+// column, medium = two, wide = the full row), its height and whether it is on the pane by default (the network row lives
+// in the pane's footer and the power profile in the battery card, so those two tiles and Notifications are optional
+// extras: "+ tile" chips in edit mode / the Tiles page). Persisted as a JSON array of {id, size, enabled}; unknown ids
+// are dropped, tiles added in a later version are appended with their defaults, so an old saved layout never loses a
+// new tile.
+var COLUMNS = 3
+var SIZES = ["small", "medium", "wide"]
 var TILES = [
-    { id: "wifi",          title: "Wi-Fi",          size: "small", height: 60 },
-    { id: "bluetooth",     title: "Bluetooth",      size: "small", height: 60 },
-    { id: "volume",        title: "Volume",         size: "wide",  height: 52 },
-    { id: "brightness",    title: "Brightness",     size: "wide",  height: 52 },
-    { id: "battery",       title: "Battery",        size: "wide",  height: 60 },
-    { id: "netspeed",      title: "Network speed",  size: "wide",  height: 48 },
-    { id: "notifications", title: "Notifications",  size: "small", height: 60 },
-    { id: "dnd",           title: "Do Not Disturb", size: "small", height: 60 },
-    { id: "powerprofile",  title: "Power profile",  size: "wide",  height: 60 },
-    { id: "nightlight",    title: "Night light",    size: "small", height: 60 },
-    { id: "screenshot",    title: "Screenshot",     size: "small", height: 60 },
-    { id: "settings",      title: "Settings",       size: "small", height: 60 }
+    { id: "wifi",          title: "Wi-Fi",          size: "medium", height: 76, enabled: true },
+    { id: "bluetooth",     title: "Bluetooth",      size: "small",  height: 76, enabled: true },
+    { id: "volume",        title: "Volume",         size: "wide",   height: 64, enabled: true },
+    { id: "brightness",    title: "Brightness",     size: "wide",   height: 64, enabled: true },
+    { id: "battery",       title: "Battery",        size: "medium", height: 96, enabled: true },
+    { id: "dnd",           title: "Do Not Disturb", size: "small",  height: 76, enabled: true },
+    { id: "nightlight",    title: "Night light",    size: "small",  height: 76, enabled: true },
+    { id: "screenshot",    title: "Screenshot",     size: "small",  height: 76, enabled: true },
+    { id: "settings",      title: "Settings",       size: "small",  height: 76, enabled: true },
+    { id: "notifications", title: "Notifications",  size: "small",  height: 76, enabled: false },
+    { id: "powerprofile",  title: "Power profile",  size: "small",  height: 76, enabled: false },
+    { id: "netspeed",      title: "Network speed",  size: "wide",   height: 56, enabled: false }
 ]
 function tileDef(id) { for (var i = 0; i < TILES.length; i++) if (TILES[i].id === id) return TILES[i]; return null }
-function defaultTiles() { return TILES.map(function (t) { return { id: t.id, size: t.size, enabled: true } }) }
+function spanOf(size) { return size === "wide" ? COLUMNS : (size === "medium" ? 2 : 1) }
+function sizeLabel(size) { return size === "wide" ? "Wide" : (size === "medium" ? "Medium" : "Small") }
+function defaultTiles() { return TILES.map(function (t) { return { id: t.id, size: t.size, enabled: t.enabled !== false } }) }
 function parseTiles(json) {
     var arr = null
     try { arr = JSON.parse(String(json || "")) } catch (e) { arr = null }
@@ -341,9 +355,9 @@ function parseTiles(json) {
         var t = arr[i]; if (!t || typeof t.id !== "string") continue
         var def = tileDef(t.id); if (!def || seen[t.id]) continue
         seen[t.id] = true
-        out.push({ id: t.id, size: t.size === "wide" || t.size === "small" ? t.size : def.size, enabled: t.enabled !== false })
+        out.push({ id: t.id, size: SIZES.indexOf(t.size) >= 0 ? t.size : def.size, enabled: typeof t.enabled === "boolean" ? t.enabled : def.enabled !== false })
     }
-    for (var k = 0; k < TILES.length; k++) if (!seen[TILES[k].id]) out.push({ id: TILES[k].id, size: TILES[k].size, enabled: true })
+    for (var k = 0; k < TILES.length; k++) if (!seen[TILES[k].id]) out.push({ id: TILES[k].id, size: TILES[k].size, enabled: TILES[k].enabled !== false })
     return out
 }
 function tilesJson(tiles) { return JSON.stringify(tiles.map(function (t) { return { id: t.id, size: t.size, enabled: t.enabled !== false } })) }
@@ -353,30 +367,36 @@ function moveTile(tiles, from, to) {
     var t = out.splice(from, 1)[0]; out.splice(to, 0, t)
     return out
 }
-function setTileSize(tiles, id, size) { return tiles.map(function (t) { return t.id === id ? { id: t.id, size: size, enabled: t.enabled } : t }) }
-function toggleTileSize(tiles, id) { var t = null; tiles.forEach(function (x) { if (x.id === id) t = x }); return t ? setTileSize(tiles, id, t.size === "wide" ? "small" : "wide") : tiles }
+function setTileSize(tiles, id, size) { return tiles.map(function (t) { return t.id === id ? { id: t.id, size: SIZES.indexOf(size) >= 0 ? size : t.size, enabled: t.enabled } : t }) }
+// the size toggle cycles small -> medium -> wide -> small
+function nextSize(size) { return SIZES[(SIZES.indexOf(size) + 1) % SIZES.length] }
+function toggleTileSize(tiles, id) { var t = null; tiles.forEach(function (x) { if (x.id === id) t = x }); return t ? setTileSize(tiles, id, nextSize(t.size)) : tiles }
 function setTileEnabled(tiles, id, on) { return tiles.map(function (t) { return t.id === id ? { id: t.id, size: t.size, enabled: !!on } : t }) }
 
-// Grid geometry for the enabled tiles: two columns; a wide tile takes a full row, small tiles fill a row left to right
-// (a small tile left alone in its row keeps its half width — the size toggle stays visible as a size). Row height =
-// the tallest tile in the row. Returns { items: [{id, x, y, w, h}], height }.
+// Grid geometry for the enabled tiles: THREE columns of equal integer width (the last column takes the rounding
+// remainder so every row's right edge is the content's right edge); a tile spans 1, 2 or 3 columns and goes into the
+// current row when it fits, else starts the next one; every tile in a row is as tall as the row (the tallest tile in
+// it), so edges align. `n` is the tile's position among the placed ones (the open animation staggers by it).
+// Returns { items: [{id, x, y, w, h, span, n}], height }.
 function layoutTiles(tiles, width, gap) {
-    gap = gap === undefined ? 8 : gap
-    var col = (width - gap) / 2, items = [], y = 0, x = 0, rowH = 0, inRow = 0
-    function endRow() { if (inRow > 0) { y += rowH + gap; x = 0; rowH = 0; inRow = 0 } }
+    gap = gap === undefined ? 12 : gap
+    var col = Math.floor((width - (COLUMNS - 1) * gap) / COLUMNS), items = [], row = [], y = 0, used = 0, rowH = 0
+    function endRow() {
+        if (row.length === 0) return
+        for (var k = 0; k < row.length; k++) row[k].h = rowH
+        y += rowH + gap; row = []; used = 0; rowH = 0
+    }
     for (var i = 0; i < tiles.length; i++) {
         var t = tiles[i]; if (t.enabled === false) continue
-        var def = tileDef(t.id) || { height: 60 }
-        if (t.size === "wide") {
-            endRow()
-            items.push({ id: t.id, x: 0, y: y, w: width, h: def.height })
-            y += def.height + gap
-        } else {
-            if (inRow === 2) endRow()
-            items.push({ id: t.id, x: inRow === 0 ? 0 : col + gap, y: y, w: col, h: def.height })
-            rowH = Math.max(rowH, def.height); inRow++
-            if (inRow === 2) endRow()
-        }
+        var def = tileDef(t.id) || { height: 76 }
+        var span = Math.min(COLUMNS, spanOf(t.size))
+        if (used + span > COLUMNS) endRow()
+        var x = used * (col + gap)
+        var w = used + span === COLUMNS ? width - x : span * col + (span - 1) * gap
+        var it = { id: t.id, x: x, y: y, w: w, h: def.height, span: span, n: items.length }
+        items.push(it); row.push(it)
+        rowH = Math.max(rowH, def.height); used += span
+        if (used === COLUMNS) endRow()
     }
     endRow()
     return { items: items, height: Math.max(0, y - gap) }
