@@ -160,6 +160,63 @@ t("voiceFailure: a failed listen-once is never silent; the CLI's own last stderr
   assert.ok(long.length <= 160 && long.endsWith("…"), "long reasons are clipped for the status line");
   assert.strictEqual(A.lastLine("a\n\n  b  \n\n"), "b"); assert.strictEqual(A.lastLine(""), "");
 });
+t("image path detection: ~/Pictures/Fab OS/*.png|jpg in text (~, $HOME, /home/<user>, file://), each once, trailing punctuation dropped", () => {
+  eq(A.imagePathsInText("Saved to ~/Pictures/Fab OS/kite at dawn.png. Also file:///home/u/Pictures/Fab%20OS/x.jpg and `/home/u/Pictures/Fab OS/y.png` (~/Pictures/Fab OS/kite at dawn.png)"),
+     ["~/Pictures/Fab OS/kite at dawn.png", "/home/u/Pictures/Fab OS/x.jpg", "/home/u/Pictures/Fab OS/y.png"]);
+  eq(A.imagePathsInText("Your picture: $HOME/Pictures/Fab OS/sunset.JPG!"), ["$HOME/Pictures/Fab OS/sunset.JPG"]);
+  eq(A.imagePathsInText("wrote ~/Documents/plan.png and /tmp/x.png and ~/Pictures/other/y.png"), [], "only ~/Pictures/Fab OS/ counts");
+  eq(A.imagePathsInText("~/Pictures/Fab OS/notes.txt and ~/Pictures/Fab OS/clip.mp4"), [], "only PNG / JPG");
+  eq(A.imagePathsInText(""), []); eq(A.imagePathsInText(null), []);
+  assert.ok(A.isImagePath("/a/b.png") && A.isImagePath("x.jpeg") && !A.isImagePath("x.gif") && !A.isImagePath(""));
+});
+t("image path detection: a finished generate_image step yields {path, prompt, provider, width, height}; anything else null", () => {
+  const out = JSON.stringify({ path: "/home/u/Pictures/Fab OS/kite.png", width: 1024, height: 768, provider: "local", prompt: "a kite" });
+  eq(A.imageFromStep({ name: "generate_image", decision: "auto-approved", input: JSON.stringify({ prompt: "a kite" }), output: out }),
+     { path: "/home/u/Pictures/Fab OS/kite.png", prompt: "a kite", provider: "local", width: 1024, height: 768 });
+  eq(A.imageFromStep({ name: "generate_image", decision: "auto-approved", input: JSON.stringify({ prompt: "from the input" }), output: JSON.stringify({ path: "~/Pictures/Fab OS/k.png" }) }),
+     { path: "~/Pictures/Fab OS/k.png", prompt: "from the input", provider: "", width: 0, height: 0 });
+  assert.strictEqual(A.imageFromStep({ name: "generate_image", decision: "auto-approved", input: "{}", output: "" }), null, "still running");
+  assert.strictEqual(A.imageFromStep({ name: "generate_image", decision: "auto-approved", input: "{}", output: JSON.stringify({ error: "no provider" }) }), null, "failed");
+  assert.strictEqual(A.imageFromStep({ name: "generate_image", decision: "auto-approved", input: "{}", output: JSON.stringify({ path: "/x/y.txt" }) }), null, "not an image");
+  assert.strictEqual(A.imageFromStep({ name: "write_file", decision: "auto-approved", input: "{}", output: JSON.stringify({ path: "/x/y.png" }) }), null, "another tool");
+  const d = A.describeStep({ name: "generate_image", input: JSON.stringify({ prompt: "a red kite" }) }, false, "");
+  assert.strictEqual(d.running, "Creating an image"); assert.strictEqual(d.done, "Created an image"); assert.strictEqual(d.subtitle, "a red kite"); assert.strictEqual(d.icon, "image-x-generic");
+  assert.strictEqual(A.imageProviderLabel("local"), "Built-in model"); assert.strictEqual(A.imageProviderLabel(""), ""); assert.strictEqual(A.imageProviderLabel("cloudx"), "cloudx");
+});
+t("image path detection: the shell commands quote paths, expand ~ / $HOME outside the quotes, and the viewer helpers degrade", () => {
+  assert.strictEqual(A.shellPath("~/Pictures/Fab OS/a b.png"), `"$HOME"/'Pictures/Fab OS/a b.png'`);
+  assert.strictEqual(A.shellPath("$HOME/Pictures/Fab OS/a.png"), `"$HOME"/'Pictures/Fab OS/a.png'`);
+  assert.strictEqual(A.shellPath("/tmp/Pictures/Fab OS/a'b.png"), `'/tmp/Pictures/Fab OS/a'\\''b.png'`);
+  assert.strictEqual(A.imageCheckCommand("~/Pictures/Fab OS/a.png"), `P="$HOME"/'Pictures/Fab OS/a.png'; [ -f "$P" ] && printf '%s\\n' "$P"`);
+  assert.strictEqual(A.fileUrl("/tmp/Pictures/Fab OS/a#1.png"), "file:///tmp/Pictures/Fab%20OS/a%231.png");
+  assert.strictEqual(A.localPath("file:///tmp/Pictures/Fab%20OS/a.png"), "/tmp/Pictures/Fab OS/a.png"); assert.strictEqual(A.localPath("/plain/p.png"), "/plain/p.png");
+  eq(A.parseBins("gwenview\nplasma-apply-wallpaperimage\n-\n"), { gwenview: true, "plasma-apply-wallpaperimage": true }); eq(A.parseBins("-\n"), {}); eq(A.parseBins(""), {});
+  assert.ok(A.binsCommand().startsWith("for b in wl-copy gwenview xdg-open plasma-apply-wallpaperimage; do command -v"));
+  assert.strictEqual(A.copyImageCommand("/p/a.png"), "wl-copy --type image/png < '/p/a.png' && echo copied");
+  assert.strictEqual(A.copyImageCommand("/p/a.JPG"), "wl-copy --type image/jpeg < '/p/a.JPG' && echo copied");
+  assert.strictEqual(A.openImageCommand("/p/a.png", { gwenview: true, "xdg-open": true }), "setsid -f gwenview -- '/p/a.png' >/dev/null 2>&1; echo gwenview");
+  assert.strictEqual(A.openImageCommand("/p/a.png", { "xdg-open": true }), "setsid -f xdg-open -- '/p/a.png' >/dev/null 2>&1; echo xdg-open");
+  assert.strictEqual(A.openImageCommand("/p/a.png", {}), "", "nothing to open with: no command (the button is disabled)");
+  assert.strictEqual(A.wallpaperCommand("/p/a.png"), "plasma-apply-wallpaperimage '/p/a.png' >/dev/null 2>&1 && echo ok");
+  assert.ok(A.saveCopyCommand("/p/it's.png").includes(`B='it'\\''s.png'`) && A.saveCopyCommand("/p/a.png").startsWith(`D="$HOME/Pictures"; mkdir -p "$D";`));
+  assert.strictEqual(A.copyToCommand("/p/a.png", "/q/b c.png"), "cp -- '/p/a.png' '/q/b c.png' && printf '%s\\n' '/q/b c.png'");
+});
+// the check command, for real: ~ is expanded by the shell, the printed path is absolute, a missing file prints nothing (exit 1)
+t("image path detection: imageCheckCommand under /bin/sh finds a real file through ~ and rejects a missing one", () => {
+  const { spawnSync } = require("child_process"), os = require("os");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "askbar-home-")), dir = path.join(home, "Pictures", "Fab OS");
+  fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, "a b.png"), "x");
+  const env = { ...process.env, HOME: home };
+  const ok = spawnSync("sh", ["-c", A.imageCheckCommand("~/Pictures/Fab OS/a b.png")], { env, encoding: "utf8" });
+  assert.strictEqual(ok.status, 0); assert.strictEqual(ok.stdout, path.join(dir, "a b.png") + "\n");
+  const miss = spawnSync("sh", ["-c", A.imageCheckCommand("~/Pictures/Fab OS/none.png")], { env, encoding: "utf8" });
+  assert.notStrictEqual(miss.status, 0); assert.strictEqual(miss.stdout, "");
+  const saved = spawnSync("sh", ["-c", A.saveCopyCommand(path.join(dir, "a b.png"))], { env, encoding: "utf8" });
+  assert.strictEqual(saved.status, 0); assert.strictEqual(saved.stdout.trim(), path.join(home, "Pictures", "a b.png"));
+  const again = spawnSync("sh", ["-c", A.saveCopyCommand(path.join(dir, "a b.png"))], { env, encoding: "utf8" });
+  assert.ok(/\/Pictures\/a b-\d{6}\.png$/.test(again.stdout.trim()), "a second save never overwrites: " + again.stdout);
+  fs.rmSync(home, { recursive: true, force: true });
+});
 t("banned words never appear in UI strings produced by the helpers", () => {
   // third-party product names that must never surface in Fab OS UI strings (spelled in halves so this file does not contain them either)
   const banned = new RegExp(["Chat" + "GPT", "Open" + "AI", "G" + "PT", "Snow" + "UI", "So" + "ra", "DA" + "LL", "Upgrade " + "plan", "can make " + "mistakes",

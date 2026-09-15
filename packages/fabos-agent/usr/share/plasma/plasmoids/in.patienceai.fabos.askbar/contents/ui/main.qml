@@ -58,6 +58,19 @@ PlasmoidItem {
     property bool sending: false
     property string pendingRequest: ""
     readonly property bool showStatus: !configured || !aiEnabled || !daemonUp || (busy && panelMode === "closed") || sending || status.length > 0
+    // cloud hint: with the built-in (local) model a dismissible chip suggests a cloud model — under the field inside the card
+    // on the desktop, the first row of the popup's header in the compact (panel) form (CloudHintChip.qml, one component in
+    // two places). The dismissal lasts the session (a plain property, not Plasmoid.configuration); never with a cloud provider
+    property string provider: ""              // GET /status provider id ("local" = the built-in model)
+    property bool cloudHintDismissed: false
+    readonly property bool cloudHint: provider === "local" && !cloudHintDismissed && configured && aiEnabled && daemonUp
+    property string lastOpenArgs: ""          // arguments of the last `fabos-command-center` launch (the harness reads it)
+
+    // ---- generated images: one card per file, appended once `[ -f ]` confirmed the file (see offerImage); the viewer below
+    property var imageSeen: ({})              // path (as given, and absolute) -> true
+    property var imagePending: ({})           // check id -> {key, prompt, provider, width, height}
+    property int imageSerial: 0
+    property var viewerImage: null            // {path, prompt, provider} while the enlarge viewer is open
 
     // ---- this conversation
     property int rootTaskId: 0                // first task; follow-ups carry parent_id = rootTaskId
@@ -197,6 +210,9 @@ PlasmoidItem {
             break
         }
         case "listen": root.onListened(code, out, err || ""); break
+        case "imgcheck": root.onImageChecked(ref, code, out); break
+        case "bins": if (viewerLoader.item) { viewerLoader.item.viewer.bins = Agent.parseBins(out); viewerLoader.item.viewer.binsKnown = true } break
+        case "vsave": case "vcopy": case "vopen": case "vwall": if (viewerLoader.item) viewerLoader.item.viewer.outcome(kind, code, out); break
         }
     }
 
@@ -213,6 +229,7 @@ PlasmoidItem {
         }
         root.configured = !!j.provider_ready
         root.aiEnabled = j.ai_enabled === undefined ? true : !!j.ai_enabled
+        root.provider = String(j.provider || "")
         if (j.ui_show_raw !== undefined) root.showRaw = j.ui_show_raw === true || String(j.ui_show_raw) === "true"
         var t = j.tasks || {}
         var n = (t.running || 0) + (t.queued || 0) + (t.waiting_approval || 0) + (t.waiting_user || 0)
@@ -237,13 +254,25 @@ PlasmoidItem {
         if (!root.daemonUp) { root.say("The Fab OS agent service is not running — click here to open Fab AI Controls. Your request stays in the bar."); return }
         if (!root.configured) { root.say("No AI provider is configured yet — click here to add one (or a local model) in Fab AI Controls → Settings. Your request stays in the bar."); return }
         if (!root.aiEnabled) { root.say("System-Wide AI is off — click here to turn it on in Fab AI Controls. Your request stays in the bar."); return }
+        root.postRequest(t, root.followUp)
+        field.text = ""
+    }
+    // POST /tasks: a follow-up threads under the root task; onCreated shows the request row (or puts the text back on failure)
+    function postRequest(t, follow) {
         root.sending = true
         root.pendingRequest = t
-        var follow = root.followUp
         var body = { request: t }
         if (follow) body.parent_id = root.rootTaskId
         root.api(follow ? "follow" : "create", 0, "POST", "/tasks", body)
-        field.text = ""
+    }
+    // the viewer's Regenerate: a follow-up in the same conversation (the daemon has the prompt in the task context). Never a
+    // silent no-op: while the previous POST is still in flight the viewer closes and the status line says why
+    function regenerateImage() {
+        root.closeImage()
+        if (root.sending) { root.say("Still sending your last request — try Regenerate again in a moment"); return }
+        root.wake()
+        if (!root.daemonUp || !root.configured || !root.aiEnabled) { root.say("The Fab OS agent cannot take requests right now — click here to open Fab AI Controls"); return }
+        root.postRequest("regenerate the image with the same prompt", root.rootTaskId > 0)
     }
     function onCreated(follow, code, j) {
         root.sending = false
@@ -270,7 +299,7 @@ PlasmoidItem {
         root.pollSoon()
     }
     function resetConversation() {
-        convo.clear(); root.seen = ({})
+        convo.clear(); root.seen = ({}); root.imageSeen = ({}); root.imagePending = ({})
         root.groupSerial = 0; root.currentGroup = -1; root.groupHeaderRow = -1; root.lastStepRow = -1; root.lastAssistantRow = -1
         root.lastApp = ""; root.resultText = ""; root.taskStatus = ""; root.rootTaskId = 0; root.taskId = 0; root.trailing = 0
         list.follow = true
@@ -281,8 +310,9 @@ PlasmoidItem {
     function copyResult() { root.copyText(root.resultText) }
     function copyText(s) { if (!s.length) return; copyHelper.text = s; copyHelper.selectAll(); copyHelper.copy(); copyHelper.text = ""; root.flash("Copied") }
     function flash(s) { root.toast = s; toastTimer.restart() }
-    function openExternal() { root.run("open", 0, "setsid -f fabos-command-center" + (root.taskId > 0 ? " --task " + root.taskId : "") + " >/dev/null 2>&1; echo opened") }
-    function openControls(args) { root.run("open", 0, "setsid -f fabos-command-center " + args + " >/dev/null 2>&1; echo opened") }
+    function openExternal() { root.openControls(root.taskId > 0 ? "--task " + root.taskId : "") }
+    function openControls(args) { root.lastOpenArgs = args; root.run("open", 0, "setsid -f fabos-command-center " + args + " >/dev/null 2>&1; echo opened") }
+    function dismissCloudHint() { root.cloudHintDismissed = true }
     function decide(approvalId, decision) {
         var idx = root.seen["a" + approvalId]
         if (idx !== undefined && idx >= 0) convo.setProperty(idx, "status", decision)
@@ -376,6 +406,37 @@ PlasmoidItem {
         }
         if (!root.taskActive && root.collapsedTask !== root.taskId) { root.collapsedTask = root.taskId; root.collapseGroups() }
     }
+    // ---- generated images. A finished generate_image step (or a ~/Pictures/Fab OS/*.png|jpg path in the final text) offers
+    // an image; the shell confirms the file exists (`[ -f ]`, ~ expanded there) and only then a card row is appended — once
+    // per file, whichever way it was mentioned (the check prints the absolute path, so `~/…` and `/home/…` meet).
+    function offerImage(img, key) {
+        if (!img || !img.path.length || root.imageSeen[img.path]) return
+        root.imageSeen[img.path] = true
+        var id = ++root.imageSerial
+        root.imagePending[id] = { key: key, prompt: img.prompt, provider: img.provider, width: img.width, height: img.height }
+        root.run("imgcheck", id, Agent.imageCheckCommand(img.path))
+    }
+    function onImageChecked(id, code, out) {
+        var p = root.imagePending[id]
+        if (!p) return
+        delete root.imagePending[id]
+        var abs = String(out || "").trim().split("\n")[0]
+        if (code !== 0 || !abs.length) return                      // not there: no card
+        if (root.seenImageRow(abs)) return                          // the same file, mentioned another way: one card
+        root.imageSeen[abs] = true
+        convo.append(root.row({ kind: "image", key: "img" + id, text: abs, subtitle: p.prompt, name: p.provider,
+                                title: p.width > 0 && p.height > 0 ? p.width + " × " + p.height : "", status: "ready" }))
+        root.wake()
+    }
+    function seenImageRow(abs) { for (var i = 0; i < convo.count; i++) { var r = convo.get(i); if (r.kind === "image" && r.text === abs) return true } return false }
+    function openImage(path, prompt, provider) {
+        root.viewerImage = { path: String(path), prompt: String(prompt || ""), provider: String(provider || "") }
+        viewerLoader.active = true
+        root.run("bins", 0, Agent.binsCommand())
+        root.wake()
+    }
+    function closeImage() { viewerLoader.active = false; root.viewerImage = null }
+
     function appendStep(t, s, key) {
         var k = String(s.kind || "")
         if (k === "tool_call") {
@@ -393,6 +454,7 @@ PlasmoidItem {
                                     narration: String(s.narration || ""), icon: d.icon, iconFallback: d.iconFallback, appIcon: d.appIcon, status: st,
                                     typed: d.typed, risk: String(s.risk || ""), group: root.currentGroup, shown: true, current: st === "running" || st === "pending" }))
             convo.setProperty(root.groupHeaderRow, "count", convo.get(root.groupHeaderRow).count + 1)
+            if (st === "done") root.offerImage(Agent.imageFromStep(s), key)
             return
         }
         if (k === "assistant") {
@@ -407,6 +469,8 @@ PlasmoidItem {
             root.closeGroup()
             var f = String(s.output || "").trim()
             if (!f.length) { root.seen[key] = -1; return }
+            var mentioned = Agent.imagePathsInText(f)          // "…saved to ~/Pictures/Fab OS/kite.png" -> a card, if the file is there
+            for (var mi = 0; mi < mentioned.length; mi++) root.offerImage({ path: mentioned[mi], prompt: root.taskRequest, provider: root.provider, width: 0, height: 0 }, key)
             if (root.lastAssistantRow >= 0 && convo.get(root.lastAssistantRow).text.trim() === f) { convo.setProperty(root.lastAssistantRow, "status", "final"); root.seen[key] = root.lastAssistantRow; return }
             root.seen[key] = convo.count; root.lastAssistantRow = convo.count
             convo.append(root.row({ kind: "assistant", key: key, text: f, status: "final" }))
@@ -432,6 +496,7 @@ PlasmoidItem {
         convo.setProperty(idx, "status", st)
         if (st === "error" || st === "denied") convo.setProperty(idx, "subtitle", Agent.stepError(s, root.showRaw))
         convo.setProperty(idx, "current", st === "running" || st === "pending")
+        if (st === "done") root.offerImage(Agent.imageFromStep(s), r.key)
     }
     function closeGroup() {
         if (root.currentGroup < 0) return
@@ -498,7 +563,8 @@ PlasmoidItem {
         // position of this applet inside the desktop view → lets the card centre on the physical screen
         readonly property real appletScreenX: { var p = root.mapToItem(null, 0, 0); return root.width + Screen.width > 0 ? p.x : 0 }
         width: root.onDesktop ? Math.min(760, Math.round(Screen.width * 0.6), Math.max(320, root.width)) : root.width
-        height: root.onDesktop ? Math.round(Math.min(root.height, Kirigami.Units.gridUnit * 6.2)) : root.height   // whole px: the panel's top edge under it stays crisp
+        // 6.2 grid units, or taller when the rows (field · status line · cloud hint chip) need it; whole px: the panel's top edge under it stays crisp
+        height: root.onDesktop ? Math.round(Math.min(root.height, Math.max(Kirigami.Units.gridUnit * 6.2, cardCol.implicitHeight + Kirigami.Units.largeSpacing * 2))) : root.height
         x: root.onDesktop ? Math.max(0, Math.round((Screen.width - width) / 2 - appletScreenX)) : 0
         y: 0
 
@@ -513,6 +579,7 @@ PlasmoidItem {
         HoverHandler { id: cardHover; onHoveredChanged: if (hovered) root.wake() }
 
         ColumnLayout {
+            id: cardCol
             anchors.fill: parent
             anchors.leftMargin: root.onDesktop ? Kirigami.Units.gridUnit : Kirigami.Units.smallSpacing
             anchors.rightMargin: root.onDesktop ? Kirigami.Units.gridUnit : Kirigami.Units.smallSpacing
@@ -570,20 +637,25 @@ PlasmoidItem {
                         Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
                     }
                 }
-                Rectangle {   // Do it — animated pill
-                    id: go
+                Rectangle {   // Do it — animated pill. DISABLED (40 %, no hover, not clickable; Enter in the field is ignored by submit())
+                    id: go    // while the field is empty or whitespace; live as soon as there is text. The mic beside it stays enabled.
+                    readonly property bool canSend: field.text.trim().length > 0 && !root.sending
                     Layout.preferredWidth: root.compact ? Kirigami.Units.gridUnit * 3.6 : Kirigami.Units.gridUnit * 5.6
                     Layout.preferredHeight: field.height
                     radius: height / 2
-                    color: goArea.pressed ? Qt.darker(Kirigami.Theme.highlightColor, 1.2) : (goArea.containsMouse ? Qt.lighter(Kirigami.Theme.highlightColor, 1.15) : Kirigami.Theme.highlightColor)
-                    scale: goArea.pressed ? 0.95 : (goArea.containsMouse ? 1.04 : 1.0)
-                    opacity: field.text.trim().length || root.sending ? 1.0 : 0.7
+                    color: goArea.pressed && canSend ? Qt.darker(Kirigami.Theme.highlightColor, 1.2) : (goArea.containsMouse && canSend ? Qt.lighter(Kirigami.Theme.highlightColor, 1.15) : Kirigami.Theme.highlightColor)
+                    scale: goArea.pressed && canSend ? 0.95 : (goArea.containsMouse && canSend ? 1.04 : 1.0)
+                    opacity: canSend || root.sending ? 1.0 : 0.4
                     Behavior on color { ColorAnimation { duration: 160 } }
                     Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutBack } }
                     Behavior on opacity { NumberAnimation { duration: 160 } }
                     Text { anchors.centerIn: parent; text: root.sending ? "" : (root.followUp ? "Send" : "Do it"); color: Kirigami.Theme.highlightedTextColor; font.family: "Inter"; font.pixelSize: 15; font.weight: Font.DemiBold }
                     Spinner { anchors.centerIn: parent; width: 18; height: 18; color: Kirigami.Theme.highlightedTextColor; visible: root.sending }
-                    MouseArea { id: goArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.submit() }
+                    MouseArea { id: goArea; anchors.fill: parent; hoverEnabled: go.canSend; cursorShape: go.canSend ? Qt.PointingHandCursor : Qt.ArrowCursor; onClicked: if (go.canSend) root.submit() }
+                    HoverHandler { id: goHover }
+                    QQC2.ToolTip.visible: goHover.hovered && !go.canSend && !root.sending
+                    QQC2.ToolTip.text: "Type or speak a request first"
+                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
                 }
             }
             RowLayout {   // status line: red dot + "Listening…" while the mic is open, a voice failure for 6 s, else the daemon status
@@ -617,6 +689,15 @@ PlasmoidItem {
                                 onClicked: root.openControls(root.configured && root.aiEnabled ? "" : "--settings" + (field.text.trim().length ? " --prefill " + root.shellQuote(field.text.trim()) : "")) }
                 }
             }
+            CloudHintChip {   // cloud hint chip (built-in model only): "Using the built-in model…" · Choose (Fab AI Controls › Settings › AI provider) · dismiss
+                id: cloudHint
+                Layout.fillWidth: true
+                Layout.leftMargin: (root.compact ? 22 : 32) + Kirigami.Units.smallSpacing * 2
+                hairline: root.hairline
+                visible: root.cloudHint && root.onDesktop      // the 36 px compact card has no room: there the chip is compactHint in the popup
+                onChoose: root.openControls("--settings provider")
+                onDismiss: root.dismissCloudHint()
+            }
         }
         QQC2.ToolTip.visible: root.compact && root.hoverTip.length > 0 && hoverHandler.hovered
         QQC2.ToolTip.text: root.hoverTip
@@ -639,7 +720,7 @@ PlasmoidItem {
         // content height: fixed header + list + fixed foot (typing dots while working) capped by the strip; the one-line
         // pill when minimised. Below the cap the panel grows with its rows (200 ms, no scrollbar); at the cap the list
         // scrolls and the 6 px overlay bar appears (`overflowing`).
-        readonly property real wanted: panelHeader.implicitHeight + 6 + list.contentHeight + panelFoot.height + 16
+        readonly property real wanted: (compactHint.visible ? compactHint.height + 6 : 0) + panelHeader.implicitHeight + 6 + list.contentHeight + panelFoot.height + 16
         readonly property real contentTarget: root.panelMode === "min" ? minPill.implicitHeight : Math.min(root.maxPanelHeight, wanted)
         readonly property bool overflowing: root.panelMode === "open" && wanted > root.maxPanelHeight + 0.5
         property real panelHeight: contentTarget
@@ -670,9 +751,20 @@ PlasmoidItem {
                 opacity: root.panelMode === "open" ? root.openProgress : 0
                 Behavior on opacity { NumberAnimation { duration: 200 } }
 
+                CloudHintChip {   // compact (panel) form only: the card is 36 px tall, so the cloud hint is the popup's first header row
+                    id: compactHint
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.leftMargin: 6; anchors.rightMargin: root.listGutter
+                    hairline: root.hairline
+                    visible: root.compact && root.cloudHint
+                    height: visible ? implicitHeight : 0
+                    onChoose: root.openControls("--settings provider")
+                    onDismiss: root.dismissCloudHint()
+                }
                 RowLayout {   // status line left, icon controls right
                     id: panelHeader
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: compactHint.bottom
+                    anchors.topMargin: compactHint.visible ? 6 : 0
                     spacing: 2
                     Spinner { visible: root.taskActive; running: root.panelMode === "open"; Layout.preferredWidth: 14; Layout.preferredHeight: 14; Layout.leftMargin: 6 }
                     Kirigami.Icon { visible: !root.taskActive && root.taskStatus === "done"; source: "checkmark"; isMask: true; color: Kirigami.Theme.positiveTextColor; Layout.preferredWidth: 16; Layout.preferredHeight: 16; Layout.leftMargin: 6 }
@@ -746,6 +838,7 @@ PlasmoidItem {
                         onCopyText: (copied) => root.copyText(copied)
                         onRetry: root.retryTask()
                         onOpenExternal: root.openExternal()
+                        onOpenImage: (path, prompt, provider) => root.openImage(path, prompt, provider)
                     }
                 }
 
@@ -784,6 +877,39 @@ PlasmoidItem {
                     IconButton { icon: "window-close"; tip: "Dismiss"; size: 28; iconSize: 16; onClicked: root.closePanel() }
                 }
                 MouseArea { anchors.fill: parent; z: -1; cursorShape: Qt.PointingHandCursor; onClicked: root.panelMode = "open" }
+            }
+        }
+    }
+
+    // ================================================================ enlarge viewer for a generated image: a PlasmaCore.Dialog
+    // sized 80 % of the screen, created ONLY when the user taps an image card (a user-invoked viewer; the desktop form
+    // otherwise opens no window). Shell actions of its controls run through the applet's executable DataSource above.
+    Loader {
+        id: viewerLoader
+        active: false
+        sourceComponent: PlasmaCore.Dialog {
+            id: viewerDialog
+            readonly property alias viewer: viewerItem
+            location: PlasmaCore.Types.Floating
+            type: PlasmaCore.Dialog.Normal
+            flags: Qt.Dialog | Qt.FramelessWindowHint
+            hideOnWindowDeactivate: false
+            backgroundHints: PlasmaCore.Dialog.NoBackground
+            x: Screen.virtualX + Math.round((Screen.width - width) / 2)
+            y: Screen.virtualY + Math.round((Screen.height - height) / 2)
+            visible: true
+            onVisibleChanged: if (!visible) root.closeImage()
+            mainItem: ImageViewer {
+                id: viewerItem
+                width: Math.round(Screen.width * 0.8)
+                height: Math.round(Screen.height * 0.8)
+                path: root.viewerImage ? root.viewerImage.path : ""
+                prompt: root.viewerImage ? root.viewerImage.prompt : ""
+                provider: root.viewerImage ? root.viewerImage.provider : ""
+                onCloseRequested: root.closeImage()
+                onAction: (kind, command) => root.run(kind, 0, command)
+                onRegenerate: root.regenerateImage()
+                Component.onCompleted: forceActiveFocus()
             }
         }
     }
