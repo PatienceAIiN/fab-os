@@ -57,7 +57,7 @@ exist as UTF-16 literals in the shipped libraries; `polkit-kde-authentication-ag
    `systemd-creds` secret (`audit_key`) generated at first start, not settable through `/secrets`. `fabos audit verify`
    walks the chain (legacy unsigned rows before the chain are tolerated; a hole or an altered row fails); `fabos audit export
    --since` writes JSON Lines with the chain head in a header line to the policy's directory. Details stay capped as before.
-5. **OS hardening files.** `/etc/sysctl.d/70-fabos-hardening.conf` (eleven keys, each verified against the image kernel's
+5. **OS hardening files.** `/etc/sysctl.d/70-fabos-hardening.conf` (twelve keys, each verified against the image kernel's
    `/proc/sys` or config); AppArmor profiles attached to the executed script paths — **enforce** for `fabos-llama`,
    **complain** for `fabos-agentd` and (since amendment 9 below; the first cut shipped it enforced) `fabos-voiced`, each with
    the enforce path written in the profile (every path read from the programs' code and the binaries' data directories;

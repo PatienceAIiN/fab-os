@@ -161,11 +161,11 @@ text with an action row) with Fab OS tokens.
   (`POST /approvals/{id}`); questions render an inline answer field (`POST /tasks/{id}/answer`; the answer is shown at
   once as a user pill and bound to the daemon's `answer` step — whose text is in `input` — when the next poll returns it,
   so it is never duplicated; answers given elsewhere appear from that step).
-- **Polling**: `GET /tasks/{id}` every 1.5 s through the executable DataSource (curl; port from
+- **Polling**: one curl snapshot (`/status` + `/tasks/{id}`) every 2 s while a task is followed, 8 s while awake and idle, a 60 s heartbeat while asleep, nothing while closed — through the executable DataSource (curl; port from
   `$XDG_RUNTIME_DIR/fabos-agent/port`; the bearer token is handed to curl as one config line on stdin — `printf … | curl
   -K -`, the shell's builtin printf — so it is never on a command line / in `/proc/*/cmdline`), only while the panel is
   open and the task is active, plus two trailing polls after it stops; rows are appended and updated in place, never
-  rebuilt. `curl` is a declared dependency of `fabos-agent`. `GET /status` every 4 s drives the mark and the
+  rebuilt. `curl` is a declared dependency of `fabos-agent`. the same snapshot drives the mark and the
   status line; `GET /settings` is read when the panel opens (`ui.show_raw`).
 - **Follow-ups**: with the panel open, typing and pressing Send posts a new task with `parent_id` = the root task and
   appends it to the same conversation. Retry of a follow-up keeps the root; retry of the root re-roots the chat (the

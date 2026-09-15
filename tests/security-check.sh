@@ -23,7 +23,7 @@ AGENTD=/usr/lib/fabos/agent/fabos_agentd.py
 # ---- kernel hardening (sysctl)
 SYSCTL=/etc/sysctl.d/70-fabos-hardening.conf
 chk "sysctl: 70-fabos-hardening.conf shipped"            "R 'test -f $SYSCTL'"
-for kv in kernel.yama.ptrace_scope=1 kernel.kptr_restrict=2 kernel.dmesg_restrict=1 fs.protected_symlinks=1 fs.protected_hardlinks=1 fs.protected_fifos=2 fs.protected_regular=2 fs.suid_dumpable=0 net.ipv4.conf.all.rp_filter=1 net.ipv4.tcp_syncookies=1 net.core.bpf_jit_harden=2; do
+for kv in kernel.yama.ptrace_scope=1 kernel.kptr_restrict=2 kernel.dmesg_restrict=1 fs.protected_symlinks=1 fs.protected_hardlinks=1 fs.protected_fifos=2 fs.protected_regular=2 fs.suid_dumpable=0 net.ipv4.conf.all.rp_filter=1 net.ipv4.conf.default.rp_filter=1 net.ipv4.tcp_syncookies=1 net.core.bpf_jit_harden=2; do
   k=${kv%%=*}; v=${kv##*=}
   chk "sysctl: $k = $v"                                     "R 'grep -Eq \"^$k *= *$v\$\" $SYSCTL 2>/dev/null'"
 done

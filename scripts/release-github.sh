@@ -22,7 +22,7 @@ Ubuntu 26.04 LTS based desktop by Patience AI with KDE Plasma 6, the Fab OS look
 (Anthropic Claude / Google Gemini / OpenAI / DeepSeek / local models with a real connection check; ask / auto / bypass permission modes; System-Wide AI switch).
 
 ## Download
-One file, one click: **https://fabos.patienceai.in/download/$base**  (about 2.3 GB).
+One file, one click: **https://fabos.patienceai.in/download/$base**  (about $(awk -v s="$(stat -c %s "$ISO")" 'BEGIN{printf "%.1f GB", s/1e9}')).
 Write it to an 8 GB+ USB stick with [Balena Etcher](https://etcher.balena.io/), restart, pick the USB stick.
 Try it live, then double-click **Install Fab OS** on the desktop. Verify with \`sha256sum -c SHA256SUMS\` and
 \`gpg --verify SHA256SUMS.gpg SHA256SUMS\` (Fab OS Archive key: fabos-archive-key.asc, also at https://fabos.patienceai.in/apt/fabos-archive-key.asc).
