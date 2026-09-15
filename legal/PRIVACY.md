@@ -17,6 +17,20 @@
   one provider the user selected. The System-Wide AI switch turns the agent
   off entirely; the permission mode (Ask / Auto / Bypass) governs which actions
   need the user's approval before they run.
+- One connectivity probe, only when a task needs the web (ADR-0020). When the
+  built-in model runs a task whose request names a web page or URL, the agent
+  first checks whether the internet is reachable so the model is told
+  "online" or "offline" instead of guessing: a single HTTPS `HEAD /` to the
+  configured cloud provider's API host, or — with the local model, whose
+  endpoint is the loopback — to `1.1.1.1:443` (Cloudflare's public resolver),
+  2-second timeout, no payload, no cookies, no identifier beyond the plain
+  `FabOS-agent/1.0` user agent; the answer is cached for 60 seconds. Tasks that
+  name no web page or URL (a copy, a count, a note) make no probe at all, and
+  the status the desktop widgets poll only reports the last result, never
+  triggering a new one. On a managed computer the administrator's
+  `hosts_allowed` list binds the probe exactly as it binds `web_fetch`: a target
+  not on the list is not probed. The System-Wide AI switch turns it off with
+  the rest of the agent.
 - Voice ("Hey Fab"): wake-word detection is fully offline — PocketSphinx
   listens on this computer only, and the microphone stream is never stored
   or sent anywhere while it waits for the phrase (only the last 6 s are held

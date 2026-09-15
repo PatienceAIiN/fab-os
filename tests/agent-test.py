@@ -107,8 +107,8 @@ class Narration(unittest.TestCase):
         n = fa.narration_for
         self.assertEqual(n("open_app", {"app": "dolphin"}), "Opening Fab Files for you now.")
         self.assertEqual(n("open_app", {"app": "/usr/bin/kate", "args": ["x"]}), "Opening Fab Editor for you now.")
-        self.assertEqual(n("open_app", {"app": "brave-browser", "args": ["https://fabos.patienceai.in"]}), "Opening Brave for you now.")   # Brave replaced Firefox
-        self.assertEqual(fa.narration_done_for("open_app", {"app": "brave"}, {}), "Done, Brave is open.")
+        self.assertEqual(n("open_app", {"app": "firefox", "args": ["https://fabos.patienceai.in"]}), "Opening Firefox for you now.")   # Firefox is back (ADR-0018)
+        self.assertEqual(fa.narration_done_for("open_app", {"app": "firefox"}, {}), "Done, Firefox is open.")
         self.assertEqual(n("type_text", {"text": "hi"}), "Typing that in now.")
         self.assertEqual(n("run_shell", {"command": "ls -la"}), "Running a command for you.")
         self.assertEqual(n("run_shell", {"command": "ls -la"}, show_raw=True), "Running: ls -la")
@@ -151,9 +151,9 @@ class Narration(unittest.TestCase):
             # persona: on by default (indian-english), appended to the system prompt; "off" removes it
             sp = fa.build_system_prompt(st, "auto", [{"name": "Fab Files"}])
             self.assertIn("warm, helpful colleague from India", sp); self.assertIn("Shall I go ahead?", sp); self.assertTrue(sp.startswith("You are the Fab OS agent"))
-            # "Show your work": open the app first, type, save with write_file, then the follow-up (send_email) — and Brave, not Firefox
+            # "Show your work": open the app first, type, save with write_file, then the follow-up (send_email) — and Firefox, not Brave (ADR-0018)
             i_open, i_type, i_save, i_send = (sp.index(k) for k in ("(1) open_app", "(2) type_text", "(3) save with write_file", "(4) then do the follow-up"))
-            self.assertTrue(i_open < i_type < i_save < i_send); self.assertIn("Show your work.", sp); self.assertIn("brave-browser = Brave", sp); self.assertNotIn("Firefox", sp)
+            self.assertTrue(i_open < i_type < i_save < i_send); self.assertIn("Show your work.", sp); self.assertIn("firefox = Firefox", sp); self.assertNotIn("Brave", sp)
             self.assertIn("never ask for a password", sp)
             self.assertIn("Show your work", [t for t in fa.TOOLS if t["name"] == "type_text"][0]["description"]); self.assertNotIn("Brevo", json.dumps(fa.TOOLS))
             st.set_setting("ui.persona", "off")
@@ -850,9 +850,14 @@ class Daemon(unittest.TestCase):
         # test_25 proves none of it reaches a shell step.
         cls.agent_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); cls.agent_sock.bind(os.path.join(cls.tmp, "openssh_agent")); cls.agent_sock.listen(1)
         env = dict(os.environ, XDG_RUNTIME_DIR=cls.tmp, FABOS_AGENT_DATA=os.path.join(cls.tmp, "data"), XDG_CONFIG_HOME=os.path.join(cls.tmp, "cfg"),
-                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT="18790", HOME=os.path.join(cls.tmp, "home"), PATH="/usr/bin:/bin",
+                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT="18790", HOME=os.path.join(cls.tmp, "home"), PATH=os.path.join(cls.tmp, "bin") + ":/usr/bin:/bin",
                    ANTHROPIC_API_KEY="sk-ant-LEAKTEST-0000", MY_SERVICE_TOKEN="LEAKTEST-token", SSH_AUTH_SOCK=os.path.join(cls.tmp, "openssh_agent"))
         os.makedirs(env["HOME"]); cls.env = env
+        # wtype shim: there is no Wayland seat in a unit test; the text type_text would have typed is appended to typed.log (as tests/local-driver-image.sh does)
+        os.makedirs(os.path.join(cls.tmp, "bin")); cls.typed_log = os.path.join(cls.tmp, "typed.log")
+        with open(os.path.join(cls.tmp, "bin", "wtype"), "w") as f:
+            f.write('#!/bin/sh\n[ "$1" = "-k" ] && { printf "\\n" >> %s; exit 0; }\nprintf "%%s" "$*" >> %s\n' % (cls.typed_log, cls.typed_log))
+        os.chmod(os.path.join(cls.tmp, "bin", "wtype"), 0o755)
         cls.proc = subprocess.Popen([sys.executable, DAEMON], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for _ in range(50):
             try:
@@ -1180,6 +1185,624 @@ class Daemon(unittest.TestCase):
             self.assertIn("agent-socket-masked", env_text)                                     # /dev/null sits over the socket file
         else:
             self.assertIn("AGENT-SOCKET-VISIBLE", env_text)                                    # fallback: only the variable is gone (documented)
+
+    # ---- the small-model driver (ADR-0020), scripted by FakeProvider: agent.driver=stepwise makes any provider run it
+    def stepwise(self, text, mode="bypass", timeout=60):
+        self.cli("settings", "agent.driver", "stepwise")
+        try:
+            r = self.cli("do", "--mode", mode, text); return self.wait(r["id"], timeout=timeout)
+        finally:
+            self.cli("settings", "agent.driver", "")
+
+    @staticmethod
+    def kinds(t, kind, name=None):
+        return [s for s in t["steps"] if s["kind"] == kind and (name is None or s["name"] == name)]
+
+    def test_26_stepwise_plan_execute_verify_finish(self):
+        """PLAN (one JSON plan recorded), EXECUTE (one tool per turn in plan order), VERIFY (a verify row per step), FINISH (the
+        reply step's text IS the result): the file exists with the exact content and the count came from the shell, not the model."""
+        path = os.path.join(self.env["HOME"], "sw", "a.txt")
+        t = self.stepwise("stepwise: create %s with hello and count it" % path)
+        self.assertEqual(t["status"], "done", t)
+        plan = [s for s in self.kinds(t, "assistant") if s["output"].startswith("Plan:")]
+        self.assertEqual(len(plan), 1, t["steps"]); self.assertIn("1. [write_file]", plan[0]["output"]); self.assertIn("3. [reply]", plan[0]["output"])
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["write_file", "run_shell"])
+        self.assertEqual(open(path).read(), "hello\n")
+        ver = self.kinds(t, "verify")
+        self.assertEqual([v["name"] for v in ver], ["write_file", "run_shell"]); self.assertTrue(all(v["output"].startswith("ok: ") for v in ver), ver)
+        self.assertIn("exists, 6 bytes", ver[0]["output"]); self.assertIn("output: 1", ver[1]["output"])
+        self.assertEqual(t["result"], "WORDS: 1")                                                  # the reply step used the shell's output
+
+    def test_27_stepwise_runs_one_tool_per_turn(self):
+        t = self.stepwise("stepwise: two calls at once")
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual(len(self.kinds(t, "tool_call")), 1)                                        # the second call of the turn never ran
+        self.assertEqual(json.loads(self.kinds(t, "tool_call")[0]["input"])["command"], "echo first")
+        self.assertTrue(any(v["name"] == "one-tool-per-turn" and "ignored 1 extra" in v["output"] for v in self.kinds(t, "verify")), t["steps"])
+        self.assertTrue(t["result"].startswith("Done, stepwise finished"), t["result"])           # FINISH: the closing summary call
+
+    def test_28_stepwise_verification_retries_with_the_error_shown(self):
+        t = self.stepwise("stepwise: flaky command")
+        self.assertEqual(t["status"], "done", t)
+        calls = self.kinds(t, "tool_call"); self.assertEqual([json.loads(c["input"])["command"] for c in calls], ["exit 3", "echo recovered"])
+        ver = self.kinds(t, "verify", "run_shell")
+        self.assertTrue(ver[0]["output"].startswith("failed: exit code 3"), ver[0]); self.assertIn("retrying with the error shown", ver[0]["output"])
+        self.assertTrue(ver[1]["output"].startswith("ok: exit 0, output: recovered"), ver[1])
+
+    def test_29_stepwise_self_check_no_triggers_a_retry(self):
+        t = self.stepwise("stepwise: selfcheck no")
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual(len(self.kinds(t, "tool_call")), 2)
+        ver = self.kinds(t, "verify", "run_shell")
+        self.assertIn("the model's own check says no", ver[0]["output"]); self.assertTrue(ver[1]["output"].startswith("ok: "), ver[1])
+        self.cli("settings", "agent.stepwise_selfcheck", "false")                                  # the self-check can be switched off
+        try:
+            t = self.stepwise("stepwise: selfcheck no"); self.assertEqual(len(self.kinds(t, "tool_call")), 1, t["steps"])
+        finally:
+            self.cli("settings", "agent.stepwise_selfcheck", "")
+
+    def test_30_stepwise_gives_up_honestly_after_the_retries(self):
+        t = self.stepwise("stepwise: hopeless")
+        self.assertEqual(t["status"], "failed", t)
+        self.assertEqual(len(self.kinds(t, "tool_call")), 1 + fa.STEP_RETRIES)                      # first attempt + STEP_RETRIES retries, then stop
+        self.assertIn("Step 1 of 1 could not be completed after 3 attempts", t["error"]); self.assertIn("exit code 7", t["error"])
+        self.assertIn("you sent exactly the same call again and it failed the same way", t["error"])            # the identical repeat is named
+
+    def test_31_stepwise_plan_is_repaired_when_the_first_answer_is_not_a_plan(self):
+        d = os.path.join(self.env["HOME"], "sw"); os.makedirs(d, exist_ok=True); open(os.path.join(d, "b.txt"), "w").write("x")
+        t = self.stepwise("stepwise: count files in %s (bad plan first)" % d)
+        self.assertEqual(t["status"], "done", t)
+        bad = self.kinds(t, "verify", "plan"); self.assertEqual(len(bad), 1); self.assertIn("invalid plan", bad[0]["output"]); self.assertIn("asking again", bad[0]["output"])
+        self.assertTrue(any(s["output"].startswith("Plan:") for s in self.kinds(t, "assistant")))
+        self.assertRegex(t["result"], r"^FILE COUNT: \d+$")
+
+    def test_31b_stepwise_all_web_plan_for_a_local_task_is_planned_again(self):
+        d = os.path.join(self.env["HOME"], "sw-local"); os.makedirs(d, exist_ok=True); open(os.path.join(d, "c.txt"), "w").write("x")
+        t = self.stepwise("stepwise: count files in %s (invented api plan first)" % d)
+        self.assertEqual(t["status"], "done", t)
+        bad = self.kinds(t, "verify", "plan"); self.assertEqual(len(bad), 1)
+        self.assertIn("every step uses the web, but the task names no web page or URL", bad[0]["output"]); self.assertIn("asking again", bad[0]["output"])
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell"]); self.assertRegex(t["result"], r"^FILE COUNT: \d+$")
+
+    def test_32_stepwise_missing_tool_call_is_retried(self):
+        t = self.stepwise("stepwise: no tool")
+        self.assertEqual(t["status"], "done", t)
+        ver = self.kinds(t, "verify")
+        self.assertTrue(ver[0]["output"].startswith("failed: no tool call was made"), ver[0])
+        self.assertEqual([json.loads(c["input"])["command"] for c in self.kinds(t, "tool_call")], ["echo pong"])
+
+    def test_33b_stepwise_outcome_check_adds_a_repair_step(self):
+        """The request names an output file the plan never wrote: before finishing, the driver notices (deterministically) and adds
+        one write_file step; the file then exists with the value from the earlier result."""
+        path = os.path.join(self.env["HOME"], "sw", "out.txt")
+        t = self.stepwise("stepwise: forget the file %s" % path)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell", "write_file"])
+        outcome = self.kinds(t, "verify", "outcome"); self.assertEqual(len(outcome), 1); self.assertIn("does not exist after the plan; adding a save_result step", outcome[0]["output"])
+        self.assertEqual(open(path).read(), "42\n")                                                       # the shell's output, byte for byte
+        self.assertTrue(any(v["name"] == "save_result" and "writing the output of step 1 (run_shell)" in v["output"] for v in self.kinds(t, "verify")), t["steps"])
+
+    def test_32b_stepwise_unparseable_arguments_never_reach_the_tool(self):
+        t = self.stepwise("stepwise: broken json")
+        self.assertEqual(t["status"], "done", t)
+        calls = self.kinds(t, "tool_call"); self.assertEqual(len(calls), 1); self.assertEqual(json.loads(calls[0]["input"])["command"], "echo pong")   # the broken call never ran
+        ver = self.kinds(t, "verify", "run_shell"); self.assertIn("were not valid JSON", ver[0]["output"]); self.assertTrue(ver[1]["output"].startswith("ok: "), ver)
+
+    def test_32c_stepwise_missing_folder_is_named_in_the_retry(self):
+        path = os.path.join(self.env["HOME"], "sw-deep", "a", "x.txt")
+        t = self.stepwise("stepwise: missing parent %s" % path)
+        self.assertEqual(t["status"], "done", t)
+        ver = self.kinds(t, "verify", "run_shell")
+        self.assertIn("No such file or directory", ver[0]["output"]); self.assertIn("the folder %s does not exist yet: create it first, e.g. mkdir -p" % os.path.dirname(path), ver[0]["output"])
+        self.assertTrue(ver[1]["output"].startswith("ok: "), ver[1]); self.assertEqual(open(path).read(), "hi\n")
+
+    def test_33c_stepwise_save_result_writes_the_previous_output_verbatim(self):
+        """save_result (driver-only): the model names a path, the driver writes the previous tool call's output there byte for byte
+        through the real write_file tool (same gate, recorded as write_file) — the model never retypes the data."""
+        path = os.path.join(self.env["HOME"], "sw", "health.json")
+        t = self.stepwise("stepwise: fetch and save %s" % path)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell", "write_file"])
+        self.assertEqual(open(path).read(), '{"ok": true, "app": "Fab OS"}\n')
+        sv = self.kinds(t, "verify", "save_result"); self.assertEqual(len(sv), 1); self.assertIn("writing the output of step 1 (run_shell) (30 chars) to %s, unchanged" % path, sv[0]["output"])
+        self.assertTrue(self.kinds(t, "verify", "write_file")[0]["output"].startswith("ok: "), t["steps"])
+        self.assertNotIn("save_result", [x["name"] for x in fa.TOOLS])                                # never offered to the free-form (cloud) loop
+
+    def test_33d_stepwise_save_result_with_nothing_to_save_fails_honestly(self):
+        t = self.stepwise("stepwise: save nothing")
+        self.assertEqual(t["status"], "failed", t)
+        self.assertEqual(self.kinds(t, "tool_call"), [])                                                    # no write ever happened
+        self.assertIn("nothing to save yet", t["error"]); self.assertIn("after 3 attempts", t["error"])
+
+    def test_33e_stepwise_plan_sanity_drops_forbidden_files_and_adds_the_reply(self):
+        """The fake planner answers an answer-only task with run_shell + save_result and no reply (the model's measured habit); the
+        task says 'Do not create or change any file' and asks for FILE COUNT — the driver drops the write and adds the reply."""
+        d = os.path.join(self.env["HOME"], "sw-count"); os.makedirs(d, exist_ok=True); open(os.path.join(d, "one.txt"), "w").close()
+        t = self.stepwise("stepwise: count files in %s (regular files only) — do not create or change any file; end your reply with FILE COUNT: <number>" % d)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell"])                     # the save_result step is gone
+        notes = [v["output"] for v in self.kinds(t, "verify", "plan")]
+        self.assertTrue(any("dropped 1 file-writing step" in n for n in notes), notes); self.assertTrue(any("added a reply step" in n for n in notes), notes)
+        self.assertEqual(t["result"], "FILE COUNT: 1"); self.assertFalse(os.path.exists("/tmp/count.txt"))
+
+    def test_33f_stepwise_open_app_must_match_the_app_the_task_names(self):
+        t = self.stepwise("stepwise: wrong app — Open the Fab Terminal application and leave it open.")
+        self.assertEqual(t["status"], "failed", t)
+        ver = self.kinds(t, "verify", "open_app"); self.assertEqual(len(ver), 3)
+        self.assertIn("the task asks for Fab Terminal, which is konsole — you opened sleep", ver[0]["output"]); self.assertIn("after 3 attempts", t["error"])
+        subprocess.run(["pkill", "-x", "-f", "sleep 8"], capture_output=True)
+
+    def test_33g_stepwise_short_value_without_the_file_forces_save_result(self):
+        """The step's command printed one short value (42) but the file its goal names does not exist: the retry offers save_result
+        only, the (fake) model names the path from the hint, and the file gets the value verbatim through write_file."""
+        path = os.path.join(self.env["HOME"], "sw", "answer.txt")
+        t = self.stepwise("stepwise: forget the redirect %s" % path)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell", "write_file"])
+        self.assertEqual(open(path).read(), "42\n")
+        ver = self.kinds(t, "verify")
+        self.assertIn("named in this step does not exist afterwards", ver[0]["output"]); self.assertIn("call save_result", ver[0]["output"])
+        self.assertTrue(any(v["name"] == "save_result" and "writing the output of step 1 (run_shell) (3 chars)" in v["output"] for v in ver), ver)
+
+    def test_33h_stepwise_save_result_of_an_empty_output_never_writes(self):
+        """The previous command printed nothing (a cp): save_result has nothing to copy, so no file is written and the step fails
+        with the reason — instead of 0 bytes landing at the path (measured on the copy-a-folder task)."""
+        path = os.path.join(self.env["HOME"], "sw", "empty-save.txt")
+        t = self.stepwise("stepwise: save empty %s" % path)
+        self.assertEqual(t["status"], "failed", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell"])                     # no write_file ever ran
+        self.assertFalse(os.path.exists(path))
+        sv = self.kinds(t, "verify", "save_result"); self.assertEqual(len(sv), 1 + fa.STEP_RETRIES)
+        self.assertIn("step 1 (run_shell) printed nothing, so there is nothing to save yet", sv[0]["output"]); self.assertIn("printed nothing", t["error"])
+
+    def test_33i_stepwise_save_result_into_a_folder_is_refused(self):
+        d = os.path.join(self.env["HOME"], "sw-folder"); os.makedirs(d, exist_ok=True)
+        t = self.stepwise("stepwise: save into folder %s" % d)
+        self.assertEqual(t["status"], "failed", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell"])
+        self.assertIn("%s is a folder, not a file" % d, self.kinds(t, "verify", "save_result")[0]["output"]); self.assertTrue(os.path.isdir(d))
+
+    def test_33j_stepwise_duplicate_plan_step_is_dropped(self):
+        """The planner repeats a goal (measured: 'copy the folder' as run_shell, then again as save_result): the repeat is dropped
+        before execution, recorded as a plan note, and the task finishes after the one real step."""
+        t = self.stepwise("stepwise: duplicate step")
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["run_shell"])
+        notes = [v["output"] for v in self.kinds(t, "verify", "plan")]
+        self.assertTrue(any(n.startswith("dropped step 2 [save_result]: it repeats an earlier step's goal") for n in notes), notes)
+        plan = [s for s in self.kinds(t, "assistant") if s["output"].startswith("Plan:")]
+        self.assertEqual(len(plan), 1); self.assertNotIn("2. [", plan[0]["output"])
+
+    def test_33k_stepwise_copy_task_never_runs_mv_on_the_source(self):
+        """A copy request: the planner's extra "rename the copied folder" step is dropped, and the executor's first attempt — `mv` of the
+        source (measured on the ladder's l1-e, which lost the user's folder) — is refused before it runs; the retry copies. The
+        source is still there, the copy exists, exactly one shell command ran."""
+        src = os.path.join(self.env["HOME"], "sw-src"); dst = os.path.join(self.env["HOME"], "sw-dst")
+        shutil.rmtree(src, ignore_errors=True); shutil.rmtree(dst, ignore_errors=True); os.makedirs(src)
+        with open(os.path.join(src, "a.txt"), "w") as f:
+            f.write("a\n")
+        t = self.stepwise("stepwise: copy folder %s to %s" % (src, dst))
+        self.assertEqual(t["status"], "done", t)
+        self.assertTrue(os.path.isfile(os.path.join(src, "a.txt")), "the source must survive a copy"); self.assertTrue(os.path.isfile(os.path.join(dst, "a.txt")))
+        calls = self.kinds(t, "tool_call"); self.assertEqual([c["name"] for c in calls], ["run_shell"]); self.assertIn("cp -r", str(calls[0]["input"]))
+        refused = [v for v in self.kinds(t, "verify", "run_shell") if "may not run here" in v["output"]]
+        self.assertEqual(len(refused), 1, self.kinds(t, "verify")); self.assertIn("`mv`", refused[0]["output"]); self.assertIn("never asks to move, rename or delete", refused[0]["output"])
+        notes = [v["output"] for v in self.kinds(t, "verify", "plan")]
+        self.assertTrue(any(n.startswith("dropped step 2 [run_shell]: it would rename, move or delete") for n in notes), notes)
+
+    def test_33l_stepwise_rename_by_extension_is_checked_on_disk(self):
+        """"Rename every .txt to .md inside DIR": a command that exits 0 but renames nothing (measured: sed -i on the contents) fails the
+        step deterministically — the leftovers are named and the mv idiom shown — and the retry renames them."""
+        d = os.path.join(self.env["HOME"], "sw-ren"); shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
+        for n in ("a.txt", "b.txt"):
+            with open(os.path.join(d, n), "w") as f:
+                f.write(n + "\n")
+        t = self.stepwise("stepwise: rename ext in %s so every file that ends in .txt ends in .md instead" % d)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual(sorted(os.listdir(d)), ["a.md", "b.md"])
+        ver = self.kinds(t, "verify", "run_shell"); self.assertEqual(len(ver), 2, ver)
+        self.assertIn("2 files in %s still end in .txt (a.txt, b.txt): nothing was renamed" % d, ver[0]["output"]); self.assertIn("${f%.txt}.md", ver[0]["output"])
+        self.assertTrue(ver[1]["output"].startswith("ok:"), ver[1])
+        self.assertEqual([c["name"] for c in self.kinds(t, "tool_call")], ["run_shell", "run_shell"])
+
+    def test_33m_stepwise_missing_folder_fails_honestly_instead_of_writing_a_file(self):
+        """The request names a folder no step created: the outcome check must not "repair" it with write_file (measured: three attempts
+        to write a file onto a folder path) — the task fails and says which path is missing."""
+        d = os.path.join(self.env["HOME"], "sw-never", "made")
+        shutil.rmtree(os.path.dirname(d), ignore_errors=True)
+        t = self.stepwise("stepwise: folder missing %s" % d)
+        self.assertEqual(t["status"], "failed", t)
+        self.assertEqual([c["name"] for c in self.kinds(t, "tool_call")], ["run_shell"])
+        self.assertFalse(os.path.exists(d)); self.assertIn("%s but it does not exist after the plan" % d, t["error"]); self.assertIn("looks like a folder", t["error"])
+        self.assertTrue(any("nothing can be written there" in v["output"] for v in self.kinds(t, "verify", "outcome")), self.kinds(t, "verify"))
+
+    def test_33n_stepwise_write_a_note_shows_the_work(self):
+        """Owner's rule (6), show your work: a request to WRITE text the user will read is typed where they can watch, then saved — even
+        when the planner (the small model's habit) returns the bare write_file: plan_sanity puts open_app and type_text in front of it."""
+        path = os.path.join(self.env["HOME"], "Documents", "note.txt")
+        t = self.stepwise("stepwise: write a short note saying hi to Priya and save it as %s" % path)
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in self.kinds(t, "tool_call")], ["open_app", "type_text", "write_file"])
+        self.assertEqual(open(path).read(), "hi to Priya\n")
+        self.assertIn("hi to Priya", open(self.typed_log).read())                                              # the text really went through the keyboard path
+        notes = [v["output"] for v in self.kinds(t, "verify", "plan")]
+        self.assertTrue(any("added open_app and type_text before write_file" in n and "show your work" in n for n in notes), notes)
+        plan = [s for s in self.kinds(t, "assistant") if s["output"].startswith("Plan:")][0]["output"]
+        self.assertIn("1. [open_app] open Fab Editor (kate) with the file path %s" % path, plan); self.assertIn("2. [type_text]", plan); self.assertIn("3. [write_file]", plan)
+
+    def test_33_status_reports_driver_and_network(self):
+        st = self.cli("status"); self.assertEqual(st["driver"], "freeform")                        # the fake provider defaults to the cloud loop
+        self.assertEqual(set(st["network"]), {"online", "target", "checked", "age_s"})
+        # every stepwise task so far (tests 26-33m, alphabetically before this one) named no web page or URL, so the daemon has never
+        # probed: /status reports the cached value only, and a poll is never a network request (README, legal/PRIVACY.md)
+        self.assertIsNone(st["network"]["online"], st["network"]); self.assertEqual(st["network"]["target"], "")
+        self.cli("settings", "agent.driver", "stepwise")
+        try:
+            self.assertEqual(self.cli("status")["driver"], "stepwise"); self.assertEqual(self.cli("settings")["agent.driver"], "stepwise")
+        finally:
+            self.cli("settings", "agent.driver", "")
+        self.assertEqual(self.cli("status")["driver"], "freeform")
+
+
+class StepwiseUnits(unittest.TestCase):
+    """In-process checks of the small-model driver's pieces (ADR-0020): plan parsing, deterministic step checks, the compact
+    turn text, the prompt budget, driver selection, the online probe, and the OpenAI-compatible provider's schema call."""
+
+    def test_parse_plan(self):
+        allowed = fa.STEP_TOOLS
+        ok = '{"steps": [{"tool": "run_shell", "goal": " copy   the folder "}, {"tool": "reply", "goal": "say so"}]}'
+        self.assertEqual(fa.parse_plan(ok, allowed), ([{"tool": "run_shell", "goal": "copy the folder"}, {"tool": "reply", "goal": "say so"}], None))
+        self.assertEqual(fa.parse_plan("Sure! Here it is:\n" + ok + "\nDone.", allowed)[0][0]["tool"], "run_shell")   # JSON embedded in prose
+        for bad, why in (("not json", "not a JSON object"), ('{"steps": []}', "no steps"), ('{"plan": 1}', "no steps"),
+                         ('{"steps": [{"tool": "teleport", "goal": "x"}]}', "unknown tool"), ('{"steps": [{"tool": "run_shell", "goal": ""}]}', "no goal"),
+                         ('{"steps": [' + ",".join(['{"tool": "run_shell", "goal": "x"}'] * 9) + ']}', "more than 8"), ('{"steps": ["x"]}', "not an object")):
+            plan, err = fa.parse_plan(bad, allowed); self.assertIsNone(plan, bad); self.assertIn(why, err)
+        self.assertIn("unknown tool", fa.parse_plan('{"steps": [{"tool": "send_email", "goal": "x"}]}', ["run_shell", "reply"])[1])   # a policy-denied tool is not offered
+
+    def test_step_check(self):
+        c = fa.step_check
+        self.assertEqual(c("run_shell", {}, {"exit_code": 0, "stdout": "8\n", "stderr": ""}, False), (True, "exit 0, output: 8"))
+        ok, why = c("run_shell", {}, {"exit_code": 2, "stdout": "", "stderr": "cp: cannot stat 'x': No such file"}, False); self.assertFalse(ok); self.assertIn("exit code 2: cp: cannot stat", why)
+        ok, why = c("run_shell", {}, {"error": "timeout after 120s"}, True); self.assertFalse(ok); self.assertIn("timeout", why)
+        tmp = tempfile.mkdtemp(prefix="fabos-sw-")
+        try:
+            p = os.path.join(tmp, "a.txt"); open(p, "w").write("hi\n")
+            self.assertEqual(c("write_file", {"path": p, "content": "hi\n"}, {"path": p, "bytes": 3}, False), (True, "%s exists, 3 bytes" % p))
+            self.assertIn("content differs", c("write_file", {"path": p, "content": "other"}, {"path": p}, False)[1])
+            self.assertIn("does not exist", c("write_file", {"path": os.path.join(tmp, "nope.txt"), "content": "x"}, {}, False)[1])
+            self.assertTrue(c("write_file", {"path": p, "content": "zzz", "append": True}, {"path": p}, False)[0])      # append: existence is enough
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertEqual(c("type_text", {"text": "hello"}, {"typed_chars": 5}, False), (True, "typed 5 characters"))
+        self.assertFalse(c("type_text", {"text": "hello"}, {"typed_chars": 0}, False)[0])
+        self.assertFalse(c("web_fetch", {"url": "http://x"}, {"text": "  "}, False)[0]); self.assertTrue(c("web_fetch", {"url": "http://x"}, {"text": "{}"}, False)[0])
+        self.assertEqual(c("open_app", {"app": "xdg-open", "args": ["https://x"]}, {"launched": "xdg-open https://x"}, False), (True, "launched"))
+        self.assertFalse(c("open_app", {"app": "no-such-app-fabos-test"}, {"launched": "x"}, False)[0])                  # not running afterwards = failed
+        self.assertTrue(c("read_file", {"path": "x"}, {"content": "abc"}, False)[0]); self.assertTrue(c("list_dir", {"path": "x"}, {"entries": [], "total": 0}, False)[0])
+        self.assertFalse(c("send_email", {"to": "a@b"}, {"sent": False}, False)[0]); self.assertTrue(c("notify_user", {}, {"notified": False}, False)[0])
+
+    def test_plan_sanity_adds_the_typing_step(self):
+        plan = [{"tool": "open_app", "goal": "open Fab Editor"}]
+        notes = fa.plan_sanity("Type the word hello into a new Fab Editor window: open it with open_app, then type it with type_text.", plan)
+        self.assertEqual([s["tool"] for s in plan], ["open_app", "type_text"]); self.assertEqual(len(notes), 1); self.assertIn("type_text", notes[0])
+        plan = [{"tool": "open_app", "goal": "open Fab Editor"}, {"tool": "type_text", "goal": "type hello"}]
+        self.assertEqual(fa.plan_sanity("type hello into the editor", plan), []); self.assertEqual(len(plan), 2)                    # already there
+        plan = [{"tool": "run_shell", "goal": "copy the folder"}]
+        self.assertEqual(fa.plan_sanity("Copy the folder /tmp/a to ~/b (file types unchanged)", plan), []); self.assertEqual(len(plan), 1)   # no open_app, no typing
+        plan = [{"tool": "open_app", "goal": "open konsole"}]
+        self.assertEqual(fa.plan_sanity("Open the Fab Terminal and leave it open", plan), []); self.assertEqual(len(plan), 1)
+        # show your work (owner's rule): a request to WRITE/COMPOSE text the user will read keeps its open_app/type_text steps although it
+        # has no open/type word, and a bare write_file plan gets open_app (with the file path) + type_text in front of it
+        note = "Write a short note saying hi to Priya and save it as ~/Documents/note.txt"
+        plan = [{"tool": "open_app", "goal": "open Fab Editor"}, {"tool": "type_text", "goal": "type the note"}, {"tool": "write_file", "goal": "save it to ~/Documents/note.txt"}]
+        self.assertEqual(fa.plan_sanity(note, plan), []); self.assertEqual([s["tool"] for s in plan], ["open_app", "type_text", "write_file"])
+        plan = [{"tool": "write_file", "goal": "write the letter to ~/Documents/landlord.txt"}]
+        notes = fa.plan_sanity("Write a letter to my landlord about the leaking tap and save it as ~/Documents/landlord.txt", plan)
+        self.assertEqual([s["tool"] for s in plan], ["open_app", "type_text", "write_file"]); self.assertEqual(len(notes), 1); self.assertIn("show your work", notes[0])
+        self.assertIn("with the file path ~/Documents/landlord.txt", plan[0]["goal"])
+        for txt in ("Create the folder ~/Ladder/one and, inside it, a file called hello.txt whose entire content is exactly this text: Hello",
+                    "Read today's date from this computer's own clock and write it in ISO form YYYY-MM-DD as the first line of ~/Ladder/one/date.txt.",
+                    "Add the amount column up across all three files and write only the grand total, as a plain integer, into ~/Ladder/total.txt",
+                    "Find the single largest file anywhere under /tmp/ladder and write just its file name into ~/Ladder/largest.txt",
+                    "Copy the folder /tmp/a to ~/b so that ~/b holds the same files"):
+            self.assertFalse(fa.COMPOSE_RE.search(txt.lower()), txt)                                                          # file operations: no window
+        for txt in ("Write a hi note and send it to x@example.com", "Compose a mail body thanking the team", "Draft a message to Ravi about Monday",
+                    "Write a Python script ~/Projects/a.py that prints hi", "write me a letter of two paragraphs"):
+            self.assertTrue(fa.COMPOSE_RE.search(txt.lower()), txt)
+        # a repeated goal (case, spacing and a final full stop aside) is dropped, the first occurrence stays, the plan is never emptied
+        plan = [{"tool": "run_shell", "goal": "copy the folder /tmp/a to ~/b"}, {"tool": "save_result", "goal": "Copy the  folder /tmp/a to ~/b."}, {"tool": "reply", "goal": "say done"}]
+        notes = fa.plan_sanity("Copy the folder /tmp/a to ~/b", plan)
+        self.assertEqual([s["tool"] for s in plan], ["run_shell", "reply"]); self.assertEqual(len(notes), 1); self.assertIn("repeats an earlier step's goal", notes[0])
+        plan = [{"tool": "run_shell", "goal": "count"}, {"tool": "run_shell", "goal": "count"}]
+        self.assertEqual(len(fa.plan_sanity("count twice", plan)), 1); self.assertEqual(len(plan), 1)
+
+    def test_destructive_and_rename_guards(self):
+        """The user's own words decide: a request without move/rename/delete words never lets mv/rm run (as a command word, after sudo or
+        xargs, find -delete / -exec rm); a rename-by-extension request yields a deterministic post-condition."""
+        copy = "Copy the folder /tmp/ladder/notes to ~/Ladder/notes-copy so that ~/Ladder/notes-copy ends up holding the same files."
+        self.assertIn("`mv` may not run here", fa.destructive_command_reason(copy, "mv /tmp/ladder/notes ~/Ladder/notes-copy"))
+        self.assertIn("`rm`", fa.destructive_command_reason(copy, "cp -r a b && rm -rf a")); self.assertIn("`-delete`", fa.destructive_command_reason(copy, "find a -name '*.tmp' -delete"))
+        self.assertIn("`rm`", fa.destructive_command_reason(copy, "find a -type f -exec rm {} \\;")); self.assertIn("`mv`", fa.destructive_command_reason(copy, "ls | xargs -n 1 mv"))
+        self.assertIn("`rmdir`", fa.destructive_command_reason(copy, "sudo rmdir /tmp/x"))
+        self.assertIsNone(fa.destructive_command_reason(copy, "cp -r /tmp/ladder/notes ~/Ladder/notes-copy"))
+        self.assertIsNone(fa.destructive_command_reason(copy, "mkdir -p ~/x && echo hi > ~/x/rm.txt"))         # rm inside a name is not a command
+        self.assertIsNone(fa.destructive_command_reason(copy, "echo rename")); self.assertIsNone(fa.destructive_command_reason(copy, "cat f | grep mv"))   # a word IN a command is not a command word
+        self.assertIn("`--delete`", fa.destructive_command_reason(copy, "rsync -a --delete a/ b/")); self.assertIn("`--delete-after`", fa.destructive_command_reason(copy, "rsync -a --delete-after a/ b/"))
+        self.assertIn("`shutil.rmtree`", fa.destructive_command_reason(copy, "python3 -c 'import shutil; shutil.rmtree(\"a\")'"))
+        self.assertIn("`os.remove`", fa.destructive_command_reason(copy, "python3 -c \"import os; os.remove('a')\""))
+        self.assertIn("`rm`", fa.destructive_command_reason(copy, "find a -execdir rm {} \\;")); self.assertIn("`rm`", fa.destructive_command_reason(copy, "if true; then rm a; fi"))
+        self.assertIn("`rm`", fa.destructive_command_reason(copy, "time rm a")); self.assertIn("`rm`", fa.destructive_command_reason(copy, "$(rm -rf a)")); self.assertIn("`rm`", fa.destructive_command_reason(copy, "{ rm a; }"))
+        self.assertIsNone(fa.destructive_command_reason(copy, "ls --delete-me"))                                              # not an rsync flag
+        self.assertIsNone(fa.destructive_command_reason("Rename every file that ends in .txt inside ~/x so it ends in .md", "for f in ~/x/*.txt; do mv \"$f\" \"${f%.txt}.md\"; done"))
+        self.assertIsNone(fa.destructive_command_reason("Delete the folder ~/tmp-old", "rm -rf ~/tmp-old")); self.assertIsNone(fa.destructive_command_reason("Move a to b", "mv a b"))
+        # plan_sanity drops a rename/move step the request never asked for; the plan is never emptied
+        plan = [{"tool": "run_shell", "goal": "copy the folder /tmp/a to ~/b"}, {"tool": "run_shell", "goal": "Rename the copied folder to ~/b"}]
+        notes = fa.plan_sanity(copy, plan); self.assertEqual(len(plan), 1); self.assertEqual(len(notes), 1); self.assertIn("would rename, move or delete", notes[0])
+        plan = [{"tool": "run_shell", "goal": "move a to b"}]
+        self.assertEqual(fa.plan_sanity("Copy a to b", plan), []); self.assertEqual(len(plan), 1)
+        plan = [{"tool": "run_shell", "goal": "rename each .txt to .md"}]
+        self.assertEqual(fa.plan_sanity("Rename every .txt in ~/x to .md", plan), []); self.assertEqual(len(plan), 1)
+        # rename_expectation: the two extensions and the existing folder(s) the request names; None without a rename word, with
+        # extensions only inside file names, or when the folder does not exist
+        d = tempfile.mkdtemp(prefix="fabos-ren-")
+        try:
+            for n in ("a.txt", "b.txt", "c.md"):
+                with open(os.path.join(d, n), "w") as f:
+                    f.write("x")
+            exp = fa.rename_expectation("Rename every file that ends in .txt inside %s so it ends in .md instead. Keep the base names unchanged." % d)
+            self.assertEqual(exp, (".txt", ".md", [d])); self.assertEqual(fa.rename_leftovers(exp), ["a.txt", "b.txt"])
+            self.assertIn("for f in %s/*.txt; do mv \"$f\" \"${f%%.txt}.md\"; done" % d, fa.rename_hint(exp))
+            os.rename(os.path.join(d, "a.txt"), os.path.join(d, "a.md")); os.rename(os.path.join(d, "b.txt"), os.path.join(d, "b.md"))
+            self.assertEqual(fa.rename_leftovers(exp), [])
+            self.assertIsNone(fa.rename_expectation("Copy every .txt file inside %s to .md" % d))
+            self.assertIsNone(fa.rename_expectation("Rename the file %s/report.txt to final.txt" % d))
+            self.assertIsNone(fa.rename_expectation("Rename every .txt to .md inside /nonexistent/folder/here"))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_expected_app_and_the_request_regexes(self):
+        self.assertEqual(fa.expected_app("Open the Fab Terminal application so a terminal window is running"), "konsole")
+        self.assertEqual(fa.expected_app("Type the word hello into a new Fab Editor window"), "kate"); self.assertEqual(fa.expected_app("open Fab Files"), "dolphin")
+        self.assertIsNone(fa.expected_app("Copy the folder /tmp/a to ~/b")); self.assertIsNone(fa.expected_app("open Fab Editor and then the browser"))   # none / several
+        self.assertEqual(fa.expected_app("Open the browser and go to example.com"), "firefox"); self.assertEqual(fa.expected_app("Open Firefox"), "firefox")   # ADR-0018
+        self.assertEqual(fa.BROWSER, "firefox"); self.assertIn(fa.BROWSER, fa.APP_NAMES); self.assertNotIn("brave-browser", fa.APP_NAMES)
+        self.assertEqual(fa.step_check("open_app", {"app": "no-such-app-fabos"}, {"launched": "x"}, False)[1],
+                         "no-such-app-fabos is not running after open_app (is the name right? kate, konsole, dolphin, firefox)")
+        self.assertTrue(fa.NO_FILES_RE.search("count the files. do not create or change any file.")); self.assertTrue(fa.NO_FILES_RE.search("without writing any files"))
+        self.assertFalse(fa.NO_FILES_RE.search("create the file ~/a.txt")); self.assertFalse(fa.NO_FILES_RE.search("do not stop until the file exists"))
+        self.assertTrue(fa.ANSWER_RE.search("count how many files are there")); self.assertTrue(fa.ANSWER_RE.search("end your reply with a line FILE COUNT: <n>"))
+        self.assertFalse(fa.ANSWER_RE.search("copy the folder /tmp/ladder/notes to ~/ladder/notes-copy"))
+        plan = [{"tool": "run_shell", "goal": "count"}, {"tool": "write_file", "goal": "save the count"}]
+        notes = fa.plan_sanity("Count how many files are in /tmp/x. Do not create or change any file.", plan)
+        self.assertEqual([s["tool"] for s in plan], ["run_shell", "reply"]); self.assertEqual(len(notes), 2)
+        plan = [{"tool": "write_file", "goal": "x"}]
+        self.assertEqual(fa.plan_sanity("Do not change any file", plan), []); self.assertEqual(len(plan), 1)                    # never empties the plan
+        plan = [{"tool": "run_shell", "goal": "copy"}]
+        self.assertEqual(fa.plan_sanity("Copy /tmp/a to ~/b so it holds the same files", plan), []); self.assertEqual(len(plan), 1)
+        plan = [{"tool": "web_fetch", "goal": "fetch the health URL"}, {"tool": "write_file", "goal": "save it to ~/h.json"}]
+        notes = fa.plan_sanity("Use your web fetch tool on http://x/health and save the JSON body you get back, unchanged, to ~/h.json", plan)
+        self.assertEqual([s["tool"] for s in plan], ["web_fetch", "save_result"]); self.assertEqual(len(notes), 1); self.assertIn("save_result instead of retyping", notes[0])
+        plan = [{"tool": "list_dir", "goal": "list the folder"}, {"tool": "web_fetch", "goal": "fetch list.txt"}, {"tool": "type_text", "goal": "type the count"}, {"tool": "reply", "goal": "answer"}]
+        notes = fa.plan_sanity("Count how many files are in the folder /tmp/x (regular files only). End your reply with FILE COUNT: <number>", plan)
+        self.assertEqual([s["tool"] for s in plan], ["list_dir", "reply"]); self.assertEqual(len(notes), 2)      # no web word, no open/type word in the task
+        plan = [{"tool": "web_fetch", "goal": "fetch"}]
+        self.assertEqual(fa.plan_sanity("Count the files in /tmp/x", plan), []); self.assertEqual(len(plan), 1)                       # never empties the plan
+        plan = [{"tool": "open_app", "goal": "open the browser"}]
+        self.assertEqual(fa.plan_sanity("Open the browser on https://example.com", plan), []); self.assertEqual(len(plan), 1)
+        self.assertEqual(fa.plan_max_steps("Copy /tmp/a to ~/b so that ~/b holds the same files."), 3)                                # 1 sentence -> 3
+        self.assertEqual(fa.plan_max_steps("Count the files in /tmp/x (regular files only). Do not change any file. End your reply with FILE COUNT: <n>"), 5)
+        self.assertEqual(fa.plan_max_steps(". ".join(["Do this"] * 12) + "."), fa.PLAN_MAX_STEPS)
+        web = [{"tool": "run_shell", "goal": "web_fetch 'https://example.com/api/grand_total'"}, {"tool": "save_result", "goal": "save the api answer"}]
+        self.assertIn("every step uses the web", fa.plan_reject_reason("Add the amount column of /tmp/a.csv and /tmp/b.csv into ~/total.txt", web))
+        self.assertIsNone(fa.plan_reject_reason("Fetch https://example.com/api and save it", web))                                    # the task names a URL
+        self.assertIsNone(fa.plan_reject_reason("Add the amounts", [web[0], {"tool": "run_shell", "goal": "sum the column"}]))       # one local step: not rejected
+        self.assertEqual(fa.plan_schema(["run_shell"], 4)["properties"]["steps"]["maxItems"], 4)
+        plan = [{"tool": "web_fetch", "goal": "fetch the page"}, {"tool": "write_file", "goal": "write a summary to ~/s.txt"}]
+        notes = fa.plan_sanity("Fetch http://x and write a two-line summary to ~/s.txt", plan)
+        self.assertEqual([s["tool"] for s in plan], ["web_fetch", "open_app", "type_text", "write_file"]); self.assertEqual(len(notes), 1); self.assertIn("show your work", notes[0])   # no verbatim wording: write_file stays write_file; a summary is text the user reads
+        plan = [{"tool": "web_fetch", "goal": "fetch the page"}, {"tool": "write_file", "goal": "write the size to ~/s.txt"}]
+        self.assertEqual(fa.plan_sanity("Fetch http://x and write its size in bytes to ~/s.txt", plan), []); self.assertEqual([s["tool"] for s in plan], ["web_fetch", "write_file"])   # a value, not prose: untouched
+
+    def test_goal_paths_and_result_rendering(self):
+        self.assertEqual(fa.goal_paths("Write the date into ~/Ladder/one/date.txt (source: /tmp/ladder/notes); see http://127.0.0.1:8790/health and ~/Ladder/total.txt."),
+                         ["~/Ladder/one/date.txt", "/tmp/ladder/notes", "~/Ladder/total.txt"])
+        self.assertEqual(fa.goal_paths("count the regular files in the folder"), [])
+        self.assertEqual(fa.goal_paths("the largest file, name only, into ~/big.txt"), ["~/big.txt"]); self.assertEqual(fa.goal_paths("look in /tmp and /dev/null"), ["/dev/null"])   # ~/x counts; a bare /tmp does not
+        self.assertIn("~/big.txt = " + os.path.expanduser("~/big.txt"), fa.task_paths_line("write it into ~/big.txt")); self.assertEqual(fa.missing_goal_paths("write into ~/no-such-fabos-file.txt"), ["~/no-such-fabos-file.txt"])
+        self.assertEqual(fa.missing_goal_paths("Copy /tmp to ~/no-such-dir-fabos/x"), ["~/no-such-dir-fabos/x"])
+        self.assertEqual(fa.missing_goal_paths("Delete ~/no-such-dir-fabos/x"), []); self.assertEqual(fa.missing_goal_paths("Move ~/no-such-dir-fabos/x to ~/y"), [])
+        self.assertEqual(fa.missing_goal_paths("Rename every .txt in ~/no-such-dir-fabos to .md"), []); self.assertEqual(fa.missing_goal_paths("List /tmp"), [])
+        r = fa.render_result
+        self.assertEqual(r("run_shell", {"exit_code": 0, "stdout": "8\n", "stderr": ""}), "exit_code 0\nstdout: 8")
+        self.assertEqual(r("run_shell", {"exit_code": 1, "stdout": "", "stderr": "boom"}), "exit_code 1\nstdout: (empty)\nstderr: boom")
+        self.assertEqual(r("web_fetch", {"url": "u", "text": '{"ok": true}'}), '{"ok": true}'); self.assertEqual(r("read_file", {"content": "abc"}), "abc")
+        self.assertEqual(r("list_dir", {"total": 2, "path": "/x", "entries": [{"name": "a", "dir": True}, {"name": "b.txt", "dir": False}]}), "2 entries in /x (1 files, 1 folders): a/, b.txt")
+        self.assertEqual(r("write_file", {"path": "/x", "bytes": 3}), "wrote 3 bytes to /x"); self.assertEqual(r("run_shell", {"error": "timeout"}), "error: timeout")
+        self.assertEqual(r("type_text", {"typed_chars": 5}), "typed 5 characters"); self.assertEqual(r("notify_user", {"notified": True}), '{"notified": true}')
+
+    def test_turn_text_is_compact_and_shows_the_current_step(self):
+        plan = [{"tool": "run_shell", "goal": "sum the column"}, {"tool": "write_file", "goal": "write the total"}, {"tool": "reply", "goal": "report it"}]
+        big = "x" * 5000
+        results = {0: {"tool": "run_shell", "text": big}, 1: {"tool": "write_file", "text": "y" * 3000}}
+        t = fa.stepwise_turn_text("Add  up the\namounts", plan, 2, results)
+        self.assertTrue(t.startswith("Task: Add up the amounts\nPlan:\n"))                                        # no paths in the task: no Paths line
+        t3 = fa.stepwise_turn_text("Write the date into ~/Ladder/one/date.txt", plan, 0, {})
+        self.assertIn("\nPaths named in the task (use them exactly): ~/Ladder/one/date.txt = %s/Ladder/one/date.txt" % fa.HOME, t3); self.assertIn("\nPlan:\n", t3)
+        self.assertIn("1. [run_shell] sum the column  (done)", t); self.assertIn("2. [write_file] write the total  (done)", t); self.assertIn("3. [reply] report it  (NOW)", t)
+        self.assertIn("Step 3 of 3: report it", t); self.assertIn("No tool call", t)
+        self.assertLess(len(t), fa.RESULT_LIMIT_STEP + fa.RESULT_LIMIT_EARLIER + 600)        # results clipped: last <= 1500 chars, earlier <= 300
+        self.assertIn("truncated", t)
+        t2 = fa.stepwise_turn_text("Task", plan, 1, {0: {"tool": "run_shell", "text": "ok"}}, error="exit code 1: No such file")
+        self.assertIn("(later)", t2); self.assertIn("Your previous attempt at this step failed: exit code 1: No such file", t2); self.assertIn("ONE write_file call", t2)
+
+    def test_raw_result_and_the_paths_line(self):
+        r = fa.raw_result
+        self.assertEqual(r("run_shell", {"exit_code": 0, "stdout": "8\n", "stderr": ""}), "8\n"); self.assertIsNone(r("run_shell", {"error": "timeout"}))
+        self.assertEqual(r("web_fetch", {"text": '{"ok": true}'}), '{"ok": true}'); self.assertEqual(r("read_file", {"content": "abc"}), "abc")
+        self.assertEqual(r("list_dir", {"entries": [{"name": "a"}, {"name": "b"}]}), "a\nb\n")
+        self.assertIsNone(r("open_app", {"launched": "kate"})); self.assertIsNone(r("write_file", {"path": "/x", "bytes": 3})); self.assertIsNone(r("run_shell", "junk"))
+        self.assertEqual(r("type_text", {"typed_chars": 5}, {"text": "hello", "delay_ms": 1500}), "hello\n")                          # what is on screen now
+        self.assertIsNone(r("type_text", {"typed_chars": 0}, {"text": "hello"})); self.assertIsNone(r("type_text", {"error": "wtype failed"}, {"text": "x"}))
+        tmp = tempfile.mkdtemp(prefix="fabos-pl-")
+        try:
+            os.makedirs(os.path.join(tmp, "have"))
+            line = fa.task_paths_line("Copy %s/have to %s/have/out.txt and to %s/missing/deep/out.txt." % (tmp, tmp, tmp))
+            want = "Paths named in the task (use them exactly): %s/have; %s/have/out.txt; %s/missing/deep/out.txt (its folder %s/missing/deep does not exist yet: mkdir -p it first; write_file and save_result create it)" % (tmp, tmp, tmp, tmp)
+            self.assertEqual(line, want)                      # existing path and existing folder: no note; missing folder: named, once
+            self.assertEqual(fa.task_paths_line("count the files in the folder"), "")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_self_check_is_shown_what_was_observed(self):
+        class P:
+            name = "x"
+
+            def complete(self, system, user, schema=None, max_tokens=600, on_usage=None):
+                P.user, P.schema = user, schema
+                return '{"ok": false, "reason": "the names still end in .txt"}'
+        ok, why = fa.Agent._self_check(None, P(), {"goal": "rename the notes to .md"}, "run_shell", {"command": "mv ..."}, '{"exit_code": 0, "stdout": ""}',
+                                       "exit 0, no output; ~/x now holds 2 entries: a.txt.md, b.txt.md", None, "Rename every  .txt in ~/x\nto .md")
+        self.assertFalse(ok); self.assertEqual(why, "the names still end in .txt"); self.assertIs(P.schema, fa.CHECK_SCHEMA)
+        self.assertTrue(P.user.startswith("Task: Rename every .txt in ~/x to .md\nGoal of the step: rename the notes to .md\n"), P.user)      # the task itself, whitespace-normalised
+        self.assertIn("Tool result: {\"exit_code\": 0, \"stdout\": \"\"}\nChecked afterwards: exit 0, no output; ~/x now holds 2 entries: a.txt.md, b.txt.md\nWas the goal achieved?", P.user)
+        self.assertIn("save_result", fa.STEP_TOOLS); self.assertEqual(fa.SAVE_RESULT_TOOL["input_schema"]["required"], ["path"])
+
+    def test_local_prompt_budget_and_content(self):
+        s = fa.local_system_prompt("auto", {"online": True})
+        self.assertLess(len(s), 3000, len(s))            # measured with the model's tokenizer in the image (tests/local-driver-image.sh prints it at every run, ADR-0020): 803 tokens for 2 930 chars, ~3.6 chars per token, so 3 000 chars stays under the 900-token budget
+        for must in ("ONE tool call", "Never say a step is done", "Show your work", "web_fetch", "run_shell", "write_file", "save_result", "open_app", "type_text", "Internet: ONLINE", "never need it", "Permission mode: auto", fa.HOME):
+            self.assertIn(must, s)
+        self.assertIn("Internet: OFFLINE", fa.local_system_prompt("ask", {"online": False})); self.assertIn("Internet: unknown", fa.local_system_prompt("ask", {"online": None}))
+        self.assertIn("Internet: not checked — this task names no web page or URL", fa.local_system_prompt("ask", dict(fa.NET_SKIPPED)))
+        self.assertIn("browser = firefox", s); self.assertIn("|firefox|", s); self.assertNotIn("brave", s.lower()); self.assertIn("firefox = the browser", fa.PLAN_SYSTEM.format(app="x", home="/h", browser=fa.BROWSER))   # ADR-0018
+        self.assertIn("t=sum(float(r['amount'])", s); self.assertIn("Show your work", fa.PLAN_SYSTEM); self.assertIn("WRITE or COMPOSE", fa.PLAN_SYSTEM)
+        # the held-out tasks of tests/local-driver-test.py (h-a..h-d) are named in no prompt: their row is the measurement the prompt cannot have memorised (ADR-0020 §3)
+        prompts = (fa.LOCAL_SYSTEM_PROMPT + fa.PLAN_SYSTEM + fa.CHECK_SYSTEM + fa.FINISH_SYSTEM).lower()
+        for w in ("qty", "stock-", ".log", ".bak", "smallest", "heldout", "logs-copy", "tiny.cfg"):
+            self.assertNotIn(w, prompts, w)
+        self.assertLess(len(fa.PLAN_SYSTEM), 2500); self.assertIn("reply", fa.PLAN_SYSTEM)     # measured with the model tokenizer (build/tokens.sh, ADR-0020): ~4.2 chars per token, so ~550 tokens
+        sch = fa.plan_schema(["run_shell", "reply"]); self.assertEqual(sch["properties"]["steps"]["items"]["properties"]["tool"]["enum"], ["run_shell", "reply"]); self.assertEqual(sch["properties"]["steps"]["maxItems"], fa.PLAN_MAX_STEPS)
+
+    def test_driver_selection(self):
+        tmp = tempfile.mkdtemp(prefix="fabos-drv-"); st = fa.Store(os.path.join(tmp, "a.db"))
+        try:
+            self.assertEqual(fa.driver_name(st, "local"), "stepwise"); self.assertEqual(fa.driver_name(st, "claude"), "freeform"); self.assertEqual(fa.driver_name(st, "fake"), "freeform")
+            st.set_setting("agent.driver", "freeform"); self.assertEqual(fa.driver_name(st, "local"), "freeform")
+            st.set_setting("agent.driver", "Stepwise "); self.assertEqual(fa.driver_name(st, "claude"), "stepwise")
+            st.set_setting("agent.driver", "bogus"); self.assertEqual(fa.driver_name(st, "local"), "stepwise")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_network_probe_target_and_cache(self):
+        tmp = tempfile.mkdtemp(prefix="fabos-net-"); st = fa.Store(os.path.join(tmp, "a.db"))
+        real, saved_env = fa._net_probe, os.environ.pop("FABOS_AGENT_PROVIDER", None)
+        try:
+            self.assertEqual(fa.net_probe_target(st), "api.anthropic.com")                                        # no setting -> the default provider (claude) -> its API host
+            st.set_setting("provider", "claude"); self.assertEqual(fa.net_probe_target(st), "api.anthropic.com")
+            st.set_setting("provider", "local"); self.assertEqual(fa.net_probe_target(st), "1.1.1.1")             # loopback endpoint: probe Cloudflare instead
+            st.set_setting("provider", "openai"); self.assertEqual(fa.net_probe_target(st), "api.openai.com")
+            st.set_setting("provider", "local"); st.set_setting("local.base_url", "http://192.168.1.20:8080/v1"); self.assertEqual(fa.net_probe_target(st), "1.1.1.1")
+            for h in ("127.0.0.1", "localhost", "10.0.0.5", "172.16.3.4", "192.168.0.1", None, ""):
+                self.assertTrue(fa._private_host(h), h)
+            self.assertFalse(fa._private_host("172.32.0.1")); self.assertFalse(fa._private_host("example.com"))
+            calls = []
+            fa._net_probe = lambda host: calls.append(host) or True
+            with fa._net_lock:
+                fa._net.update(online=None, target="", checked=0.0)
+            self.assertEqual(fa.network_cached(), {"online": None, "target": "", "checked": 0.0, "age_s": None}); self.assertEqual(calls, [])   # /status's view: never a probe
+            d = fa.network_status(st); self.assertEqual((d["online"], d["target"], d["age_s"]), (True, "1.1.1.1:443", 0)); self.assertEqual(calls, ["1.1.1.1"])
+            fa._net_probe = lambda host: calls.append(host) or False
+            d = fa.network_status(st); self.assertTrue(d["online"]); self.assertEqual(len(calls), 1)             # cached for NET_CACHE_S: no second probe
+            self.assertTrue(fa.network_cached()["online"]); self.assertEqual(len(calls), 1)
+            with fa._net_lock:
+                fa._net["checked"] = time.time() - fa.NET_CACHE_S - 1
+            self.assertGreaterEqual(fa.network_cached()["age_s"], fa.NET_CACHE_S); self.assertEqual(len(calls), 1)   # stale, and still no probe from the cached view
+            self.assertFalse(fa.network_status(st)["online"]); self.assertEqual(len(calls), 2)                     # a task that needs the web refreshes it
+            with fa._net_lock:                                                                                     # a managed allow-list without the target: no probe, stale value returned
+                fa._net["checked"] = time.time() - fa.NET_CACHE_S - 1
+            saved_pol = fa.POLICY.data; fa.POLICY.data = dict(saved_pol, hosts_allowed=["example.com"])
+            try:
+                self.assertFalse(fa.network_status(st)["online"]); self.assertEqual(len(calls), 2)
+            finally:
+                fa.POLICY.data = saved_pol
+            self.assertTrue(fa.NET_SKIPPED["skipped"]); self.assertIsNone(fa.NET_SKIPPED["online"])
+            self.assertTrue(fa.WEB_WORDS_RE.search("use your web fetch tool on http://127.0.0.1:8790/health")); self.assertFalse(fa.WEB_WORDS_RE.search("copy the folder /tmp/a to ~/b"))
+        finally:
+            fa._net_probe = real
+            if saved_env is not None: os.environ["FABOS_AGENT_PROVIDER"] = saved_env
+            with fa._net_lock:
+                fa._net.update(online=None, target="", checked=0.0)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_net_probe_counts_an_http_level_failure_as_online(self):
+        """RemoteDisconnected / BadStatusLine arrive AFTER a TCP connect (the network is there); DNS, refused and timeouts are offline."""
+        import http.client as hc, ssl as _ssl
+
+        class Conn:
+            exc = None
+
+            def __init__(self, host, port, timeout=None): pass
+            def request(self, *a, **k): raise Conn.exc
+            def getresponse(self): pass
+            def close(self): pass
+
+        class Client: HTTPException, HTTPSConnection = hc.HTTPException, Conn
+
+        class Stub: client = Client
+        saved = fa.http; fa.http = Stub
+        try:
+            for exc, want in ((hc.RemoteDisconnected("closed"), True), (hc.BadStatusLine("x"), True), (_ssl.SSLError("cert"), True),
+                              (ConnectionRefusedError(), False), (socket.timeout(), False), (OSError("dns"), False), (ValueError("odd"), True)):
+                Conn.exc = exc; self.assertEqual(fa._net_probe("h"), want, exc)
+        finally:
+            fa.http = saved
+
+    def test_openai_compat_complete_and_step_options(self):
+        """The local provider sends temperature 0.2 + top_p 0.9, response_format json_schema for schema calls (falling back to the
+        schema in the prompt when the endpoint rejects it), tool_choice/max_tokens on tool turns; other providers keep their shape."""
+        real = urllib.request.urlopen
+        bodies = []
+
+        def fake_urlopen(req, timeout=None, **kw):
+            body = json.loads(req.data); bodies.append(body)
+            if "response_format" in body and getattr(fake_urlopen, "reject", False):
+                raise urllib.error.HTTPError(req.full_url, 400, "err", {}, io.BytesIO(json.dumps({"error": {"message": "response_format is not supported"}}).encode()))
+            content = '{"steps": [{"tool": "run_shell", "goal": "g"}]}' if ("response_format" in body or "schema" in body["messages"][-1]["content"]) else "plain answer"
+            return _Resp(200, {"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 5, "completion_tokens": 2}})
+        urllib.request.urlopen = fake_urlopen
+        try:
+            local = fa.OpenAICompatProvider("http://127.0.0.1:8080/v1", None, "local", name="local", result_limit=fa.RESULT_LIMIT_LOCAL)
+            cloud = fa.OpenAICompatProvider("https://api.example.test/v1", "k", "m", name="openai")
+            used = []
+            out = local.complete("sys", "Task from the user:\nx", schema=fa.plan_schema(["run_shell"]), max_tokens=123, on_usage=lambda i, o: used.append((i, o)))
+            self.assertEqual(json.loads(out)["steps"][0]["tool"], "run_shell"); self.assertEqual(used, [(5, 2)])
+            b = bodies[-1]; self.assertEqual((b["temperature"], b["top_p"], b["repeat_penalty"], b["max_tokens"]), (0.2, 0.9, 1.05, 123)); self.assertEqual(b["response_format"]["type"], "json_schema")
+            self.assertEqual(b["response_format"]["json_schema"]["schema"]["properties"]["steps"]["items"]["properties"]["tool"]["enum"], ["run_shell"]); self.assertTrue(local.json_schema_ok)
+            fake_urlopen.reject = True; local.json_schema_ok = None
+            out = local.complete("sys", "Task from the user:\nx", schema=fa.CHECK_SCHEMA)
+            self.assertEqual(json.loads(out)["steps"][0]["goal"], "g"); self.assertFalse(local.json_schema_ok)
+            self.assertNotIn("response_format", bodies[-1]); self.assertIn("matching this schema", bodies[-1]["messages"][-1]["content"])
+            fake_urlopen.reject = False
+            self.assertEqual(local.complete("sys", "hello"), "plain answer"); self.assertNotIn("response_format", bodies[-1])
+            local.step("sys", [{"role": "user", "content": "do"}], [fa.TOOLS[0]], tool_choice="required", max_tokens=700)
+            b = bodies[-1]; self.assertEqual(b["tool_choice"], "required"); self.assertEqual(b["max_tokens"], 700); self.assertEqual(b["top_p"], 0.9); self.assertEqual(len(b["tools"]), 1)
+            local.step("sys", [{"role": "user", "content": "do"}], [])
+            self.assertNotIn("tools", bodies[-1]); self.assertNotIn("tool_choice", bodies[-1])
+            cloud.step("sys", [{"role": "user", "content": "do"}], fa.TOOLS)
+            b = bodies[-1]; self.assertEqual(b["temperature"], 0.2); self.assertNotIn("top_p", b); self.assertNotIn("repeat_penalty", b); self.assertNotIn("max_tokens", b); self.assertNotIn("tool_choice", b)   # the cloud request shape is unchanged
+            self.assertEqual(len(b["tools"]), len(fa.TOOLS))
+        finally:
+            urllib.request.urlopen = real
+
+    def test_provider_complete_falls_back_to_step_for_providers_without_complete(self):
+        class P:
+            name = "x"
+
+            def step(self, system, messages, tools, on_usage=None, **opts):
+                P.seen = (messages[0]["content"], tools, opts)
+                return {"content": [{"type": "text", "text": '{"ok": true, "reason": "fine"}'}], "stop_reason": "end_turn"}
+        out = fa.provider_complete(P(), "sys", "Goal: x", schema=fa.CHECK_SCHEMA, max_tokens=60)
+        self.assertEqual(json.loads(out)["ok"], True); self.assertIn("matching this schema", P.seen[0]); self.assertEqual(P.seen[1], []); self.assertEqual(P.seen[2]["max_tokens"], 60)
 
 
 class SecurityUnits(unittest.TestCase):

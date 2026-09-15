@@ -35,10 +35,14 @@ Mail: the user's OWN account (Gmail, Outlook/Hotmail, Yahoo, Zoho, iCloud preset
 mail.provider / mail.address / mail.from_name, secret mail_password (an app password where the provider requires one) or
 the Google refresh token mail_oauth_refresh. The feedback relay (fabos-feedback) is a separate channel and is not used here.
 Every tool step carries a one-sentence "narration" (Indian English) that UIs display and the voice daemon speaks.
+Drivers (ADR-0020): cloud providers run the free-form tool loop; the built-in `local` model (or setting agent.driver=stepwise)
+runs PLAN -> one tool per turn -> VERIFY -> FINISH with a compact prompt written for a 1.5B model. /status carries `driver`
+and `network` ({online, target, checked, age_s}: the LAST probe's result, never a new one). The probe — one HTTPS HEAD to the provider
+host or 1.1.1.1:443, 2 s timeout, no payload — runs only when a stepwise task names a web page or URL (legal/PRIVACY.md).
 FABOS_AGENT_PROVIDER=fake runs a scripted provider for tests.
 """
 import base64, hashlib, hmac, io, json, os, re, secrets as _secrets, shlex, shutil, signal, socket, sqlite3, subprocess, sys, threading, time, uuid, wave, urllib.request, urllib.error, urllib.parse
-import smtplib, imaplib, email, email.utils, email.header, datetime as _dt
+import http.client, smtplib, imaplib, email, email.utils, email.header, ssl, datetime as _dt
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
@@ -391,7 +395,7 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}, "append": {"type": "boolean", "default": False}}, "required": ["path", "content"]}},
     {"name": "list_dir", "description": "List a directory.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
     {"name": "open_app",
-     "description": "Open a desktop application, file or URL in the user's graphical session (e.g. app='kate' (Fab Editor) with args=['/path/file.txt'], app='dolphin' (Fab Files), app='brave-browser' (Brave) with args=['https://...'], app='libreoffice' with args=['--writer'], app='xdg-open' with args=['https://...']). Returns immediately.",
+     "description": "Open a desktop application, file or URL in the user's graphical session (e.g. app='kate' (Fab Editor) with args=['/path/file.txt'], app='dolphin' (Fab Files), app='firefox' (Firefox) with args=['https://...'], app='libreoffice' with args=['--writer'], app='xdg-open' with args=['https://...']). Returns immediately.",
      "input_schema": {"type": "object", "properties": {"app": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}}, "required": ["app"]}},
     {"name": "type_text",
      "description": "Type text into the currently focused window through the Wayland virtual keyboard, so the user watches it appear. Use it right after open_app when the user asked you to write or compose something (note, letter, mail body, document, code) — see 'Show your work'. Save afterwards with write_file to the same path.",
@@ -1107,7 +1111,7 @@ How to work:
 - Show your work. When the user asks you to WRITE or COMPOSE something they will read (a note, a letter, a mail body, a document, code they will look at), do it where they can watch, in this order: (1) open_app the right app first — kate (Fab Editor) with the target file path for notes, text and code; libreoffice --writer for documents; a mail body is composed in Fab Editor too; (2) type_text the content so it appears on screen (delay_ms 1500 right after opening); (3) save with write_file to the same path (there is no keyboard-shortcut tool, so say "saving the file for you"); (4) then do the follow-up — send_email, run the code — and narrate every step in one short sentence. Pure file or system operations (copy, rename, count, install, configure) need no window: do them directly.
 - For coding tasks: create a project under ~/Projects/<name>, write the code and tests, run them with run_shell, fix failures, then summarise what was built and how it was verified.
 - For email: send_email to send (the user's own account, signed in under Settings → Mail; if it is not configured say so and stop, never ask for a password); check_email to read. To wait for a reply after sending, call schedule_watch(kind="email_reply", from_contains=<recipient address>, ...) so the user is notified and, if asked, a follow-up task runs automatically. Then finish; never poll in a loop.
-- Applications: every installed app (system, Flatpak, user) is available to you the moment it is installed. Use list_apps to discover names, launch commands and supported file types, open_app to launch them (kate = Fab Editor, dolphin = Fab Files, konsole = Fab Terminal, brave-browser = Brave for the web), and their CLI or D-Bus interfaces via run_shell (KDE apps: qdbus6 / kdialog / kioclient). Installed now ({app_count} apps): {app_names}.
+- Applications: every installed app (system, Flatpak, user) is available to you the moment it is installed. Use list_apps to discover names, launch commands and supported file types, open_app to launch them (kate = Fab Editor, dolphin = Fab Files, konsole = Fab Terminal, firefox = Firefox for the web), and their CLI or D-Bus interfaces via run_shell (KDE apps: qdbus6 / kdialog / kioclient). Installed now ({app_count} apps): {app_names}.
 - System administration (packages, services, kernel modules, sysctl, disks, files under /etc or /usr) is done with run_shell(as_root=true). It is CRITICAL risk: the user approves it unless their mode is bypass. Never put sudo in the command; as_root already runs it as root. Verify the result afterwards (e.g. systemctl is-active, dpkg -s, lsmod).
 - Every tool call passes a deterministic policy check (risk LOW/MEDIUM/HIGH/CRITICAL against the user's permission mode). A denied call returns an error: respect it, explain, and find an allowed way or stop.
 - Never fabosate results. Report exactly what happened, including partial failures. Keep the final message short: what was done, where outputs are, what the user should look at.
@@ -1150,7 +1154,7 @@ def _base(path):
 def _app_name(inp):
     app = str(inp.get("app") or "").split("/")[-1]
     return {"kate": "Fab Editor", "dolphin": "Fab Files", "konsole": "Fab Terminal", "xdg-open": "the default app", "open": "the default app",
-            "brave-browser": "Brave", "brave": "Brave", "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos",
+            "firefox": "Firefox", "firefox-esr": "Firefox", "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos",
             "okular": "Fab Documents", "kcalc": "Fab Calculator", "spectacle": "Fab Screenshot", "systemsettings": "Fab Settings"}.get(app, app or "the app")
 
 
@@ -1296,6 +1300,549 @@ def compact_messages(messages, limit):
     return n
 
 
+# ----------------------------------------------------------------------------- small-model driver (ADR-0020)
+# The built-in 1.5B model cannot carry the 60-turn free-form conversation the cloud models run: measured on the graded
+# ladder it calls one tool and declares the task done. So the `local` provider (or the setting agent.driver=stepwise) runs
+# every task as PLAN (strict-JSON plan, schema enforced by llama-server's response_format) -> EXECUTE one tool call per turn,
+# the model seeing only the current step, the results so far (clipped) and the remaining steps -> VERIFY each step
+# (deterministic check + a yes/no self-check; up to STEP_RETRIES retries with the error shown) -> FINISH (one short summary).
+# Cloud providers keep the free-form loop unchanged; agent.driver=freeform forces it for the local model too.
+# save_result (driver-only) writes the previous tool call's output to a file verbatim, so the model never retypes data.
+STEP_TOOLS = ("run_shell", "write_file", "save_result", "read_file", "list_dir", "open_app", "type_text", "web_fetch", "send_email", "check_email", "notify_user", "reply")
+# Driver-only tool (never offered to the free-form loop): a 1.5B model mangles data it has to retype inside JSON arguments
+# (measured: the fetched {"ok": true, "app": "Fab OS"} came back as "ok\napp=Fab OS"). save_result names a path; the driver writes
+# the previous tool call's output there byte for byte through the real write_file tool (same risk gate, same record).
+SAVE_RESULT_TOOL = {"name": "save_result",
+                    "description": "Write the output of the previous tool call (stdout of run_shell, the text web_fetch or read_file returned) to a file exactly as it is. Use it instead of retyping data.",
+                    "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}
+PLAN_MAX_STEPS = 8
+STEP_RETRIES = 2                                          # attempts after the first, each shown the previous attempt's error
+RESULT_LIMIT_STEP, RESULT_LIMIT_EARLIER = 1500, 300       # chars of the last / earlier verified results in a stepwise turn
+CHECK_SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}, "reason": {"type": "string", "maxLength": 120}},
+                "required": ["ok", "reason"], "additionalProperties": False}
+# The desktop's browser executable (ADR-0018: Firefox, Mozilla's own build) — every prompt and check below derives from this one name.
+BROWSER = "firefox"
+# Network probe for the local prompt's "Internet:" line: one HTTPS HEAD, 2 s, cached 60 s — run ONLY when a stepwise task names a web
+# page or URL (a copy, a count or a note never touches the network; legal/PRIVACY.md). /status reports the cached value, never probes.
+NET_PROBE_HOST, NET_PROBE_PORT, NET_CACHE_S, NET_TIMEOUT_S = "1.1.1.1", 443, 60, 2.0
+_net = {"online": None, "target": "", "checked": 0.0}
+_net_lock = threading.Lock()
+
+# Written for a 1.5B model: short, explicit schemas, worked examples, the verification rule, the show-your-work rule. Kept
+# under 900 tokens (measured with llama-server /tokenize in the image; tests/agent-test.py bounds the character count).
+LOCAL_SYSTEM_PROMPT = """You are the {app} agent on this Linux desktop (KDE Plasma, Wayland), working as user {user}. Home: {home}. Date: {date}. Internet: {net}.
+You get ONE step of a plan at a time. Do exactly that step with ONE tool call, then stop. Rules:
+- Never count, add or compute in your head: run a command and use its output. Paths are absolute; ~ means {home}.
+- Copy means cp and the source stays: never mv, rm or delete anything unless the task itself asks to move, rename or delete it.
+- Never say a step is done before its result is verified. If the last result shows an error, change the command or the arguments and try again.
+- Show your work: text the user will read (a note, a letter, a mail body) is typed where they can watch it: open_app kate with the file path, then type_text the text, then write_file the same text to the same path.
+Tools and their JSON arguments:
+- run_shell {{"command": "<bash>"}} -> {{"exit_code", "stdout", "stderr"}}. Files, folders, copy, rename, count, sum, dates, downloads (curl).
+- write_file {{"path": "...", "content": "..."}} creates folders and writes the content exactly (nothing added).
+- save_result {{"path": "..."}} writes the previous tool call's output (stdout, fetched text, typed text) to that file unchanged; never retype data.
+- read_file {{"path"}} · list_dir {{"path"}} · web_fetch {{"url"}} -> the page text (needs internet) · open_app {{"app": "kate|konsole|dolphin|{browser}|libreoffice", "args": ["/path"]}} · type_text {{"text": "...", "delay_ms": 1500}} types into the window opened in the previous step · notify_user {{"message"}} · send_email {{"to", "subject", "body"}}.
+Worked examples (step -> the one call):
+- save the word hi into ~/Documents/a.txt -> write_file {{"path": "{home}/Documents/a.txt", "content": "hi\\n"}}
+- count the regular files in /tmp/x -> run_shell {{"command": "find /tmp/x -maxdepth 1 -type f | wc -l"}}
+- total of the column amount in a.csv and b.csv -> run_shell {{"command": "python3 -c \\"import csv,sys; t=sum(float(r['amount']) for f in sys.argv[1:] for r in csv.DictReader(open(f))); print(int(t) if t==int(t) else round(t,2))\\" a.csv b.csv"}}
+- rename every .txt in ~/x to .md (same base names) -> run_shell {{"command": "for f in ~/x/*.txt; do mv \"$f\" \"${{f%.txt}}.md\"; done"}}
+- the largest file under /tmp/x, name only, into ~/big.txt -> run_shell {{"command": "find /tmp/x -type f -printf '%s %f\\n' | sort -n | tail -1 | cut -d' ' -f2- > {home}/big.txt"}}
+- open Fab Editor and type hello -> open_app {{"app": "kate"}} ; then the next step -> type_text {{"text": "hello", "delay_ms": 1500}}
+- save what the previous step fetched or printed into ~/Documents/out.json -> save_result {{"path": "{home}/Documents/out.json"}}
+Apps: Fab Editor = kate, Fab Terminal = konsole, Fab Files = dolphin, browser = {browser}. Permission mode: {mode}."""
+
+PLAN_SYSTEM = """You plan a desktop task for the {app} agent as a short numbered list of steps; each step is done by ONE tool call. Home: {home}. The task's files and folders are on this computer.
+Tools: run_shell (a bash command: files, folders, copy, rename, count, sum, dates, curl), write_file (create a text file with exact content the user gave), save_result (write the previous step's output to a file exactly as it is), read_file, list_dir, web_fetch (fetch a URL's text), open_app (kate = Fab Editor, konsole = Fab Terminal, dolphin = Fab Files, {browser} = the browser, libreoffice), type_text (type into the app opened in the previous step), send_email, notify_user, reply (the final answer text, only when the user asked a question or for a report line).
+Rules: as few steps as possible; ONE run_shell step when a command does the whole job, including writing a computed value into a file with '>' (dates: date +%F; copying: cp, the source stays; a column total in CSV files: python3's csv module by column name). To count or list the files of a folder use list_dir: it returns the total and the names. Use web_fetch only when the task names a web page or URL; never invent a URL. Tool names are not shell commands. If the user names the tools or the order (open X, then type Y), plan exactly those steps in that order. Each step does one thing: web_fetch and read_file only return text, so saving what they return is a separate save_result step right after. write_file is for text the user gave literally; save_result for output a previous step produced. Show your work: when the user asks to WRITE or COMPOSE text they will read (a note, a letter, a mail body, a message, a document, code) or wants to watch it typed: open_app kate with the file path, then type_text, then write_file the same text to that path. Pure file or system operations (copy, rename, count, a value into a file) need no window. No step for checking: verification is automatic. Never create a file the task does not name; a count, a question or a report line ends with a reply step, not a file. Do not invent facts, values or paths. Do not answer the task yourself.
+Example — "How big is ~/Pictures? Reply SIZE: <bytes>" -> {{"steps": [{{"tool": "run_shell", "goal": "print the total size of ~/Pictures in bytes"}}, {{"tool": "reply", "goal": "SIZE: the number printed"}}]}}
+Return only JSON: {{"steps": [{{"tool": "...", "goal": "what the step must achieve, in words, with the exact paths and values — never a command"}}]}}"""
+
+CHECK_SYSTEM = ("You verify one step of a desktop task. Answer as JSON {\"ok\": true|false, \"reason\": \"...\"}: ok=true when the tool result shows the "
+                "step's goal was achieved (exit_code 0 and the expected output or file), ok=false only when the result shows an error, a wrong value or that nothing happened.")
+
+FINISH_SYSTEM = ("You write the closing message of the {app} agent to the user: one or two short sentences in plain, warm English saying what was done "
+                 "and where the outputs are. Only facts from the step results below; never invent, never add offers or questions.")
+
+
+def plan_max_steps(request):
+    """How many steps a plan for this request may have: two more than the request has sentences, at least 3, at most
+    PLAN_MAX_STEPS — enforced through the JSON schema, so a one-line task cannot come back as a seven-step story (measured)."""
+    n = len([s for s in re.split(r"[.!?;]+\s", " ".join((request or "").split())) if s.strip()])
+    return max(3, min(PLAN_MAX_STEPS, 2 + n))
+
+
+def plan_schema(allowed, max_steps=PLAN_MAX_STEPS):
+    return {"type": "object", "additionalProperties": False, "required": ["steps"],
+            "properties": {"steps": {"type": "array", "minItems": 1, "maxItems": max_steps,
+                                     "items": {"type": "object", "additionalProperties": False, "required": ["tool", "goal"],
+                                               "properties": {"tool": {"type": "string", "enum": list(allowed)}, "goal": {"type": "string", "maxLength": 240}}}}}}
+
+
+def driver_name(store, kind):
+    """'stepwise' or 'freeform' for a provider kind: the setting agent.driver wins, else local => stepwise, everything else free-form."""
+    s = (store.setting("agent.driver", "") or "").strip().lower()
+    if s in ("stepwise", "freeform"):
+        return s
+    return "stepwise" if kind == "local" else "freeform"
+
+
+def _private_host(host):
+    return (not host or host in ("localhost",) or host.startswith(("127.", "10.", "192.168.", "0.", "::1", "fe80:"))
+            or re.match(r"^172\.(1[6-9]|2\d|3[01])\.", host) is not None)
+
+
+def net_probe_target(store=None):
+    """The configured provider's host when it is a public one, else 1.1.1.1 (the local model lives on the loopback)."""
+    host = None
+    if store is not None:
+        kind = os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude")
+        if kind == "claude":
+            host = urllib.parse.urlparse(ClaudeProvider.API).hostname
+        elif kind in PROVIDERS and PROVIDERS[kind].get("base_url"):
+            host = urllib.parse.urlparse(store.setting(kind + ".base_url", PROVIDERS[kind]["base_url"]) or "").hostname
+    return NET_PROBE_HOST if _private_host(host) else host
+
+
+def _net_probe(host):
+    """True when a TLS connection to host:443 could be made (any HTTP answer, even an error, means the network is there)."""
+    try:
+        c = http.client.HTTPSConnection(host, NET_PROBE_PORT, timeout=NET_TIMEOUT_S)
+        c.request("HEAD", "/", headers={"User-Agent": "FabOS-agent/1.0"})
+        c.getresponse()
+        c.close()
+        return True
+    except (ssl.SSLError, http.client.HTTPException):
+        return True                              # the socket connected; only the certificate, the protocol or the HTTP answer disagreed (RemoteDisconnected, BadStatusLine)
+    except (OSError, socket.timeout):
+        return False                             # DNS failure, unreachable, refused, timed out
+    except Exception:
+        return True                              # a malformed HTTP answer still came over the network
+
+
+def network_cached():
+    """The LAST probe's result without touching the network: {"online": bool|None, "target": "host:443", "checked": epoch, "age_s": n}
+    (online None = never probed). What /status reports — the UIs poll it every few seconds, and a poll must never be a network request."""
+    with _net_lock:
+        d = {k: _net[k] for k in ("online", "target", "checked")}
+    d["age_s"] = int(time.time() - d["checked"]) if d["checked"] else None
+    return d
+
+
+def network_status(store=None):
+    """Probe once (one HTTPS HEAD, NET_TIMEOUT_S, no payload) unless the cached value is younger than NET_CACHE_S, and return it.
+    Called ONLY at the start of a stepwise task whose request names a web page or URL (the only tasks web_fetch can appear in);
+    a managed computer's hosts_allowed list binds the probe as it binds web_fetch (no probe when the target is not allowed)."""
+    d = network_cached()
+    if d["online"] is not None and d["age_s"] is not None and d["age_s"] < NET_CACHE_S:
+        return d
+    host = net_probe_target(store)
+    if not POLICY.host_allowed(host):
+        return d
+    online = _net_probe(host)
+    with _net_lock:
+        _net.update(online=online, target="%s:%d" % (host, NET_PROBE_PORT), checked=time.time())
+    return network_cached()
+
+
+NET_SKIPPED = {"online": None, "target": "", "checked": 0.0, "age_s": None, "skipped": True}     # the task names no web page or URL: no probe
+
+
+def local_system_prompt(mode, net):
+    online = net.get("online")
+    line = ("ONLINE — web_fetch works, but only for tasks that name a web page or URL; the clock, files, folders and apps are local and never need it"
+            if online else "OFFLINE right now (no web_fetch; the clock, files, folders and apps still work)" if online is False
+            else "not checked — this task names no web page or URL, so nothing in it needs the internet; the clock, files, folders and apps are local" if net.get("skipped")
+            else "unknown")
+    return LOCAL_SYSTEM_PROMPT.format(app=APP, user=os.environ.get("USER", "user"), home=HOME, date=datetime.now().strftime("%Y-%m-%d"), net=line, mode=mode, browser=BROWSER)
+
+
+def parse_plan(text, allowed):
+    """(steps, None) from the model's plan text, or (None, why). Strict JSON first, then the first {...} block in the text."""
+    text = (text or "").strip()
+    doc = None
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        m = re.search(r"\{.*\}", text, re.S)
+        if m:
+            try:
+                doc = json.loads(m.group(0))
+            except ValueError:
+                doc = None
+    if not isinstance(doc, dict):
+        return None, "not a JSON object"
+    steps = doc.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return None, "no steps"
+    if len(steps) > PLAN_MAX_STEPS:
+        return None, "more than %d steps" % PLAN_MAX_STEPS
+    out = []
+    for i, s in enumerate(steps):
+        if not isinstance(s, dict):
+            return None, "step %d is not an object" % (i + 1)
+        tool = str(s.get("tool") or "").strip()
+        goal = " ".join(str(s.get("goal") or "").split())
+        if tool not in allowed:
+            return None, "step %d uses unknown tool %r (allowed: %s)" % (i + 1, tool, ", ".join(allowed))
+        if not goal:
+            return None, "step %d has no goal" % (i + 1)
+        out.append({"tool": tool, "goal": goal[:300]})
+    return out, None
+
+
+def step_check(tool, inp, out, err):
+    """Deterministic verification of a finished tool call: (ok, one-line detail). Cheap and local: exit codes, files on disk,
+    processes running; never trusts the model's words."""
+    if err or (isinstance(out, dict) and out.get("error")):
+        return False, str((out or {}).get("error") if isinstance(out, dict) else out)[:300]
+    out = out if isinstance(out, dict) else {}
+    if tool == "run_shell":
+        code = out.get("exit_code")
+        if code != 0:
+            return False, "exit code %s: %s" % (code, " ".join(((out.get("stderr") or out.get("stdout") or "")[-300:]).split()))
+        so = (out.get("stdout") or "").strip()
+        return True, "exit 0" + (", output: %s" % " ".join(so[:120].split()) if so else ", no output")
+    if tool == "write_file":
+        p = os.path.expanduser(str(inp.get("path") or ""))
+        if not os.path.isfile(p):
+            return False, "the file %s does not exist afterwards" % p
+        try:
+            with open(p, errors="replace") as f:
+                data = f.read()
+        except OSError as e:
+            return False, str(e)
+        if not inp.get("append") and data != (inp.get("content") or ""):
+            return False, "the file content differs from what was written"
+        return True, "%s exists, %d bytes" % (p, len(data.encode()))
+    if tool == "open_app":
+        name = os.path.basename(str(inp.get("app") or "").split()[0]) if inp.get("app") else ""
+        if name and name not in ("xdg-open", "open"):
+            time.sleep(1.0)                          # setsid -f detached it: find the application by name, not by pid
+            for args in (["pgrep", "-x", name], ["pgrep", "-f", name]):
+                if subprocess.run(args, capture_output=True).returncode == 0:
+                    return True, "%s is running" % name
+            return False, "%s is not running after open_app (is the name right? kate, konsole, dolphin, %s)" % (name, BROWSER)
+        return True, "launched"
+    if tool == "type_text":
+        n = int(out.get("typed_chars") or 0)
+        return n > 0, "typed %d characters" % n
+    if tool == "web_fetch":
+        text = (out.get("text") or "").strip()
+        return bool(text), ("fetched %d characters: %s" % (len(text), " ".join(text[:300].split())) if text else "empty response")
+    if tool == "read_file":
+        return "content" in out, "read %d characters" % len(out.get("content") or "")
+    if tool == "list_dir":
+        return "entries" in out, "%s entries" % out.get("total")
+    if tool == "send_email":
+        return bool(out.get("sent")), "sent to %s" % out.get("to") if out.get("sent") else "not sent"
+    if tool == "check_email":
+        return "messages" in out, "%s messages" % out.get("count")
+    return True, "done"
+
+
+GOAL_PATH_RE = re.compile(r"(?<![\w:/])(~/[\w.@+-]+(?:/[\w.@+-]+)*|/[\w.@+-]+(?:/[\w.@+-]+)+)")   # ~/big.txt, ~/Ladder/one/date.txt, /tmp/ladder/notes — not URLs, not /tmp alone, not bare names
+NO_FILES_RE = re.compile(r"\b(do not|don't|never|without) (create|creating|change|changing|modify|modifying|write|writing|touch|touching|alter|altering)\b[^.]{0,40}\bfiles?\b")
+ANSWER_RE = re.compile(r"(how many|how much|what is|which |tell me|end your (reply|answer)|reply with|answer with|report the|\?)")
+WEB_WORDS_RE = re.compile(r"(https?://|www\.|\b(web|url|page|site|website|online|internet|download|fetch|http)\b)")
+OPEN_WORDS_RE = re.compile(r"\b(open|opens|typ(e|es|ed|ing)|window|editor|terminal|browser|app|application|watch|show|screen)\b")
+# The owner's show-your-work rule in the SYSTEM_PROMPT's own words: text the user will READ (a note, a letter, a mail body, a message,
+# a document, code) that the request asks to write, compose or draft is typed in Fab Editor where they can watch, then saved. A verb and a
+# content noun together — "write the total into total.txt" or "create a file whose content is X" are file operations and stay windowless.
+COMPOSE_RE = re.compile(r"\b(write|writes|writing|compose|composes|composing|draft|drafts|drafting|pen|jot down)\b(?:(?!\binto\b)[^.;]){0,60}?"
+                        r"\b(note|notes|letter|letters|mail|e-?mail|message|memo|document|essay|poem|story|paragraph|summary|report|reply|body|code|script|program)\b")
+SAVE_VERBATIM_RE = re.compile(r"\b(unchanged|exactly as|as[- ]is|verbatim|without (any )?changes?|what (it|you) (got|returned|fetched)|the (json|text|body|output) you get)\b")
+# The desktop's brand names -> the executable open_app must start. When the task names exactly one of them, an open_app step
+# that starts something else is a failed step (measured: "Open the Fab Terminal" opened dolphin).
+APP_NAMES = {"konsole": ("fab terminal", "terminal", "konsole"), "kate": ("fab editor", "text editor", "kate"),
+             "dolphin": ("fab files", "file manager", "dolphin"), BROWSER: ("browser", BROWSER)}
+
+
+def expected_app(request):
+    """The one executable the request's app name points at ('konsole' for 'Open the Fab Terminal'), or None when the request
+    names none or several."""
+    low = " ".join((request or "").lower().split())
+    hits = [exe for exe, names in APP_NAMES.items() if any(n in low for n in names)]
+    return hits[0] if len(hits) == 1 else None
+GOAL_DELETE_RE = re.compile(r"\b(delete|remove|rm|erase|clean|clear|unlink|trash|empty|purge|move|mv|rename)\b", re.I)
+# The user's own words that ask for something to be moved, renamed, deleted or replaced. A request without any of them (a copy,
+# a count, a sum) never justifies an mv/rm in a shell step — measured on "Copy the folder /tmp/ladder/notes to ~/Ladder/notes-copy":
+# the plan's second step, "Rename the copied folder", ran `mv /tmp/ladder/notes ~/Ladder/notes-copy` and the user's source folder
+# was gone (the ladder's check still passed, which is why this is a deterministic guard and not a check).
+CHANGE_WORDS_RE = re.compile(r"\b(delete|deletes|deleting|remove|removes|removing|rm|erase|erasing|clean|cleans|cleaning|clear|clears|clearing|unlink|trash|"
+                             r"empty|empties|purge|move|moves|moving|mv|rename|renames|renaming|replace|replaces|replacing|overwrite|overwrites|overwriting|"
+                             r"tidy|sort out|organi[sz]e|get rid of|throw away|discard)\b")
+# The command words that move, rename or delete, as the FIRST word of a simple command (at the start, after ; & | ( ` { $( or the
+# keywords do/then/else, optionally behind sudo, xargs, nice, time, command or env) — `echo rename` is not a command; plus find's
+# -delete / -exec[dir] mv|rm, rsync's --delete / --remove-source-files, and Python's shutil.rmtree/move and os.remove/unlink/rename/rmdir.
+# A word list, not a parser: the common forms (ADR-0020 says so); the risk classifier and the sandbox stay in front of everything else.
+DESTRUCTIVE_CMD_RE = re.compile(r"(?:^|[;&|(`{]|\$\(|\b(?:do|then|else)\s)\s*(?:sudo\s+(?:-\S+\s+)*|xargs\s+(?:-\S+\s+|\d+\s+)*|nice\s+(?:-n\s*\d+\s+)?|time\s+|command\s+|env\s+(?:\S+=\S*\s+)*)?"
+                                r"(mv|rm|rmdir|shred|unlink|rename)(?=\s|$)"
+                                r"|\s(-delete|--delete(?:-(?:before|after|during|delay|excluded))?|--remove-source-files)(?=\s|$)"
+                                r"|-exec(?:dir)?\s+(mv|rm)\s"
+                                r"|\b(shutil\.(?:rmtree|move)|os\.(?:remove|unlink|rename|renames|replace|rmdir|removedirs))\s*\(")
+# A plan step whose own goal renames, moves or deletes (dropped when the request never asks for that).
+PLAN_CHANGE_RE = re.compile(r"\b(rename|renames|renaming|move|moves|moving|delete|deletes|deleting|remove|removes|removing|erase|purge|trash|rm|mv)\b")
+# "Rename every file that ends in .txt inside ~/x so it ends in .md": the two extensions and the folders, for a deterministic
+# post-condition (no *.txt may remain) — measured: `sed -i 's/.txt/.md/g'` on the files' CONTENTS exited 0, renamed nothing, and
+# the model's self-check said yes.
+RENAME_EXT_RE = re.compile(r"\brenam\w*\b")
+EXT_RE = re.compile(r"(?<![\w/])\.([a-z0-9]{1,5})\b")
+
+
+def destructive_command_reason(request, command):
+    """Why this shell command may not run for this request, or None: it moves, renames or deletes (mv, rm, rmdir, shred, unlink,
+    rename, find -delete / -exec rm) while the user's words never asked for anything to be moved, renamed, deleted or replaced."""
+    low = " ".join((request or "").lower().split())
+    if CHANGE_WORDS_RE.search(low):
+        return None
+    m = DESTRUCTIVE_CMD_RE.search(command or "")
+    if not m:
+        return None
+    word = next(g for g in m.groups() if g)
+    return ("the task never asks to move, rename or delete anything, so `%s` may not run here (it would change or lose the user's files);"
+            " do the step with cp, mkdir, cat or a > redirect instead" % word)
+
+
+def rename_expectation(request):
+    """(old_ext, new_ext, [folders]) when the request asks to rename files from one extension to another inside folders it names
+    (and they exist), else None. The rename step's deterministic post-condition: no file with old_ext may remain there."""
+    low = " ".join((request or "").lower().split())
+    if not RENAME_EXT_RE.search(low):
+        return None
+    exts = []
+    for m in EXT_RE.finditer(low):
+        e = "." + m.group(1)
+        if e not in exts:
+            exts.append(e)
+    if len(exts) != 2:
+        return None
+    folders = [p for p in goal_paths(request) if os.path.isdir(os.path.expanduser(p))]
+    if not folders:
+        return None
+    return exts[0], exts[1], folders
+
+
+def rename_leftovers(exp):
+    """Files still ending in the old extension inside the expectation's folders (names only, sorted)."""
+    old, _new, folders = exp
+    left = []
+    for d in folders:
+        fp = os.path.expanduser(d)
+        try:
+            names = sorted(os.listdir(fp))
+        except OSError:
+            continue
+        left += [n for n in names if n.lower().endswith(old) and os.path.isfile(os.path.join(fp, n))]
+    return left
+
+
+def rename_hint(exp):
+    old, new, folders = exp
+    return "rename each one with mv, e.g. for f in %s/*%s; do mv \"$f\" \"${f%%%s}%s\"; done" % (folders[0], old, old, new)
+
+
+def goal_paths(goal):
+    """Filesystem paths named in a step goal, in order, de-duplicated (trailing punctuation stripped)."""
+    out = []
+    for m in GOAL_PATH_RE.findall(goal or ""):
+        p = m.rstrip(".,;:)\"'")
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def missing_goal_paths(goal):
+    """Paths the step's goal names that do not exist afterwards — a cheap, deterministic 'did the command really do it' check for
+    shell steps (exit 0 alone proves little: `date +%F` prints the date and writes nothing). Skipped for steps that delete, move or rename."""
+    if GOAL_DELETE_RE.search(goal or ""):
+        return []
+    return [p for p in goal_paths(goal) if not os.path.exists(os.path.expanduser(p))]
+
+
+def plan_reject_reason(request, plan):
+    """Why a parsed plan must be planned again, or None: every step reaches for the web (web_fetch, or a goal that names a URL or
+    web_fetch) while the task names no web page or URL — the small model's measured habit of inventing an API for local files."""
+    low = " ".join((request or "").lower().split())
+    if WEB_WORDS_RE.search(low):
+        return None
+    webby = [s for s in plan if s["tool"] == "web_fetch" or re.search(r"(https?://|www\.|\bweb_fetch\b|\bcurl\b|\bapi\b)", s["goal"].lower())]
+    if webby and len(webby) == len(plan):
+        return "every step uses the web, but the task names no web page or URL — the files are on this computer: use run_shell, list_dir, read_file, write_file or save_result on the paths the task gives"
+    return None
+
+
+def plan_sanity(request, plan):
+    """Deterministic repairs of a parsed plan from the product rules, returned as notes. Show your work (owner's rule): when the
+    user asks to TYPE something and the plan opens an application, a type_text step must follow the open_app step — the small
+    model regularly plans the open_app and forgets the typing."""
+    notes = []
+    low = " ".join((request or "").lower().split())
+    # A step that repeats an earlier step's goal word for word does nothing new (measured: "copy the folder A to B" planned as
+    # run_shell and again as save_result, which then wrote 0 bytes into the copied folder three times and failed a task whose
+    # work was done). The first occurrence stays, later repeats go; never empties the plan.
+    seen, keep = set(), []
+    for i, s in enumerate(plan):
+        key = " ".join(s["goal"].lower().split()).rstrip(".!")
+        if key in seen:
+            notes.append("dropped step %d [%s]: it repeats an earlier step's goal (%s)" % (i + 1, s["tool"], s["goal"][:80]))
+            continue
+        seen.add(key)
+        keep.append(s)
+    if keep and len(keep) < len(plan):
+        plan[:] = keep
+    # The request never asks to move, rename or delete: a step whose own goal would is dropped — measured: "Copy the folder A to B"
+    # planned as cp, then "Rename the copied folder to B", which ran mv on the source. Never empties the plan.
+    if not CHANGE_WORDS_RE.search(low):
+        keep = [s for s in plan if s["tool"] == "reply" or not PLAN_CHANGE_RE.search(s["goal"].lower())]
+        if keep and len(keep) < len(plan):
+            for i, s in enumerate(plan):
+                if s not in keep:
+                    notes.append("dropped step %d [%s]: it would rename, move or delete, which the task never asks for (%s)" % (i + 1, s["tool"], s["goal"][:80]))
+            plan[:] = keep
+    compose = COMPOSE_RE.search(low) is not None
+    tools = [s["tool"] for s in plan]
+    if compose and "open_app" not in tools and "write_file" in tools and len(plan) + 2 <= PLAN_MAX_STEPS:
+        # Show your work (owner's rule): text the user asked to have written for them is typed where they can watch, then saved —
+        # the small model plans the bare write_file; the window and the typing go in front of it.
+        i = tools.index("write_file")
+        paths = goal_paths(plan[i]["goal"]) or goal_paths(request)
+        plan.insert(i, {"tool": "open_app", "goal": "open Fab Editor (kate)%s so the user can watch the text being written" % ((" with the file path " + paths[0]) if paths else "")})
+        plan.insert(i + 1, {"tool": "type_text", "goal": "type the text the user asked for into the editor window opened in the previous step"})
+        notes.append("added open_app and type_text before write_file: the user asked for text they will read, so it is typed where they can watch (show your work)")
+        tools = [s["tool"] for s in plan]
+    if re.search(r"\btyp(e|es|ed|ing)\b", low) and "open_app" in tools and "type_text" not in tools and len(plan) < PLAN_MAX_STEPS:
+        i = tools.index("open_app")
+        plan.insert(i + 1, {"tool": "type_text", "goal": "type the text the user asked for into the window opened in the previous step"})
+        notes.append("added a type_text step after open_app: the user asked to type")
+    # "Do not create or change any file": the user's own words — no write_file / save_result step may stay (measured: the model
+    # planned save_result into the very folder it was told to leave alone). Never empties the plan.
+    if NO_FILES_RE.search(low):
+        keep = [s for s in plan if s["tool"] not in ("write_file", "save_result")]
+        if keep and len(keep) < len(plan):
+            notes.append("dropped %d file-writing step(s): the task says not to create or change files" % (len(plan) - len(keep)))
+            plan[:] = keep
+    # No URL or web word in the task: web_fetch has no business in the plan (measured: "Fetch the content of the 'list.txt' file" for
+    # a local folder). No open/type/window word AND nothing to write or compose for the user to read (a pure file or system
+    # operation: copy, count, a computed value into a file): neither have open_app / type_text. Never empties the plan.
+    for tools_out, keep_if, why in (({"web_fetch"}, WEB_WORDS_RE.search(low), "the task names no web page or URL"),
+                                    ({"open_app", "type_text"}, OPEN_WORDS_RE.search(low) or compose, "the task never asks to open an app, to type, or to write text the user will read")):
+        if not keep_if:
+            keep = [s for s in plan if s["tool"] not in tools_out]
+            if keep and len(keep) < len(plan):
+                notes.append("dropped %d %s step(s): %s" % (len(plan) - len(keep), "/".join(sorted(tools_out)), why))
+                plan[:] = keep
+    # "save the JSON you get back, unchanged": a write_file right after web_fetch/read_file would make the model retype the data
+    # (measured: {"ok": true, "app": "Fab OS"} became "ok\napp=Fab OS") — the driver's save_result copies it instead.
+    if SAVE_VERBATIM_RE.search(low):
+        for i in range(1, len(plan)):
+            if plan[i]["tool"] == "write_file" and plan[i - 1]["tool"] in ("web_fetch", "read_file"):
+                plan[i]["tool"] = "save_result"
+                notes.append("step %d saves the fetched text with save_result instead of retyping it: the task says to keep it unchanged" % (i + 1))
+    # The task asks for an answer (a count, a question, "end your reply with ...") and the plan never replies: add the reply step.
+    if ANSWER_RE.search(low) and "reply" not in [s["tool"] for s in plan] and len(plan) < PLAN_MAX_STEPS:
+        plan.append({"tool": "reply", "goal": "answer the user in exactly the form the task asks, using the results above"})
+        notes.append("added a reply step: the task asks for an answer")
+    return notes
+
+
+def render_result(tool, out):
+    """A tool result as the small model sees it: plain text, not the JSON envelope (the full JSON stays in the task history)."""
+    if not isinstance(out, dict):
+        return str(out)
+    if out.get("error"):
+        return "error: " + str(out["error"])
+    if tool == "run_shell":
+        so, se = (out.get("stdout") or "").strip(), (out.get("stderr") or "").strip()
+        return "exit_code %s\nstdout: %s%s" % (out.get("exit_code"), so or "(empty)", ("\nstderr: " + se) if se else "")
+    if tool in ("web_fetch", "read_file"):
+        return (out.get("text") if tool == "web_fetch" else out.get("content")) or "(empty)"
+    if tool == "list_dir":
+        ents = out.get("entries") or []
+        nd = sum(1 for e in ents if e.get("dir"))
+        return "%s entries in %s (%d files, %d folders): %s" % (out.get("total"), out.get("path"), len(ents) - nd, nd, ", ".join(e["name"] + ("/" if e.get("dir") else "") for e in ents))
+    if tool == "write_file":
+        return "wrote %s bytes to %s" % (out.get("bytes"), out.get("path"))
+    if tool == "open_app":
+        return "launched: " + str(out.get("launched"))
+    if tool == "type_text":
+        return "typed %s characters" % out.get("typed_chars")
+    return json.dumps(out)
+
+
+def raw_result(tool, out, inp=None):
+    """The data a tool call produced, verbatim — what save_result writes: stdout of run_shell, the page text of web_fetch, the
+    content of read_file, the names list_dir returned (one per line), the text type_text put on screen (so "type it, then save
+    it" saves exactly what was typed); None when the tool has no data output or failed."""
+    if not isinstance(out, dict) or out.get("error"):
+        return None
+    if tool == "type_text":
+        return (str((inp or {}).get("text") or "") + "\n") if out.get("typed_chars") else None
+    if tool == "run_shell":
+        return out.get("stdout") or ""
+    if tool == "web_fetch":
+        return out.get("text") or ""
+    if tool == "read_file":
+        return out.get("content") or ""
+    if tool == "list_dir":
+        return "".join(e["name"] + "\n" for e in out.get("entries") or [])
+    return None
+
+
+def task_paths_line(request):
+    """'Paths named in the task (use them exactly): ~/Ladder/one/date.txt = /home/u/Ladder/one/date.txt; /tmp/ladder/notes' or ''.
+    A 1.5B model drops directory components from paths it retypes; spelling them out (expanded) is cheap insurance."""
+    paths = goal_paths(request)
+    if not paths:
+        return ""
+    parts = []
+    for p in paths[:6]:
+        full = os.path.expanduser(p)
+        s = "%s = %s" % (p, full) if p.startswith("~") else p
+        parent = os.path.dirname(full)
+        if not os.path.exists(full) and parent and not os.path.isdir(parent):      # a fact about the disk, refreshed every turn
+            s += " (its folder %s does not exist yet: mkdir -p it first; write_file and save_result create it)" % parent
+        parts.append(s)
+    return "Paths named in the task (use them exactly): " + "; ".join(parts)
+
+
+def stepwise_turn_text(request, plan, idx, results, error=None):
+    """The one user message of an EXECUTE turn: the task (with its paths spelled out), the plan with the current step marked, the
+    verified results so far (last one clipped to RESULT_LIMIT_STEP, earlier ones to RESULT_LIMIT_EARLIER), the previous attempt's
+    error, the order."""
+    lines = ["Task: " + " ".join(request.split())]
+    pl = task_paths_line(request)
+    if pl:
+        lines.append(pl)
+    lines.append("Plan:")
+    for i, s in enumerate(plan):
+        mark = "done" if i < idx else ("NOW" if i == idx else "later")
+        lines.append("  %d. [%s] %s  (%s)" % (i + 1, s["tool"], s["goal"], mark))
+    for i in range(idx):
+        r = results.get(i)
+        if r:
+            lines.append("Result of step %d (%s): %s" % (i + 1, r["tool"], clip(r["text"], RESULT_LIMIT_STEP if i == idx - 1 else RESULT_LIMIT_EARLIER)))
+    if error:
+        lines.append("Your previous attempt at this step failed: %s" % " ".join(str(error).split())[:600])
+        lines.append("Fix it: use a different command or different arguments, then try again.")
+    step = plan[idx]
+    if step["tool"] == "reply":
+        lines.append("Step %d of %d: %s" % (idx + 1, len(plan), step["goal"]))
+        lines.append("Write the reply text now, using only the results above. No tool call.")
+    else:
+        lines.append("Step %d of %d — do it now with ONE %s call: %s" % (idx + 1, len(plan), step["tool"], step["goal"]))
+    return "\n".join(lines)
+
+
+def provider_complete(prov, system, user, schema=None, max_tokens=600, on_usage=None):
+    """One plain completion (plan, self-check, summary). Providers with `complete` enforce the JSON schema server-side; the
+    others get the schema in the prompt and the caller parses/retries."""
+    if hasattr(prov, "complete"):
+        return prov.complete(system, user, schema=schema, max_tokens=max_tokens, on_usage=on_usage)
+    if schema:
+        user = user + "\n\nAnswer with one JSON object matching this schema and nothing else: " + json.dumps(schema)
+    resp = prov.step(system, [{"role": "user", "content": user}], [], on_usage, max_tokens=max_tokens)
+    return "".join(b.get("text", "") for b in resp["content"] if b.get("type") == "text")
+
 
 def kill_tree(p, grace=2.0):
     """Terminate a Popen started with start_new_session=True together with everything it spawned: SIGTERM to the whole
@@ -1380,10 +1927,12 @@ class ClaudeProvider:
                 raise _ClaudeHTTPError(400, str(e))
         return self._http_create(kw)
 
-    def step(self, system, messages, tools, on_usage=None):
-        kw = dict(model=self.model, max_tokens=16000,
+    def step(self, system, messages, tools, on_usage=None, **opts):
+        kw = dict(model=self.model, max_tokens=int(opts.get("max_tokens") or 16000),
                   system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                  messages=messages, tools=tools)
+                  messages=messages)
+        if tools:
+            kw["tools"] = tools
         # Server-side refusal fallbacks (Opus 5 / Fable): re-run declined requests on a fallback model inside the same call.
         if self.fallbacks and self.model.startswith(("claude-opus-5", "claude-fable")):
             kw["extra_headers"] = {"anthropic-beta": "server-side-fallback-2026-07-01"}
@@ -1417,8 +1966,59 @@ class OpenAICompatProvider:
             self.name = name
         if result_limit:
             self.result_limit = result_limit
+        # Sampling per request: temperature 0.2 for every provider (as before); the local model also gets top_p 0.9 and
+        # repeat_penalty 1.05 (Qwen2.5's own generation_config value; without it the 1.5B model looped ". | . | . | ..." inside
+        # tool arguments) — llama-server accepts these llama.cpp fields on /v1/chat/completions; cloud requests keep their shape.
+        self.sampling = {"temperature": 0.2, "top_p": 0.9, "repeat_penalty": 1.05} if self.name == "local" else {"temperature": 0.2}
+        self.json_schema_ok = None                 # None = untried; False after the endpoint rejected response_format once
 
-    def step(self, system, messages, tools, on_usage=None):
+    def _post(self, body):
+        req = urllib.request.Request(self.base + "/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "Authorization": "Bearer " + self.key})
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            # surface the server's own message (llama-server/vLLM/vendors put it in {"error": {"message": ...}}) instead of a bare "400 Bad Request"
+            raw = e.read().decode("utf-8", "replace")[:2000]
+            try:
+                err = json.loads(raw).get("error", raw)
+                msg = err.get("message") if isinstance(err, dict) else str(err)
+            except Exception:
+                msg = raw
+            msg = (msg or str(e)).strip()
+            if e.code in (400, 413, 422) and re.search(r"context|too many tokens|maximum.*length|exceed", msg, re.I):
+                raise ContextOverflow("%s (HTTP %d from %s)" % (msg, e.code, self.base))
+            raise RuntimeError("%s provider error HTTP %d: %s" % (self.name, e.code, msg))
+        except urllib.error.URLError as e:
+            raise RuntimeError("%s provider unreachable at %s: %s" % (self.name, self.base, e.reason))
+
+    def complete(self, system, user, schema=None, max_tokens=600, on_usage=None):
+        """One plain completion. With `schema`, llama-server enforces it through response_format json_schema (grammar-constrained
+        sampling; verified on llama.cpp 8681); an endpoint that rejects response_format gets the schema in the prompt instead
+        and the caller's parse-and-retry takes over."""
+        body = {"model": self.model, "max_tokens": max_tokens, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+        body.update(self.sampling)
+        enforced = bool(schema) and self.json_schema_ok is not False
+        if enforced:
+            body["response_format"] = {"type": "json_schema", "json_schema": {"name": "answer", "strict": True, "schema": schema}}
+        elif schema:
+            body["messages"][1]["content"] += "\n\nAnswer with one JSON object matching this schema and nothing else: " + json.dumps(schema)
+        try:
+            d = self._post(body)
+        except RuntimeError as e:
+            if enforced and re.search(r"response_format|json_schema|schema", str(e), re.I):
+                LOG("%s: response_format rejected (%s) — falling back to schema-in-prompt" % (self.name, str(e)[:160]))
+                self.json_schema_ok = False
+                return self.complete(system, user, schema, max_tokens, on_usage)
+            raise
+        if enforced:
+            self.json_schema_ok = True
+        if on_usage and d.get("usage"):
+            on_usage(d["usage"].get("prompt_tokens", 0), d["usage"].get("completion_tokens", 0))
+        return (d["choices"][0]["message"].get("content") or "").strip()
+
+    def step(self, system, messages, tools, on_usage=None, **opts):
         msgs = [{"role": "system", "content": system}]
         for m in messages:
             if m["role"] == "user":
@@ -1437,27 +2037,15 @@ class OpenAICompatProvider:
                 if calls:
                     am["tool_calls"] = calls
                 msgs.append(am)
-        body = {"model": self.model, "messages": msgs, "temperature": 0.2,
-                "tools": [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}} for t in tools]}
-        req = urllib.request.Request(self.base + "/chat/completions", data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json", "Authorization": "Bearer " + self.key})
-        try:
-            with urllib.request.urlopen(req, timeout=600) as r:
-                d = json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            # surface the server's own message (llama-server/vLLM/vendors put it in {"error": {"message": ...}}) instead of a bare "400 Bad Request"
-            raw = e.read().decode("utf-8", "replace")[:2000]
-            try:
-                err = json.loads(raw).get("error", raw)
-                msg = err.get("message") if isinstance(err, dict) else str(err)
-            except Exception:
-                msg = raw
-            msg = (msg or str(e)).strip()
-            if e.code in (400, 413, 422) and re.search(r"context|too many tokens|maximum.*length|exceed", msg, re.I):
-                raise ContextOverflow("%s (HTTP %d from %s)" % (msg, e.code, self.base))
-            raise RuntimeError("%s provider error HTTP %d: %s" % (self.name, e.code, msg))
-        except urllib.error.URLError as e:
-            raise RuntimeError("%s provider unreachable at %s: %s" % (self.name, self.base, e.reason))
+        body = {"model": self.model, "messages": msgs}
+        body.update(self.sampling)
+        if tools:
+            body["tools"] = [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}} for t in tools]
+            if opts.get("tool_choice"):
+                body["tool_choice"] = opts["tool_choice"]        # "required": the stepwise driver wants exactly a tool call this turn
+        if opts.get("max_tokens"):
+            body["max_tokens"] = int(opts["max_tokens"])
+        d = self._post(body)
         ch = d["choices"][0]["message"]
         content = []
         if ch.get("content"):
@@ -1474,12 +2062,152 @@ class OpenAICompatProvider:
 
 
 class FakeProvider:
-    """Deterministic scripted provider for tests and offline demos (FABOS_AGENT_PROVIDER=fake)."""
+    """Deterministic scripted provider for tests and offline demos (FABOS_AGENT_PROVIDER=fake). Also scripts the stepwise
+    driver (plan / one tool per turn / self-check / summary) for requests that start with "stepwise:"."""
     name = "fake"
 
-    def step(self, system, messages, tools, on_usage=None):
+    def __init__(self):
+        self.calls = {"plan": 0, "check": 0, "finish": 0}
+
+    # ---- stepwise scripts: (tool, goal, input, retry_input) per step of a request
+    @staticmethod
+    def fake_plan(req):
+        low = req.lower()
+        m = re.search(r"stepwise: create (\S+) with (\w+) and count it", low)
+        if m:
+            path, word = m.group(1), m.group(2)
+            return [("write_file", "write the word %s into %s" % (word, path), {"path": path, "content": word + "\n"}, None),
+                    ("run_shell", "count the words in %s" % path, {"command": "wc -w < " + path}, None),
+                    ("reply", "report the word count as WORDS: <n>", None, None)]
+        m = re.search(r"stepwise: count files in (\S+)", low)
+        if m:
+            return [("run_shell", "count the regular files in %s" % m.group(1), {"command": "find %s -maxdepth 1 -type f | wc -l" % m.group(1)}, None),
+                    ("reply", "report the count as FILE COUNT: <n>", None, None)]
+        if "stepwise: flaky command" in low:
+            return [("run_shell", "run the flaky command", {"command": "exit 3"}, {"command": "echo recovered"})]
+        if "stepwise: two calls at once" in low:
+            return [("run_shell", "say first and second", {"command": "echo first"}, None)]
+        if "stepwise: selfcheck no" in low:
+            return [("run_shell", "print ok (selfcheck no scenario)", {"command": "echo ok"}, None)]
+        if "stepwise: hopeless" in low:
+            return [("run_shell", "a command that never succeeds", {"command": "exit 7"}, {"command": "exit 7"})]
+        m = re.search(r"stepwise: missing parent (\S+)", low)
+        if m:
+            path = m.group(1)
+            return [("run_shell", "write hi into %s" % path, {"command": "echo hi > %s" % path}, {"command": "mkdir -p %s && echo hi > %s" % (os.path.dirname(path), path)})]
+        m = re.search(r"stepwise: fetch and save (\S+)", low)
+        if m:
+            return [("run_shell", "print the health JSON line", {"command": "echo '{\"ok\": true, \"app\": \"Fab OS\"}'"}, None),
+                    ("save_result", "save the output of the previous step to %s exactly as it is" % m.group(1), {"path": m.group(1)}, None)]
+        if "stepwise: wrong app" in low:
+            return [("open_app", "open the terminal", {"app": "sleep", "args": ["8"]}, {"app": "sleep", "args": ["8"]})]
+        if "stepwise: save nothing" in low:
+            return [("save_result", "save the previous output to /tmp/x (there is none)", {"path": "/tmp/fabos-save-nothing.txt"}, None)]
+        m = re.search(r"stepwise: save empty (\S+)", low)
+        if m:                                                                       # the previous command printed nothing: nothing to save
+            return [("run_shell", "copy the folder (prints nothing)", {"command": "true"}, None),
+                    ("save_result", "save the previous output to %s" % m.group(1), {"path": m.group(1)}, {"path": m.group(1)})]
+        m = re.search(r"stepwise: save into folder (\S+)", low)
+        if m:                                                                       # the path is a directory
+            return [("run_shell", "print x", {"command": "echo x"}, None),
+                    ("save_result", "save the previous output to the folder %s" % m.group(1), {"path": m.group(1)}, {"path": m.group(1)})]
+        if "stepwise: duplicate step" in low:
+            return [("run_shell", "copy the folder a to b", {"command": "echo copied"}, None)]
+        m = re.search(r"stepwise: copy folder (\S+) to (\S+)", req, re.I)
+        if m:                                                                       # first attempt reaches for mv (measured); the retry copies
+            return [("run_shell", "copy the folder %s to %s" % (m.group(1), m.group(2)), {"command": "mv %s %s" % (m.group(1), m.group(2))},
+                     {"command": "cp -r %s %s" % (m.group(1), m.group(2))})]
+        m = re.search(r"stepwise: rename ext in (\S+)", req, re.I)
+        if m:                                                                       # first attempt exits 0 and renames nothing (measured: sed -i on the contents)
+            return [("run_shell", "rename each .txt file in %s to .md" % m.group(1), {"command": "true"},
+                     {"command": "for f in %s/*.txt; do mv \"$f\" \"${f%%.txt}.md\"; done" % m.group(1)})]
+        if "stepwise: folder missing" in low:                                       # the request names a folder that no step creates
+            return [("run_shell", "print hello", {"command": "echo hello"}, None)]
+        if "stepwise: broken json" in low:
+            return [("run_shell", "print pong", {"_raw": "{\"command\": \"echo | . | . | . |"}, {"command": "echo pong"})]
+        if "stepwise: no tool" in low:
+            return [("run_shell", "print pong", {"command": "echo pong"}, None)]
+        m = re.search(r"stepwise: forget the redirect (\S+)", low)
+        if m:
+            return [("run_shell", "compute the answer and write it to %s" % m.group(1), {"command": "echo 42"}, None)]   # prints, never writes
+        if "stepwise: forget the file" in low:
+            return [("run_shell", "compute the answer", {"command": "echo 42"}, None)]          # never writes the file the request names
+        if "stepwise: type into the editor" in low:
+            return [("open_app", "open Fab Editor", {"app": "kate"}, None), ("type_text", "type hello", {"text": "hello", "delay_ms": 100}, None)]
+        m = re.search(r"stepwise: write a short note saying (.+?) and save it as (\S+)", req, re.I)
+        if m:                                                                       # show your work: the window (a stand-in process) and the typing come before the file
+            text, path = m.group(1), m.group(2)
+            return [("open_app", "open Fab Editor with the file path %s" % path, {"app": "sleep", "args": ["8"]}, None),
+                    ("type_text", "type the note into the editor", {"text": text, "delay_ms": 100}, None),
+                    ("write_file", "save the note to %s" % path, {"path": path, "content": text + "\n"}, None)]
+        return [("run_shell", "show the system", {"command": "uname -a"}, None)]
+
+    def _stepwise_turn(self, text, tools=()):
+        """An EXECUTE turn of the stepwise driver: return the scripted call for 'Step N of M' of the request on the first line."""
+        req = text.split("\n", 1)[0][len("Task: "):]
+        if [t["name"] for t in tools] == ["save_result"]:           # the driver offered one tool: with tool_choice=required a real model must call it
+            mp = re.search(r'call save_result \{"path": "([^"]+)"\}', text)
+            return {"content": [{"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": "save_result", "input": {"path": mp.group(1) if mp else "~/save.txt"}}], "stop_reason": "tool_use"}
+        m = re.search(r"Step (\d+) of (\d+)", text)
+        idx = int(m.group(1)) - 1 if m else 0
+        plan = self.fake_plan(req)
+        last = re.search(r"Result of step \d+ \(run_shell\): exit_code \d+\nstdout: (.*)", text)     # results are rendered as plain text
+        last_out = last.group(1).strip() if last else ""
+        if idx >= len(plan):
+            # a repair step the driver appended (outcome check): save_result when an earlier step produced output, else write_file
+            ms = re.search(r"Save the output above to (\S+) exactly", text)
+            if ms:
+                return {"content": [{"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": "save_result", "input": {"path": ms.group(1)}}], "stop_reason": "tool_use"}
+            mp = re.search(r"Create (\S+) exactly", text)
+            return {"content": [{"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": "write_file",
+                                 "input": {"path": mp.group(1) if mp else "~/repair.txt", "content": last_out + "\n"}}], "stop_reason": "tool_use"}
+        tool, goal, inp, retry_inp = plan[idx]
+        failed = "previous attempt at this step failed" in text
+        if tool == "reply":
+            label = "FILE COUNT" if "FILE COUNT" in goal else "WORDS"
+            return {"content": [{"type": "text", "text": "%s: %s" % (label, last_out)}], "stop_reason": "end_turn"}
+        if "stepwise: no tool" in req.lower() and not failed:
+            return {"content": [{"type": "text", "text": "I would run echo pong now."}], "stop_reason": "end_turn"}     # forgot the tool call
+        use = retry_inp if (failed and retry_inp) else inp
+        calls = [{"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": tool, "input": use}]
+        if "stepwise: two calls at once" in req.lower():
+            calls.append({"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": "run_shell", "input": {"command": "echo second"}})
+        return {"content": [{"type": "text", "text": "Doing step %d." % (idx + 1)}] + calls, "stop_reason": "tool_use"}
+
+    def complete(self, system, user, schema=None, max_tokens=600, on_usage=None):
+        """Plan (schema with 'steps'), self-check (schema with 'ok') or the closing summary (no schema)."""
+        m = re.search(r"Task(?: from the user)?:\s*(.+)", user)
+        req = m.group(1).strip() if m else user
+        props = (schema or {}).get("properties") or {}
+        if "steps" in props:
+            self.calls["plan"] += 1
+            if "bad plan first" in req.lower() and self.calls["plan"] == 1:
+                return "Here is my plan: {\"steps\": [{\"tool\": \"teleport\""          # invalid JSON + unknown tool: the driver must repair
+            if "invented api plan first" in req.lower() and self.calls["plan"] == 1:               # the measured habit: an API for local files
+                return json.dumps({"steps": [{"tool": "run_shell", "goal": "web_fetch 'https://example.com/api/grand_total'"}, {"tool": "save_result", "goal": "save the API answer"}]})
+            steps = [{"tool": t, "goal": g} for t, g, _i, _r in self.fake_plan(req)]
+            if "duplicate step" in req.lower():                                                   # the model's habit: the same goal planned twice
+                steps = steps + [{"tool": "save_result", "goal": steps[0]["goal"].upper() + "."}]
+            if "copy folder" in req.lower():                                                      # the model's habit: a "rename the copied folder" step after the cp (measured: it ran mv on the source)
+                steps = steps + [{"tool": "run_shell", "goal": "Rename the copied folder to its final name"}]
+            if "write a short note" in req.lower():                                                 # the model's habit: the bare write_file, no window, no typing
+                steps = [st for st in steps if st["tool"] == "write_file"]
+            if "count files in" in req.lower() and "do not create" in req.lower():   # the model's habit: an answer-only task planned as run_shell + save_result, no reply
+                steps = [steps[0], {"tool": "save_result", "goal": "save the count to /tmp/count.txt"}]
+            return json.dumps({"steps": steps})
+        if "ok" in props:
+            self.calls["check"] += 1
+            if "selfcheck no" in user.lower() and self.calls["check"] == 1:          # the self-check prompt carries the step goal, not the request
+                return json.dumps({"ok": False, "reason": "the output does not show what the step asked for"})
+            return json.dumps({"ok": True, "reason": "the result matches the goal"})
+        self.calls["finish"] += 1
+        return "Done, stepwise finished for '%s'." % req[:50]
+
+    def step(self, system, messages, tools, on_usage=None, **opts):
         first = messages[0]["content"]
         full = first if isinstance(first, str) else first[0].get("text", "")
+        if isinstance(full, str) and full.startswith("Task: ") and "\nPlan:\n" in full:
+            return self._stepwise_turn(full, tools)
         req = user_text(full)   # follow-ups carry a context prefix; the script keys off the user's words
         n_results = sum(1 for m in messages if m["role"] == "user" and not isinstance(m["content"], str))
         low = req.lower()
@@ -1726,14 +2454,18 @@ class Agent:
         except ValueError:
             return getattr(prov, "result_limit", RESULT_LIMIT_CLOUD)
 
-    def model_step(self, tid, prov, system, messages, usage, tools=None):
+    def driver_for(self, prov):
+        """'stepwise' (small-model driver, ADR-0020) or 'freeform' (the cloud loop) for this provider — see driver_name()."""
+        return driver_name(self.store, getattr(prov, "name", ""))
+
+    def model_step(self, tid, prov, system, messages, usage, tools=None, **opts):
         """One provider call. If the conversation no longer fits the model's context, compact earlier tool outputs and retry
         (twice, progressively harder) instead of failing the task with an opaque HTTP error."""
         limits = (1500, 300)  # chars per earlier tool result after the 1st and 2nd overflow
         tools = TOOLS if tools is None else tools
         for attempt in range(len(limits) + 1):
             try:
-                return prov.step(system, messages, tools, usage)
+                return prov.step(system, messages, tools, usage, **opts)
             except ContextOverflow as e:
                 if attempt == len(limits):
                     raise RuntimeError("The model's context window is too small for this task even after compacting tool outputs (%s). "
@@ -1869,51 +2601,16 @@ class Agent:
                 self.store.step(tid, "error", "provider", "", str(e))
                 notify(APP + ": task failed", str(e)[:200])
                 return
-            apps = installed_apps()
-            system = build_system_prompt(self.store, self.mode(task), apps)
-            messages = [{"role": "user", "content": task["request"]}]
-            final = ""
-            limit = self.result_limit(prov)
             tools = self.tools_for_model()
+            state = {"final": ""}          # the last assistant text so far: saved as the result even when the task fails
 
             def usage(i, o):
                 self.store.q("UPDATE tasks SET cost_in=cost_in+?, cost_out=cost_out+? WHERE id=?", i, o, tid)
             try:
-                for turn in range(int(self.store.setting("agent.max_turns", "60"))):
-                    if tid in self.cancel:
-                        raise RuntimeError("cancelled by user")
-                    resp = self.model_step(tid, prov, system, messages, usage, tools)
-                    content = resp["content"]
-                    messages.append({"role": "assistant", "content": content})
-                    for b in content:
-                        if b["type"] == "text" and b["text"].strip():
-                            self.store.step(tid, "assistant", prov.name, "", b["text"])
-                            final = b["text"]
-                    if resp["stop_reason"] == "refusal":
-                        raise RuntimeError("The model declined this request (%s)." % ((resp.get("stop_details") or {}).get("category") or "policy"))
-                    calls = [b for b in content if b["type"] == "tool_use"]
-                    if not calls:
-                        break
-                    results = []
-                    for c in calls:
-                        if tid in self.cancel:
-                            raise RuntimeError("cancelled by user")
-                        inp = c["input"] if isinstance(c["input"], dict) else {}
-                        sid, ok, risk, reason = self._gate(tid, task, c["name"], inp)
-                        if not ok:
-                            out, err = {"error": "Denied by user/policy (%s: %s). Do not retry the same action; explain or find an allowed way." % (risk, reason)}, True
-                            done_line = "Sorry, that did not work: %s." % ("your organisation does not allow it" if reason.startswith(MANAGED_MSG) else "you did not allow it")
-                        else:
-                            out, err = self.tools.run(tid, c["name"], inp)
-                            done_line = narration_done_for(c["name"], inp, out, error=err)
-                        self.store.finish_step(sid, json.dumps(out), done_line)
-                        res = {"type": "tool_result", "tool_use_id": c["id"], "content": clip(json.dumps(out), limit)}
-                        if err:
-                            res["is_error"] = True
-                        results.append(res)
-                    messages.append({"role": "user", "content": results})
+                if self.driver_for(prov) == "stepwise":
+                    final = self._run_stepwise(tid, task, prov, usage, tools, state)
                 else:
-                    final += "\n\n(stopped: reached the turn limit)"
+                    final = self._run_freeform(tid, task, prov, usage, tools, state)
                 st = "cancelled" if tid in self.cancel else "done"
                 self.store.q("UPDATE tasks SET status=?, result=?, updated=? WHERE id=?", st, final, time.time(), tid)
                 self.store.step(tid, "final", "", "", final)
@@ -1922,12 +2619,297 @@ class Agent:
             except Exception as e:
                 msg = str(e) if isinstance(e, RuntimeError) else "%s: %s" % (type(e).__name__, e)
                 st = "cancelled" if "cancelled" in msg else "failed"
-                self.store.q("UPDATE tasks SET status=?, error=?, result=?, updated=? WHERE id=?", st, msg, final, time.time(), tid)
+                self.store.q("UPDATE tasks SET status=?, error=?, result=?, updated=? WHERE id=?", st, msg, state["final"], time.time(), tid)
                 self.store.step(tid, "error", "", "", msg)
                 self.store.activity("agent", "task_" + st, tid, msg[:500])
                 notify(APP + ": task " + st, msg[:200], "critical")
             finally:
                 self.cancel.discard(tid)
+
+    def _run_call(self, tid, task, c):
+        """Gate, run and record one tool call; returns (out, err, inp)."""
+        inp = c["input"] if isinstance(c["input"], dict) else {}
+        sid, ok, risk, reason = self._gate(tid, task, c["name"], inp)
+        if not ok:
+            out, err = {"error": "Denied by user/policy (%s: %s). Do not retry the same action; explain or find an allowed way." % (risk, reason)}, True
+            done_line = "Sorry, that did not work: %s." % ("your organisation does not allow it" if reason.startswith(MANAGED_MSG) else "you did not allow it")
+        else:
+            out, err = self.tools.run(tid, c["name"], inp)
+            done_line = narration_done_for(c["name"], inp, out, error=err)
+        self.store.finish_step(sid, json.dumps(out), done_line)
+        return out, err, inp
+
+    def _run_freeform(self, tid, task, prov, usage, tools, state):
+        """The free-form tool loop the cloud providers run: the model sees the whole conversation and decides when it is done."""
+        system = build_system_prompt(self.store, self.mode(task), installed_apps())
+        messages = [{"role": "user", "content": task["request"]}]
+        limit = self.result_limit(prov)
+        final = ""
+        for turn in range(int(self.store.setting("agent.max_turns", "60"))):
+            if tid in self.cancel:
+                raise RuntimeError("cancelled by user")
+            resp = self.model_step(tid, prov, system, messages, usage, tools)
+            content = resp["content"]
+            messages.append({"role": "assistant", "content": content})
+            for b in content:
+                if b["type"] == "text" and b["text"].strip():
+                    self.store.step(tid, "assistant", prov.name, "", b["text"])
+                    final = state["final"] = b["text"]
+            if resp["stop_reason"] == "refusal":
+                raise RuntimeError("The model declined this request (%s)." % ((resp.get("stop_details") or {}).get("category") or "policy"))
+            calls = [b for b in content if b["type"] == "tool_use"]
+            if not calls:
+                break
+            results = []
+            for c in calls:
+                if tid in self.cancel:
+                    raise RuntimeError("cancelled by user")
+                out, err, _inp = self._run_call(tid, task, c)
+                res = {"type": "tool_result", "tool_use_id": c["id"], "content": clip(json.dumps(out), limit)}
+                if err:
+                    res["is_error"] = True
+                results.append(res)
+            messages.append({"role": "user", "content": results})
+        else:
+            final += "\n\n(stopped: reached the turn limit)"
+        return final
+
+    # ---- the small-model driver (ADR-0020): PLAN -> EXECUTE one tool per turn -> VERIFY -> FINISH
+    def _plan(self, tid, prov, request, net, usage, tools):
+        allowed = [t for t in STEP_TOOLS if t == "reply" or any(x["name"] == t for x in tools) or (t == "save_result" and any(x["name"] == "write_file" for x in tools))]
+        system = PLAN_SYSTEM.format(app=APP, home=HOME, browser=BROWSER)
+        pl = task_paths_line(request)
+        user = "Task from the user:\n" + request.strip() + ("\n" + pl if pl else "") + "\n\nReturn the JSON plan."
+        why = None
+        for attempt in range(3):
+            ask = user if not why else user + "\n\nYour previous answer was not a valid plan (%s). Return only the JSON object, tools from the list." % why
+            text = provider_complete(prov, system, ask, plan_schema(allowed, plan_max_steps(request)), 600, usage)
+            plan, why = parse_plan(text, allowed)
+            if plan and plan_reject_reason(request, plan):
+                why, plan = plan_reject_reason(request, plan), None
+            if plan:
+                for note in plan_sanity(request, plan):
+                    self.store.step(tid, "verify", "plan", "", note)
+                self.store.step(tid, "assistant", prov.name, "", "Plan:\n" + "\n".join("%d. [%s] %s" % (i + 1, s["tool"], s["goal"]) for i, s in enumerate(plan)))
+                return plan
+            self.store.step(tid, "verify", "plan", (text or "")[:2000], "invalid plan (%s)%s" % (why, "; asking again with the error shown" if attempt < 2 else ""))
+        raise RuntimeError("The model could not produce a valid plan for this task (%s)." % why)
+
+    def _self_check(self, prov, step, name, inp, res_text, observed, usage, request=""):
+        """The model's own yes/no on a verified-looking result (schema-enforced), shown the task, the result AND what the deterministic
+        check observed afterwards (exit code, the file's content, the folder's names). Never overrides a deterministic failure."""
+        user = "Task: %s\nGoal of the step: %s\nTool call: %s %s\nTool result: %s\nChecked afterwards: %s\nWas the goal achieved?" % (
+            " ".join((request or "").split())[:400], step["goal"], name, json.dumps(inp)[:600], clip(res_text, 800), clip(observed or "", 600))
+        try:
+            text = provider_complete(prov, CHECK_SYSTEM, user, CHECK_SCHEMA, 60, usage)
+            m = re.search(r"\{.*\}", text or "", re.S)
+            d = json.loads(m.group(0)) if m else {}
+            return bool(d.get("ok", True)), str(d.get("reason") or "")[:200]
+        except Exception as e:                       # a broken self-check must not fail a step the deterministic check passed
+            return True, "self-check unavailable (%s)" % str(e)[:80]
+
+    def _run_stepwise(self, tid, task, prov, usage, tools, state):
+        request = task["request"]
+        # The probe runs only when the request names a web page or URL — the only requests a web_fetch step can survive plan_sanity in.
+        # A copy, a count or a note never makes the agent touch the network (README "Nothing leaves your machine", legal/PRIVACY.md).
+        net = network_status(self.store) if WEB_WORDS_RE.search(" ".join(request.lower().split())) else dict(NET_SKIPPED)
+        mode = self.mode(task)
+        system = local_system_prompt(mode, net)
+        self_check = self.store.setting("agent.stepwise_selfcheck", "true") == "true"
+        plan = self._plan(tid, prov, request, net, usage, tools)
+        exec_tools = [t for t in tools if t["name"] in STEP_TOOLS]
+        if any(t["name"] == "write_file" for t in exec_tools):
+            exec_tools.append(SAVE_RESULT_TOOL)             # driver-only: the previous output reaches the file verbatim, the model never retypes it
+        results, reply_text, repaired = {}, None, []
+        rename_exp = rename_expectation(request)            # "rename … .txt … .md inside <folder>": no *.txt may remain afterwards
+        last_output = None                                  # {"raw", "from"}: the most recent tool call that produced data, ok or not
+        idx = 0
+        while idx < len(plan):
+            step = plan[idx]
+            error, goal_only, short_value, failed_sigs = None, False, False, set()
+            for attempt in range(STEP_RETRIES + 1):
+                if tid in self.cancel:
+                    raise RuntimeError("cancelled by user")
+                turn = stepwise_turn_text(request, plan, idx, results, error)
+                if step["tool"] == "reply":
+                    resp = self.model_step(tid, prov, system, [{"role": "user", "content": turn}], usage, [], max_tokens=300)
+                    text = "".join(b.get("text", "") for b in resp["content"] if b["type"] == "text").strip()
+                    if text:
+                        self.store.step(tid, "assistant", prov.name, "", text)
+                        results[idx] = {"tool": "reply", "text": text}
+                        reply_text = state["final"] = text
+                        break
+                    error = "the reply was empty"
+                    continue
+                # first attempt: the planned tool plus run_shell (the universal fallback); after a step that worked but did not produce the
+                # file it names: save_result alone when it printed one short value, else save_result + write_file + run_shell (save what
+                # you have); other retries: every tool, the model may change approach
+                if attempt == 0:
+                    offered = [t for t in exec_tools if t["name"] in (step["tool"], "run_shell")] or exec_tools
+                elif goal_only and short_value:
+                    # the command printed one short value and wrote nothing: the only sensible move is to save it (the hint names the path)
+                    offered = [t for t in exec_tools if t["name"] == "save_result"] or exec_tools
+                elif goal_only:
+                    offered = [t for t in exec_tools if t["name"] in ("save_result", "write_file", "run_shell")] or exec_tools
+                else:
+                    offered = exec_tools
+                resp = self.model_step(tid, prov, system, [{"role": "user", "content": turn}], usage, offered, tool_choice="required", max_tokens=700)
+                content = resp["content"]
+                for b in content:
+                    if b["type"] == "text" and b["text"].strip():
+                        self.store.step(tid, "assistant", prov.name, "", b["text"])
+                if resp.get("stop_reason") == "refusal":
+                    raise RuntimeError("The model declined this request (%s)." % ((resp.get("stop_details") or {}).get("category") or "policy"))
+                calls = [b for b in content if b["type"] == "tool_use"]
+                if not calls:
+                    error = "no tool call was made; step %d needs one %s call" % (idx + 1, step["tool"])
+                    self.store.step(tid, "verify", step["tool"], step["goal"][:300], "failed: " + error)
+                    continue
+                if len(calls) > 1:
+                    self.store.step(tid, "verify", "one-tool-per-turn", "", "ignored %d extra tool call(s); only the first one runs" % (len(calls) - 1))
+                c = calls[0]
+                if tid in self.cancel:
+                    raise RuntimeError("cancelled by user")
+                if not isinstance(c["input"], dict) or "_raw" in c["input"]:
+                    error = "the tool arguments were not valid JSON (a repeated or unterminated string); write ONE small JSON object, e.g. {\"command\": \"...\"}"
+                    self.store.step(tid, "verify", c["name"], step["goal"][:300], "failed: " + error)
+                    continue
+                t_start = time.time()
+                if c["name"] == "save_result":
+                    # Deterministic guards before any write: no earlier output, an EMPTY earlier output (a cp/mv that printed nothing —
+                    # measured: 0 bytes written into the copied folder, three times), or a path that is a folder.
+                    save_to = os.path.expanduser(str(c["input"].get("path") or ""))
+                    if not last_output:
+                        error = "save_result needs an earlier tool call with output; nothing to save yet — run the command first"
+                    elif not last_output["raw"].strip():
+                        error = "%s printed nothing, so there is nothing to save yet; if the step's work is already done, no file needs writing — otherwise run a command that prints the value first" % last_output["from"]
+                    elif os.path.isdir(save_to):
+                        error = "%s is a folder, not a file; save_result needs a file path" % save_to
+                    else:
+                        error = None
+                    if error:
+                        self.store.step(tid, "verify", "save_result", step["goal"][:300], "failed: " + error)
+                        continue
+                    c = {"id": c["id"], "name": "write_file", "input": {"path": str(c["input"].get("path") or ""), "content": last_output["raw"]}}
+                    self.store.step(tid, "verify", "save_result", step["goal"][:300], "writing the output of %s (%d chars) to %s, unchanged"
+                                    % (last_output["from"], len(last_output["raw"]), c["input"]["path"]))
+                if c["name"] == "run_shell":
+                    # Deterministic, before the risk gate: the user's words never asked for anything to be moved, renamed or deleted, so
+                    # mv/rm may not run (measured: a copy task's second step moved the source folder away).
+                    reason = destructive_command_reason(request, str(c["input"].get("command") or ""))
+                    if reason:
+                        sig = json.dumps(c["input"], sort_keys=True)
+                        error = ("you sent exactly the same call again and it was refused the same way; change the command. " if sig in failed_sigs else "") + reason
+                        failed_sigs.add(sig)
+                        self.store.step(tid, "verify", "run_shell", step["goal"][:300], "failed: " + error + ("" if attempt == STEP_RETRIES else "; retrying with the reason shown"))
+                        continue
+                out, err, inp = self._run_call(tid, task, c)
+                res_text = json.dumps(out)
+                raw = raw_result(c["name"], out, inp)
+                if raw is not None:
+                    last_output = {"raw": raw, "from": "step %d (%s)" % (idx + 1, c["name"])}
+                ok, detail = step_check(c["name"], inp, out, err)
+                goal_only = False
+                if ok and c["name"] == "open_app":
+                    want = expected_app(request)
+                    got = os.path.basename(str(inp.get("app") or "").split()[0]) if inp.get("app") else ""
+                    if want and got and got != want and got not in ("xdg-open", "open"):
+                        ok, detail = False, "the task asks for %s, which is %s — you opened %s; call open_app {\"app\": \"%s\"}" % (
+                            next(n for n in APP_NAMES[want] if n.startswith("fab ") or n == want).title(), want, got, want)
+                if ok and c["name"] in ("run_shell", "web_fetch", "read_file", "list_dir"):
+                    missing = missing_goal_paths(step["goal"])
+                    if missing:
+                        ok, goal_only = False, True
+                        short_value = raw is not None and 0 < len(raw.strip()) <= 200 and raw.strip().count("\n") <= 2
+                        where = " and ".join(missing[:3])
+                        if c["name"] == "run_shell":
+                            hint = "if the output above is the right value, call save_result {\"path\": \"%s\"} to write it there exactly; otherwise fix the command and append ' > %s'" % (missing[0], missing[0])
+                        else:
+                            hint = "%s only returns text: call save_result {\"path\": \"%s\"} to write the text above there exactly" % (c["name"], missing[0])
+                        detail = "%s, but %s named in this step %s not exist afterwards — %s" % (detail, where, "does" if len(missing) == 1 else "do", hint)
+                    elif c["name"] == "run_shell":
+                        for p in goal_paths(step["goal"]):          # what this step just changed on disk: a small file's content, a folder's names
+                            fp = os.path.expanduser(p)
+                            try:
+                                if os.path.isfile(fp) and os.path.getmtime(fp) >= t_start - 1 and os.path.getsize(fp) <= 2000:
+                                    with open(fp, errors="replace") as f:
+                                        detail += "; %s now contains: %s" % (p, " ".join(f.read()[:200].split()) or "(empty)")
+                                elif os.path.isdir(fp) and os.path.getmtime(fp) >= t_start - 1:
+                                    names = sorted(os.listdir(fp))
+                                    detail += "; %s now holds %d entries: %s%s" % (p, len(names), ", ".join(names[:12]), ", ..." if len(names) > 12 else "")
+                            except OSError:
+                                pass
+                if ok and c["name"] == "run_shell" and rename_exp and (RENAME_EXT_RE.search(step["goal"].lower()) or rename_exp[0] in step["goal"].lower()):
+                    left = rename_leftovers(rename_exp)          # the user's own words: no file may still end in the old extension
+                    if left:
+                        ok = False
+                        detail += "; but %d file%s in %s still end%s in %s (%s): nothing was renamed — %s" % (
+                            len(left), "" if len(left) == 1 else "s", " and ".join(rename_exp[2]), "s" if len(left) == 1 else "", rename_exp[0],
+                            ", ".join(left[:6]) + (", ..." if len(left) > 6 else ""), rename_hint(rename_exp))
+                if ok and self_check and c["name"] not in ("open_app", "type_text"):
+                    sc_ok, why = self._self_check(prov, step, c["name"], inp, res_text, detail, usage, request)
+                    if not sc_ok:
+                        ok, detail = False, "the model's own check says no: " + (why or "no reason given")
+                if not ok and c["name"] == "run_shell" and "No such file or directory" in detail:
+                    # the classic small-model loop: the same failing redirect three times. Name the missing folder and the fix.
+                    for p in goal_paths(step["goal"]) + goal_paths(str(inp.get("command") or "")):
+                        parent = os.path.dirname(os.path.expanduser(p))
+                        if parent and not os.path.isdir(parent):
+                            detail += " — the folder %s does not exist yet: create it first, e.g. mkdir -p %s && <the same command>" % (parent, parent)
+                            break
+                self.store.step(tid, "verify", c["name"], step["goal"][:300], ("ok: " if ok else "failed: ") + detail + ("" if ok or attempt == STEP_RETRIES else "; retrying with the error shown"))
+                if ok:
+                    results[idx] = {"tool": c["name"], "text": render_result(c["name"], out)}
+                    break
+                sig = json.dumps(inp, sort_keys=True)
+                error = ("you sent exactly the same call again and it failed the same way; change the command or the arguments. " if sig in failed_sigs else "") + detail
+                failed_sigs.add(sig)
+            else:
+                done = ", ".join("%d. %s" % (i + 1, s["goal"]) for i, s in enumerate(plan) if i in results) or "nothing yet"
+                raise RuntimeError("Step %d of %d could not be completed after %d attempts (%s): %s. Done before that: %s"
+                                   % (idx + 1, len(plan), STEP_RETRIES + 1, step["goal"][:120], error, done))
+            idx += 1
+            if idx == len(plan) and not reply_text:
+                # OUTCOME CHECK before finishing: every path the user's request names must exist now (deletes/moves excepted).
+                # A small model often does the work and never writes the file; one repair step per missing path, at most two.
+                if rename_exp and "rename" not in repaired:
+                    left = rename_leftovers(rename_exp)
+                    if left:                                     # the user's rename is not done: one repair step; the step's own check then decides
+                        repaired.append("rename")
+                        plan.append({"tool": "run_shell", "goal": "Rename the %d file%s in %s that still end in %s so they end in %s instead (mv each one, same base names): %s"
+                                     % (len(left), "" if len(left) == 1 else "s", " and ".join(rename_exp[2]), rename_exp[0], rename_exp[1], ", ".join(left[:6]))})
+                        self.store.step(tid, "verify", "outcome", " and ".join(rename_exp[2]), "%d file(s) still end in %s after the plan (%s); adding a run_shell step to rename them"
+                                        % (len(left), rename_exp[0], ", ".join(left[:6])))
+                for p in missing_goal_paths(request)[:2]:
+                    if p in repaired:
+                        continue
+                    repaired.append(p)
+                    if not os.path.splitext(os.path.basename(p))[1]:
+                        # It looks like a folder (no extension). No step's output can stand in for a folder, and writing a FILE at its path
+                        # would be wrong (measured: three write_file attempts onto the copied folder) — the task fails, honestly.
+                        done = ", ".join("%d. %s" % (i + 1, s["goal"]) for i, s in enumerate(plan) if i in results) or "nothing"
+                        self.store.step(tid, "verify", "outcome", p, "the task names %s but it does not exist after the plan, and it looks like a folder: nothing can be written there" % p)
+                        raise RuntimeError("The task names %s but it does not exist after the plan (it looks like a folder, which no step's output can stand in for). Done: %s" % (p, done))
+                    if last_output and last_output["raw"].strip():
+                        # an earlier step produced the value: the driver copies it, the model only confirms the path
+                        plan.append({"tool": "save_result", "goal": "Save the output above to %s exactly (the task names it and it does not exist yet)" % p})
+                    else:
+                        plan.append({"tool": "write_file", "goal": "Create %s exactly as the task asks, using the results above (it does not exist yet)" % p})
+                    self.store.step(tid, "verify", "outcome", p, "the task names %s but it does not exist after the plan; adding a %s step to create it" % (p, plan[-1]["tool"]))
+        if reply_text:
+            return reply_text
+        lines = ["Task: " + " ".join(request.split()), "Steps done and verified:"]
+        for i, s in enumerate(plan):
+            lines.append("%d. [%s] %s -> %s" % (i + 1, s["tool"], s["goal"], clip(results[i]["text"], 300) if i in results else "?"))
+        try:
+            final = provider_complete(prov, FINISH_SYSTEM.format(app=APP), "\n".join(lines) + "\n\nWrite the closing message now.", None, 150, usage).strip()
+        except Exception as e:
+            LOG("task", tid, "summary call failed:", str(e)[:200])
+            final = ""
+        if not final:
+            final = "Done: %d step%s completed and verified — %s." % (len(plan), "" if len(plan) == 1 else "s", "; ".join(s["goal"] for s in plan)[:400])
+        state["final"] = final
+        return final
 
 
 # ----------------------------------------------------------------------------- watches (background tracking)
@@ -2734,6 +3716,8 @@ def make_handler(store, agent, token):
                                         # "policy": the administrator's /etc/fabos/policy.json as loaded (managed=true when any key is set) — UIs show
                                         # "Managed by your organisation" from it. root_path/sandbox: how root and run_shell are reached on this machine.
                                         "policy": POLICY.status(), "root_path": "polkit" if root_argv("x")[0] == "pkexec" else "sudo", "sandbox": agent.sandbox_name(),
+                                        # driver: how this provider's tasks run (ADR-0020); network: the cached online probe (non-blocking here)
+                                        "driver": driver_name(store, prov), "network": network_cached(),
                                         "provider_label": PROVIDERS[prov]["label"] if prov in PROVIDERS else prov,
                                         "provider_model": store.setting(prov + ".model", PROVIDERS[prov]["model"]) if prov in PROVIDERS else "",
                                         "ui_show_raw": store.setting("ui.show_raw", "false") == "true",
@@ -2750,6 +3734,7 @@ def make_handler(store, agent, token):
                 s.setdefault("ai.enabled", "true")
                 s.setdefault("ui.show_raw", "false")     # Fab AI Controls: show commands / raw tool output in chats
                 s.setdefault("ui.persona", PERSONA_DEFAULT)
+                s.setdefault("agent.driver", "")         # "" = the provider decides (local -> stepwise), or stepwise | freeform (ADR-0020)
                 for k, d in VOICE_DEFAULTS.items():
                     s.setdefault(k, d)
                 for k, v in PROVIDERS.items():
