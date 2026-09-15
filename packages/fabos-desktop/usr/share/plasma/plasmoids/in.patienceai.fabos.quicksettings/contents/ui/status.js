@@ -1,6 +1,6 @@
-// Pure helpers for the Fab OS quick-settings applet: parse the output of contents/code/status.sh and of
-// /proc/net/{route,dev}, choose FabOS monochrome glyph names, format rates and times. No Qt, no I/O — the same file
-// runs under node in tests/quicksettings-js-test.js.
+// Pure helpers for the Fab OS quick-settings applet: parse the one JSON line of contents/code/status.sh (full or
+// --light) and the older key=value / /proc/net forms, choose FabOS monochrome glyph names, format rates and times.
+// No Qt, no I/O — the same file runs under node in tests/quicksettings-js-test.js.
 .pragma library
 
 // ---------------------------------------------------------------- status.sh -> object
@@ -9,7 +9,8 @@ function empty() {
              iface: "", ip4: "", btPresent: false, btPowered: null, btConnected: 0,
              volume: -1, muted: false, hasAudio: false,
              batPct: -1, batStatus: "", batTime: "", hasBattery: false, profile: "",
-             blCur: -1, blMax: 0, hasBacklight: false }
+             blCur: -1, blMax: 0, hasBacklight: false,
+             light: false, rx: 0, tx: 0, wifiQuality: -1 }
 }
 
 // nmcli -t escapes ':' inside values as '\:'; split on unescaped colons only.
@@ -25,7 +26,80 @@ function splitTerse(line) {
     return out
 }
 
+// One probe -> state. status.sh prints ONE JSON line (full or --light); the key=value form of the first release is still
+// understood (the QML harness feeds it), so an upgraded applet and an old script never disagree.
 function parseStatus(text) {
+    var t = String(text || "").trim()
+    if (t.charAt(0) === "{") {
+        var j = null
+        try { j = JSON.parse(t.split("\n")[0]) } catch (e) { j = null }
+        return j ? fromJson(j) : empty()
+    }
+    return parseKeyValues(t)
+}
+
+// ---- the JSON line of status.sh. `light` = kernel readings only (net counters, Wi-Fi quality, battery, backlight); the
+// applet merges those into the last full state with mergeLight(). devs = nmcli `dev status` lines
+// DEVICE:TYPE:STATE:CONNECTION (a Wi-Fi device reads "unavailable" while the radio is off); wifi = the IN-USE line of
+// `dev wifi list`; bt from BlueZ over D-Bus; volume = the raw wpctl line.
+function fromJson(j) {
+    var s = empty()
+    s.light = j.light === true
+    var net = j.net || {}
+    s.iface = String(net.iface || "")
+    s.rx = typeof net.rx === "number" ? net.rx : 0
+    s.tx = typeof net.tx === "number" ? net.tx : 0
+    s.wifiQuality = typeof j.wifi_quality === "number" ? j.wifi_quality : -1
+    var b = j.battery
+    if (b && typeof b.pct === "number") { s.batPct = b.pct; s.hasBattery = true; s.batStatus = String(b.status || ""); s.batTime = String(b.time || "") }
+    var bl = j.backlight
+    if (bl && typeof bl.max === "number" && bl.max > 0) { s.blCur = typeof bl.cur === "number" ? bl.cur : 0; s.blMax = bl.max; s.hasBacklight = true }
+    if (s.light) return s
+    var devs = j.devs || [], wifiDevs = 0, wifiUp = 0
+    for (var i = 0; i < devs.length; i++) {
+        var f = splitTerse(String(devs[i]))
+        if (f.length < 3) continue
+        var dev = f[0], type = f[1], state = f[2], name = f.slice(3).join(":")
+        var isWifi = type === "wifi" || type.indexOf("wireless") >= 0, isWired = type === "ethernet" || type.indexOf("ethernet") >= 0
+        if (isWifi) { wifiDevs++; if (state.indexOf("unavailable") < 0 && state.indexOf("unmanaged") < 0) wifiUp++ }
+        var connected = state.indexOf("connected") === 0
+        if (isWifi && connected && s.connType !== "wifi") { s.connType = "wifi"; s.connDev = dev; s.connName = name }
+        else if (isWired && connected && !s.connType) { s.connType = "wired"; s.connDev = dev; s.connName = name }
+    }
+    s.wifiRadio = wifiDevs === 0 ? null : wifiUp > 0
+    var w = splitTerse(String(j.wifi || ""))
+    if (w.length >= 3 && w[0] === "*") { s.wifiSsid = w[1]; s.wifiSignal = parseInt(w[2], 10); if (isNaN(s.wifiSignal)) s.wifiSignal = -1; s.wifiLocked = (w[3] || "").trim() !== "" && (w[3] || "").trim() !== "--" }
+    if (s.connType === "wifi" && s.wifiSignal < 0 && s.wifiQuality >= 0) s.wifiSignal = s.wifiQuality
+    s.ip4 = String(j.ip4 || "").replace(/\/\d+$/, "")
+    var bt = j.bt || {}
+    s.btPresent = bt.present === true
+    s.btPowered = bt.powered === true ? true : (bt.powered === false ? false : null)
+    s.btConnected = typeof bt.connected === "number" ? bt.connected : 0
+    var m = /Volume:\s*([0-9.]+)/.exec(String(j.volume || ""))
+    if (m) { s.volume = Math.round(parseFloat(m[1]) * 100); s.hasAudio = true; s.muted = String(j.volume).indexOf("MUTED") >= 0 }
+    s.profile = String(j.profile || "")
+    if (s.connType === "wifi" && !s.wifiSsid) s.wifiSsid = s.connName
+    return s
+}
+
+// A --light probe carries only the kernel readings: keep everything the last full probe knew and refresh those. The
+// Wi-Fi signal follows the kernel's link quality between full probes (only while connected over Wi-Fi).
+function mergeLight(prev, light) {
+    var s = {}
+    for (var k in prev) s[k] = prev[k]
+    s.light = true
+    s.iface = light.iface; s.rx = light.rx; s.tx = light.tx; s.wifiQuality = light.wifiQuality
+    s.hasBattery = light.hasBattery; s.batPct = light.batPct; s.batStatus = light.batStatus; s.batTime = light.batTime
+    s.hasBacklight = light.hasBacklight; s.blCur = light.blCur; s.blMax = light.blMax
+    if (s.connType === "wifi" && light.wifiQuality >= 0) s.wifiSignal = light.wifiQuality
+    return s
+}
+
+// the counters of a parsed probe, in the shape rates() takes
+function counters(s) { return { iface: s.iface || "", rx: s.rx || 0, tx: s.tx || 0 } }
+
+// ---- key=value lines (first-release status.sh; the QML harness still feeds this form)
+function parseKeyValues(text) {
     var s = empty()
     var lines = String(text || "").split("\n")
     for (var i = 0; i < lines.length; i++) {

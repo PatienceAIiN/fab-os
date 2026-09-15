@@ -10,7 +10,9 @@ import org.kde.taskmanager as TaskManager
 // config, one icon per application, activity / virtual-desktop filters) rendered as a Row of icons with macOS-like
 // magnification: the hovered icon scales to `peak`, its neighbours to `near` / `far` (160 ms OutCubic), and because
 // each item's width follows its scale the row re-flows and icons never overlap. Resting icons are sized so the
-// magnified one still fits the panel height (a panel clips its applets). Scale only — no shaders, no per-icon effects.
+// magnified one still fits the panel height (a panel clips its applets). Scale only — no shaders, no per-icon effects,
+// and nothing animates continuously: every motion here is a Behavior (magnify, running-dot width) or a bounded run
+// (launch bounce, a few startup pulses), so an idle dock costs no frames at all.
 //
 // The applet's own width does NOT follow the hover: it is the resting row plus the room one fully magnified group
 // needs (`reserve`), so the floating "fit" panel keeps its length while the pointer moves (no per-frame panel resize)

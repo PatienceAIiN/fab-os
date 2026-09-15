@@ -11,11 +11,15 @@ import "status.js" as Status
 
 // Fab OS quick settings (top bar). One compact indicator group — network glyph with live ↓/↑ speed, Bluetooth,
 // volume (while muted / just changed), battery glyph + percentage, bell with unread badge — and one PlasmaCore.Dialog
-// that slides down from the bar (height 0 -> content, 240 ms OutCubic; the FabOS dialog background rounds the bottom
+// that slides down from the bar (height 0 -> content, 200 ms OutCubic; the FabOS dialog background rounds the bottom
 // corners at radius 24) holding either the settings tiles or the notification history.
 //
-// Data: contents/code/status.sh through the Plasma5Support executable engine every `pollSeconds` (default 10 s) and
-// right after each action; /proc/net/{route,dev} every 2 s for the rate. Actions: nmcli radio wifi, bluetoothctl
+// Data: contents/code/status.sh through the Plasma5Support executable engine — ONE script call, ONE JSON line. While the
+// pane is closed the periodic call is the --light probe (kernel readings only: net counters for the rate, Wi-Fi link
+// quality, battery, backlight; 2 processes) every `pollSeconds` (default 5 s) and the full probe (NetworkManager, BlueZ,
+// volume, power profile; 12–25 processes) every `fullSeconds` (30 s) plus once at once whenever a light probe sees the
+// link change (interface / Wi-Fi up-down); while the pane is open the full probe runs every 2 s; after each action the
+// full probe runs once, 400 ms later. Budget: docs/LOW-RAM.md "Idle budget". Actions: nmcli radio wifi, bluetoothctl
 // power, wpctl set-volume/set-mute, powerprofilesctl set, powerdevil's ScreenBrightness D-Bus (BrightnessBridge.qml).
 // Notifications + Do Not Disturb: org.kde.notificationmanager (the model the stock history uses; same process, same
 // server). The stock applets stay reachable: each tile's chevron opens `plasmawindowed <applet>`.
@@ -53,51 +57,68 @@ PlasmoidItem {
     property var netPrev: null
     property real netPrevAt: 0
     property int zeroSamples: 99
-    readonly property bool speedVisible: Plasmoid.configuration.showSpeed && st.iface !== "" && zeroSamples < 5
+    readonly property bool speedVisible: Plasmoid.configuration.showSpeed && st.iface !== "" && zeroSamples < 2   // hidden after ~10 s without traffic
     property bool volumeFlash: false
     property string paneMode: "closed"       // closed | settings | notifications
     property bool closing: false
     property bool dnd: false
     property bool paneAutoHide: true        // harness sets false (offscreen windows never activate)
-    property bool autoRefresh: true         // re-probe status.sh after each action (harness sets false)
+    property bool autoRefresh: true         // probe the machine (periodic + after each action); the harness sets false and feeds state itself
     readonly property string statusScript: Qt.resolvedUrl("../code/status.sh").toString().replace(/^file:\/\//, "")
-    readonly property string statusCmd: "sh " + root.statusScript
-    readonly property string netCmd: "cat /proc/net/route; echo ---; cat /proc/net/dev"
+    // `timeout 8` around the whole script: a stuck daemon never leaves a probe behind (the script itself bounds each tool)
+    readonly property string statusCmd: "timeout 8 sh " + root.statusScript + (root.paneMode !== "closed" ? " --pane" : "")   // full probe
+    readonly property string lightCmd: "timeout 8 sh " + root.statusScript + " --light"                                        // kernel readings only
+    readonly property bool paneOpen: root.paneMode !== "closed"
     readonly property int unread: history.unreadNotificationsCount
 
-    // ---------------------------------------------------------------- data sources
-    P5Support.DataSource {
+    // ---------------------------------------------------------------- data sources (one script, adaptive cadence)
+    P5Support.DataSource {   // periodic: the light probe every pollSeconds while closed, the full probe every 2 s while open
         id: poll
         engine: "executable"
-        interval: Math.max(5, Plasmoid.configuration.pollSeconds) * 1000
-        onNewData: (source, data) => { if (source === root.statusCmd) root.applyStatus(String(data["stdout"] || "")) }
-        Component.onCompleted: connectSource(root.statusCmd)
+        interval: root.paneOpen ? 2000 : Math.max(5, Plasmoid.configuration.pollSeconds) * 1000
+        connectedSources: root.autoRefresh ? [root.paneOpen ? root.statusCmd : root.lightCmd] : []   // switching the source runs it at once
+        onNewData: (source, data) => root.applyStatus(String(data["stdout"] || ""))
     }
-    P5Support.DataSource {
-        id: netPoll
+    P5Support.DataSource {   // one-shot full probe: 400 ms after each action, and every 30 s while the pane is closed
+        id: probe
         engine: "executable"
-        interval: 2000
-        connectedSources: [root.netCmd]
-        onNewData: (source, data) => root.applyNet(String(data["stdout"] || ""), Date.now())
+        onNewData: (source, data) => { disconnectSource(source); root.applyStatus(String(data["stdout"] || "")) }
     }
-    P5Support.DataSource {   // one-shot actions; the status is re-read 400 ms after each finishes
+    // full probe while closed: 30 s = 0.4–0.8 tasks/s on top of the light probe's 0.4/s (12 tasks with the daemons absent,
+    // up to 25 with them present, measured in the image); Bluetooth power, mute and the power profile changed from
+    // elsewhere can therefore show for up to 30 s in the closed bar — the bar's own actions and a link change refresh at once
+    readonly property int fullSeconds: 30
+    Timer { id: fullTimer; interval: root.fullSeconds * 1000; repeat: true; running: root.autoRefresh && !root.paneOpen; onTriggered: root.refresh() }
+    P5Support.DataSource {   // one-shot actions; the full status is re-read 400 ms after each finishes
         id: actions
         engine: "executable"
         onNewData: (source, data) => { disconnectSource(source); refreshTimer.restart() }
     }
-    Timer { id: refreshTimer; interval: 400; onTriggered: if (root.autoRefresh) root.refresh() }
+    Timer { id: refreshTimer; interval: 400; onTriggered: root.refresh() }
     function run(cmd) { root.lastSync = cmd.indexOf("evaluateScript") >= 0 ? cmd : root.lastSync; actions.connectSource(cmd) }
     function launch(cmd) { root.run(Status.detach(cmd)) }
-    function refresh() { poll.disconnectSource(root.statusCmd); poll.connectSource(root.statusCmd) }
+    function refresh() { if (!root.autoRefresh) return; probe.disconnectSource(root.statusCmd); probe.connectSource(root.statusCmd) }
 
+    // one probe result (JSON line; the first release's key=value form is still understood). A --light line refreshes
+    // only the kernel readings inside the last full state; every probe feeds the network counters for the rate.
     function applyStatus(text) {
         var s = Status.parseStatus(text)
-        if (root.st.hasAudio && s.hasAudio && (s.volume !== root.st.volume || s.muted !== root.st.muted)) root.flashVolume()
+        if (s.light) {
+            // the default-route interface changed or the Wi-Fi link came up / went down since the last probe: a network
+            // was joined or left from elsewhere, so the SSID and device list are refreshed by one full probe now (400 ms)
+            // instead of at the next full tick — the light probe stays 2 processes, the full one runs only on a change
+            var linkChanged = s.iface !== root.st.iface || (s.wifiQuality >= 0) !== (root.st.wifiQuality >= 0)
+            s = Status.mergeLight(root.st, s)
+            if (linkChanged && root.autoRefresh && !root.paneOpen) refreshTimer.restart()
+        }
+        else if (root.st.hasAudio && s.hasAudio && (s.volume !== root.st.volume || s.muted !== root.st.muted)) root.flashVolume()
         root.st = s
-        root.refreshDnd()
+        root.applyNet(Status.counters(s), Date.now())
+        if (!s.light) root.refreshDnd()
     }
-    function applyNet(text, now) {
-        var cur = Status.parseNet(text)
+    // sample = {iface, rx, tx} (from a probe) or the older "/proc/net/route --- /proc/net/dev" text (the harness feeds that)
+    function applyNet(sample, now) {
+        var cur = typeof sample === "string" ? Status.parseNet(sample) : sample
         if (root.netPrev) {
             var r = Status.rates(root.netPrev, cur, now - root.netPrevAt)
             root.down = r.down; root.up = r.up
@@ -155,7 +176,7 @@ PlasmoidItem {
         root.refreshDnd()
     }
     Connections { target: notificationSettings; function onSettingsChanged() { root.refreshDnd() } }
-    Component.onCompleted: root.refreshDnd()
+    Component.onCompleted: { root.refreshDnd(); root.refresh() }   // one full probe at start; the periodic light probe then keeps the kernel readings fresh
 
     // ---------------------------------------------------------------- pane open / close (imperative: the dialog's
     // visibility is set here and in closeTimer only, so the slide-up can finish before the window hides)
@@ -166,7 +187,7 @@ PlasmoidItem {
         pane.visible = true
         pane.openProgress = 1
         if (mode === "notifications") history.lastRead = new Date()
-        root.refresh()
+        // no refresh() here: paneOpen switches the periodic source to the full probe, which runs it at once
     }
     function closePane() {
         if (root.paneMode === "closed") return
@@ -174,7 +195,7 @@ PlasmoidItem {
         root.closing = true; pane.openProgress = 0; closeTimer.restart()
     }
     function togglePane(mode) { if (root.paneMode === mode && !root.closing) root.closePane(); else root.openPane(mode) }
-    Timer { id: closeTimer; interval: 260; onTriggered: { root.closing = false; root.paneMode = "closed"; pane.visible = false } }
+    Timer { id: closeTimer; interval: 200; onTriggered: { root.closing = false; root.paneMode = "closed"; pane.visible = false } }   // = the slide duration
 
     // ---------------------------------------------------------------- the bar
     PlasmaCore.ToolTipArea {
@@ -245,10 +266,10 @@ PlasmoidItem {
         onVisibleChanged: if (!visible && root.paneMode !== "closed" && !root.closing) { history.lastRead = new Date(); root.paneMode = "closed" }
 
         property real openProgress: 0
-        Behavior on openProgress { id: openBehavior; NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
+        Behavior on openProgress { id: openBehavior; NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }   // motion token "normal"
         readonly property real contentTarget: root.paneMode === "notifications" ? notifPane.implicitHeight : settingsPane.implicitHeight
         property real paneHeight: contentTarget
-        Behavior on paneHeight { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
+        Behavior on paneHeight { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
         readonly property int paneWidth: Kirigami.Units.gridUnit * 21
 
         mainItem: Item {

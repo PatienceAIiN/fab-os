@@ -535,3 +535,47 @@ runs above; none of the numbers above moved because no image has been built from
   `/opt/brave.com/brave/brave` (`brave` from Ubuntu, `brave-browser-stable` from Brave's postinst) load without
   `apparmor.service` errors and Brave's sandbox starts; the VM self-test now prints `NO_WALLET=…`, `APPARMOR_BRAVE=<loaded>:errors=<n>`
   and `SUID_COUNT=<n>:brave_sandbox=root:4755` for exactly this.
+- **`perf-smooth` track (2026-09-15, sources only):** desktop responsiveness — half-length Plasma/KWin animations
+  (`AnimationDurationFactor=0.5`), `AllowTearing=false`, blur off under 3.5 GB via a login tune, File Search runner off,
+  `fabos-voiced` at `Nice=15` + `IOSchedulingClass=idle`, the ask bar's single-curl snapshot, the quick settings' two-process
+  light probe, Fab AI Controls' daemon calls on a worker thread (`ApiQueue`; Settings > Save on its own `ApiJobWorker` after
+  review), `tests/perf-vm.sh`. Review fixes folded in: the login tune is `/usr/lib/fabos/lowram-tune.sh` (with the plain name
+  `packages/build-debs.sh` packaged it 0644 and the `-x` guard in the env hook never ran it; the hook now runs it through
+  `sh` with a `-r` guard, and an unreadable `MemTotal` decides nothing), `ApiQueue.stop()` shuts the in-flight socket so a
+  hung daemon cannot outlive `closeEvent`'s wait, the ask bar keeps a 60 s status heartbeat while asleep (tasks and approvals
+  started elsewhere still reach the closed bar) and counts its two trailing snapshots from the one after the stop, the quick
+  settings run a full probe when a light probe sees the link change (the 30 s closed-pane cadence for Bluetooth / mute /
+  power profile is a documented deviation from the 5 s brief — `fullSeconds` in `main.qml`), `perf-vm.sh` writes
+  well-formed measurement objects and implements `--keep`, MOTION_GUIDELINES no longer claims the factor scales our own
+  literal durations. Verified on this host against `localhost/fabos:vm`: `tests/branding-check.sh` **164 PASS / 9 FAIL**
+  with 173 checks — the 9 failures are exactly the 9 checks this track appended, which describe the rebuilt image;
+  `tests/ai-controls-render.py` full pass **3/3 runs OK** (one earlier run failed a `flush_api` wait at a `DELETE` → refresh
+  point; the untouched baseline failed the same way once and passed once — a timing flake of the seeded daemon under host
+  load, not a regression; the `sync()` helper now names the queued jobs on a timeout), `--settings --welcome` **2/2 OK** after
+  a race in the pass itself was fixed (the window's initial `fabos-voice status` probe overwrote the test's voice fixture);
+  `tests/askbar-qml-test.sh` PASS (117 checks), `tests/desktop-applets-qml-test.sh` soak-qs/harness-qs/soak-dock PASS,
+  `node tests/askbar-js-test.js` and `node tests/quicksettings-js-test.js` OK; the build-debs permission pass simulated on a
+  copy of `packages/fabos-desktop` leaves `lowram-tune.sh` 0755, and the hook run in the image against a mounted
+  `/proc/meminfo` writes `blurEnabled=false` at 1 980 000 kB and nothing at 8 000 000 kB (marker `blur=kept`), keeping a
+  later user choice. **Not run:** `tests/perf-vm.sh` itself (needs the booted VM) — its numbers are still to be pasted here.
+- **`perf-smooth` review round 2 (2026-09-15, sources only; branch `fix-perf-smooth`):** every review item re-verified with
+  commands, one more GUI-thread wait removed. The 9 checks this track appended to `tests/branding-check.sh` were replayed in
+  `localhost/fabos:vm` with the working-tree files mounted at their installed paths: **9/9 PASS** (against the round-3 image
+  itself the suite stays at 164 PASS / 9 FAIL of 173, those same 9). The `build-debs.sh` permission pass simulated on a copy
+  of `packages/fabos-desktop` leaves `usr/lib/fabos/lowram-tune.sh` **0755**; the env hook run in the image with the script
+  deliberately at 0644 and `/proc/meminfo` bound to a fake still works (`sh` invocation): 1 980 000 kB → user `kwinrc`
+  `[Plugins] blurEnabled=false` + marker, a later `blurEnabled=true` survives the next login, 8 000 000 kB → nothing written.
+  `ApiQueue.stop()` against a daemon that accepts TCP and never answers: a 3-call job blocked in its first read ended in
+  **0.001 s** with one connection made (no further call started); normal path: results delivered on the GUI thread, a
+  same-key queued job replaced (`done(job, None)`). New in this round: `SettingsDialog.done()` used to `wait(5000)` on a
+  running connection / mail check (`ApiWorker` timeouts 20 s / 45 s) — Cancel or Escape during a check froze the dialog for
+  up to 5 s and left the thread running. `ApiWorker` / `ApiJobWorker` now have `abort()` (shuts the in-flight socket through
+  the shared `_shutdown_inflight()`, emits nothing) and `done()` aborts before it waits: measured **0.001 s** on the GUI
+  thread with a provider check blocked in its read, `ApiWorker(timeout=45).abort()` 0.000 s, a 3-call
+  `ApiJobWorker.abort()` 0.000 s with no second call started, `abort()` before `start()` never connects. All of it is now a
+  repo test, `tests/ai-controls-workers-test.py` (offscreen in the image, needs no daemon — it is the daemon): **16 checks
+  PASS**. Suites re-run on this tree: `tests/agent-test.py` 45 OK, `tests/voice-test.py` 72 OK (5 skipped),
+  `node tests/askbar-js-test.js` 22 groups, `node tests/quicksettings-js-test.js` 16 groups, `tests/askbar-qml-test.sh` PASS
+  (117 checks), `tests/desktop-applets-qml-test.sh` PASS (all steps incl. the kwin harnesses), `tests/ai-controls-render.py`
+  default pass exit 0 and `--settings --welcome` exit 0 (both after the abort change), `bash -n tests/perf-vm.sh`, `sh -n` on
+  the tune + hook, `py_compile` on `command_center.py`. **Not run:** `tests/perf-vm.sh` (needs the booted VM).

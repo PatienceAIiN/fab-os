@@ -1,0 +1,39 @@
+#!/bin/sh
+# Fab OS low-RAM desktop tune (docs/LOW-RAM.md, "Idle budget"). Runs once per user, before KWin starts, as
+# `sh /usr/lib/fabos/lowram-tune.sh` from /etc/xdg/plasma-workspace/env/40-fabos-lowram.sh (Plasma sources the env scripts
+# before the compositor is launched). The .sh suffix is load-bearing: packages/build-debs.sh chmods every packaged file to
+# 0644 and restores 0755 only for *.sh / *.py / rebrand-* / tray-defaults under /usr/lib/fabos; the hook runs it via sh anyway.
+#
+# kwinrc is a static default: it cannot know how much memory the machine has. On a machine that reports less than
+# LOWRAM_KB the blur effect is turned off in the USER's kwinrc (blur is the one enabled effect whose cost scales with the
+# screen and runs on every frame behind translucent surfaces; on the integrated GPUs of 2 GB laptops it is the difference
+# between a smooth and a stuttering panel slide). Everything else — slide, overview, magic lamp, fade, scale — stays on.
+#
+# Once: a marker in ~/.config/fabos records that the tune was applied, so a user who later turns blur back on in
+# Fab Settings > Desktop Effects keeps that choice. Nothing is written on machines with more memory.
+#
+# Threshold: a nominal 4 GB machine reports ~3.8–3.9 GB (firmware and the GPU take their share), so "< 4 GB" is tested as
+# MemTotal < 3 500 000 kB; 2 GB and 3 GB machines are below it, a 4 GB machine is above it.
+LOWRAM_KB=3500000
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}"
+MARK="$CFG/fabos/lowram-tune-done-v1"
+[ -f "$MARK" ] && exit 0
+[ -n "$HOME" ] || exit 0
+[ -r /proc/meminfo ] || exit 0
+total=0
+while IFS=' ' read -r key value unit; do
+  case "$key" in MemTotal:) total=$value; break;; esac
+done < /proc/meminfo
+case "$total" in ''|*[!0-9]*|0) exit 0;; esac   # unreadable or zero MemTotal: decide nothing
+mkdir -p "$CFG/fabos" 2>/dev/null || exit 0
+if [ "$total" -lt "$LOWRAM_KB" ]; then
+  if command -v kwriteconfig6 >/dev/null 2>&1; then
+    kwriteconfig6 --file kwinrc --group Plugins --key blurEnabled false
+  elif ! grep -qs '^blurEnabled=' "$CFG/kwinrc"; then
+    printf '\n[Plugins]\nblurEnabled=false\n' >> "$CFG/kwinrc"
+  fi
+  printf 'blur=off mem_kb=%s %s\n' "$total" "$(date -u +%FT%TZ 2>/dev/null)" > "$MARK"
+else
+  printf 'blur=kept mem_kb=%s %s\n' "$total" "$(date -u +%FT%TZ 2>/dev/null)" > "$MARK"
+fi
+exit 0

@@ -10,7 +10,12 @@ Type=simple
 ExecStart=/usr/bin/python3 /usr/lib/fabos/voice/fabos_voiced.py
 Restart=on-failure
 RestartSec=3
-Nice=10
+# Background priority: the always-on spotter (pw-record | pocketsphinx) must never take a time slice from the compositor,
+# the shell or the app the user is in. Nice=15 = far below the session's default 0; IOSchedulingClass=idle = its disk reads
+# (model load, state file) only run when nothing else wants the disk. The spotter itself is started only when a capture
+# device exists (voicelib.mic_present, re-checked every 30 s while there is none) — no microphone, no audio process at all.
+Nice=15
+IOSchedulingClass=idle
 # 200M is a soft cap (memory.high throttles and reclaims, it never kills) sized for what stays resident: python3 + numpy
 # ~40 MB, pw-record, pocketsphinx ~32 MB. whisper-cli with tiny.en peaks at ~175 MB, so the daemon runs each
 # transcription in its own transient scope (systemd-run --user --scope -p MemoryHigh=400M, voicelib.scope_prefix); if

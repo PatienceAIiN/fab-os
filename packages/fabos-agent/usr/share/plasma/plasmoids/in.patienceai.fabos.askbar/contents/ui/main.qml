@@ -67,7 +67,7 @@ PlasmoidItem {
     property string resultText: ""
     property string panelMode: "closed"       // closed | open | min
     property int restoreTaskId: 0             // remembered task whose GET /tasks/{id} the daemon has not answered yet (retried from onStatus)
-    property bool closing: false              // closePanel() called; panelMode stays "open"/"min" for the 300 ms shrink
+    property bool closing: false              // closePanel() called; panelMode stays "open"/"min" for the 220 ms shrink
     readonly property bool followUp: panelMode !== "closed" && !closing && rootTaskId > 0   // the next submit threads under rootTaskId
     property bool showRaw: false              // daemon setting ui.show_raw
     property var seen: ({})                   // "t<task>s<step>" / "a<approval>" / "q<question>" -> model row
@@ -110,8 +110,8 @@ PlasmoidItem {
 
     function shellQuote(s) { return Agent.shellQuote(s) }
     function wake() { root.markAwake = true; sleepTimer.restart() }
-    // the daemon writes status=done BEFORE the final step, so poll twice more after a task stops to catch trailing rows
-    onTaskActiveChanged: { wake(); if (!taskActive && taskId > 0) { trailingPoll1.restart(); trailingPoll2.restart() } }
+    // the daemon writes status=done BEFORE the final step, so two more snapshots follow a task that stops (trailing rows)
+    onTaskActiveChanged: { wake(); if (!taskActive && taskId > 0) root.trailing = 2 }
     onSendingChanged: wake()
     onListeningChanged: wake()
     onPanelModeChanged: { wake(); if (panelMode === "min" || panelMode === "open") { closeTimer.stop(); root.closing = false; root.openProgress = 1 } root.saveTask() }
@@ -122,10 +122,8 @@ PlasmoidItem {
     Timer { id: hintTimer; interval: 6000; onTriggered: root.voiceHint = "" }
     Timer { id: toastTimer; interval: 1600; onTriggered: root.toast = "" }
     // panel fully shrunk: forget the task in the bar so the mark returns to idle (the task itself carries on in the daemon)
-    Timer { id: closeTimer; interval: 300; onTriggered: { root.closing = false; root.panelMode = "closed"; root.taskStatus = "" } }
+    Timer { id: closeTimer; interval: 220; onTriggered: { root.closing = false; root.panelMode = "closed"; root.taskStatus = "" } }   // = the shrink duration
     Timer { id: stickyTimer; interval: 10000; onTriggered: root.stickyStatus = false }
-    Timer { id: trailingPoll1; interval: 1500; onTriggered: if (root.taskId > 0 && root.panelMode !== "closed") root.api("poll", root.taskId, "GET", "/tasks/" + root.taskId) }
-    Timer { id: trailingPoll2; interval: 4000; onTriggered: if (root.taskId > 0 && root.panelMode !== "closed") root.api("poll", root.taskId, "GET", "/tasks/" + root.taskId) }
     property bool stickyStatus: false
     function say(msg) { root.status = msg; root.stickyStatus = true; stickyTimer.restart() }
 
@@ -145,18 +143,40 @@ PlasmoidItem {
     function run(kind, ref, cmd) { root.serial++; exec.connectSource(Agent.tagged(kind, ref, root.serial, cmd)) }
     function api(kind, ref, method, path, body) { root.run(kind, ref, Agent.apiCommand(method, path, body)) }
 
-    Timer { interval: 4000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.api("status", 0, "GET", "/status") }
+    // ---- ONE periodic snapshot (GET /status + GET /tasks/{id} in a single curl, Agent.snapshotCommand) at an adaptive cadence:
+    //   2 s   while the panel follows an active task, plus two trailing snapshots once it stops (at +2 s and +4 s: the
+    //         daemon writes status=done before the final step)
+    //   8 s   otherwise, while the bar is awake (interacted with in the last 30 s, or a task/recording is going on)
+    //   60 s  status-only heartbeat once the mark has gone idle (4 tasks a minute): tasks started elsewhere — Fab AI
+    //         Controls, the CLI, a schedule_watch hit — and their pending approvals still reach the closed bar's status
+    //         line; wake() (hover, focus, click, a task) switches back to the 8 s timer, which snapshots at once.
+    // One-off calls (create, cancel, retry, approve, answer, settings, the remembered task) keep using api().
+    property int trailing: 0                                 // snapshots still owed after the followed task stopped
+    readonly property bool followTask: root.panelMode !== "closed" && root.taskId > 0 && (root.taskActive || root.trailing > 0)
     Timer {
-        id: pollTimer
-        interval: 1500; repeat: true; triggeredOnStart: true
-        running: root.panelMode !== "closed" && root.taskId > 0 && root.taskActive
-        onTriggered: root.api("poll", root.taskId, "GET", "/tasks/" + root.taskId)
+        id: snapTimer
+        interval: root.followTask ? 2000 : 8000
+        repeat: true; triggeredOnStart: true
+        running: root.followTask || root.markAwake
+        onTriggered: root.snapshot()
     }
-    function pollSoon() { if (pollTimer.running) pollTimer.restart() }
+    Timer { id: heartbeat; interval: 60000; repeat: true; running: !snapTimer.running; onTriggered: root.snapshot() }
+    function snapshot() { var t = root.followTask ? root.taskId : 0; root.run("snap", t, Agent.snapshotCommand(t)) }
+    function pollSoon() { if (snapTimer.running) snapTimer.restart(); else root.wake() }   // restart() re-triggers at once
 
     function handle(kind, ref, code, out, err) {
         var j = Agent.parseJson(out)
         switch (kind) {
+        case "snap": {
+            var sn = Agent.parseSnapshot(out)
+            var wasActive = root.taskActive
+            root.onStatus(sn.status)
+            if (ref > 0 && ref === root.taskId && sn.task && sn.task.id === root.taskId) root.ingest(sn.task)
+            // the snapshot that itself ended the task (ingest -> onTaskActiveChanged set trailing = 2 synchronously) is
+            // not one of the two trailing ones; only snapshots taken after the stop count down
+            if (!wasActive && !root.taskActive && root.trailing > 0) root.trailing--
+            break
+        }
         case "status": root.onStatus(j); break
         case "settings": if (j) root.showRaw = String(j["ui.show_raw"] || "") === "true"; break
         case "create": case "follow": root.onCreated(kind === "follow", code, j); break
@@ -237,16 +257,17 @@ PlasmoidItem {
         else if (root.panelMode === "min") root.panelMode = "open"
     }
     function switchTask(id, noteText) {
+        root.trailing = 0
         root.taskId = id; root.taskStatus = "queued"; root.resultText = ""
         root.currentGroup = -1; root.groupHeaderRow = -1; root.lastStepRow = -1; root.taskFirstGroup = root.groupSerial
         if (noteText.length) root.note(noteText)
         root.wake()
-        if (pollTimer.running) pollTimer.restart()
+        root.pollSoon()
     }
     function resetConversation() {
         convo.clear(); root.seen = ({})
         root.groupSerial = 0; root.currentGroup = -1; root.groupHeaderRow = -1; root.lastStepRow = -1; root.lastAssistantRow = -1
-        root.lastApp = ""; root.resultText = ""; root.taskStatus = ""; root.rootTaskId = 0; root.taskId = 0
+        root.lastApp = ""; root.resultText = ""; root.taskStatus = ""; root.rootTaskId = 0; root.taskId = 0; root.trailing = 0
         list.follow = true
     }
     function cancelTask() { if (root.taskId > 0) root.api("cancel", root.taskId, "POST", "/tasks/" + root.taskId + "/cancel") }
@@ -271,7 +292,7 @@ PlasmoidItem {
 
     // ---------------------------------------------------------------- panel open / close (height grows from the bar)
     property real openProgress: 0
-    Behavior on openProgress { id: openBehavior; NumberAnimation { duration: 280; easing.type: Easing.OutCubic } }
+    Behavior on openProgress { id: openBehavior; NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }   // motion token "normal+" (docs/design/MOTION_GUIDELINES.md)
     function openPanel() {
         closeTimer.stop(); root.closing = false; root.restoreTaskId = 0
         openBehavior.enabled = false; root.openProgress = 0; openBehavior.enabled = true
@@ -518,7 +539,7 @@ PlasmoidItem {
                     background: Rectangle {
                         radius: height / 2; color: Kirigami.Theme.alternateBackgroundColor
                         border.color: field.activeFocus ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor; border.width: field.activeFocus ? 1.5 : 1
-                        Behavior on border.color { ColorAnimation { duration: 180 } }
+                        Behavior on border.color { ColorAnimation { duration: 160 } }
                     }
                     onAccepted: root.submit()
                     Keys.onEscapePressed: (event) => { if (root.panelMode === "open") { root.panelMode = "min"; event.accepted = true } else event.accepted = false }
@@ -614,7 +635,7 @@ PlasmoidItem {
         readonly property real contentTarget: root.panelMode === "min" ? minPill.implicitHeight
                                             : Math.min(root.maxPanelHeight, panelHeader.implicitHeight + 6 + list.contentHeight + 16)
         property real panelHeight: contentTarget
-        Behavior on panelHeight { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
+        Behavior on panelHeight { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
         Rectangle {   // same radius as the card so the pair reads as one stack
             anchors.fill: parent
@@ -684,8 +705,8 @@ PlasmoidItem {
                         TypingDots { anchors.left: parent.left; anchors.leftMargin: 6; anchors.verticalCenter: parent.verticalCenter; visible: root.taskActive && root.panelMode === "open"; color: Kirigami.Theme.textColor }
                     }
                     add: Transition {
-                        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 260; easing.type: Easing.OutCubic }
-                        NumberAnimation { property: "rise"; from: 12; to: 0; duration: 260; easing.type: Easing.OutCubic }
+                        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 200; easing.type: Easing.OutCubic }
+                        NumberAnimation { property: "rise"; from: 12; to: 0; duration: 200; easing.type: Easing.OutCubic }
                     }
                     delegate: ConvoDelegate {
                         showRaw: root.showRaw

@@ -59,12 +59,12 @@ PlasmaCore.ToolTipArea {
         transformOrigin: Item.Bottom
         opacity: item.model.IsMinimized === true ? 0.6 : 1.0
         Behavior on opacity { NumberAnimation { duration: 160 } }
-        SequentialAnimation on opacity {   // startup feedback: pulse while the app is launching
+        SequentialAnimation on opacity {   // startup feedback: a few pulses while the app is launching — never an endless loop
             running: item.model.IsStartup === true
-            loops: Animation.Infinite
+            loops: 4                        // ~2.6 s; a slow app then simply shows its icon (libtaskmanager clears IsStartup itself)
             alwaysRunToEnd: true
-            NumberAnimation { to: 0.35; duration: 450; easing.type: Easing.InOutSine }
-            NumberAnimation { to: 1.0; duration: 450; easing.type: Easing.InOutSine }
+            NumberAnimation { to: 0.35; duration: 320; easing.type: Easing.InOutSine }
+            NumberAnimation { to: 1.0; duration: 320; easing.type: Easing.InOutSine }
         }
     }
     Rectangle {   // running indicator; a wider pill for a group, accent when active, attention colour when demanding

@@ -25,6 +25,25 @@ function apiCommand(method, path, body) {
     return c + " \"http://127.0.0.1:$P" + path + "\" 2>/dev/null"
 }
 
+// The bar's ONE periodic call: GET /status and, while a task is followed, GET /tasks/{id} — both in a single curl.
+// Same token discipline as apiCommand (config line on stdin, never argv), but no cat: `read` is a shell builtin, so the
+// port and token files cost no process, and curl fetches both URLs in one run with -w '\n' ending each body with a
+// newline — the reply is one JSON object per line (parseSnapshot). Measured in the image with /proc/stat `processes`:
+// 4 tasks per snapshot (sh, the printf subshell, curl and its resolver thread) against 7 per apiCommand call, i.e. 14 for
+// the status + task pair the bar used to make every 1.5 s (docs/LOW-RAM.md "Idle budget").
+function snapshotCommand(taskId) {
+    // (read returns 1 on a file without a trailing newline although the variable IS set, so the fallback tests $P, not $?)
+    var c = "R=\"${XDG_RUNTIME_DIR:-/tmp}/fabos-agent\"; read -r P < \"$R/port\" 2>/dev/null; [ -n \"$P\" ] || P=8790; read -r T < \"$R/token\" 2>/dev/null; "
+          + "printf 'header = \"Authorization: Bearer %s\"\\n' \"$T\" | curl -s -m 12 -K - -w '\\n' \"http://127.0.0.1:$P/status\""
+    if (taskId > 0) c += " \"http://127.0.0.1:$P/tasks/" + taskId + "\""
+    return c + " 2>/dev/null"
+}
+// snapshot stdout -> {status, task}: line 1 = /status, line 2 = /tasks/{id} (null when not asked for or not JSON)
+function parseSnapshot(out) {
+    var lines = String(out || "").split("\n")
+    return { status: parseJson(lines[0]), task: lines.length > 1 ? parseJson(lines[1]) : null }
+}
+
 // ": kind.ref.serial; ..." -> {kind, ref}  (the ': …;' prefix is a shell no-op that makes each source unique and routable)
 function tagged(kind, ref, serial, cmd) { return ": " + kind + "." + ref + "." + serial + "; " + cmd }
 function parseTag(source) {

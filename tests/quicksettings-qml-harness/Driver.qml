@@ -6,7 +6,7 @@ import org.kde.notificationmanager as NotificationManager
 
 // Headless driver for the quick-settings applet. tests/desktop-applets-qml-test.sh copies the plasmoid into a temp
 // package and appends one Loader line to that COPY of main.qml which loads this file and hands over the ids. Feeds
-// status.sh-shaped text and two /proc/net samples, opens the slide-down pane (settings, then notifications after a
+// status.sh-shaped text (the first release's key=value form, still parsed) and two /proc/net samples, opens the slide-down pane (settings, then notifications after a
 // real org.freedesktop.Notifications.Notify call on the session bus), toggles Do Not Disturb and the bar size, renders
 // /out/quicksettings-{bar,pane,notifications}.png and prints PASS/FAIL lines + "HARNESS DONE failures=N".
 // Under a virtual kwin_wayland (tests/dock-qml-harness/kwin-session.sh, QT_QPA_PLATFORM=wayland) it goes on to drive a
@@ -28,7 +28,7 @@ Item {
     property var volInd: null
     property var bellInd: null
     property var poll: null
-    property var netPoll: null
+    property var probe: null
     property int failures: 0
     property int grabs: 0
     property var backdrops: ({})
@@ -73,8 +73,8 @@ Item {
     function stage1() {
         root.paneAutoHide = false
         root.autoRefresh = false
-        if (poll) poll.disconnectSource(root.statusCmd)   // the fed state must not be replaced by the container's real probe
-        if (netPoll) netPoll.disconnectSource(root.netCmd)
+        if (poll) poll.connectedSources = []                // the fed state must not be replaced by the container's real probe
+        if (probe) probe.connectedSources = []              // (the periodic light/full probe and the one-shot full probe)
         var win = root.Window.window
         if (h.wayland && win) {   // screen coordinates for the pointer: fullscreen window, the bar in a 40 px strip along its top edge
             h.strip = stripComp.createObject(root, { width: Qt.binding(function() { return bar.implicitWidth + 32 }), height: 40 })
