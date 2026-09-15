@@ -6,7 +6,7 @@
   <group name="General">
     <entry name="launchers" type="StringList">
       <label>Pinned apps (launcher URLs), in dock order. The look-and-feel layout writes the same list at first login.</label>
-      <default>applications:fabos-overview.desktop,applications:fabos-command-center.desktop,applications:org.kde.dolphin.desktop,applications:org.kde.konsole.desktop,applications:org.kde.kate.desktop,applications:brave-browser.desktop,applications:systemsettings.desktop,applications:org.kde.discover.desktop</default>
+      <default>applications:fabos-overview.desktop,applications:fabos-command-center.desktop,applications:org.kde.dolphin.desktop,applications:org.kde.konsole.desktop,applications:org.kde.kate.desktop,applications:firefox.desktop,applications:systemsettings.desktop,applications:org.kde.discover.desktop</default>
     </entry>
     <entry name="magnify" type="Bool">
       <label>Magnify icons under the pointer (hovered 1.6x, neighbours 1.3x / 1.1x at Normal). One switch shared with the top bar's quick settings, kept in sync both ways.</label>
@@ -31,6 +31,18 @@
     <entry name="maxIconSize" type="Int">
       <label>Upper bound for the resting icon size in pixels.</label>
       <default>48</default>
+    </entry>
+    <entry name="showStart" type="Bool">
+      <label>Fab OS start button as the first dock item (opens the launcher menu through plasmashell's activateLauncherMenu; the stock launcher applet sits zero-width beside the dock as the menu's owner). Same size and magnify as every other icon.</label>
+      <default>true</default>
+    </entry>
+    <entry name="showPeek" type="Bool">
+      <label>"Peek at the desktop" as the last dock item (KWin's Show Desktop). Same size and magnify as every other icon.</label>
+      <default>true</default>
+    </entry>
+    <entry name="tileScale" type="Double">
+      <label>Fab OS app icons are full-bleed rounded tiles while Breeze app icons leave a margin inside their box; tiles (Fab OS app icons, the start button's launcher tile and peek's neutral tile) are drawn at this fraction of the box so every item's visible extent equals a Breeze app icon's glyph (measured by tests/dock-qml-harness/measure.py from the harness renders).</label>
+      <default>0.85</default>
     </entry>
   </group>
 </kcfg>

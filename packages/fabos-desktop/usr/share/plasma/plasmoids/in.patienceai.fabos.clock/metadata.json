@@ -1,0 +1,16 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Authors": [{"Email": "support@patienceai.in", "Name": "@VENDOR_NAME@"}],
+    "Category": "Date and Time",
+    "Description": "Day, date and time on one bold line in the bar's size; click for the month",
+    "Icon": "clock",
+    "Id": "in.patienceai.fabos.clock",
+    "License": "Apache-2.0",
+    "Name": "@DISTRO_NAME@ Clock",
+    "Version": "@DISTRO_VERSION@",
+    "Website": "@HOME_URL@"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "X-Plasma-Provides": ["org.kde.plasma.time", "org.kde.plasma.date"]
+}
