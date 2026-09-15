@@ -292,7 +292,7 @@ status glyphs (`brand/gen/make_assets.py` MONO_MAP, recoloured by the icon loade
 - **Backend**: libtaskmanager's `TasksModel` exactly as the stock task manager configures it — launchers from
   `Plasmoid.configuration.launchers` (written back on change), `GroupApplications`, `SortManual`, launch-in-place,
   activity / virtual-desktop filters from the settings. Default pins: Overview, Fab AI Controls, Files, Terminal, Editor,
-  **Brave**, Settings, Software.
+  **Firefox**, Settings, Software.
 - **Magnify**: a `Row` of `TaskItem`s; the hovered icon scales to 1.6, neighbours 1.3 / 1.1 (Subtle 1.3 / 1.15 / 1.05,
   Strong 1.9 / 1.45 / 1.15), 160 ms OutCubic. Each item's width follows its own scale, so the row re-flows and icons
   never overlap. Because a panel clips its applets, the **resting** size is `floor(available height / peak)`, capped at

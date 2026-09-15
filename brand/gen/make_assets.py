@@ -252,7 +252,7 @@ ICON_MAP = {
     ("systemsettings", "preferences-system", "configure", "org.kde.systemsettings"): ("settings", "#5B6472"),
     ("plasmadiscover", "org.kde.discover", "system-software-install", "flatpak-discover"): ("shopping_bag", "#1F9D57"),
     ("kate", "org.kde.kate", "accessories-text-editor", "text-editor"): ("edit_note", "#B7791F"),
-    ("brave-browser", "com.brave.Browser", "firefox", "firefox-esr", "web-browser", "internet-web-browser", "org.mozilla.firefox"): ("public", "#E0642B"),   # generic globe, never a vendor logo (ADR-0016)
+    ("firefox", "firefox-esr", "web-browser", "internet-web-browser", "org.mozilla.firefox"): ("public", "#E0642B"),   # generic globe, never a vendor logo (ADR-0018)
     ("fabos-command-center",): ("smart_toy", "#6E9BFF"),
     ("fabos-feedback",): ("feedback", "#7C5CFF"),
     ("fabos-overview",): ("grid_view", "#4B3BD6"),          # Task view / Overview button in the dock

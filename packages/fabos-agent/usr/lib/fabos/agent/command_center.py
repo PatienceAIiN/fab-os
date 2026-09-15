@@ -1093,8 +1093,8 @@ LIVE = {"run_shell": "Running a command", "read_file": "Reading a file", "write_
         "context": "Tidying earlier notes"}
 STEP_GLYPH = {"run_shell": "terminal", "type_text": "keyboard", "write_file": "file", "read_file": "file", "list_dir": "folder", "web_fetch": "globe", "send_email": "mail",
               "check_email": "mail", "notify_user": "bell", "ask_user": "question", "schedule_watch": "eye", "list_apps": "apps", "open_app": "apps", "context": "tools"}
-APP_NAMES = {"kate": "Fab Editor", "dolphin": "Fab Files", "konsole": "Fab Terminal", "xdg-open": "the default app", "open": "the default app", "brave-browser": "Brave",
-             "brave": "Brave", "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos", "okular": "Fab Documents",
+APP_NAMES = {"kate": "Fab Editor", "dolphin": "Fab Files", "konsole": "Fab Terminal", "xdg-open": "the default app", "open": "the default app", "firefox": "Firefox",
+             "firefox-esr": "Firefox", "libreoffice": "LibreOffice", "vlc": "VLC", "plasma-discover": "Fab Software", "gwenview": "Fab Photos", "okular": "Fab Documents",
              "kcalc": "Fab Calculator", "spectacle": "Fab Screenshot", "systemsettings": "Fab Settings"}
 
 
@@ -3521,7 +3521,7 @@ class SettingsDialog(RoundedDialog):
 
 # ----------------------------------------------------------------------------- main window
 EMPTY_COLUMNS = [
-    ("bulb", "Try asking", ["Open Fab Files in Downloads", "Write a hi note in Fab Editor and mail it to a friend", "Open Brave on fabos.patienceai.in"]),
+    ("bulb", "Try asking", ["Open Fab Files in Downloads", "Write a hi note in Fab Editor and mail it to a friend", "Open Firefox on fabos.patienceai.in"]),
     ("bolt", "What I can do", ["Open and drive apps, type into them", "Read, write and organise your files, run commands", "Send and check mail, fetch the web, keep a watch"]),
     ("shield", "Keep in mind", ["Every step is scored LOW to CRITICAL", "Ask · Auto · Bypass decide when I ask you first", "Nothing leaves this computer except your requests to the AI provider you chose"]),
 ]

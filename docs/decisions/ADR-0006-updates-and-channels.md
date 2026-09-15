@@ -6,8 +6,8 @@
 - Clients ship `fabos.sources` (Standard) and the keyring. `fabos-updates` switches suites, checks and
   installs (pkexec + polkit), and configures unattended-upgrades for "Patience AI" origins and Ubuntu security.
   A daily timer notifies logged-in users when updates are waiting. Automatic installation is ON by default.
-- Ubuntu updates keep flowing from Ubuntu unchanged; Brave Browser from Brave's own repository (since 2026-09-15,
-  ADR-0016; Firefox from Mozilla's repository before that).
+- Ubuntu updates keep flowing from Ubuntu unchanged; Firefox from Mozilla's repository (origin-pinned 1000; ADR-0018 —
+  Brave's repository served the 1.0-3 / 1.0-4 images only, ADR-0016).
 
 ## Tradeoffs
 HTTP transport until a certificate is issued for the host (signatures protect integrity; privacy of package

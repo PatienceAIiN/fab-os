@@ -28,7 +28,7 @@ Try it live, then double-click **Install Fab OS** on the desktop. Verify with \`
 \`gpg --verify SHA256SUMS.gpg SHA256SUMS\` (Fab OS Archive key: fabos-archive-key.asc, also at https://fabos.patienceai.in/apt/fabos-archive-key.asc).
 
 ## What is inside
-See MANIFEST.txt (every package and version). Bundled: Brave Browser (Brave's official build), LibreOffice, VLC, KWeather, Fab Terminal,
+See MANIFEST.txt (every package and version). Bundled: Firefox (Mozilla's official build), LibreOffice, VLC, KWeather, Fab Terminal,
 Fab Files, Fab Editor, Fab Software, Fab Photos, Fab Documents, Fab AI Controls, Fab Updates, Fab Feedback.
 
 ## Legal

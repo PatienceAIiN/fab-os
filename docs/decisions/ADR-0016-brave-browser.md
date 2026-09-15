@@ -1,6 +1,6 @@
 # ADR-0016: Brave Browser replaces Firefox, installed unmodified from Brave's own repository
 
-**Status:** accepted (2026-09-15) · amends ADR-0004 (browser source) and ADR-0006 (update streams)
+**Status:** superseded by [ADR-0018](ADR-0018-firefox-returns.md) (2026-09-15, the same day: the owner brought Firefox back after the Brave build) — kept unchanged below as the record of the 1.0-3 / 1.0-4 images · amended ADR-0004 (browser source) and ADR-0006 (update streams)
 
 ## Context
 Owner's request: "ship with brave browser and remove firefox". Firefox came from Mozilla's apt repository (Ubuntu's own

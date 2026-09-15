@@ -15,9 +15,11 @@ kept as an experiment branch), Xfce/LXQt (light but Wayland immature).
 Not installed and pinned to priority -1. Removes a daemon, mounts, boot time,
 and a Canonical-controlled store from the base. Flatpak + Discover cover
 sandboxed apps. Firefox therefore comes from Mozilla's apt repo or Flatpak
-(documented, not preinstalled yet). *Amended 2026-09-15 (ADR-0016): the
-shipped browser is Brave, installed unmodified from Brave's own apt
-repository; Firefox and the Mozilla repository were removed.*
+(documented, not preinstalled yet). *Amended 2026-09-15 (ADR-0016, then ADR-0018 the same
+day): Brave from Brave's own apt repository replaced Firefox for the
+1.0-3 / 1.0-4 images; Firefox from Mozilla's own apt repository is the
+shipped browser again, with Mozilla's enterprise-policy file for a quiet
+first run.*
 
 ## FabOS shell
 FabOS AI surfaces (command bar, activity center, settings pane) are delivered

@@ -7,8 +7,8 @@ Everything comes from the image itself (read-only `podman run`): every dpkg pack
 source package, homepage) with the licence declared in the first `License:` field of its /usr/share/doc/<pkg>/copyright
 (Debian machine-readable format; "unknown" when the file is absent or not machine-readable), plus the components that
 are not dpkg packages: the built-in Qwen2.5 model (from /usr/share/fabos/ai-models.json), the Whisper tiny.en weights
-(/usr/share/fabos/voice/ggml-tiny.en.bin, sha256 computed in the image) and Brave Browser (its dpkg entry when the image
-carries it). The BUILD_ID is read from /etc/fabos/release (FABOS_BUILD_ID) unless given. Exit 0 and a one-line summary
+(/usr/share/fabos/voice/ggml-tiny.en.bin, sha256 computed in the image) and Firefox (its dpkg entry is annotated with Mozilla as
+the supplier and packages.mozilla.org as the distribution when the image carries Mozilla's build, ADR-0018). The BUILD_ID is read from /etc/fabos/release (FABOS_BUILD_ID) unless given. Exit 0 and a one-line summary
 with the component count; nothing is downloaded.
 """
 import argparse, datetime, json, os, re, subprocess, sys, uuid
@@ -138,12 +138,12 @@ def main():
                       "hashes": [{"alg": "SHA-256", "content": wh["sha256"]}],
                       "externalReferences": [{"type": "distribution", "url": "https://huggingface.co/ggerganov/whisper.cpp"}],
                       "properties": [{"name": "fabos:path", "value": "/usr/share/fabos/voice/ggml-tiny.en.bin"}, {"name": "fabos:bytes", "value": str(wh["bytes"])}]})
-    brave = next((p for p in data["packages"] if p["name"] == "brave-browser"), None)
+    firefox = next((p for p in data["packages"] if p["name"] == "firefox"), None)   # Mozilla's build (ADR-0018); Ubuntu's snap shim never reaches an image
     for c in comps:
-        if brave and c["name"] == "brave-browser":
-            c["supplier"] = {"name": "Brave Software, Inc.", "url": ["https://brave.com/"]}
-            c["licenses"] = [{"license": {"id": "MPL-2.0", "name": "MPL-2.0 (Brave's code) with Chromium's BSD-3-Clause components; unmodified official .deb"}}]
-            c["externalReferences"] = [{"type": "distribution", "url": "https://brave-browser-apt-release.s3.brave.com"}]
+        if firefox and c["name"] == "firefox":
+            c["supplier"] = {"name": "Mozilla Foundation", "url": ["https://www.mozilla.org/firefox/"]}
+            c["licenses"] = [{"license": {"id": "MPL-2.0", "name": "MPL-2.0; Mozilla's unmodified official .deb from packages.mozilla.org"}}]
+            c["externalReferences"] = [{"type": "distribution", "url": "https://packages.mozilla.org/apt"}]
     bom = {"bomFormat": "CycloneDX", "specVersion": "1.5", "serialNumber": "urn:uuid:" + str(uuid.uuid4()), "version": 1,
            "metadata": {"timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "tools": [{"vendor": "Patience AI", "name": "fabos sbom.py", "version": "1.0"}],

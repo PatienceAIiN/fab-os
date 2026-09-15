@@ -53,5 +53,20 @@ case "$1" in configure)
     [ -d /run/systemd/system ] && sysctl -q -p /etc/sysctl.d/60-fabos-lowram.conf 2>/dev/null || true
   fi
   [ -x /usr/lib/fabos/rebrand-desktop-entries ] && /usr/lib/fabos/rebrand-desktop-entries || true
+  # Browser migration (ADR-0018): a system installed from the 1.0-3 / 1.0-4 images has brave-browser, Brave's apt source,
+  # `firefox` pinned out in the image-written 00-fabos-blocklist (no package rewrites that file, and the pin hits Mozilla's
+  # build too) and no Mozilla Firefox. Flag the one-shot job and start it — it waits for this apt run to finish, installs
+  # Firefox from Mozilla's source, then removes the old browser; if it cannot finish now (offline) it runs at the next boot.
+  # A fresh image has Mozilla's Firefox and nothing of Brave, so nothing happens there.
+  if dpkg -l brave-browser 2>/dev/null | grep -q '^ii' || [ -e /etc/apt/sources.list.d/brave-browser-release.sources ] \
+     || grep -qsw firefox /etc/apt/preferences.d/00-fabos-blocklist \
+     || ! dpkg-query -W -f '${Maintainer}' firefox 2>/dev/null | grep -q '^Mozilla'; then
+    mkdir -p /var/lib/fabos && touch /var/lib/fabos/browser-migrate-pending
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload 2>/dev/null || true
+      systemctl enable fabos-browser-migrate.service 2>/dev/null || true
+      systemctl start --no-block fabos-browser-migrate.service 2>/dev/null || true
+    fi
+  fi
 ;; esac
 exit 0

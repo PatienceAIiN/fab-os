@@ -12,7 +12,7 @@ own notice is in `/usr/share/doc/<package>/copyright` (never excluded from Fab O
 | `LGPL-2.0.txt` | GNU Library GPL v2 | bubblewrap (LGPL-2.0-or-later, the agent's shell sandbox); polkit / pkexec (LGPL-2.0-or-later, the agent's root path) |
 | `LGPL-2.1.txt` | GNU LGPL v2.1 | KDE Frameworks, KWallet and other LGPL-2.1-or-later libraries; systemd |
 | `LGPL-3.0.txt` | GNU LGPL v3 | KDE Breeze icon theme, Breeze style and colour schemes (basis of Fab Dark / Fab Light, which stay LGPL-3.0-or-later) |
-| `MPL-2.0.txt` | Mozilla Public License 2.0 | Brave Browser (Brave's own code; unmodified official .deb from brave-browser-apt-release.s3.brave.com; Chromium's BSD-3-Clause components carry their notices inside the package) |
+| `MPL-2.0.txt` | Mozilla Public License 2.0 | Firefox (Mozilla's unmodified .deb from packages.mozilla.org; ADR-0018 — the same text covered the browser of the 1.0-3/1.0-4 images, ADR-0016) |
 | `MIT.txt` | MIT / Expat | llama.cpp; anthropic Python SDK; whisper.cpp and the Whisper `tiny.en` ggml model shipped in `/usr/share/fabos/voice` |
 | `Qwen2.5-LICENSE.txt` | Apache License 2.0 with the upstream copyright notice "Copyright 2024 Alibaba Cloud" | Qwen2.5-1.5B-Instruct GGUF model weights, the built-in offline model (`/usr/share/fabos/models/`); verbatim `LICENSE` of huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF |
 | `BSD-2-Clause.txt` | BSD 2-Clause "Simplified" | PocketSphinx and the `pocketsphinx-en-us` acoustic model, dictionary and language model (Carnegie Mellon University) |

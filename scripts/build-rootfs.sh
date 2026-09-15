@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the FabOS OS rootfs image with rootless podman and turn it into an ext4 filesystem (no host root).
-# Usage: scripts/build-rootfs.sh [vm|iso]   Env: ROOT_SIZE (default 14G — the vm test disk must hold the built-in model, Brave and voice with room to run), NO_CACHE=1
+# Usage: scripts/build-rootfs.sh [vm|iso]   Env: ROOT_SIZE (default 14G — the vm test disk must hold the built-in model, Firefox and voice with room to run), NO_CACHE=1
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"; PROFILE=${1:-vm}; TAG=fabos:$PROFILE
 ROOT_SIZE=${ROOT_SIZE:-14G}; mkdir -p build
