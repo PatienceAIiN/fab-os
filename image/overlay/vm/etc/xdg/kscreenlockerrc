@@ -1,0 +1,7 @@
+# vm TEST profile only (never in the ISO): the headless test VM must not lock while the suites run — a locked screen made
+# the corners/perf/browser probes sample the dimmed lock screen instead of windows. Installed systems keep the 10-minute
+# autolock from image/overlay/common/etc/xdg/kscreenlockerrc (ADR-0017).
+[Daemon]
+Autolock=false
+LockOnResume=false
+Timeout=0
