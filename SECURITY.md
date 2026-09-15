@@ -22,7 +22,7 @@ In scope:
 - The Fab OS apt repository (signing, channel switching in Fab OS Updates).
 - The website and community server in `website/` and `community/`.
 
-Out of scope: vulnerabilities in unmodified Ubuntu, KDE, Brave or other upstream packages (report them
+Out of scope: vulnerabilities in unmodified Ubuntu, KDE, Mozilla or other upstream packages (report them
 upstream; tell us as well if Fab OS's default configuration makes them worse), and the VM test profile,
 which has a known password and autologin by design and is never distributed.
 
@@ -39,7 +39,7 @@ Three attackers, and what stands between each of them and the machine. Every con
 | become root through the agent's root path | Fab OS ships no passwordless path: `rootexec` is started by `pkexec` under the polkit action `in.patienceai.fabos.rootexec` (`allow_active=auth_admin_keep`, `allow_any`/`allow_inactive=no`), so polkit asks the active user for their own password (an administrator's for non-admin accounts) in every mode; `rootexec` then runs only a record the daemon wrote (`O_EXCL 0600` in a `0700` dir, owner = `PKEXEC_UID`, no symlink, < 10 min, `id` and `command_sha256` verified, single use) and logs every decision (`/var/log/fabos/rootexec.log`, journal). No `NOPASSWD` sudoers rule exists; `postinst`/`postrm` remove the 1.0-3 one. **Residual window, stated plainly:** `auth_admin_keep` caches the authorization for five minutes, so within that window a process of the same user that has read the daemon's `0600` API token (readable outside the sandbox, by design — it is the user's own agent) can drive a `bypass`-mode `as_root` task without a new prompt. Organisations that do not accept this drop the cache with one polkit rule (`/etc/polkit-1/rules.d/40-fabos-rootexec.rules`: `polkit.addRule(function(a, s) { if (a.id == "in.patienceai.fabos.rootexec") return polkit.Result.AUTH_ADMIN; });`) — every root step then costs a fresh password; `tests/security-check.sh` only asserts that no rule *weakens* the action. A `sudo` rule someone installs for `rootexec` does not re-create the 1.0-3 escalation either: `rootexec` honours `SUDO_UID` only when the administrator's `/etc/fabos/policy.json` sets `require_password_for_root: false` (an explicit opt-in for unattended kiosks) and refuses the sudo launcher otherwise. |
 | drive the agent through its API to approve steps or change the mode | the API token is `0600` in `$XDG_RUNTIME_DIR/fabos-agent`, hidden from every `run_shell` sandbox; approvals and mode changes are recorded in the chained activity log; the administrator's `mode_max` caps what any approval can allow |
 | debug or dump the daemon to read provider keys | `kernel.yama.ptrace_scope=1` (only descendants), `LimitCORE=0` on the unit, `fs.suid_dumpable=0`; keys live in `systemd-creds`, decrypted on use |
-| escalate through setuid binaries | the image's setuid/setgid/capability lists must equal the saved baselines (`tests/security/*.txt`, Ubuntu's stock set + Brave's sandbox helper); no Fab OS file is setuid, setgid or carries a capability; `fs.protected_*` block `/tmp` symlink and FIFO tricks |
+| escalate through setuid binaries | the image's setuid/setgid/capability lists must equal the saved baselines (`tests/security/*.txt`, Ubuntu's stock set; Firefox adds no setuid file); no Fab OS file is setuid, setgid or carries a capability; `fs.protected_*` block `/tmp` symlink and FIFO tricks |
 | use `sudo` habits against the administrator | `/etc/sudoers.d/fabos-hardening`: `passwd_timeout=1`, `use_pty` (no TIOCSTI injection), `logfile` |
 
 **2. A remote attacker via the browser or the network.**
@@ -48,7 +48,7 @@ Three attackers, and what stands between each of them and the machine. Every con
 |---|---|
 | reach a listening service | ufw denies incoming (no rules on installed systems), no SSH server, mDNS off (`avahi-daemon` disabled), every Fab OS daemon binds 127.0.0.1 or a unix socket and runs as the user with `MemoryHigh` |
 | reach the agent or the local model from a web page | `fabos-agentd` (127.0.0.1:8790) requires the bearer token on every request except `/health`; `llama-server` is bound to 127.0.0.1:8081 by its wrapper and confined by the enforced AppArmor profile `fabos-llama` (model directories read-only, no home, no /tmp) |
-| persist or pivot after a browser compromise | Brave runs under its upstream AppArmor profiles with Chromium's sandbox; `kernel.kptr_restrict=2`, `dmesg_restrict=1`, `net.core.bpf_jit_harden=2`, strict `rp_filter`, SYN cookies (`/etc/sysctl.d/70-fabos-hardening.conf`); unattended security updates for Ubuntu, Fab OS and Brave; the screen locks after 10 idle minutes and on wake from sleep |
+| persist or pivot after a browser compromise | Firefox runs under Ubuntu's `firefox` AppArmor profile (user namespaces for its content sandbox) with Mozilla's multi-process sandbox; `kernel.kptr_restrict=2`, `dmesg_restrict=1`, `net.core.bpf_jit_harden=2`, strict `rp_filter`, SYN cookies (`/etc/sysctl.d/70-fabos-hardening.conf`); unattended security updates for Ubuntu and Fab OS, Firefox updates from Mozilla's repository through the same apt path; the screen locks after 10 idle minutes and on wake from sleep |
 
 **3. Malicious model output** (prompt injection through a web page, a mail, a file the agent read).
 
@@ -122,25 +122,23 @@ administrator policy file (`/etc/fabos/policy.json`) bounds every user setting (
 any built image is produced by `scripts/sbom.py`. Known gap: the Fab OS repository is served over HTTP until a certificate
 is issued for the host (integrity is protected by signatures; package names are not private).
 
-Secrets and the browser (2026-09-15, ADR-0015 / ADR-0016): KWallet is disabled system-wide (`/etc/xdg/kwalletrc`
+Secrets and the browser (2026-09-15, ADR-0015 / ADR-0018): KWallet is disabled system-wide (`/etc/xdg/kwalletrc`
 `Enabled=false`), KWallet Manager is not installed and pinned out, and `pam_kwallet5` is removed from the SDDM PAM
 stack, so no wallet daemon runs and no wallet prompt appears. Wi-Fi/VPN secrets are therefore held by NetworkManager
-in root-only files under `/etc/NetworkManager/system-connections/`; the agent's keys stay in `systemd-creds`. Brave
-Browser is Brave's unmodified official build from Brave's own signed apt repository (keyring fingerprint-checked at
-build time, key scoped to that source only, never in `/etc/apt/trusted.gpg.d/`). Brave's packaging is Chromium's
-installer template with Google's repository constants still inside it, but both scripts that contain that code stop
-before reaching it: the postinst `exit 0`s immediately before `install_key` (brave/brave-browser#54299) and the daily
-cron script `exit 0`s at its line 23, before it even defines `DEFAULTS_FILE` (brave/brave-browser#1084) — checked in
-`brave-browser 1.95.101`. No Google source or key is ever added; the `/etc/default/brave-browser` Fab OS ships
-(`repo_add_once="false"`) is belt-and-braces for a future package that re-enables the template, the image has no cron
-daemon, and the build fails if any source other than Ubuntu's and Brave's appears.
+in root-only files under `/etc/NetworkManager/system-connections/`; the agent's keys stay in `systemd-creds`. Firefox
+is Mozilla's unmodified official build from Mozilla's own signed apt repository (`packages.mozilla.org`, signing key
+fingerprint-checked at build time, `Signed-By` scoped to that source only, never in `/etc/apt/trusted.gpg.d/`, origin
+pinned above Ubuntu's snap-shim `firefox`). Fab OS adds one file, `/usr/lib/firefox/distribution/policies.json` —
+Mozilla's documented enterprise-policy mechanism — which turns off Firefox telemetry and studies, the first-run tour,
+the default-browser prompt, stock bookmarks and sponsored tiles and sets the home page; nothing in it is locked, and it
+cannot weaken Firefox's own sandbox or its update path (updates come through apt from Mozilla). The build fails if any
+source other than Ubuntu's and Mozilla's appears or anything of the Brave package set (ADR-0016, one release) remains.
 
-Setuid, setgid and file capabilities: the image carries Ubuntu's stock set plus **exactly one non-stock setuid-root
-file, `/opt/brave.com/brave/chrome-sandbox`** — Chromium's setuid sandbox helper (15 224 bytes, mode 4755, shipped
-unmodified in Brave's package). Brave's sandbox normally uses unprivileged user namespaces under an AppArmor profile
-that grants `userns` (Ubuntu's `/etc/apparmor.d/brave`; Brave's postinst also installs its own `brave-browser-stable`
-profile for the same binary — both `flags=(unconfined)`, both parse with `apparmor_parser` 5.0.2); the setuid helper is
-Chromium's fallback when user namespaces are unavailable. No Fab OS binary is setuid or setgid or carries a capability;
+Setuid, setgid and file capabilities: the image carries **Ubuntu's stock set and nothing else**: Firefox has no setuid
+helper — its content sandbox uses unprivileged user namespaces, which Ubuntu's `/etc/apparmor.d/firefox` profile
+(`flags=(unconfined)` with `userns`, shipped by the `apparmor` package for `/usr/lib/firefox/firefox{,-bin}`) grants
+under `kernel.apparmor_restrict_unprivileged_userns=1`. Brave's `chrome-sandbox`, the one non-stock setuid file of the
+1.0-3 / 1.0-4 images (ADR-0016), left with Brave (ADR-0018). No Fab OS binary is setuid or setgid or carries a capability;
 every daemon Fab OS adds binds 127.0.0.1 or a unix socket, runs as the user and carries a `MemoryHigh` limit.
 `tests/branding-check.sh` and `tests/security-check.sh` compare the full `find / -xdev -perm -4000`, `-perm -2000` and
 `getcap -r /` lists of the built image against explicit allowlists / the saved baselines in `tests/security/` (any new

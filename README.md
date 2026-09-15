@@ -81,7 +81,7 @@ How the microphone path behaves: `listen-once` records through PipeWire (`pw-rec
 
 ## What's in the box
 
-- **Apps you already know:** Brave Browser (Brave's own unmodified build), LibreOffice, VLC, plus the Fab suite — Fab Files, Fab Terminal, Fab Editor, Fab Software, Fab Photos, Fab Documents, Fab Calculator, Fab Screenshot, Fab Monitor, Fab System Info, Weather.
+- **Apps you already know:** Firefox (Mozilla's own unmodified build), LibreOffice, VLC, plus the Fab suite — Fab Files, Fab Terminal, Fab Editor, Fab Software, Fab Photos, Fab Documents, Fab Calculator, Fab Screenshot, Fab Monitor, Fab System Info, Weather.
 - **Fab AI Controls** — chat with the agent: searchable history grouped by day, follow-ups with context, the live action timeline, approvals, the System-Wide AI switch, voice, and compact settings (four tabs — permission mode and System-Wide AI · AI provider with a real connection check · Voice with a Voice check and Test voice · Mail with Sign in — everything else under *Advanced*). Launch it with Meta+Space (`fabos-command-center`; `--task ID` opens a specific conversation).
 - **Talk to Fab** — the "Hey Fab" wake word, offline speech-to-text and spoken narration (`fabos-voice`).
 - **Fab Updates** — one place for updates, with Standard and Beta channels.
@@ -191,7 +191,7 @@ Fab OS keeps two update streams, both automatic and both signed:
 
 - **Ubuntu** security and package updates come from the Ubuntu archive, unchanged.
 - **Fab OS** feature, AI, and branding updates come from Patience AI's signed repository at `https://fabos.patienceai.in/apt` (suites `loom` for Standard, `loom-beta` for Beta).
-- **Brave Browser** updates come from Brave's own signed repository (`https://brave-browser-apt-release.s3.brave.com`, configured in `/etc/apt/sources.list.d/brave-browser-release.sources` with Brave's keyring), through the same `apt` path — Fab OS ships Brave's official build unmodified and never patches it.
+- **Firefox** updates come from Mozilla's own signed repository (`https://packages.mozilla.org/apt`, configured in `/etc/apt/sources.list.d/mozilla.sources` with Mozilla's keyring and pinned above the Ubuntu archive, whose own `firefox` package is only a snap shim), through the same `apt` path — Fab OS ships Mozilla's official build unmodified and never patches it. The one Fab OS addition is Mozilla's documented enterprise-policy file (`/usr/lib/firefox/distribution/policies.json`): it makes the first launch quiet (no welcome tour, no telemetry or studies, no default-browser prompt, no stock bookmarks, no sponsored tiles, home page `fabos.patienceai.in`) and locks nothing.
 
 `apt`, `flatpak`, and everything else you know work normally.
 
@@ -217,7 +217,7 @@ Fab OS is free and open source. **Own code is Apache-2.0** ([LICENSE](LICENSE), 
 - **[ATTRIBUTIONS.md](ATTRIBUTIONS.md)** and **[THIRD_PARTY_LICENSES/](THIRD_PARTY_LICENSES/)** — every third-party component and its licence text.
 - **[legal/](legal/)** — trademark notes, the Ubuntu-derivative compliance record, the GPL source offer, the privacy statement, the list of length-preserving string patches, and the open-source release checklist.
 
-Trademark note: **Ubuntu** is a trademark of Canonical Ltd.; **KDE** and **Plasma** are trademarks of KDE e.V.; **Brave** and the Brave lion logo are trademarks of Brave Software, Inc. (Fab OS ships the unmodified official build from Brave's repository and is not endorsed by Brave Software). Fab OS is an independent project and is **not endorsed by** any of them. All Ubuntu/Canonical and KDE trademarks and logos are removed from the product surface; the underlying free software and its copyright notices are unchanged.
+Trademark note: **Ubuntu** is a trademark of Canonical Ltd.; **KDE** and **Plasma** are trademarks of KDE e.V.; **Firefox** is a trademark of the Mozilla Foundation; Fab OS ships Mozilla's own unmodified build. Fab OS is an independent project and is **not endorsed by** any of them. All Ubuntu/Canonical and KDE trademarks and logos are removed from the product surface; the underlying free software and its copyright notices are unchanged.
 
 No telemetry, no analytics, no accounts. See [legal/PRIVACY.md](legal/PRIVACY.md) and [SECURITY.md](SECURITY.md).
 

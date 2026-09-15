@@ -141,8 +141,8 @@ Three records exist, all append-only from the user's point of view:
 
 Unattended upgrades are on (`/etc/apt/apt.conf.d/20auto-upgrades`) for Ubuntu security updates and the Fab OS repository
 (`/etc/apt/apt.conf.d/52fabos-unattended`, origins `Patience AI:loom` and `-beta`); no automatic reboot. Channels (stable /
-beta) are switched in Fab OS Updates through its own polkit action (`in.patienceai.fabos.updates`, ADR-0006). Brave updates
-come from Brave's own signed repository. Ubuntu packages are unmodified: their CVE handling is Ubuntu's.
+beta) are switched in Fab OS Updates through its own polkit action (`in.patienceai.fabos.updates`, ADR-0006). Firefox updates
+come from Mozilla's own signed repository (`packages.mozilla.org`, ADR-0018). Ubuntu packages are unmodified: their CVE handling is Ubuntu's.
 
 ## 7. Verifying an ISO and an installation
 
@@ -163,7 +163,7 @@ come from Brave's own signed repository. Ubuntu packages are unmodified: their C
   `ufw status`, `systemctl is-enabled avahi-daemon unattended-upgrades`, `ls -l /etc/sudoers.d`, `pkaction --verbose
   --action-id in.patienceai.fabos.rootexec`, `fabos status`, `fabos policy`, `fabos audit verify`.
 - Software bill of materials: `scripts/sbom.py --image localhost/fabos:iso` writes a CycloneDX 1.5 JSON with every dpkg
-  package (name, version, licence from its copyright file), the model weights (sha256) and Brave.
+  package (name, version, licence from its copyright file), the model weights (sha256) and Firefox (Mozilla as supplier).
 
 ## 8. What is NOT covered
 
@@ -181,7 +181,7 @@ Said plainly so nobody plans around it:
 - **Cloud providers see what is sent to them.** With `cloud_allowed` true, requests and tool results go to the selected
   provider under its terms; Fab OS adds no proxy, redaction or DLP.
 - **`fabos-agentd` and `fabos-voiced` are not yet AppArmor-enforced** (complain mode, path documented in each profile;
-  only `fabos-llama` is enforced); Brave runs under its own upstream profiles; the rest of the desktop is Ubuntu's stock
+  only `fabos-llama` is enforced); Firefox runs under Ubuntu's `firefox` profile (unconfined, user namespaces for its own sandbox); the rest of the desktop is Ubuntu's stock
   confinement.
 - **The ISO currently on the download page is not signed.** It predates `scripts/release-checksums.sh` and has only an
   unsigned `<iso>.sha256`; releases published from now on carry `SHA256SUMS` + `SHA256SUMS.gpg` (§7).

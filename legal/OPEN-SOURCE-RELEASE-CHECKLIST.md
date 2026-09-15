@@ -34,15 +34,15 @@ external step is needed). Evidence is noted so the check can be repeated.
 | B11 | Plymouth (GPL-2.0-or-later) unmodified, Fab OS theme only | PASS | `packages/fabos-branding/usr/share/plymouth/themes/fabos`; GPL-2.0 text now present |
 | B12 | PyQt6 (GPL-3) used by Apache-2.0 Fab OS apps | PASS | Fab OS apps are distributed as Apache-2.0 source; GPL-3 governs the combined distribution (`ATTRIBUTIONS.md`); Apache-2.0 is GPL-3-compatible |
 
-## C. Browser (Brave Software; Mozilla until 2026-09-15)
+## C. Browser (Mozilla; Brave Software for the 1.0-3 / 1.0-4 images of 2026-09-15 only)
 
 | # | Item | Status | Evidence |
 |---|------|--------|----------|
-| C1 | Brave Browser is Brave's own unmodified `.deb` from Brave's repository | PASS (unbuilt) | Containerfile installs from `https://brave-browser-apt-release.s3.brave.com` (Brave's documented `.sources` file and name), keyring verified at build against the "Brave Linux Release" uid and fingerprints `DBF1A116…20038257` / `47D32A74…6A73CD96` / `B2A3DCA3…E4B0DCA0`; `apt-get update` + simulated install replayed in an Ubuntu 26.04 container on 2026-09-15 (candidate 1.95.101, Maintainer Brave Software); `tests/branding-check.sh` checks the image's `dpkg -s brave-browser` Maintainer; image rebuild pending |
-| C2 | Brave not renamed or re-branded by Fab OS | PASS | no `brave` rule in `rebrand-catalogs`, `rebrand-binaries` or `rebrand-desktop-entries`; only the FabOS icon theme maps the launcher tile to a generic "public" (globe) glyph, not the lion logo |
-| C3 | Statement that we ship Brave's unmodified package and are not endorsed | PASS | stated in `ATTRIBUTIONS.md`, `LICENSING.md`, `NOTICE`, `README.md`, `legal/TRADEMARKS.md`, `legal/THIRD-PARTY.md`, `legal/UBUNTU-DERIVATIVE-COMPLIANCE.md` #13 |
-| C4 | MPL-2.0 text present (Brave's licence; Chromium's BSD-3 notices travel inside the package) | PASS | `THIRD_PARTY_LICENSES/MPL-2.0.txt` (added for Firefox, kept for Brave) |
-| C5 | Mozilla repository, pin and keyring removed | PASS | `mozilla.sources`, `preferences.d/mozilla` deleted from `fabos-branding` and the Containerfile; `firefox` pinned `-1`; `tests/branding-check.sh` asserts their absence |
+| C1 | Firefox is Mozilla's own unmodified `.deb` from `packages.mozilla.org` | PASS (unbuilt) | Containerfile installs from `https://packages.mozilla.org/apt`, key fingerprint `35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3` verified at build, apt origin pin 1000, `firefox` removed from `00-fabos-blocklist` (a `Package:` pin there hits Mozilla's build too — replayed: `Candidate: (none)`); replayed in an Ubuntu 26.04 container on 2026-09-15: `firefox 155.0.1~build1`, `Maintainer: Mozilla <release@mozilla.com>`; `tests/branding-check.sh` checks the image's `dpkg -s firefox` Maintainer; image rebuild pending (ADR-0018) |
+| C2 | Firefox not renamed or re-branded by Fab OS | PASS | no `firefox` rule in `rebrand-catalogs`, `rebrand-binaries` or `rebrand-desktop-entries`; only the FabOS icon theme maps the launcher tile to a generic "public" (globe) glyph, not the Firefox logo; the only added file is Mozilla's documented `policies.json` with unlocked first-run defaults |
+| C3 | Statement that we ship Mozilla's unmodified package | PASS | stated in `ATTRIBUTIONS.md`, `LICENSING.md`, `NOTICE`, `README.md`, `legal/TRADEMARKS.md`, `legal/THIRD-PARTY.md`, `legal/UBUNTU-DERIVATIVE-COMPLIANCE.md` #13 |
+| C4 | MPL-2.0 text present | PASS | `THIRD_PARTY_LICENSES/MPL-2.0.txt` |
+| C5 | Brave repository, keyring, defaults file, setuid helper and trademark lines removed | PASS | the Containerfile fails the build if `brave-browser`/`brave-keyring`, `/opt/brave.com` or `/etc/default/brave-browser` remain; `tests/security/suid-baseline.txt` is Ubuntu's stock set again; the legal files carry the Mozilla lines; ADR-0016 is kept as the record of the two Brave images |
 
 ## D. Other third-party components
 

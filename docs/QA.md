@@ -1072,3 +1072,56 @@ Security reports: see [`SECURITY.md`](../SECURITY.md).
 
 If a number on this page cannot be reproduced with the command beside it, that is a bug in this page and is
 worth an issue on its own.
+
+---
+
+# Changes after v1.0.3 (2026-09-15, sources only — no image rebuilt yet)
+
+### Browser track — Firefox returns, Brave removed (ADR-0018)
+
+The owner brought Firefox back after the Brave build. Sources changed; **no number above moved**, because no image has been
+built from this tree. What was verified on 2026-09-15, and what the next run must expect:
+
+- **Verified in a plain `ubuntu:26.04` container** (NITC mirror `http://mirror.nitc.ac.in/ubuntu`, suite `resolute`; the
+  Containerfile's browser lines replayed by hand): Mozilla's signing key has fingerprint
+  `35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3` (the one the build pins); with `mozilla.sources` and the origin pin,
+  `apt-get install -y firefox` installs **`firefox 155.0.1~build1`, `Maintainer: Mozilla <release@mozilla.com>`**
+  (`Provides: gnome-www-browser, www-browser`; `firefox --version` → `Mozilla Firefox 155.0.1`). The deb ships
+  `/usr/share/applications/firefox.desktop` (`Exec=firefox %u`, `StartupWMClass=firefox`) and owns
+  `/usr/lib/firefox/distribution/distribution.ini` but no `policies.json`, so Fab OS's policy file shares that directory
+  without a dpkg conflict. **Round 4's `firefox` entry in `00-fabos-blocklist` pinned Mozilla's build to -1 as well**
+  (`apt-cache policy firefox` → `Candidate: (none)` with the entry, `155.0.1~build1` at priority 1000 without it); the entry is
+  removed and the build now fails if it returns. `kdotool` is not in the Ubuntu 26.04 archive; `firefox-esr 153.2.0esr` is in
+  Mozilla's.
+- **Policy keys** in `packages/fabos-desktop/usr/lib/firefox/distribution/policies.json` were checked against Mozilla's
+  policy-templates documentation (fetched the same day): all present; `DisablePocket` is marked deprecated there and is kept
+  only because it was asked for. Nothing in the file is locked. Rendered with `HOME_URL` the file is valid JSON (checked).
+- **`tests/branding-check.sh`: 181 → 184 checks.** Rewritten in place because the Brave expectation is now the defect:
+  `browser: firefox absent, brave-browser from Brave` → `browser: firefox from Mozilla (not the snap shim), brave-browser
+  absent`; the six Brave source / keyring / mimeapps / blocklist / sandbox checks → their Firefox counterparts;
+  `setuid files: Ubuntu stock set + Brave chrome-sandbox only` → `… Ubuntu stock set only`; the layout and dock checks expect
+  `applications:firefox.desktop`. Appended: `policies.json` valid with the quiet-first-run keys and nothing locked plus
+  Mozilla's `distribution.ini` untouched; Ubuntu's `firefox` AppArmor profile (`userns`) present and parsing; a source-tree
+  check (Mozilla source + pin in `fabos-branding`, `firefox.desktop` default, `policies.json` valid, no Brave identifiers).
+  **Replayed on 2026-09-15 against `localhost/fabos:vm` (the 1.0-4 image): 173 PASS / 11 FAIL.** All eleven fail **by
+  design** on that image — it has Brave, no Mozilla source, `firefox` in the blocklist and Brave's setuid helper — and are
+  exactly: the Mozilla-maintainer check, `setuid files: Ubuntu stock set only`, the five Firefox/Brave source-mimeapps-blocklist
+  checks, `policies.json`, and the two layout/dock pin checks (the layout file and the dock's default launcher list are owned
+  by another track and still pin Brave; they must switch or those two stay red after the rebuild). The 173 others, including
+  the three appended AppArmor/source-tree checks, pass. Log: `build/branding-check-browser-track.out` (not committed).
+- **`tests/security/suid-baseline.txt`** is Ubuntu's stock set again (Brave's `chrome-sandbox` removed), so
+  `tests/security-check.sh` "no setuid file beyond the baseline" will fail against the 1.0-4 image (expected) and pass on a
+  rebuilt one. `tests/agent-test.py`: 73 tests OK on this tree (unchanged by this track). `tests/layout-js-dry-run.js` fails on
+  the ask-bar strip geometry (`[0, 259, 1920, 713]` vs `[0, 324, 1920, 150]`) with this track's tree — the layout file and
+  that test are untouched here, so the failure predates this track and belongs to the layout owner.
+- **New `tests/browser-vm.sh` — not yet run.** SSH-driven like `tests/agent-live-vm.sh`: Mozilla maintainer + version,
+  `brave-browser` absent, `policies.json` valid, `xdg-settings get default-web-browser == firefox.desktop`, the agent's
+  `fabos do --mode bypass "open firefox"`, a direct `firefox` launch and `xdg-open https://fabos.patienceai.in/`, each timed
+  from the first firefox process to the first KWin window (a KWin script reporting `windowAdded` over the session bus, the
+  technique `tests/perf-vm.sh` verified; budget 12 s), exactly one window after the first launch, a screenshot to
+  `build/browser-firefox.png`, numbers in `build/browser-vm.json`. Its window-list parser and summary writer were unit-tested
+  against a fake `busctl` log on the host; the real session run is the orchestrator's.
+- **Still Brave, owned by other tracks** (listed in ADR-0018): the desktop layout's dock pin, the dock plasmoid's default
+  launcher list, `tests/layout-js-dry-run.js`, the agent daemon's `open_app` description / system prompt / `_app_name`
+  table, and the four `tests/agent-test.py` assertions that expect "Brave". Fab AI Controls' `APP_NAMES` and its "Try
+  asking" chip were switched here. The 1.0-3 / 1.0-4 records above and `legal/source-offer/*` keep their Brave lines as history.

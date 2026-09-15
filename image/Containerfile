@@ -18,14 +18,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends dpkg-dev python3 python3-pil xz-utils gpg ca-certificates wget && rm -rf /var/lib/apt/lists/*
 COPY brand /src/brand
 COPY packages /src/packages
-# Brave's official apt signing keyring (the binary OpenPGP file Brave documents), fetched here where gpg exists and staged OUTSIDE
-# the package tree: the `brave-keyring` package (a dependency of brave-browser) owns /usr/share/keyrings/brave-browser-archive-keyring.gpg,
-# so no Fab OS package may ship that path. The build FAILS unless gpg parses the file as a keyring whose uid is "Brave Linux Release"
-# and which still carries one of the three release keys seen on 2026-09-15 (a key rotation therefore fails loudly and gets reviewed).
-RUN wget -qO /tmp/brave-keyring.gpg https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg \
- && gpg --show-keys --with-colons /tmp/brave-keyring.gpg | grep -q '^uid:.*Brave Linux Release' \
- && gpg --show-keys --with-fingerprint --with-colons /tmp/brave-keyring.gpg | grep -qE '^fpr:::::::::(DBF1A116C220B8C7164F98230686B78420038257|47D32A74E9A9E013A4B4926C68D513D36A73CD96|B2A3DCA350E67256740DF904DE4EC67BE4B0DCA0):' \
- && install -D -m 0644 /tmp/brave-keyring.gpg /src/keyrings/brave-browser-archive-keyring.gpg
+# Mozilla's official apt signing key, shipped in fabos-branding so Firefox keeps updating from Mozilla (no snap). Fingerprint pinned
+# (35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3, re-checked 2026-09-15 against https://packages.mozilla.org/apt/repo-signing-key.gpg):
+# the build FAILS on any other key, so a key rotation is reviewed, never silently trusted (ADR-0018).
+RUN wget -qO /tmp/moz.asc https://packages.mozilla.org/apt/repo-signing-key.gpg && gpg --show-keys --with-fingerprint --with-colons /tmp/moz.asc | grep -q '^fpr:::::::::35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3:' \
+ && install -d /src/packages/fabos-branding/usr/share/keyrings && gpg --dearmor -o /src/packages/fabos-branding/usr/share/keyrings/packages.mozilla.org.gpg /tmp/moz.asc
 COPY build/bin /src/bin
 COPY --from=assets /assets /src/assets
 RUN bash /src/packages/build-debs.sh /src /out
@@ -37,7 +34,7 @@ ENV DEBIAN_FRONTEND=noninteractive LANG=en_US.UTF-8
 # The container base is "minimized": undo the doc/man exclusion so new packages install complete.
 # (Copyright files were never excluded; legal/UBUNTU-DERIVATIVE-COMPLIANCE.md #5.)
 RUN rm -f /etc/dpkg/dpkg.cfg.d/excludes /etc/apt/apt.conf.d/docker-* && \
-    printf 'Package: snapd ubuntu-pro-client ubuntu-advantage-tools ubuntu-report popularity-contest motd-news-config apport whoopsie kwalletmanager firefox\nPin: release *\nPin-Priority: -1\n' > /etc/apt/preferences.d/00-fabos-blocklist && \
+    printf 'Package: snapd ubuntu-pro-client ubuntu-advantage-tools ubuntu-report popularity-contest motd-news-config apport whoopsie kwalletmanager\nPin: release *\nPin-Priority: -1\n' > /etc/apt/preferences.d/00-fabos-blocklist && \
     printf 'APT::Install-Recommends "true";\nAPT::Install-Suggests "false";\n' > /etc/apt/apt.conf.d/50fabos && \
     sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -64,25 +61,25 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 # security.ubuntu.com is a separate line in ubuntu.sources; mirror it too (separate layer so the desktop layer above stays cached)
 RUN sed -i "s|http://security.ubuntu.com/ubuntu|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources
-# Brave Browser from Brave's own apt repository: the unmodified official build, never patched or renamed by Fab OS (ADR-0016).
-# Ubuntu's firefox package is a snap shim and is pinned out above. The source file is Brave's documented deb822 file under its
-# documented name: brave-keyring's postinst (2026-09-15, 1.20) looks for exactly /etc/apt/sources.list.d/brave-browser-release.sources
-# with this Signed-By line and then keeps the key scoped to this source instead of symlinking it into /etc/apt/trusted.gpg.d.
-# /etc/default/brave-browser: Brave's postinst and its daily cron script are Chromium's installer template with Google's repository
-# constants left in, but BOTH exit before that code runs (postinst: brave/brave-browser#54299; cron script: #1084, `exit 0` at its
-# line 23 — checked in 1.95.101), so the repo_add_once/repo_reenable_on_distupgrade="false" written here is belt-and-braces only, and
-# the image has no cron daemon anyway (asserted). The build fails if anything but the Ubuntu and Brave sources exists afterwards or the
-# desktop file is missing. Brave's chrome-sandbox (Chromium's setuid sandbox fallback) is the ONE setuid-root file the image adds to
-# Ubuntu's stock set: asserted root:4755 here, allowlisted by path in tests/branding-check.sh, recorded in SECURITY.md / ADR-0016.
-# Brave updates keep flowing from this repository through the normal apt update path (README "How updates work").
-COPY --from=pkgs /src/keyrings/brave-browser-archive-keyring.gpg /usr/share/keyrings/brave-browser-archive-keyring.gpg
-RUN printf 'Types: deb\nURIs: https://brave-browser-apt-release.s3.brave.com\nSuites: stable\nComponents: main\nArchitectures: amd64 arm64\nSigned-By: /usr/share/keyrings/brave-browser-archive-keyring.gpg\n' > /etc/apt/sources.list.d/brave-browser-release.sources \
- && printf 'repo_add_once="false"\nrepo_reenable_on_distupgrade="false"\n' > /etc/default/brave-browser \
- && apt-get update && apt-get install -y brave-browser && rm -rf /var/lib/apt/lists/* \
- && test -f /usr/share/applications/brave-browser.desktop && test -s /usr/share/keyrings/brave-browser-archive-keyring.gpg \
- && test "$(ls /etc/apt/sources.list.d | grep -v -E '^(ubuntu|brave-browser-release)\.sources$' | wc -l)" = 0 \
- && ! grep -rq dl.google.com /etc/apt/sources.list.d/ && ! dpkg -s firefox >/dev/null 2>&1 \
- && test "$(stat -c %U:%a /opt/brave.com/brave/chrome-sandbox)" = root:4755 && ! dpkg -s cron >/dev/null 2>&1 && ! dpkg -s anacron >/dev/null 2>&1
+# Firefox from Mozilla's own apt repository: Mozilla's unmodified official build, never patched or renamed by Fab OS (ADR-0018;
+# Brave stood in for one release, ADR-0016). Ubuntu's own `firefox` package is a snap shim (1:1snap1) and snap is not installed,
+# so the origin pin (packages.mozilla.org = 1000) puts Mozilla's build above the archive. `firefox` must NOT be listed in
+# 00-fabos-blocklist above: a `Package: … firefox` record pins EVERY version of the name, Mozilla's included, to -1 (replayed in an
+# Ubuntu 26.04 container on 2026-09-15: Candidate: (none) with the entry, 155.0.1~build1 without it). The build fails if the
+# installed firefox is not Mozilla's, its desktop file or binary is missing, any source other than Ubuntu's and Mozilla's exists,
+# anything Brave is left behind, `firefox` is still pinned out, or Firefox brought a setuid file (it has none: the image's setuid
+# set is back to Ubuntu's stock set, tests/security/suid-baseline.txt). Mozilla's deb owns /usr/lib/firefox/distribution/ and its
+# distribution.ini only; fabos-desktop adds policies.json there (Mozilla's documented enterprise-policy path) for a quiet first run.
+# Firefox updates keep flowing from this repository through the normal apt update path (README "How updates work").
+COPY --from=pkgs /src/packages/fabos-branding/usr/share/keyrings/packages.mozilla.org.gpg /usr/share/keyrings/packages.mozilla.org.gpg
+RUN printf 'Types: deb\nURIs: https://packages.mozilla.org/apt\nSuites: mozilla\nComponents: main\nSigned-By: /usr/share/keyrings/packages.mozilla.org.gpg\n' > /etc/apt/sources.list.d/mozilla.sources \
+ && printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla \
+ && apt-get update && apt-get install -y firefox && rm -rf /var/lib/apt/lists/* \
+ && dpkg -s firefox | grep -q '^Maintainer: Mozilla' && test -f /usr/share/applications/firefox.desktop && test -x /usr/lib/firefox/firefox-bin \
+ && test "$(ls /etc/apt/sources.list.d | grep -v -E '^(ubuntu|mozilla)\.sources$' | wc -l)" = 0 \
+ && ! dpkg -s brave-browser >/dev/null 2>&1 && ! dpkg -s brave-keyring >/dev/null 2>&1 && test ! -e /opt/brave.com && test ! -e /etc/default/brave-browser \
+ && ! grep -qw firefox /etc/apt/preferences.d/00-fabos-blocklist \
+ && test -z "$(find /usr/lib/firefox -perm -4000 -type f)"
 # Agent runtime deps (separate layer so the big desktop layer above stays cached)
 RUN apt-get update && apt-get install -y python3-pyqt6 python3-anthropic python3-dbus python3-gi libnotify-bin wtype unattended-upgrades ubuntu-drivers-common && rm -rf /var/lib/apt/lists/*
 # Bundled applications (own layer): LibreOffice with KDE integration, VLC, KWeather, extra Plasma widgets (weather, etc.)

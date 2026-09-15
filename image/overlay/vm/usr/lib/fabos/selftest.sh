@@ -32,9 +32,11 @@ import sys,json; t=json.load(sys.stdin); o=[s for s in t['steps'] if s['name']==
   echo "SESSION_NAME=$(grep ^Name= /usr/local/share/wayland-sessions/fabos.desktop | cut -d= -f2)"
   # ADR-0015 (no wallet): manager absent, kwalletrc Enabled=false, no kwalletd6 after the desktop user's login
   echo "NO_WALLET=$(dpkg -s kwalletmanager >/dev/null 2>&1 && echo kwalletmanager-INSTALLED || echo no-manager):$(grep -q '^Enabled=false' /etc/xdg/kwalletrc && echo disabled || echo ENABLED):kwalletd6=$(pgrep -c kwalletd6)"
-  # ADR-0016: Ubuntu's `brave` and Brave's `brave-browser-stable` profiles both attach to /opt/brave.com/brave/brave — count what loaded, and apparmor.service errors
-  echo "APPARMOR_BRAVE=$(aa-status 2>/dev/null | grep -cE '^ +(brave|brave-browser-stable)$'):errors=$(journalctl -b -u apparmor.service -p err --no-pager -q 2>/dev/null | wc -l)"
-  echo "SUID_COUNT=$(find / -xdev -perm -4000 -type f 2>/dev/null | wc -l):brave_sandbox=$(stat -c %U:%a /opt/brave.com/brave/chrome-sandbox 2>/dev/null || echo absent)"
+  # ADR-0018: Firefox from Mozilla (version:maintainer, desktop file, policies.json); Ubuntu's `firefox` AppArmor profile grants the
+  # user namespaces its content sandbox needs under kernel.apparmor_restrict_unprivileged_userns=1 — count it loaded, and apparmor.service errors
+  echo "FIREFOX=$(dpkg-query -W -f '${Version}' firefox 2>/dev/null || echo absent):$(dpkg-query -W -f '${Maintainer}' firefox 2>/dev/null | cut -d' ' -f1):desktop=$([ -f /usr/share/applications/firefox.desktop ] && echo present || echo missing):policies=$([ -f /usr/lib/firefox/distribution/policies.json ] && echo present || echo missing)"
+  echo "APPARMOR_FIREFOX=$(aa-status 2>/dev/null | grep -cE '^ +firefox$'):errors=$(journalctl -b -u apparmor.service -p err --no-pager -q 2>/dev/null | wc -l)"
+  echo "SUID_COUNT=$(find / -xdev -perm -4000 -type f 2>/dev/null | wc -l):brave_left=$(ls -d /opt/brave.com 2>/dev/null || echo none)"
   echo "PLASMA_THEME=$(runuser -u $U -- kreadconfig6 --file plasmarc --group Theme --key name 2>/dev/null || grep -A1 '^\[Theme\]' /etc/xdg/plasmarc | tail -1)"
   echo "ICON_THEME=$(grep -A2 '^\[Icons\]' /etc/xdg/kdeglobals | grep Theme | cut -d= -f2)"
   echo "RUNNER_DBUS=$([ -f /usr/share/dbus-1/services/in.patienceai.fabos.runner.service ] && echo present || echo missing)"
