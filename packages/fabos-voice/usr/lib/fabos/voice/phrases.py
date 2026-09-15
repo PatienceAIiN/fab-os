@@ -119,6 +119,7 @@ def _short_cmd(cmd, n=60):
 # One entry per agent tool (tests assert the table covers fabos_agentd.TOOLS). Templates are callables so
 # each can look at the step input; keep them to a single natural sentence.
 NARRATION = {
+    "generate_image": lambda i: "Generating the image now.",
     "run_shell": lambda i: ("Running a system command as administrator now." if i.get("as_root")
                             else "Running a command for you now."),
     "read_file": lambda i: "Reading %s now." % _name(i.get("path")),
@@ -136,6 +137,7 @@ NARRATION = {
 }
 
 NARRATION_DONE = {
+    "generate_image": lambda i: "Done, the image is saved in your Pictures folder.",
     "run_shell": lambda i: "Done, the command has finished.",
     "read_file": lambda i: "Done, I have read %s." % _name(i.get("path")),
     "write_file": lambda i: "Done, %s is saved." % _name(i.get("path")),
@@ -208,6 +210,8 @@ def approval_summary(tool, inp=None, reason="", raw=False):
         return "keep a background watch"
     if tool == "notify_user":
         return "send you a notification"
+    if tool == "generate_image":
+        return "generate an image"
     if tool == "list_apps":
         return "list your applications"
     if tool == "ask_user":
