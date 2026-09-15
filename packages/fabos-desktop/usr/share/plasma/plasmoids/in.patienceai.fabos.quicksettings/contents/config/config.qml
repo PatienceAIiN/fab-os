@@ -7,4 +7,9 @@ ConfigModel {
         icon: "configure"
         source: "configGeneral.qml"
     }
+    ConfigCategory {
+        name: "Tiles"
+        icon: "view-grid"
+        source: "configTiles.qml"
+    }
 }

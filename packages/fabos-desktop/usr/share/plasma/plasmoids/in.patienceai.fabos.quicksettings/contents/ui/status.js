@@ -1,15 +1,17 @@
 // Pure helpers for the Fab OS quick-settings applet: parse the one JSON line of contents/code/status.sh (full or
-// --light) and the older key=value / /proc/net forms, choose FabOS monochrome glyph names, format rates and times.
+// --light) and the older key=value / /proc/net forms, choose FabOS monochrome glyph names, format rates and times,
+// and the tile model of the pane (order, size, enabled; persisted as JSON in Plasmoid.configuration.tilesJson).
 // No Qt, no I/O — the same file runs under node in tests/quicksettings-js-test.js.
 .pragma library
 
 // ---------------------------------------------------------------- status.sh -> object
 function empty() {
-    return { wifiRadio: null, wifiSsid: "", wifiSignal: -1, wifiLocked: false, connType: "", connName: "", connDev: "",
+    return { wifiRadio: null, wifiSsid: "", wifiSignal: -1, wifiLocked: false, wifiActive: null, connType: "", connName: "", connDev: "",
              iface: "", ip4: "", btPresent: false, btPowered: null, btConnected: 0,
              volume: -1, muted: false, hasAudio: false,
              batPct: -1, batStatus: "", batTime: "", hasBattery: false, profile: "",
              blCur: -1, blMax: 0, hasBacklight: false,
+             nightEnabled: null, nightRunning: false,
              light: false, rx: 0, tx: 0, wifiQuality: -1 }
 }
 
@@ -38,10 +40,61 @@ function parseStatus(text) {
     return parseKeyValues(t)
 }
 
-// ---- the JSON line of status.sh. `light` = kernel readings only (net counters, Wi-Fi quality, battery, backlight); the
-// applet merges those into the last full state with mergeLight(). devs = nmcli `dev status` lines
-// DEVICE:TYPE:STATE:CONNECTION (a Wi-Fi device reads "unavailable" while the radio is off); wifi = the IN-USE line of
-// `dev wifi list`; bt from BlueZ over D-Bus; volume = the raw wpctl line.
+// ---- the active line of `nmcli -t -f ACTIVE,SIGNAL,SSID,SECURITY dev wifi list --rescan no` ("yes:70:Home\:Net:WPA2 WPA3")
+// or, from the first release's script, the IN-USE form "*:Home\:Net:70:WPA2". Returns { active, signal, ssid, locked }.
+// The light probe passes only ACTIVE,SIGNAL ("yes:70"): ssid stays "" and the applet keeps the last full probe's name.
+function parseWifiLine(line) {
+    var r = { active: false, signal: -1, ssid: "", locked: false }
+    var f = splitTerse(String(line || "").trim())
+    if (f.length < 2) return r
+    var sec = ""
+    if (f[0] === "*" || f[0] === " ") {          // IN-USE:SSID:SIGNAL:SECURITY
+        if (f[0] !== "*") return r
+        r.active = true; r.ssid = f[1] || ""; r.signal = parseInt(f[2], 10); sec = f[3] || ""
+    } else {                                     // ACTIVE:SIGNAL[:SSID[:SECURITY]]
+        if (f[0] !== "yes") return r
+        r.active = true; r.signal = parseInt(f[1], 10); r.ssid = f[2] || ""; sec = f[3] || ""
+    }
+    if (isNaN(r.signal)) r.signal = -1
+    r.locked = f.length > 3 && sec.trim() !== "" && sec.trim() !== "--"
+    return r
+}
+
+// the first active line out of a whole `dev wifi list` output (any number of lines, any order)
+function activeWifiLine(text) {
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+        var l = lines[i].trim()
+        if (l.charAt(0) === "*" || l.indexOf("yes:") === 0) return l
+    }
+    return ""
+}
+
+// ---- `nmcli -t -f DEVICE,TYPE,STATE,CONNECTION dev status` lines (a Wi-Fi device reads "unavailable" while the radio
+// is off). The three-field form TYPE:STATE:CONNECTION is accepted too. Fills connType / connDev / connName / wifiRadio.
+function applyDevs(s, devs) {
+    var wifiDevs = 0, wifiUp = 0
+    for (var i = 0; i < devs.length; i++) {
+        var f = splitTerse(String(devs[i]))
+        if (f.length < 3) continue
+        var dev, type, state, name
+        if (isDevType(f[0]) && !isDevType(f[1])) { dev = ""; type = f[0]; state = f[1]; name = f.slice(2).join(":") }
+        else { dev = f[0]; type = f[1]; state = f[2]; name = f.slice(3).join(":") }
+        var isWifi = type === "wifi" || type.indexOf("wireless") >= 0, isWired = type === "ethernet" || type.indexOf("ethernet") >= 0
+        if (isWifi) { wifiDevs++; if (state.indexOf("unavailable") < 0 && state.indexOf("unmanaged") < 0) wifiUp++ }
+        var connected = state.indexOf("connected") === 0
+        if (isWifi && connected && s.connType !== "wifi") { s.connType = "wifi"; s.connDev = dev; s.connName = name }
+        else if (isWired && connected && !s.connType) { s.connType = "wired"; s.connDev = dev; s.connName = name }
+    }
+    s.wifiRadio = wifiDevs === 0 ? null : wifiUp > 0
+    return s
+}
+function isDevType(t) { return ["wifi", "ethernet", "loopback", "tun", "bridge", "wifi-p2p", "wireguard", "bond", "vlan", "dummy", "gsm", "bluetooth", "ppp"].indexOf(t) >= 0 }
+
+// ---- the JSON line of status.sh. `light` = kernel readings + the active Wi-Fi signal (net counters, battery,
+// backlight, `wifi` = "yes:70" or ""); the applet merges those into the last full state with mergeLight().
+// devs = nmcli dev status lines; wifi = the active line of `dev wifi list`; bt from BlueZ over D-Bus; volume = the raw
+// wpctl line; night = KWin's night light (enabled in settings / running now).
 function fromJson(j) {
     var s = empty()
     s.light = j.light === true
@@ -54,21 +107,10 @@ function fromJson(j) {
     if (b && typeof b.pct === "number") { s.batPct = b.pct; s.hasBattery = true; s.batStatus = String(b.status || ""); s.batTime = String(b.time || "") }
     var bl = j.backlight
     if (bl && typeof bl.max === "number" && bl.max > 0) { s.blCur = typeof bl.cur === "number" ? bl.cur : 0; s.blMax = bl.max; s.hasBacklight = true }
+    var w = parseWifiLine(activeWifiLine(j.wifi))
+    if (typeof j.wifi === "string") { s.wifiActive = w.active; if (w.active) { s.wifiSignal = w.signal; s.wifiSsid = w.ssid; s.wifiLocked = w.locked } }
     if (s.light) return s
-    var devs = j.devs || [], wifiDevs = 0, wifiUp = 0
-    for (var i = 0; i < devs.length; i++) {
-        var f = splitTerse(String(devs[i]))
-        if (f.length < 3) continue
-        var dev = f[0], type = f[1], state = f[2], name = f.slice(3).join(":")
-        var isWifi = type === "wifi" || type.indexOf("wireless") >= 0, isWired = type === "ethernet" || type.indexOf("ethernet") >= 0
-        if (isWifi) { wifiDevs++; if (state.indexOf("unavailable") < 0 && state.indexOf("unmanaged") < 0) wifiUp++ }
-        var connected = state.indexOf("connected") === 0
-        if (isWifi && connected && s.connType !== "wifi") { s.connType = "wifi"; s.connDev = dev; s.connName = name }
-        else if (isWired && connected && !s.connType) { s.connType = "wired"; s.connDev = dev; s.connName = name }
-    }
-    s.wifiRadio = wifiDevs === 0 ? null : wifiUp > 0
-    var w = splitTerse(String(j.wifi || ""))
-    if (w.length >= 3 && w[0] === "*") { s.wifiSsid = w[1]; s.wifiSignal = parseInt(w[2], 10); if (isNaN(s.wifiSignal)) s.wifiSignal = -1; s.wifiLocked = (w[3] || "").trim() !== "" && (w[3] || "").trim() !== "--" }
+    applyDevs(s, j.devs || [])
     if (s.connType === "wifi" && s.wifiSignal < 0 && s.wifiQuality >= 0) s.wifiSignal = s.wifiQuality
     s.ip4 = String(j.ip4 || "").replace(/\/\d+$/, "")
     var bt = j.bt || {}
@@ -78,12 +120,15 @@ function fromJson(j) {
     var m = /Volume:\s*([0-9.]+)/.exec(String(j.volume || ""))
     if (m) { s.volume = Math.round(parseFloat(m[1]) * 100); s.hasAudio = true; s.muted = String(j.volume).indexOf("MUTED") >= 0 }
     s.profile = String(j.profile || "")
+    var n = j.night
+    if (n && typeof n.enabled === "boolean") { s.nightEnabled = n.enabled; s.nightRunning = n.running === true }
     if (s.connType === "wifi" && !s.wifiSsid) s.wifiSsid = s.connName
     return s
 }
 
-// A --light probe carries only the kernel readings: keep everything the last full probe knew and refresh those. The
-// Wi-Fi signal follows the kernel's link quality between full probes (only while connected over Wi-Fi).
+// A --light probe carries the kernel readings and the active Wi-Fi signal: keep everything the last full probe knew
+// and refresh those. An active Wi-Fi line while the last full probe saw no Wi-Fi (or the reverse) is a link change —
+// the applet then runs one full probe (linkChanged()).
 function mergeLight(prev, light) {
     var s = {}
     for (var k in prev) s[k] = prev[k]
@@ -91,8 +136,17 @@ function mergeLight(prev, light) {
     s.iface = light.iface; s.rx = light.rx; s.tx = light.tx; s.wifiQuality = light.wifiQuality
     s.hasBattery = light.hasBattery; s.batPct = light.batPct; s.batStatus = light.batStatus; s.batTime = light.batTime
     s.hasBacklight = light.hasBacklight; s.blCur = light.blCur; s.blMax = light.blMax
-    if (s.connType === "wifi" && light.wifiQuality >= 0) s.wifiSignal = light.wifiQuality
+    if (light.wifiActive === true && light.wifiSignal >= 0) { s.wifiSignal = light.wifiSignal; s.wifiActive = true }
+    else if (light.wifiActive === false) s.wifiActive = false
+    else if (s.connType === "wifi" && light.wifiQuality >= 0 && light.wifiActive === null) s.wifiSignal = light.wifiQuality   // older script: kernel link quality only
     return s
+}
+
+// did a light probe see the link change since the last state? (interface, or Wi-Fi association up/down)
+function linkChanged(prev, light) {
+    if (light.iface !== prev.iface) return true
+    if (light.wifiActive === null) return (light.wifiQuality >= 0) !== (prev.wifiQuality >= 0)
+    return light.wifiActive !== (prev.connType === "wifi")
 }
 
 // the counters of a parsed probe, in the shape rates() takes
@@ -118,8 +172,8 @@ function parseKeyValues(text) {
             break
         }
         case "wifi": {   // IN-USE:SSID:SIGNAL:SECURITY
-            var f = splitTerse(v)
-            if (f.length >= 3) { s.wifiSsid = f[1]; s.wifiSignal = parseInt(f[2], 10); if (isNaN(s.wifiSignal)) s.wifiSignal = -1; s.wifiLocked = (f[3] || "").trim() !== "" && (f[3] || "").trim() !== "--" }
+            var w = parseWifiLine(v)
+            if (w.active) { s.wifiActive = true; s.wifiSsid = w.ssid; s.wifiSignal = w.signal; s.wifiLocked = w.locked }
             break
         }
         case "iface": s.iface = v; break
@@ -176,8 +230,10 @@ function rates(prev, cur, dtMs) {
     return { down: down, up: up }
 }
 
+// kB/s is the smallest unit shown: the rate is always on the bar while a link is up, so an idle link reads "0 kB/s"
+// (never "0 B/s" jitter), a trickle "0.5 kB/s", then 2.5 kB/s · 80 kB/s · 1.2 MB/s · 2.50 GB/s.
 function fmtRate(bps) {
-    if (bps < 1000) return Math.round(bps) + " B/s"
+    if (bps < 1000) return (bps < 50 ? "0" : (bps / 1000).toFixed(1)) + " kB/s"
     if (bps < 1000 * 1000) return (bps / 1000).toFixed(bps < 10000 ? 1 : 0) + " kB/s"
     if (bps < 1000 * 1000 * 1000) return (bps / 1e6).toFixed(1) + " MB/s"
     return (bps / 1e9).toFixed(2) + " GB/s"
@@ -186,14 +242,18 @@ function fmtRate(bps) {
 function speedText(down, up) { return "↓ " + fmtRate(down) + "  ↑ " + fmtRate(up) }
 
 // ---------------------------------------------------------------- glyph names (FabOS mono icons, brand/gen/make_assets.py MONO_MAP)
+// Signal (nmcli SIGNAL, 0-100) -> five glyphs: excellent >= 80, good >= 55, ok >= 30, weak >= 5, none below.
+function wifiLevel(signal) {
+    return signal >= 80 ? "excellent" : signal >= 55 ? "good" : signal >= 30 ? "ok" : signal >= 5 ? "weak" : "none"
+}
 function wifiIcon(s) {
     if (s.wifiRadio === false) return "network-wireless-off"
     if (s.connType === "wired") return "network-wired"
     if (s.connType !== "wifi") return "network-wireless-disconnected"
     var lvl = s.wifiSignal
-    var name = lvl >= 80 ? "network-wireless-signal-excellent" : lvl >= 55 ? "network-wireless-signal-good" : lvl >= 30 ? "network-wireless-signal-ok"
-             : lvl >= 5 ? "network-wireless-signal-weak" : (lvl < 0 ? "network-wireless-signal-excellent" : "network-wireless-signal-none")
-    return s.wifiLocked && lvl >= 0 ? name + "-locked" : name
+    if (lvl < 0) return "network-wireless-connected"          // associated, strength not read yet
+    var name = "network-wireless-signal-" + wifiLevel(lvl)
+    return s.wifiLocked ? name + "-locked" : name
 }
 
 function batteryIcon(pct, status) {
@@ -241,14 +301,123 @@ function bluetoothLine(s) {
     return s.btConnected > 0 ? s.btConnected + (s.btConnected === 1 ? " device connected" : " devices connected") : "On"
 }
 
-// The plasmashell scripting call that re-applies one bar size to the stock clock and pushes the shared "magnify on
+function profileLabel(p) { return p === "power-saver" ? "Power saver" : p === "performance" ? "Performance" : p === "balanced" ? "Balanced" : "" }
+function profileIcon(p) { return p === "power-saver" ? "battery-profile-powersave" : p === "performance" ? "battery-profile-performance" : "battery-profile-balanced" }
+function nextProfile(p) { var order = ["power-saver", "balanced", "performance"]; var i = order.indexOf(p); return order[(i + 1) % order.length] }
+
+function nightLine(s, inhibited) {
+    if (s.nightEnabled === false) return "Off"
+    if (s.nightEnabled === null) return "Unavailable"
+    if (inhibited) return "Suspended"
+    return s.nightRunning ? "On" : "Scheduled"
+}
+
+// ---------------------------------------------------------------- the pane's tiles (Plasmoid.configuration.tilesJson)
+// Every tile the pane can show, in the default order, with its default size (small = half a row, wide = a full row).
+// Persisted as a JSON array of {id, size, enabled}; unknown ids are dropped, tiles added in a later version are
+// appended with their defaults, so an old saved layout never loses a new tile.
+var TILES = [
+    { id: "wifi",          title: "Wi-Fi",          size: "small", height: 60 },
+    { id: "bluetooth",     title: "Bluetooth",      size: "small", height: 60 },
+    { id: "volume",        title: "Volume",         size: "wide",  height: 52 },
+    { id: "brightness",    title: "Brightness",     size: "wide",  height: 52 },
+    { id: "battery",       title: "Battery",        size: "wide",  height: 60 },
+    { id: "netspeed",      title: "Network speed",  size: "wide",  height: 48 },
+    { id: "notifications", title: "Notifications",  size: "small", height: 60 },
+    { id: "dnd",           title: "Do Not Disturb", size: "small", height: 60 },
+    { id: "powerprofile",  title: "Power profile",  size: "wide",  height: 60 },
+    { id: "nightlight",    title: "Night light",    size: "small", height: 60 },
+    { id: "screenshot",    title: "Screenshot",     size: "small", height: 60 },
+    { id: "settings",      title: "Settings",       size: "small", height: 60 }
+]
+function tileDef(id) { for (var i = 0; i < TILES.length; i++) if (TILES[i].id === id) return TILES[i]; return null }
+function defaultTiles() { return TILES.map(function (t) { return { id: t.id, size: t.size, enabled: true } }) }
+function parseTiles(json) {
+    var arr = null
+    try { arr = JSON.parse(String(json || "")) } catch (e) { arr = null }
+    if (!Array.isArray(arr)) return defaultTiles()
+    var out = [], seen = {}
+    for (var i = 0; i < arr.length; i++) {
+        var t = arr[i]; if (!t || typeof t.id !== "string") continue
+        var def = tileDef(t.id); if (!def || seen[t.id]) continue
+        seen[t.id] = true
+        out.push({ id: t.id, size: t.size === "wide" || t.size === "small" ? t.size : def.size, enabled: t.enabled !== false })
+    }
+    for (var k = 0; k < TILES.length; k++) if (!seen[TILES[k].id]) out.push({ id: TILES[k].id, size: TILES[k].size, enabled: true })
+    return out
+}
+function tilesJson(tiles) { return JSON.stringify(tiles.map(function (t) { return { id: t.id, size: t.size, enabled: t.enabled !== false } })) }
+function moveTile(tiles, from, to) {
+    var out = tiles.slice()
+    if (from < 0 || from >= out.length || to < 0 || to >= out.length || from === to) return out
+    var t = out.splice(from, 1)[0]; out.splice(to, 0, t)
+    return out
+}
+function setTileSize(tiles, id, size) { return tiles.map(function (t) { return t.id === id ? { id: t.id, size: size, enabled: t.enabled } : t }) }
+function toggleTileSize(tiles, id) { var t = null; tiles.forEach(function (x) { if (x.id === id) t = x }); return t ? setTileSize(tiles, id, t.size === "wide" ? "small" : "wide") : tiles }
+function setTileEnabled(tiles, id, on) { return tiles.map(function (t) { return t.id === id ? { id: t.id, size: t.size, enabled: !!on } : t }) }
+
+// Grid geometry for the enabled tiles: two columns; a wide tile takes a full row, small tiles fill a row left to right
+// (a small tile left alone in its row keeps its half width — the size toggle stays visible as a size). Row height =
+// the tallest tile in the row. Returns { items: [{id, x, y, w, h}], height }.
+function layoutTiles(tiles, width, gap) {
+    gap = gap === undefined ? 8 : gap
+    var col = (width - gap) / 2, items = [], y = 0, x = 0, rowH = 0, inRow = 0
+    function endRow() { if (inRow > 0) { y += rowH + gap; x = 0; rowH = 0; inRow = 0 } }
+    for (var i = 0; i < tiles.length; i++) {
+        var t = tiles[i]; if (t.enabled === false) continue
+        var def = tileDef(t.id) || { height: 60 }
+        if (t.size === "wide") {
+            endRow()
+            items.push({ id: t.id, x: 0, y: y, w: width, h: def.height })
+            y += def.height + gap
+        } else {
+            if (inRow === 2) endRow()
+            items.push({ id: t.id, x: inRow === 0 ? 0 : col + gap, y: y, w: col, h: def.height })
+            rowH = Math.max(rowH, def.height); inRow++
+            if (inRow === 2) endRow()
+        }
+    }
+    endRow()
+    return { items: items, height: Math.max(0, y - gap) }
+}
+
+// Drag-to-reorder in the pane's edit mode: the tile whose rect (from layoutTiles) contains the point, else the nearest
+// by centre distance within one tile height; "" when the point is far from every tile.
+function tileAt(items, px, py) {
+    var best = "", bestD = Infinity
+    for (var i = 0; i < items.length; i++) {
+        var r = items[i]
+        if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) return r.id
+        var dx = px - (r.x + r.w / 2), dy = py - (r.y + r.h / 2), d = Math.sqrt(dx * dx + dy * dy)
+        if (d < bestD && d <= r.h) { bestD = d; best = r.id }
+    }
+    return best
+}
+// move tile `id` to the position tile `beforeId` holds (the dragged tile takes the hovered tile's slot; the rest shift)
+function moveTileTo(tiles, id, beforeId) {
+    var from = -1, to = -1
+    for (var i = 0; i < tiles.length; i++) { if (tiles[i].id === id) from = i; if (tiles[i].id === beforeId) to = i }
+    return from < 0 || to < 0 ? tiles : moveTile(tiles, from, to)
+}
+// the rect of one tile in a layoutTiles() result, or null
+function rectFor(layout, id) { for (var i = 0; i < layout.items.length; i++) if (layout.items[i].id === id) return layout.items[i]; return null }
+
+// KWin's night light is switched in kwinrc (NightColor/Active) followed by a reconfigure — the D-Bus inhibit() call is
+// tied to the caller's bus connection and would end with the one-shot process. "" when KWin does not offer it.
+function nightCommand(s) {
+    if (s.nightEnabled === null || s.nightEnabled === undefined) return ""
+    return "kwriteconfig6 --file kwinrc --group NightColor --key Active " + (s.nightEnabled ? "false" : "true") + " && qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure"
+}
+
+// The plasmashell scripting call that pushes one bar size to the Fab OS clock applet and the shared "magnify on
 // hover" switch to the dock (Plasmoid.configuration of another applet is not writable from QML; the shell's D-Bus
 // scripting API is). The dock's magnification strength is the dock's own setting and is not touched here.
 function clockSizeFor(barSize) { return barSize === "small" ? 12 : (barSize === "large" ? 15 : 13) }
 function syncScript(barSize, magnify) {
-    var px = clockSizeFor(barSize)
+    var size = barSize === "small" || barSize === "large" ? barSize : "medium"
     return "var ps = panels(); for (var i = 0; i < ps.length; i++) {"
-         + " var cs = ps[i].widgets(\"org.kde.plasma.digitalclock\"); for (var j = 0; j < cs.length; j++) { cs[j].currentConfigGroup = [\"Appearance\"]; cs[j].writeConfig(\"fontSize\", " + px + ") }"
+         + " var cs = ps[i].widgets(\"in.patienceai.fabos.clock\"); for (var j = 0; j < cs.length; j++) { cs[j].currentConfigGroup = [\"General\"]; cs[j].writeConfig(\"barSize\", \"" + size + "\") }"
          + " var ds = ps[i].widgets(\"in.patienceai.fabos.dock\"); for (var k = 0; k < ds.length; k++) { ds[k].currentConfigGroup = [\"General\"]; ds[k].writeConfig(\"magnify\", " + (magnify ? "true" : "false") + ") } }"
 }
 function syncCommand(barSize, magnify) {

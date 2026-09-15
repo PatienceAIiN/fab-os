@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Window
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
+import QtQuick.Templates as T
 import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.plasma5support as P5Support
@@ -105,6 +106,10 @@ PlasmoidItem {
     readonly property color codeBg: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.08)
     // the panel sits 8 px under the card and may use the rest of the strip (minus an 8 px foot) — never more
     readonly property int panelGap: 8
+    // conversation gutter: rows stop 14 px short of the list's right edge; the 6 px overlay scrollbar lives in that lane,
+    // so no text, pill, icon button or step card is ever under it
+    readonly property int listGutter: 14
+    readonly property int barWidth: 6
     readonly property int maxPanelHeight: onDesktop ? Math.max(120, root.height - (card.y + card.height + panelGap) - 8)
                                                     : Math.min(640, Math.max(240, Math.round(Screen.height * 0.62) - 150))
 
@@ -631,9 +636,12 @@ PlasmoidItem {
         visible: root.onDesktop && root.panelMode !== "closed" && height > 0
         clip: true
 
-        // content height: header + list (+ typing footer) capped by the strip; the one-line pill when minimised
-        readonly property real contentTarget: root.panelMode === "min" ? minPill.implicitHeight
-                                            : Math.min(root.maxPanelHeight, panelHeader.implicitHeight + 6 + list.contentHeight + 16)
+        // content height: fixed header + list + fixed foot (typing dots while working) capped by the strip; the one-line
+        // pill when minimised. Below the cap the panel grows with its rows (200 ms, no scrollbar); at the cap the list
+        // scrolls and the 6 px overlay bar appears (`overflowing`).
+        readonly property real wanted: panelHeader.implicitHeight + 6 + list.contentHeight + panelFoot.height + 16
+        readonly property real contentTarget: root.panelMode === "min" ? minPill.implicitHeight : Math.min(root.maxPanelHeight, wanted)
+        readonly property bool overflowing: root.panelMode === "open" && wanted > root.maxPanelHeight + 0.5
         property real panelHeight: contentTarget
         Behavior on panelHeight { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
@@ -683,26 +691,46 @@ PlasmoidItem {
                     IconButton { icon: "window-new"; tip: "Open in Fab AI Controls"; onClicked: root.openExternal() }
                 }
 
+                // The scroll area is ONLY the list: the header above and the foot below are fixed, so neither the icon
+                // controls nor the typing dots can ever sit under the scrollbar or scroll away.
                 ListView {   // the conversation for THIS task (+ follow-ups); rows are appended, never rebuilt
                     id: list
                     anchors.left: parent.left; anchors.right: parent.right
-                    anchors.top: panelHeader.bottom; anchors.topMargin: 6; anchors.bottom: parent.bottom
-                    anchors.leftMargin: 4; anchors.rightMargin: 4
+                    anchors.top: panelHeader.bottom; anchors.topMargin: 6; anchors.bottom: panelFoot.top
+                    anchors.leftMargin: 8; anchors.rightMargin: 0
+                    readonly property int gutter: root.listGutter   // delegates are `width - gutter` wide (ConvoDelegate)
                     clip: true
                     spacing: 0
                     boundsBehavior: Flickable.StopAtBounds
+                    maximumFlickVelocity: 2000                      // moderate: a flick never overshoots half the chat
                     model: convo
+                    // follow = the user is at the bottom: new rows and the growth animation keep the newest row at the bottom
+                    // edge; scrolling up (drag, flick, wheel or the bar's handle) stops following until the user is back at the end
                     property bool follow: true
                     onMovementEnded: follow = atYEnd
                     onFlickEnded: follow = atYEnd
                     onCountChanged: if (follow) Qt.callLater(list.positionViewAtEnd)
                     onContentHeightChanged: if (follow && !moving) Qt.callLater(list.positionViewAtEnd)
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar { policy: QQC2.ScrollBar.AsNeeded }
-                    footer: Item {
-                        width: list.width
-                        height: root.taskActive ? 30 : 8
-                        Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
-                        TypingDots { anchors.left: parent.left; anchors.leftMargin: 6; anchors.verticalCenter: parent.verticalCenter; visible: root.taskActive && root.panelMode === "open"; color: Kirigami.Theme.textColor }
+                    // the panel's height animates (growth / open): anchor the bottom in the same frame, so the transition
+                    // from growing to scrolling never jumps
+                    onHeightChanged: if (follow && !moving && height > 0) positionViewAtEnd()
+                    QQC2.ScrollBar.vertical: T.ScrollBar {
+                        id: vbar
+                        // an OVERLAY bar, 6 px wide, in the 14 px right gutter — shown only once the panel is at its max height
+                        policy: panel.overflowing ? T.ScrollBar.AsNeeded : T.ScrollBar.AlwaysOff
+                        Binding on visible { delayed: true; restoreMode: Binding.RestoreBindingOrValue; value: vbar.policy !== T.ScrollBar.AlwaysOff && vbar.size > 0 && vbar.size < 1 }
+                        implicitWidth: root.barWidth; width: root.barWidth
+                        minimumSize: 0.1
+                        padding: 0; topPadding: 2; bottomPadding: 4
+                        hoverEnabled: true
+                        onPressedChanged: list.follow = pressed ? false : list.atYEnd   // dragging the handle counts as scrolling
+                        contentItem: Rectangle {
+                            implicitWidth: root.barWidth
+                            radius: root.barWidth / 2
+                            color: Kirigami.Theme.textColor
+                            opacity: vbar.pressed ? 0.6 : (vbar.hovered || list.moving ? 0.5 : 0.28)
+                            Behavior on opacity { NumberAnimation { duration: 160 } }
+                        }
                     }
                     add: Transition {
                         NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 200; easing.type: Easing.OutCubic }
@@ -719,6 +747,16 @@ PlasmoidItem {
                         onRetry: root.retryTask()
                         onOpenExternal: root.openExternal()
                     }
+                }
+
+                Item {   // fixed foot: the typing dots while the task works — outside the scroll area, clear of the gutter
+                    id: panelFoot
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                    anchors.leftMargin: 8; anchors.rightMargin: root.listGutter
+                    height: root.taskActive ? 26 : 0
+                    clip: true
+                    Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                    TypingDots { anchors.left: parent.left; anchors.leftMargin: 6; anchors.bottom: parent.bottom; anchors.bottomMargin: 6; visible: root.taskActive && root.panelMode === "open"; color: Kirigami.Theme.textColor }
                 }
             }
 

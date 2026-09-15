@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pixel probes for the frames rendered by main.qml (400x300 FrameSvgItem; geometry from brand/gen/aurorae_theme.py: padding 28,
-radius 20). Prints every probe and a final "RESULT PASS|FAIL" line. Pass conditions, per frame:
+radius 14 since ADR-0019 — it must equal the KWin effect's [Round-Corners] Size; the "inner" notch probes sit at P+2, the last
+pixel that is outside a radius-14 arc on the diagonal). Prints every probe and a final "RESULT PASS|FAIL" line. Pass conditions, per frame:
   notch pixels (inside the window box, outside the arc) alpha == 0        -> corners look rounded on the desktop
   title bar pixels alpha == 1                                              -> the bar itself is intact
   shadow just outside the straight edges alpha > 0.05                      -> the drop shadow still exists
@@ -11,7 +12,7 @@ radius 20). Prints every probe and a final "RESULT PASS|FAIL" line. Pass conditi
 import sys
 from PyQt6.QtGui import QImage
 
-P, R, W, H = 28, 20, 400, 300
+P, R, W, H = 28, 14, 400, 300
 LW = P + R
 ok = True
 for f in sys.argv[1:]:
@@ -23,13 +24,13 @@ for f in sys.argv[1:]:
     edge = a(W // 2, P - 1)                       # shadow strength just above the straight top edge (0.37 active / 0.19 inactive)
     probes = [
         ("notch top-left corner", (P + 1, P + 1), lambda v: v == 0.0),
-        ("notch top-left inner", (P + 4, P + 4), lambda v: v == 0.0),
+        ("notch top-left inner", (P + 2, P + 2), lambda v: v == 0.0),
         ("notch top-right corner", (W - P - 2, P + 1), lambda v: v == 0.0),
-        ("notch top-right inner", (W - P - 5, P + 4), lambda v: v == 0.0),
+        ("notch top-right inner", (W - P - 3, P + 2), lambda v: v == 0.0),
         ("title bar top edge", (W // 2, P + 1), lambda v: v >= 0.99),
         ("title bar middle", (W // 2, P + 18), lambda v: v >= 0.99),
         ("title bar left edge", (P + 1, P + 30), lambda v: v >= 0.99),
-        ("arc inside (P+10,P+10)", (P + 10, P + 10), lambda v: v >= 0.99),
+        ("arc inside (P+9,P+9)", (P + 9, P + 9), lambda v: v >= 0.99),
         ("shadow above top edge", (W // 2, P - 1), lambda v: v > 0.05),
         ("shadow left of edge", (P - 1, H // 2), lambda v: v > 0.05),
         ("taper: above the notch (TL)", (P + 4, P - 1), lambda v: v < 0.4 * edge),

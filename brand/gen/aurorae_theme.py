@@ -22,7 +22,7 @@ The output is generated offline and COMMITTED (packages/fabos-desktop/usr/share/
 not run this script. After editing, re-run:  python3 brand/gen/aurorae_theme.py --out packages/fabos-desktop/usr/share/aurorae/themes
 
 Geometry (1x, Aurorae scales with the button-size factor):
-  radius 20 on the two top corners, title bar 36 px, buttons 28 px in a 36 px bar, 3 px glyph strokes,
+  radius 14 on the two top corners, title bar 36 px, buttons 28 px in a 36 px bar, 3 px glyph strokes,
   shadow padding 28 px on every side (gradients plus one luminance <mask> per top corner; no SVG filters), side/bottom borders 0 (BorderSize=None).
 
 FrameSvg layout of decoration.svg: the corner elements are painted into (leftWidth x topHeight) rectangles where
@@ -47,13 +47,21 @@ Why the corner NOTCHES are transparent (2026-09-15; ISO 1.0 rev 2 showed square 
   (`updateBlur()` -> `setBlurRegion`; v1 aurorae.qml `decorationMask` -> `updateBlur`), never the window shape, and a
   blur region behind an opaque title bar would only cost GPU time.
 
+Radius 14, not 20 (2026-09-15, ADR-0019): the four corners of every window are now cut by the KDE-Rounded-Corners KWin
+  effect (kwinrc [Round-Corners] Size=14, circular arcs: UseSquircleShape=false). The effect masks the whole frame
+  (decoration included), so the visible top corner is the INTERSECTION of the effect's arc and this frame's arc; the two
+  must be the same circle or a sliver of the effect's 1 px outline would show inside this frame's transparent notch (or
+  this frame's arc would show inside the effect's). R here therefore equals the effect's Size, and both are 14 — the
+  "field" radius of the design scale (docs/design/BRANDING.md), smaller than the 24 of Plasma popups, which stay as they are.
+  Without the effect (KWin without OpenGL compositing) this frame still gives radius-14 top corners on its own.
+
 Usage: aurorae_theme.py --out <dir>   (writes <dir>/FabOS and <dir>/FabOSLight)
 """
 import argparse, os
 
-P, R, TH = 28, 20, 36            # shadow padding, corner radius, title-bar height
+P, R, TH = 28, 14, 36            # shadow padding, corner radius (= the KWin effect's [Round-Corners] Size, ADR-0019), title-bar height
 LW, TOPH, BH = P + R, P + TH, P  # frame border thicknesses: left/right, top, bottom
-BW, BHT = 2 * LW + 8, TOPH + 8 + BH   # one 9-slice block: 104 x 100
+BW, BHT = 2 * LW + 8, TOPH + 8 + BH   # one 9-slice block: 92 x 100 (2*LW+8 x TOPH+8+BH)
 BTN = 28                          # button element size
 
 STYLE = ('<style type="text/css" id="current-color-scheme">'

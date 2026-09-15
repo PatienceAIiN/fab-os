@@ -1,8 +1,8 @@
 # Fab OS privileged-file baseline: setuid-root files. Measured 2026-09-15 on localhost/fabos:vm and :iso (Ubuntu stock set:
-# union of both profiles — newgrp and mount.cifs exist only on iso) plus the ONE accepted non-stock entry, Brave's setuid sandbox
-# helper (SECURITY.md, ADR-0016). tests/security-check.sh fails when the image carries a setuid file that is not listed here.
+# union of both profiles — newgrp and mount.cifs exist only on iso). No non-stock entry: Firefox (Mozilla's build, ADR-0018) has
+# no setuid helper; the previous browser's chrome-sandbox, accepted for the 1.0-3/1.0-4 images only (ADR-0016), is gone.
+# tests/security-check.sh fails when the image carries a setuid file that is not listed here.
 # Lines starting with # are ignored. Regenerate: podman run --rm localhost/fabos:iso find / -xdev -perm -4000 -type f | sort
-/opt/brave.com/brave/chrome-sandbox
 /usr/bin/chfn
 /usr/bin/chsh
 /usr/bin/fusermount3

@@ -3,17 +3,23 @@ import QtQuick.Window
 import org.kde.plasma.plasma5support as P5Support
 import org.kde.kirigami as Kirigami
 import org.kde.notificationmanager as NotificationManager
+import "../ui/status.js" as Status
 
 // Headless driver for the quick-settings applet. tests/desktop-applets-qml-test.sh copies the plasmoid into a temp
 // package and appends one Loader line to that COPY of main.qml which loads this file and hands over the ids. Feeds
-// status.sh-shaped text (the first release's key=value form, still parsed) and two /proc/net samples, opens the slide-down pane (settings, then notifications after a
-// real org.freedesktop.Notifications.Notify call on the session bus), toggles Do Not Disturb and the bar size, renders
-// /out/quicksettings-{bar,pane,notifications}.png and prints PASS/FAIL lines + "HARNESS DONE failures=N".
+// status.sh-shaped text (the first release's key=value form, still parsed) and /proc/net samples (moving, then idle:
+// the rate must stay on the bar as "0 kB/s"), opens the slide-down pane while SAMPLING the dialog window's size and
+// the card's y every 11 ms (the no-blink proof: the window never changes size while the card moves), drives the tile
+// edit mode (programmatic drag through the delegate's dragTo, size toggle, remove / add back, reset -> tilesJson),
+// then the notification pane after a real org.freedesktop.Notifications.Notify call on the session bus (28 gridUnits,
+// 56 px rows, 32 px icon, 13 px body, dismiss reachable), Do Not Disturb, the bar size, and the close animation
+// (sampled the same way). Renders /out/quicksettings-{bar,pane,edit}.png and /out/notifications-pane.png and prints
+// PASS/FAIL lines + "HARNESS DONE failures=N".
 // Under a virtual kwin_wayland (tests/dock-qml-harness/kwin-session.sh, QT_QPA_PLATFORM=wayland) it goes on to drive a
 // REAL pointer through fakeinput.py (KWin's org_kde_kwin_fake_input): the main window is made fullscreen with the bar
 // pinned to its top edge so scene coordinates are screen coordinates; the pointer hovers the network indicator
-// (glyph-only magnify, rendered to /out/quicksettings-bar-hover.png), then hovers a history row, moves onto its
-// dismiss cross and clicks it.
+// (glyph-only magnify, rendered to /out/quicksettings-bar-hover.png), clicks the bell, hovers a history row, moves onto
+// its dismiss cross and clicks it.
 Item {
     id: h
     property var root: null
@@ -22,6 +28,8 @@ Item {
     property var history: null
     property var settingsPane: null
     property var notifPane: null
+    property var tilesArea: null
+    property var tileRepeater: null
     property var notifList: null
     property var batInd: null
     property var netInd: null
@@ -34,8 +42,29 @@ Item {
     property var backdrops: ({})
     function check(cond, msg) { if (cond) console.log("PASS " + msg); else { h.failures++; console.log("FAIL " + msg) } }
     function near(a, b, eps) { return Math.abs(a - b) <= (eps || 0.02) }
+    function tileItem(id) { for (var i = 0; i < tileRepeater.count; i++) { var it = tileRepeater.itemAt(i); if (it && it.tileId === id) return it } return null }
 
-    // ---- real pointer (wayland session only): one fakeinput.py process per move / click, then 350 ms to settle
+    // ---- window-size / card-position sampler (the no-blink proof)
+    property var samples: []
+    Timer { id: sampler; interval: 11; repeat: true; onTriggered: { var c = pane.cardItem; h.samples.push({ w: pane.width, h: pane.height, y: c.y, o: c.opacity, p: pane.openProgress }); if (h.samples.length >= 24) stop() } }
+    function startSampling() { h.samples = []; sampler.restart() }
+    function analyseSamples(label, opening) {
+        var s = h.samples, ws = {}, hs = {}, ys = {}, mono = true, n = s.length
+        for (var i = 0; i < n; i++) {
+            ws[s[i].w] = true; hs[s[i].h] = true; ys[Math.round(s[i].y)] = true
+            if (i > 0 && (opening ? s[i].y < s[i - 1].y - 0.01 : s[i].y > s[i - 1].y + 0.01)) mono = false
+        }
+        var nw = Object.keys(ws).length, nh = Object.keys(hs).length, ny = Object.keys(ys).length
+        console.log("INFO " + label + ": " + n + " samples; window sizes " + Object.keys(ws).join("/") + " x " + Object.keys(hs).join("/") + "; card y " + s.map(function (x) { return Math.round(x.y) }).join(" "))
+        check(n >= 20, label + ": at least 20 frames sampled during the 220 ms animation (" + n + ")")
+        check(nw === 1 && nh === 1 && s[0].w > 0 && s[0].h > 0, label + ": the dialog window kept ONE width and ONE height across every sampled frame (" + Object.keys(ws)[0] + "x" + Object.keys(hs)[0] + ")")
+        check(ny >= 8 && mono, label + ": the card's y moved through " + ny + " distinct values, monotonic (" + (opening ? "up to 0" : "down to -height") + ")")
+        var c = pane.cardItem
+        if (opening) check(s[0].y < -c.height * 0.3 && s[n - 1].y === 0 && s[0].o < 0.7 && near(s[n - 1].o, 1, 0.001), label + ": y from " + Math.round(s[0].y) + " to 0, opacity " + s[0].o.toFixed(2) + " -> 1")
+        else check(s[0].y > -c.height * 0.7 && s[n - 1].y <= -c.height + 1 && s[n - 1].o < 0.01, label + ": y from " + Math.round(s[0].y) + " to " + Math.round(s[n - 1].y) + " (= -height " + c.height + "), opacity -> 0")
+    }
+
+    // ---- real pointer (wayland session only): one fakeinput.py process per move / click, then 600 ms to settle
     readonly property bool wayland: Qt.platform.pluginName === "wayland"
     readonly property string injector: Qt.resolvedUrl("fakeinput.py").toString().replace(/^file:\/\//, "")
     property var afterPointer: null
@@ -51,13 +80,13 @@ Item {
     property Item strip: null
     function screenPos(item, fx, fy) { return item.mapToItem(null, item.width * fx, item.height * fy) }   // main window is fullscreen at 0,0
     function panePos(item, fx, fy) { var p = item.mapToItem(null, item.width * fx, item.height * fy); return Qt.point(pane.x + p.x, pane.y + p.y) }   // the dialog window sits at pane.x/y
-    Component { id: backdrop; Rectangle { z: -1; anchors.fill: parent; radius: 24; color: Kirigami.Theme.backgroundColor } }
+    Component { id: backdrop; Rectangle { z: -1; anchors.fill: parent; color: Kirigami.Theme.backgroundColor } }
     function grab(item, file) {
         h.grabs++
         if (!h.backdrops[file]) h.backdrops[file] = backdrop.createObject(item)
         item.grabToImage(function(r) { r.saveToFile(file); console.log("RENDER " + file + " " + Math.round(item.width) + "x" + Math.round(item.height)); h.grabs-- })
     }
-    onNotifListChanged: if (root && pane && bar && history && notifList) startTimer.start()
+    onProbeChanged: if (root && pane && bar && history && notifList && tileRepeater && probe) startTimer.start()
     Timer { id: startTimer; interval: 700; onTriggered: h.stage1() }
     P5Support.DataSource { id: shell; engine: "executable"; onNewData: (source, data) => { disconnectSource(source); console.log("SHELL exit=" + data["exit code"] + " out=" + String(data["stdout"] || "").trim() + " err=" + String(data["stderr"] || "").trim().slice(0, 120)) } }
 
@@ -69,6 +98,7 @@ Item {
         return "Iface\tDestination\tGateway\n" + "wlp2s0\t00000000\t3B03EC0A\t0003\t0\t0\t600\t00000000\t0\t0\t0\n---\n"
              + "Inter-|Receive|Transmit\n face |bytes packets\n    lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\nwlp2s0: " + rx + " 4 0 0 0 0 0 0 " + tx + " 9 0 0 0 0 0 0\n"
     }
+    property int notifHeightBefore: 0
 
     function stage1() {
         root.paneAutoHide = false
@@ -87,6 +117,10 @@ Item {
         root.applyNet(h.net(1000 + 2400000, 500 + 160000), 3000)
         check(root.st.wifiSignal === 78 && root.st.batPct === 87 && root.st.volume === 45, "status applied (wifi 78, battery 87, volume 45)")
         check(root.speedVisible === true && netInd.text === "↓ 1.2 MB/s  ↑ 80 kB/s", "speed text beside the network glyph: " + netInd.text)
+        root.applyNet(h.net(1000 + 2400000, 500 + 160000), 5000)   // two seconds later, not one byte moved
+        check(root.speedVisible === true && netInd.text === "↓ 0 kB/s  ↑ 0 kB/s", "idle link: the rate STAYS on the bar as 0 kB/s (" + netInd.text + ")")
+        root.applyNet(h.net(1000 + 2400000 + 160000, 500 + 160000 + 24000), 7000)
+        check(netInd.text === "↓ 80 kB/s  ↑ 12 kB/s", "traffic again: " + netInd.text)
         check(netInd.icon === "network-wireless-signal-good-locked", "wifi glyph by signal: " + netInd.icon)
         check(batInd.visible && batInd.text === "87%" && batInd.icon === "battery-090", "battery glyph + percentage: " + batInd.icon + " " + batInd.text)
         check(root.glyph === 18 && root.textPx === 12 && root.clockPx === 13 && batInd.textPx === 13, "medium: glyph 18, text 12, battery text = clock 13")
@@ -94,19 +128,72 @@ Item {
         check(root.dnd === false, "do not disturb off at start")
         check(netInd.scale === 1 && batInd.scale === 1 && netInd.glyphScale === 1 && typeof netInd.hovered === "boolean" && netInd.hovered === false, "indicators rest unscaled; magnify is on the glyph only (item scale stays 1)")
         check(pane.visible === false && root.paneMode === "closed", "pane hidden at start (imperative visibility, no dead binding)")
+        // the tile model before the pane opens
+        check(root.tiles.length === 12 && root.tiles[0].id === "wifi" && root.tiles[2].id === "volume" && root.tiles[2].size === "wide", "12 tiles in the default order from tilesJson")
+        check(root.shownTiles.length === 11 && root.tileRect("nightlight") === null && root.tileRect("brightness") !== null && root.tileRect("battery") !== null, "night light hidden while KWin does not report it; brightness (backlight fed) and battery (fed) shown: " + root.shownTiles.length + " tiles")
+        check(root.tileLayout.items.length === 11 && root.tileLayout.height > 300 && root.settingsHeight === 2 * root.cardPad + root.headerH + 8 + root.tileLayout.height + 8 + root.footerH, "settings card height is arithmetic on the tile layout (" + root.settingsHeight + " px)")
         stage1b.start()
     }
     Timer { id: stage1b; interval: 300; onTriggered: {
         grab(h.wayland ? h.strip : root, "/out/quicksettings-bar.png")
+        h.startSampling()
         root.openPane("settings")
         check(root.paneMode === "settings" && pane.visible === true, "settings pane opens (dialog visible)")
+        check(pane.backgroundHints === 0, "dialog window is transparent (backgroundHints NoBackground = " + pane.backgroundHints + ")")
         stage2.start()
     } }
     Timer { id: stage2; interval: 700; onTriggered: {
-        check(near(pane.openProgress, 1, 0.001), "slide-down finished (openProgress 1)")
-        check(pane.mainItem.height >= settingsPane.implicitHeight - 1 && settingsPane.implicitHeight > 200, "pane height reached its content (" + pane.mainItem.height + " px)")
-        check(pane.mainItem.width === pane.paneWidth, "pane width " + pane.paneWidth)
+        h.analyseSamples("open", true)
+        var c = pane.cardItem
+        check(near(pane.openProgress, 1, 0.001) && c.y === 0, "slide-down finished (openProgress 1, card y 0)")
+        check(c.width === Kirigami.Units.gridUnit * 21 && c.height === root.settingsHeight, "card " + c.width + "x" + c.height + " = 21 gridUnits x settingsHeight")
+        check(pane.mainItem.width === c.width + 2 * pane.shadow && pane.mainItem.height === c.height + pane.shadow && pane.width === pane.mainItem.width && pane.height === pane.mainItem.height, "window = card + shadow margins (" + pane.width + "x" + pane.height + ")")
+        check(c.bottomLeftRadius === 24 && c.bottomRightRadius === 24 && c.topLeftRadius === 0 && c.border.width === 1, "card drawn by the applet: radius 24 at the bottom corners, hairline")
+        var col = (c.width - 2 * root.cardPad - 8) / 2
+        var wifi = tileItem("wifi"), bt = tileItem("bluetooth"), vol = tileItem("volume"), night = tileItem("nightlight")
+        check(wifi && wifi.visible && wifi.x === 0 && wifi.y === 0 && wifi.width === col, "Wi-Fi tile at the first slot, half a row wide (" + wifi.width + ")")
+        check(bt && bt.x === col + 8 && bt.y === 0, "Bluetooth beside it")
+        check(vol && vol.x === 0 && vol.y === 68 && vol.width === c.width - 2 * root.cardPad, "volume row wide below them")
+        check(night && night.visible === false, "night light delegate exists but has no slot")
+        check(tilesArea.height === root.tileLayout.height, "tiles area = layout height " + tilesArea.height)
+        check(wifi.content && wifi.content.enabled === true && wifi.frame.visible === false && wifi.editBar.visible === false, "tiles are live outside edit mode (no frame, no handles)")
         grab(pane.mainItem, "/out/quicksettings-pane.png")
+        stage2b.start()
+    } }
+    Timer { id: stage2b; interval: 400; onTriggered: {
+        root.editing = true
+        var wifi = tileItem("wifi"), bt = tileItem("bluetooth")
+        check(wifi.frame.visible && wifi.editBar.visible && wifi.content.enabled === false, "edit mode: accent frame + size/remove controls, the tile's own controls inert")
+        check(tileItem("nightlight").visible === true && root.shownTiles.length === 12, "edit mode shows every enabled tile, the unavailable one dimmed (" + tileItem("nightlight").opacity + ")")
+        // programmatic drag: Wi-Fi dropped on Bluetooth's slot takes it; Bluetooth shifts to the first slot
+        var target = bt.rect
+        wifi.dragTo(target.x, target.y)
+        check(root.tiles[0].id === "bluetooth" && root.tiles[1].id === "wifi", "drag reorders live: " + root.tiles.slice(0, 3).map(function (t) { return t.id }).join(","))
+        root.dropTiles()
+        check(root.cfg.tilesJson.indexOf('[{"id":"bluetooth"') === 0, "drop persists the order in tilesJson")
+        root.saveTiles(Status.toggleTileSize(root.tiles, "wifi"))
+        stage2c.start()
+    } }
+    Timer { id: stage2c; interval: 400; onTriggered: {
+        var c = pane.cardItem, wifi = tileItem("wifi")
+        check(wifi.wide && wifi.rect.w === c.width - 2 * root.cardPad && wifi.rect.y === 68 && wifi.rect.x === 0, "size toggle: Wi-Fi is now a wide tile on its own row (" + wifi.rect.w + " px at y " + wifi.rect.y + ")")
+        check(pane.height === c.height + pane.shadow && c.height === root.settingsHeight, "window follows the card while open (instant, no animation): " + pane.height)
+        root.saveTiles(Status.setTileEnabled(root.tiles, "screenshot", false))
+        check(root.hiddenTiles.length === 1 && root.hiddenTiles[0].id === "screenshot" && tileItem("screenshot").visible === false, "remove: Screenshot leaves the grid")
+        stage2d.start()
+    } }
+    Timer { id: stage2d; interval: 500; onTriggered: {   // the tiles have finished their 160 ms re-flow and the chip row is laid out
+        check(root.addRowH > 0 && pane.cardItem.height === root.settingsHeight && pane.height === pane.cardItem.height + pane.shadow, "removed tiles come back as chips under the grid (add row " + root.addRowH + " px); the card and window follow (" + pane.height + ")")
+        grab(pane.mainItem, "/out/quicksettings-edit.png")
+        stage2e.start()
+    } }
+    Timer { id: stage2e; interval: 400; onTriggered: {
+        root.saveTiles(Status.setTileEnabled(root.tiles, "screenshot", true))
+        check(root.hiddenTiles.length === 0 && tileItem("screenshot").visible === true, "add back: Screenshot returns")
+        root.saveTiles(Status.defaultTiles())
+        check(root.tiles[0].id === "wifi" && !root.tiles[0].size.match(/wide/) && root.cfg.tilesJson === Status.tilesJson(Status.defaultTiles()), "reset to default: order, sizes and tilesJson back to the shipped layout")
+        root.editing = false
+        check(tileItem("wifi").frame.visible === false && tileItem("wifi").content.enabled === true, "done: frames gone, tiles live again")
         // volume slider path: coalesced wpctl call + glyph flash
         root.setVolume(60)
         stage3.start()
@@ -117,7 +204,7 @@ Item {
         check(root.st.muted === true && volInd.icon === "audio-volume-muted", "mute toggles the glyph")
         root.toggleMute()
         // a real notification on the session bus
-        shell.connectSource("gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.Notify 'Fab OS Updates' 0 'system-software-update' 'Update ready' 'Fab OS 1.0 revision 3 is ready to install.' '[]' \"{'desktop-entry': <'org.kde.discover'>}\" 1000")   // 1 s timeout: the badge counts notifications whose popup has gone
+        shell.connectSource("gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.Notify 'Fab OS Updates' 0 'system-software-update' 'Update ready' 'Fab OS 1.0 revision 5 is ready to install.' '[]' \"{'desktop-entry': <'org.kde.discover'>}\" 1000")   // 1 s timeout: the badge counts notifications whose popup has gone
         stage4.start()
     } }
     Timer { id: stage4; interval: 1800; onTriggered: {
@@ -133,11 +220,14 @@ Item {
         stage5.start()
     } }
     Timer { id: stage5; interval: 700; onTriggered: {
+        var c = pane.cardItem
         check(root.paneMode === "notifications" && pane.visible, "bell pane open")
-        check(notifList.count === 1, "history list has the row")
+        check(c.width === Kirigami.Units.gridUnit * 28 && pane.width === c.width + 2 * pane.shadow, "notification pane 28 gridUnits wide (" + c.width + ")")
+        check(notifList.count === 1 && notifList.visible, "history list has the row")
         var row = notifList.itemAtIndex(0)
-        check(row && row.summaryText === "Update ready" && row.bodyText.indexOf("revision 3") >= 0, "row reads summary/body roles: " + (row ? row.summaryText : "no row"))
+        check(row && row.summaryText === "Update ready" && row.bodyText.indexOf("revision 5") >= 0, "row reads summary/body roles: " + (row ? row.summaryText : "no row"))
         if (row) {   // the dismiss cross must be reachable with the mouse: its hover area spans the whole row and the button lies inside it
+            check(row.height >= 56 && row.appIcon.width === 32 && row.bodyLabel.font.pixelSize === 13, "row " + row.height + " px (>= 56), app icon 32, body 13 px")
             var btn = row.dismissButton, area = row.hoverArea, b = btn.mapToItem(row, 0, 0)
             check(area.x === 0 && area.y === 0 && area.width === row.width && area.height === row.height, "row hover area spans the whole row (" + area.width + "x" + area.height + " of " + row.width + "x" + row.height + ")")
             check(b.x >= 0 && b.x + btn.width <= row.width && b.y >= 0 && b.y + btn.height <= row.height && btn.width >= 24, "dismiss button lies inside the hover area (x " + Math.round(b.x) + " w " + btn.width + " of " + row.width + ")")
@@ -145,7 +235,8 @@ Item {
             check(row.history === history && row.history !== null, "row.history is the Notifications model (not the delegate's own property)")
         }
         check(root.unread === 0, "opening the pane marks it read")
-        check(pane.mainItem.height >= notifPane.implicitHeight - 1, "pane re-sized to the history (" + pane.mainItem.height + " px)")
+        check(c.height === root.notifHeight && root.notifHeight <= Math.round(root.screenH * 0.6) && root.notifListH >= 56, "card sized to the history (" + c.height + " px, list " + root.notifListH + "), capped at 60 % of the screen")
+        h.notifHeightBefore = root.notifHeight
         root.toggleDnd()
         check(root.dnd === true, "do not disturb on")
         stage6.start()
@@ -153,8 +244,8 @@ Item {
     Timer { id: stage6; interval: 500; onTriggered: {
         var until = root.notifSettings.notificationsInhibitedUntil
         check(root.dnd === true && until && until.getTime() > Date.now() + 300 * 24 * 3600 * 1000, "do not disturb persisted after save + live reload (until " + until + ")")
-        check(notifPane.implicitHeight > 140, "do-not-disturb banner is in the pane (" + notifPane.implicitHeight + " px)")
-        grab(pane.mainItem, "/out/quicksettings-notifications.png")   // rendered on the next frame: keep the banner until then
+        check(root.notifHeight === h.notifHeightBefore + 46 && pane.cardItem.height === root.notifHeight, "do-not-disturb banner adds one 40 px row to the card (" + root.notifHeight + " px)")
+        grab(pane.mainItem, "/out/notifications-pane.png")   // rendered on the next frame: keep the banner until then
         stage6b.start()
     } }
     Timer { id: stage6b; interval: 400; onTriggered: {
@@ -165,14 +256,16 @@ Item {
     } }
     Timer { id: stage7; interval: 500; onTriggered: {
         check(root.glyph === 22 && root.textPx === 13 && root.clockPx === 15 && batInd.textPx === 15, "large: glyph 22, text 13, battery text 15")
-        check(root.lastSync.indexOf("writeConfig(\"fontSize\", 15)") > 0 && root.lastSync.indexOf("in.patienceai.fabos.dock") > 0, "size change queued the clock/dock sync script")
+        check(root.lastSync.indexOf("writeConfig(\"barSize\", \"large\")") > 0 && root.lastSync.indexOf("in.patienceai.fabos.clock") > 0 && root.lastSync.indexOf("in.patienceai.fabos.dock") > 0, "size change queued the clock/dock sync script (Fab OS clock barSize + dock magnify)")
         check(root.lastSync.indexOf("magnification") < 0 && root.lastSync.indexOf("writeConfig(\"magnify\", true)") > 0, "sync writes the shared magnify switch only, never the dock's magnification strength")
         root.cfg.barSize = "medium"
+        h.startSampling()
         root.closePane()
         stage8.start()
     } }
-    Timer { id: stage8; interval: 500; onTriggered: {
-        check(root.paneMode === "closed" && pane.visible === false, "pane closed after the shrink")
+    Timer { id: stage8; interval: 600; onTriggered: {
+        h.analyseSamples("close", false)
+        check(root.paneMode === "closed" && pane.visible === false, "pane hidden after the slide-up")
         check(root.glyph === 18, "back to medium")
         if (h.wayland) stageP0.start(); else done.start()
     } }

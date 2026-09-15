@@ -3,9 +3,10 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
 // One row of the notification history (data from NotificationManager.Notifications; role names are the model's
-// enum names without "Role", first letter lower-case). Click runs the default action; the cross closes it.
-// Hover: `rowArea` spans the whole row (the button sits above it) and the cross stays visible while the pointer is on
-// the button itself (`dismissBtn.hovered`), so it can always be reached with the mouse.
+// enum names without "Role", first letter lower-case). 56 px minimum, app icon 32, summary and body at 13 px.
+// Click runs the default action; the cross closes it. Hover: `rowArea` spans the whole row (the button sits above it)
+// and the cross stays visible while the pointer is on the button itself (`dismissBtn.hovered`), so it can always be
+// reached with the mouse — a hovered MouseArea takes the hover from the row area beneath it.
 Item {
     id: row
     required property int index
@@ -17,6 +18,8 @@ Item {
     readonly property bool rowHovered: rowArea.containsMouse || dismissBtn.hovered
     readonly property Item dismissButton: dismissBtn   // harness hooks (tests/quicksettings-qml-harness)
     readonly property Item hoverArea: rowArea
+    readonly property Item appIcon: iconItem
+    readonly property Item bodyLabel: bodyItem
     function ago(d) {
         if (!d || isNaN(d.getTime ? d.getTime() : NaN)) return ""
         var s = Math.max(0, (Date.now() - d.getTime()) / 1000)
@@ -25,28 +28,29 @@ Item {
         if (s < 86400) return Math.floor(s / 3600) + " h ago"
         return Qt.formatDate(d, "ddd d MMM")
     }
-    width: ListView.view ? ListView.view.width : 320
-    implicitHeight: content.implicitHeight + 16
+    width: ListView.view ? ListView.view.width : 480
+    implicitHeight: Math.max(56, content.implicitHeight + 14)
 
-    Rectangle { anchors.fill: parent; radius: 12; color: Kirigami.Theme.textColor; opacity: row.rowHovered ? 0.06 : 0; Behavior on opacity { NumberAnimation { duration: 120 } } }
+    Rectangle { anchors.fill: parent; radius: 14; color: Kirigami.Theme.textColor; opacity: row.rowHovered ? 0.06 : 0; Behavior on opacity { NumberAnimation { duration: 120 } } }
     RowLayout {
         id: content
         anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-        anchors.leftMargin: 8; anchors.rightMargin: 4
-        spacing: 10
+        anchors.leftMargin: 10; anchors.rightMargin: 6
+        spacing: 12
         Kirigami.Icon {
-            Layout.preferredWidth: 24; Layout.preferredHeight: 24; Layout.alignment: Qt.AlignTop
+            id: iconItem
+            Layout.preferredWidth: 32; Layout.preferredHeight: 32; Layout.alignment: Qt.AlignTop
             source: row.model.applicationIconName || row.model.iconName || "notifications"
             fallback: "notifications"
         }
         ColumnLayout {
-            Layout.fillWidth: true; spacing: 1
+            Layout.fillWidth: true; spacing: 2
             Text { text: row.summaryText.length > 0 ? row.summaryText : (row.model.applicationName || "Notification"); color: Kirigami.Theme.textColor; font.family: "Inter"; font.pixelSize: 13; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
-            Text { visible: text.length > 0; text: row.isJob ? (row.model.percentage + "%" + (row.bodyText ? " · " + row.bodyText : "")) : row.bodyText
-                   color: Kirigami.Theme.textColor; opacity: 0.8; font.family: "Inter"; font.pixelSize: 12; wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight; Layout.fillWidth: true }
+            Text { id: bodyItem; visible: text.length > 0; text: row.isJob ? (row.model.percentage + "%" + (row.bodyText ? " · " + row.bodyText : "")) : row.bodyText
+                   color: Kirigami.Theme.textColor; opacity: 0.8; font.family: "Inter"; font.pixelSize: 13; wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight; Layout.fillWidth: true }
             Text { text: (row.model.applicationName || "") + (row.model.applicationName ? " · " : "") + row.ago(row.model.created); color: Kirigami.Theme.textColor; opacity: 0.55; font.family: "Inter"; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true }
         }
-        SmallButton { id: dismissBtn; icon: "dialog-close"; tip: "Dismiss"; iconSize: 14; Layout.alignment: Qt.AlignTop; visible: row.rowHovered
+        SmallButton { id: dismissBtn; icon: "dialog-close"; tip: "Dismiss"; iconSize: 14; implicitWidth: 30; implicitHeight: 30; Layout.alignment: Qt.AlignTop; visible: row.rowHovered
                       onClicked: if (row.history) row.history.close(row.history.index(row.index, 0)) }
     }
     MouseArea {   // below the content (z -1): the dismiss button's own MouseArea takes clicks on it first

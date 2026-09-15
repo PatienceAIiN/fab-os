@@ -33,7 +33,7 @@
   is accepted only as a short, answer-shaped reply, never from a longer
   sentence, and a command run as administrator needs a clear "yes".
 - Ubuntu package updates fetch metadata from Ubuntu mirrors; Fab OS updates
-  from the Patience AI repository; Brave Browser updates from Brave's own
+  from the Patience AI repository; Firefox updates from Mozilla's own
   repository. All are standard apt transactions with no identifying payload.
 - No wallet (ADR-0015): KWallet is disabled and no wallet application is
   installed, so nothing asks for a wallet password. Wi-Fi and VPN secrets are
@@ -42,10 +42,15 @@
   the machine, not by other ordinary users); the agent's keys stay in
   `systemd-creds` as described above; browser passwords are protected by the
   browser's own store.
-- Brave Browser is a third-party application shipped exactly as Brave
-  publishes it. Its own settings govern what it sends (for example Brave
-  Rewards, Brave News and its product analytics); Fab OS does not change or
-  pre-answer them.
+- Firefox is a third-party application shipped exactly as Mozilla publishes
+  it. Fab OS adds only Mozilla's documented enterprise-policy file
+  (`/usr/lib/firefox/distribution/policies.json`, ADR-0018), which turns off
+  Firefox telemetry and studies, the Terms of Use / Privacy Notice startup
+  screen (`SkipTermsOfUse` — Patience AI accepts Mozilla's Firefox Terms of Use
+  on behalf of Fab OS users; legal/OPEN-SOURCE-RELEASE-CHECKLIST.md C6; Mozilla's
+  Privacy Notice still applies to what Firefox itself does), the first-run
+  tour, the default-browser prompt and sponsored tiles and sets the home page;
+  nothing is locked, and Firefox's own settings govern everything else it sends.
 - Applicable law: Digital Personal Data Protection Act 2023 (India) and GDPR
   where users are in the EU. Because nothing is collected, no consent flow is
   required for the OS itself.

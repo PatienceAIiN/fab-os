@@ -30,8 +30,9 @@ own password store, and NetworkManager can hold Wi-Fi secrets itself.
   Upstream plasma-nm therefore does not open a wallet when it is disabled and defaults new passwords to system storage:
   NetworkManager keeps the PSK itself (`psk-flags=0`) in `/etc/NetworkManager/system-connections/<name>.nmconnection`,
   root-only (0600). This is the documented, acceptable outcome; the live behaviour in a VM is listed under "not verified".
-- Browsers: Brave (ADR-0016) is Chromium-based; on KDE it asks `org.kde.kwalletd6` whether the wallet is enabled and, when
-  it is not, falls back to Chromium's basic store for its saved passwords (an obfuscated store, not wallet-protected).
+- Browsers: Firefox (ADR-0018) keeps saved passwords in its own profile store (NSS `key4.db` + `logins.json`, optionally
+  behind a primary password) and never asks KWallet; Brave, shipped for the 1.0-3 / 1.0-4 images only (ADR-0016), asked
+  `org.kde.kwalletd6` and fell back to Chromium's basic store when the wallet was disabled.
 - SSH: `ksshaskpass` works without a wallet (it simply asks each time).
 - The agent: `systemd-creds --user encrypt/decrypt` in `~/.config/fabos-agent/secrets/`, never KWallet.
 

@@ -8,7 +8,7 @@ Version 2.0 (see LICENSE). Artwork may additionally be used under
 CC0-1.0 (see legal/ARTWORK.md).
 
 Third-party software
-  Fab OS images contain Ubuntu, Debian, KDE, Brave and other third-party
+  Fab OS images contain Ubuntu, Debian, KDE, Mozilla and other third-party
   packages. Each keeps its own copyright and licence. Verbatim licence
   texts are in THIRD_PARTY_LICENSES/, the component list with copyright
   holders and licences is in ATTRIBUTIONS.md, and on an installed system
@@ -37,8 +37,8 @@ Voice stack
 Trademarks
   Ubuntu is a trademark of Canonical Ltd.; KDE and Plasma are trademarks
   of KDE e.V.; Fab OS is an independent project not endorsed by them.
-  Brave and the Brave lion logo are trademarks of Brave Software, Inc.;
-  Fab OS ships the unmodified official build from Brave's repository and
-  is not endorsed by Brave Software. "Fab OS" and the Fab OS mark identify
+  Firefox is a trademark of the Mozilla Foundation; Fab OS ships Mozilla's
+  own unmodified Firefox package and is not endorsed by Mozilla. "Fab OS"
+  and the Fab OS mark identify
   software published by Patience AI (see legal/TRADEMARKS.md); Patience AI
   does not claim a registered trademark in them.
