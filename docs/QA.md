@@ -1180,3 +1180,37 @@ built from this tree. What was verified on 2026-09-15, and what the next run mus
   launcher list, `tests/layout-js-dry-run.js`, the agent daemon's `open_app` description / system prompt / `_app_name`
   table, and the four `tests/agent-test.py` assertions that expect "Brave". Fab AI Controls' `APP_NAMES` and its "Try
   asking" chip were switched here. The 1.0-3 / 1.0-4 records above and `legal/source-offer/*` keep their Brave lines as history.
+
+## Installer (2026-09-16) — offline job audit + automated installation (ADR-0021, docs/INSTALL-TEST.md)
+
+- **Why:** the installer failed on the owner's device ("Installation Failed — Package Manager error"; the `packages` job
+  removed a package that was never installed, 692a6f0) and had never been run end to end by a test.
+- **Offline job audit, `tests/calamares-jobs-test.sh localhost/fabos:iso` → `### jobs-test: pass=165 fail=0`** (run on
+  the host with podman, network off, no QEMU). Every exec module of `settings.conf` replayed in the target image as the
+  module would run it: `apt-get -s --purge remove casper calamares` **and** the backend's `--autoremove` second step (purges
+  12 auto-marked packages, none of them `apt-mark manual`: cryptsetup*, grub-efi-amd64-signed, shim-signed, efibootmgr,
+  plymouth*, sddm, network-manager, fabos-*, linux-image-generic, initramfs-tools all stay); every `shellprocess` line via
+  `sh -c` (live user, casper.conf, sudo rule, autologin gone afterwards; post-install units enabled); `systemctl
+  enable/disable` of every unit in `services-systemd.conf`; `locale-gen`; `update-initramfs -k all -c -t` (initramfs then
+  contains cryptroot + the Fab OS Plymouth theme); grub-install/grub-mkconfig/grub-probe/efibootmgr + signed GRUB/shim
+  present, the signed GRUB's prefix `/EFI/ubuntu` and its missing `argon2` module read from the binary; the **effective
+  GRUB values after `/etc/default/grub.d/fabos.cfg`** (`GRUB_TIMEOUT=2 … GRUB_CMDLINE_LINUX_DEFAULT=quiet splash`,
+  simulated as grub-mkconfig sources the files); cryptsetup-initramfs; sddm + theme `fabos` + session; console-setup/xkb;
+  every `users.conf` group; NetworkManager; jsonschema validation of each module config against the schemas in the image.
+  Config bugs found and fixed by the audit are listed in `docs/INSTALL-TEST.md` §1 (no default module configs on Ubuntu →
+  `mount`/`machineid`/`umount` confs added; 3.3 `services-systemd` list form; `grubcfg`/`fstab`/`initramfs` key names;
+  `efiBootloaderId ubuntu`; unencrypted `/boot` layout; `requiredRam 1.5`; xfs dropped).
+- **Review finding fixed (blocker):** `live-autoinstall.sh` waited for `completion: succeeded`, which the finished module
+  logs only when it can reach `org.freedesktop.Notifications`; replayed in the image: a session bus started as `fabos`
+  answers `fabos` and **refuses root at once** (`dbus-send` → "Did not receive a reply", PyQt6 `sessionBus().isConnected()`
+  False), so a good install would have been reported as `timeout` after 45 min. The helper now takes any of the three
+  `Config::doNotify` lines as "finished page reached" and `Installation failed:` / `- message:` as failure; the audit
+  greps each string in the image's `libcalamares_viewmodule_finished.so` / `libcalamaresui.so` and runs the classifier on
+  synthetic logs (7 cases) — a `$(…)`-subshell bug that lost the job counters was caught by that self-test before commit.
+  Session log now gzip+base64 with sha256 (round trip through the driver's decoder byte-identical, corruption reported)
+  and copied into the target ESP; stage-2 passphrase retries no longer depend on OCR recognising the Plymouth prompt.
+- **Not run here (no QEMU allowed for this track): `tests/install-vm.sh both`** — the orchestrator's VM run. Expected
+  PASS lines per variant: live ISO booted; INSTALL_RESULT=ok; finished page reached (`finished_page=yes`); every job
+  started (`AUTOINSTALL_JOBS started=m total=m`); session log received intact (`SESSION_LOG_DECODE=ok`); LUKS2 container
+  (luks variant); ESP holds `EFI/ubuntu/grubx64.efi` + `EFI/boot/bootx64.efi`; installed disk boots to
+  `FABOS_INSTALLED_OK`. Record the actual lines here after the run.
