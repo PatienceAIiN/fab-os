@@ -62,12 +62,12 @@ RUN apt-get update && apt-get install -y \
 # security.ubuntu.com is a separate line in ubuntu.sources; mirror it too (separate layer so the desktop layer above stays cached)
 RUN sed -i "s|http://security.ubuntu.com/ubuntu|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources
 # Firefox from Mozilla's own apt repository: Mozilla's unmodified official build, never patched or renamed by Fab OS (ADR-0018;
-# Brave stood in for one release, ADR-0016). Ubuntu's own `firefox` package is a snap shim (1:1snap1) and snap is not installed,
+# another browser stood in for one release, ADR-0016). Ubuntu's own `firefox` package is a snap shim (1:1snap1) and snap is not installed,
 # so the origin pin (packages.mozilla.org = 1000) puts Mozilla's build above the archive. `firefox` must NOT be listed in
 # 00-fabos-blocklist above: a `Package: … firefox` record pins EVERY version of the name, Mozilla's included, to -1 (replayed in an
 # Ubuntu 26.04 container on 2026-09-15: Candidate: (none) with the entry, 155.0.1~build1 without it). The build fails if the
 # installed firefox is not Mozilla's, its desktop file or binary is missing, any source other than Ubuntu's and Mozilla's exists,
-# anything Brave is left behind, `firefox` is still pinned out, or Firefox brought a setuid file (it has none: the image's setuid
+# anything of that browser's package set is left behind, `firefox` is still pinned out, or Firefox brought a setuid file (it has none: the image's setuid
 # set is back to Ubuntu's stock set, tests/security/suid-baseline.txt). Mozilla's deb owns /usr/lib/firefox/distribution/ and its
 # distribution.ini only; fabos-desktop adds policies.json there (Mozilla's documented enterprise-policy path) for a quiet first run.
 # Firefox updates keep flowing from this repository through the normal apt update path (README "How updates work").

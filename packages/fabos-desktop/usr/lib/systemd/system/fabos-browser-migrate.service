@@ -1,0 +1,19 @@
+[Unit]
+Description=@DISTRO_NAME@ browser migration (Firefox replaces the browser of the 1.0-3 / 1.0-4 images)
+Documentation=https://github.com/PatienceAIiN/fab-os/blob/main/docs/decisions/ADR-0018-firefox-returns.md
+# fabos-desktop's postinst creates the flag on an upgraded 1.0-3 / 1.0-4 system and starts this job; the job removes the
+# flag only when Mozilla's Firefox is installed and the old browser is gone, so an offline upgrade is retried at boot.
+ConditionPathExists=/var/lib/fabos/browser-migrate-pending
+After=network-online.target NetworkManager.service fabos-firstboot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/fabos/browser-migrate.sh
+Nice=10
+IOSchedulingClass=idle
+MemoryHigh=768M
+TimeoutStartSec=1h
+
+[Install]
+WantedBy=multi-user.target

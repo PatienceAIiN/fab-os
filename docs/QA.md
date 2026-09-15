@@ -1096,6 +1096,15 @@ built from this tree. What was verified on 2026-09-15, and what the next run mus
 - **Policy keys** in `packages/fabos-desktop/usr/lib/firefox/distribution/policies.json` were checked against Mozilla's
   policy-templates documentation (fetched the same day): all present; `DisablePocket` is marked deprecated there and is kept
   only because it was asked for. Nothing in the file is locked. Rendered with `HOME_URL` the file is valid JSON (checked).
+  **Review finding (same day): `SkipTermsOfUse` was missing** — Firefox 138+ opens with a Terms of Use / Privacy Notice modal
+  at first start that none of the other keys silences. Added (`true`) and verified in the upstream schema
+  (`browser/components/enterprisepolicies/schemas/policies-schema.json` from `mozilla-firefox/firefox` main: `boolean`,
+  `x-category: Startup`, added 138 / ESR 140, restart-required) and in policy-templates (`### SkipTermsOfUse`, "Compatibility:
+  Firefox 138, Firefox ESR 140"), which attaches the representation quoted in ADR-0018 and recorded as
+  `legal/OPEN-SOURCE-RELEASE-CHECKLIST.md` C6. The schema's Startup category has ten keys (`DefaultBrowserSettingEnabled,
+  DisableLaunchOnLogin, DontCheckDefaultBrowser, FirefoxHome, Homepage, NewTabPage, OverrideFirstRunPage,
+  OverridePostUpdatePage, ShowHomeButton, SkipTermsOfUse`); every one that shows a screen is now set. `UserMessaging.WhatsNew`
+  (deprecated) and `FirefoxLabs` (a Preferences section) exist in the schema and are deliberately not used.
 - **`tests/branding-check.sh`: 181 → 184 checks.** Rewritten in place because the Brave expectation is now the defect:
   `browser: firefox absent, brave-browser from Brave` → `browser: firefox from Mozilla (not the snap shim), brave-browser
   absent`; the six Brave source / keyring / mimeapps / blocklist / sandbox checks → their Firefox counterparts;
@@ -1109,6 +1118,13 @@ built from this tree. What was verified on 2026-09-15, and what the next run mus
   checks, `policies.json`, and the two layout/dock pin checks (the layout file and the dock's default launcher list are owned
   by another track and still pin Brave; they must switch or those two stay red after the rebuild). The 173 others, including
   the three appended AppArmor/source-tree checks, pass. Log: `build/branding-check-browser-track.out` (not committed).
+  **After the review fixes: 184 → 186 checks** (appended: the migration unit + script in the image — executable,
+  `ConditionPathExists`, `MemoryHigh`, `systemd-analyze verify`, no stale flag — and the source-tree side: meta Recommends
+  `firefox` alone, postinst flags the job, the script un-pins firefox and purges the old browser, `policies.json` carries
+  `SkipTermsOfUse`, the dock harness fixture pins `firefox.desktop`); the `policies.json` check now also greps
+  `"SkipTermsOfUse": true`. **Replayed against `localhost/fabos:vm` on 2026-09-15: 174 PASS / 12 FAIL** — the eleven above
+  plus the new image-side upgrade check (the 1.0-4 image has no migration unit), all by design on that image; the new
+  source-tree upgrade check passes.
 - **`tests/security/suid-baseline.txt`** is Ubuntu's stock set again (Brave's `chrome-sandbox` removed), so
   `tests/security-check.sh` "no setuid file beyond the baseline" will fail against the 1.0-4 image (expected) and pass on a
   rebuilt one. `tests/agent-test.py`: 73 tests OK on this tree (unchanged by this track). `tests/layout-js-dry-run.js` fails on
@@ -1117,10 +1133,49 @@ built from this tree. What was verified on 2026-09-15, and what the next run mus
 - **New `tests/browser-vm.sh` — not yet run.** SSH-driven like `tests/agent-live-vm.sh`: Mozilla maintainer + version,
   `brave-browser` absent, `policies.json` valid, `xdg-settings get default-web-browser == firefox.desktop`, the agent's
   `fabos do --mode bypass "open firefox"`, a direct `firefox` launch and `xdg-open https://fabos.patienceai.in/`, each timed
-  from the first firefox process to the first KWin window (a KWin script reporting `windowAdded` over the session bus, the
-  technique `tests/perf-vm.sh` verified; budget 12 s), exactly one window after the first launch, a screenshot to
-  `build/browser-firefox.png`, numbers in `build/browser-vm.json`. Its window-list parser and summary writer were unit-tested
-  against a fake `busctl` log on the host; the real session run is the orchestrator's.
+  from the first firefox process to the first KWin window (a KWin script reporting `windowAdded` over the session bus; budget
+  12 s), exactly one window after the first launch and — added after the review — no first-run caption (Terms of Use /
+  Privacy Notice / Welcome), `SkipTermsOfUse` present in the shipped `policies.json`, a screenshot to
+  `build/browser-firefox.png`, numbers in `build/browser-vm.json`. **Correction (review):** the first write-up called the KWin
+  probe "the technique `tests/perf-vm.sh` verified" — `perf-vm.sh` has never been run (see above), so there is no such
+  precedent. What is verified is the monitor + parser half: the new `tests/browser-vm.sh --selftest` (a private
+  `dbus-run-session`, the same `busctl --user monitor --json=short --match interface=in.patienceai.fabos.browsertest` line,
+  five `busctl call`s shaped like the KWin script's, then the parser) **passes on the host and inside `localhost/fabos:vm`:
+  5 method_calls captured, parser `added=2 first_t=2000 current=1`** (2026-09-15). The KWin half (`callDBus` from the script,
+  `windowAdded`) is proven only by the VM run; the script falls back to Firefox's `org.mozilla.firefox` bus name if KWin's
+  script does not report. The real session run is the orchestrator's.
+- **Upgrade path from a 1.0-3 / 1.0-4 install (review finding, fixed 2026-09-15; ADR-0018 "Upgrading…").** Read from the
+  1.0-4 image: `brave-browser 1.95.101` Provides `www-browser`, so the first draft's `Recommends: firefox | www-browser` was
+  already satisfied and Firefox would never have arrived; `00-fabos-blocklist` (written by the Containerfile, owned by no
+  package) still pins `firefox` — Mozilla's build included — to -1; Brave's source and `/etc/default/brave-browser` are
+  unowned files. Fix: `fabos-desktop-meta` Recommends `firefox` alone; `fabos-desktop` ships `fabos-browser-migrate.service` +
+  `/usr/lib/fabos/browser-migrate.sh`, flagged by its postinst when brave-browser, Brave's source, `firefox` in the blocklist or
+  a non-Mozilla firefox is found (live systems only; never in the image build). **Replayed in the 1.0-4 container** (worktree
+  mounted; the new apt files, keyring — fingerprint `35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3` checked —, script, unit,
+  `mimeapps.list`, `policies.json` copied in as the debs would install them; a fabos-user `mimeapps.list` and `appletsrc` seeded
+  with `brave-browser.desktop`): real postinst `configure 1.0-4` → exit 0, flag created; `systemd-analyze verify` → 0; job run
+  with the dpkg frontend lock held 12 s → `removed firefox from /etc/apt/preferences.d/00-fabos-blocklist`, `apt-get install
+  firefox` fetched `155.0.1~build1` (89.7 MB, 20 s) from `packages.mozilla.org`, `installed firefox 155.0.1~build1`, purged
+  `brave-browser 1.95.101` + `brave-keyring 1.20` (485 MB freed), repointed both user files at `firefox.desktop` (owner
+  `fabos:fabos` kept), exit 0 after 152 s in total; afterwards `dpkg-query` → `firefox 155.0.1~build1 Mozilla`, no
+  brave-browser/brave-keyring, blocklist line without `firefox`, sources `fabos mozilla ubuntu`, no `/etc/default/brave-browser`,
+  Brave keyring or `/opt/brave.com`, flag gone, `browser-migrate-done` written, `xdg-mime query default x-scheme-handler/https`
+  → `firefox.desktop` for the user and for the system default, `firefox --version` → `Mozilla Firefox 155.0.1`,
+  `/usr/lib/firefox/distribution/` holds `distribution.ini` + `policies.json` (valid, `SkipTermsOfUse` on), no setuid file under
+  `/usr/lib/firefox`, `apt-cache policy firefox` Installed = Candidate = `155.0.1~build1`; second run → `done`, exit 0
+  (idempotent); postinst `configure 1.0-5` on the migrated system → no flag. Lock-wait loop measured separately in the image:
+  released 10 s after an 8 s `flock` hold, 0 s with no holder. Not observed: dpkg's own upgrade sequence (a real `apt upgrade`
+  with the new debs) and the desktop notification (no session in a container).
+- **Minor review items, same day:** `tests/dock-qml-harness/Driver.qml` fixture now pins `applications:firefox.desktop` /
+  `AppName: "Firefox"` (was still Brave under a "Firefox" label); the history sentences naming Brave in `SECURITY.md`,
+  `legal/OPEN-SOURCE-RELEASE-CHECKLIST.md` (§C heading, C5), `legal/UBUNTU-DERIVATIVE-COMPLIANCE.md` #13,
+  `THIRD_PARTY_LICENSES/README.md`, `tests/security/suid-baseline.txt` and the two Containerfile comments were reworded to
+  "the previous browser (ADR-0016)". The mandated `grep -ri brave` over `packages image tests docs README.md LICENSING.md
+  ATTRIBUTIONS.md legal` now hits only: this file and the ADRs (history), the other tracks' files (agent daemon, agent-test,
+  layout.js, dock `main.xml`, `layout-js-dry-run.js`), and the negative assertions / removal logic that must name what they
+  remove (Containerfile line 80, `selftest.sh`'s `brave_left=` probe, `tests/branding-check.sh`, `tests/browser-vm.sh`,
+  `browser-migrate.sh`, the `fabos-desktop` postinst). `PKG_REVISION` is still 4 — bump to 5 at merge (fabos-branding,
+  fabos-desktop, fabos-desktop-meta changed; the manifest check follows).
 - **Still Brave, owned by other tracks** (listed in ADR-0018): the desktop layout's dock pin, the dock plasmoid's default
   launcher list, `tests/layout-js-dry-run.js`, the agent daemon's `open_app` description / system prompt / `_app_name`
   table, and the four `tests/agent-test.py` assertions that expect "Brave". Fab AI Controls' `APP_NAMES` and its "Try

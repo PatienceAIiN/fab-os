@@ -4,27 +4,30 @@
 # the VM — dpkg, xdg-settings / xdg-mime, KWin's own window list, pgrep, the session bus, a spectacle screenshot — never
 # by the source tree. kdotool is not packaged for Ubuntu 26.04 and KWin's D-Bus interface has no window list, so a small
 # KWin script reports every window (resourceClass|resourceName|caption) and every windowAdded as a D-Bus call that
-# `busctl --user monitor` timestamps — the technique tests/perf-vm.sh verified in a virtual kwin_wayland session.
+# `busctl --user monitor` timestamps. The monitor + parser half is checked without a VM by `--selftest` (a private dbus-daemon
+# session, the same monitor line, calls shaped like the probe's); the KWin half (callDBus from the script, windowAdded) is only
+# proven by the VM run itself — if the script does not report, the run falls back to Firefox's org.mozilla.firefox bus name.
 #
-#   tests/browser-vm.sh [--budget S] [--keep] [--skip-agent]
+#   tests/browser-vm.sh [--budget S] [--keep] [--skip-agent] [--selftest]
 #     --budget S    seconds allowed from the first firefox process to its first window (default 12)
 #     --keep        leave Firefox open and a VM this script booted powered on
 #     --skip-agent  do not drive the agent (`fabos do "open firefox"`); only the direct and xdg-open launches
+#     --selftest    no VM: run the window-probe monitor + parser under a private dbus-daemon session and exit (PASS/FAIL)
 #   ANTHROPIC_API_KEY (optional): configures the Claude provider when the agent has no ready provider.
 #   VM_MEM (default 2048): scripts/boot-vm.sh is started if no VM is running.
 # Output: build/browser-vm.out (log), build/browser-vm.json (numbers), build/browser-firefox.png (screenshot).
 #
 # What is checked
-#   1. firefox is Mozilla's build (dpkg Maintainer), version printed; brave-browser absent; policies.json shipped + valid
+#   1. firefox is Mozilla's build (dpkg Maintainer), version printed; brave-browser absent; policies.json shipped + valid + SkipTermsOfUse
 #   2. `xdg-settings get default-web-browser` == firefox.desktop; `xdg-mime query default x-scheme-handler/https` too
 #   3. agent path: `fabos do --mode bypass "open firefox"` -> a Firefox window appears; process -> window < budget
 #      (the model's thinking time before the launch is reported, not judged); which tool the agent used is printed
 #   4. direct path: Firefox closed, `firefox` launched in the session -> first window < budget; exactly one Firefox
-#      window (no first-run extras); screenshot saved to build/browser-firefox.png
+#      window and no first-run caption (Terms of Use / Privacy Notice / Welcome); screenshot saved to build/browser-firefox.png
 #   5. `xdg-open https://fabos.patienceai.in/` with Firefox closed -> a Firefox window < budget (the default handler)
 set -uo pipefail; HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"
-BUDGET=12; KEEP=0; SKIP_AGENT=0
-while [ $# -gt 0 ]; do case "$1" in --budget) BUDGET=$2; shift;; --keep) KEEP=1;; --skip-agent) SKIP_AGENT=1;; -h|--help) sed -n '2,24p' "$0"; exit 0;; *) echo "unknown argument: $1"; exit 3;; esac; shift; done
+BUDGET=12; KEEP=0; SKIP_AGENT=0; SELFTEST=0
+while [ $# -gt 0 ]; do case "$1" in --budget) BUDGET=$2; shift;; --keep) KEEP=1;; --skip-agent) SKIP_AGENT=1;; --selftest) SELFTEST=1;; -h|--help) sed -n '2,27p' "$0"; exit 0;; *) echo "unknown argument: $1"; exit 3;; esac; shift; done
 SSH="sshpass -p fabos ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -p 2222 fabos@127.0.0.1"
 SCP="sshpass -p fabos scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -P 2222"
 mkdir -p build; OUT=build/browser-vm.out; JSON=build/browser-vm.json; : > "$OUT"; exec > >(tee -a "$OUT") 2>&1
@@ -37,30 +40,6 @@ jget() { python3 -c "import sys,json; d=json.load(sys.stdin); print(d$1)" 2>/dev
 pass=0; fail=0; skip=0
 verdict() { case "$1" in PASS) pass=$((pass+1));; FAIL) fail=$((fail+1));; SKIP) skip=$((skip+1));; esac; echo ">>> $1: $2"; }
 declare -A R; R[budget_s]=$BUDGET; BOOTED=0
-
-echo "### Fab OS browser VM test — $(date -u +%FT%TZ) — budget=${BUDGET}s keep=$KEEP skip_agent=$SKIP_AGENT"
-pgrep -f qemu-system-x86_64 >/dev/null || { echo "booting VM"; BOOTED=1; (scripts/boot-vm.sh --headless --mem "${VM_MEM:-2048}" --cpus 4 > build/boot-headless.out 2>&1 &); }
-for i in $(seq 1 100); do vm true 2>/dev/null && break; sleep 3; done; vm true || { echo "no ssh to the VM"; exit 3; }
-echo "### waiting for the graphical session (plasmashell + kwin_wayland)"
-for i in $(seq 1 120); do vm "pgrep -x plasmashell >/dev/null && pgrep -x kwin_wayland >/dev/null" && break; sleep 3; done
-vm "pgrep -x plasmashell >/dev/null" || { echo "no plasmashell in the VM (is the session logged in?)"; exit 3; }
-vm "nproc; head -1 /proc/meminfo; uptime -p; grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release"
-
-# ---------------------------------------------------------------- 1. package
-echo; echo "=== 1. package"
-FFV=$(vm "dpkg-query -W -f '\${Version}' firefox 2>/dev/null"); FFM=$(vm "dpkg-query -W -f '\${Maintainer}' firefox 2>/dev/null")
-R[firefox_version]=${FFV:-absent}; R[firefox_maintainer]=${FFM:-absent}
-if echo "$FFM" | grep -q '^Mozilla'; then verdict PASS "firefox $FFV is Mozilla's build ($FFM)"; else verdict FAIL "firefox is not Mozilla's build (version='${FFV:-absent}' maintainer='${FFM:-absent}')"; fi
-if vm "dpkg -s brave-browser >/dev/null 2>&1"; then verdict FAIL "brave-browser is still installed"; else verdict PASS "brave-browser absent"; fi
-if vm "test -f /usr/lib/firefox/distribution/policies.json && python3 -m json.tool /usr/lib/firefox/distribution/policies.json >/dev/null 2>&1"; then verdict PASS "policies.json shipped and valid ($(vm "grep -c '\"' /usr/lib/firefox/distribution/policies.json") quoted lines)"; else verdict FAIL "policies.json missing or invalid at /usr/lib/firefox/distribution/policies.json"; fi
-vm "test -f /etc/apparmor.d/firefox && aa-status 2>/dev/null | grep -qE '^ +firefox$'" && echo "    apparmor: firefox profile (userns) loaded" || echo "    apparmor: firefox profile not reported by aa-status (needs sudo, or not loaded)"
-
-# ---------------------------------------------------------------- 2. default browser
-echo; echo "=== 2. default browser"
-DB=$(vms "xdg-settings get default-web-browser 2>/dev/null" | tail -1); MM=$(vms "xdg-mime query default x-scheme-handler/https 2>/dev/null" | tail -1)
-R[default_browser]=${DB:-none}; R[mime_https]=${MM:-none}
-[ "$DB" = firefox.desktop ] && verdict PASS "xdg-settings get default-web-browser = firefox.desktop" || verdict FAIL "xdg-settings get default-web-browser = '${DB:-}' (want firefox.desktop)"
-[ "$MM" = firefox.desktop ] && verdict PASS "xdg-mime query default x-scheme-handler/https = firefox.desktop" || verdict FAIL "xdg-mime query default x-scheme-handler/https = '${MM:-}' (want firefox.desktop)"
 
 # ---------------------------------------------------------------- window probe (KWin script + session-bus monitor)
 cat > build/browser-kwin.js <<'JS'
@@ -114,6 +93,63 @@ for line in lines:
         added.append(t)
 print(json.dumps({"added": len(added), "first_t": int(min(added)) if added else 0, "current": cur, "captions": captions[-3:]}))
 PY
+
+if [ $SELFTEST = 1 ]; then
+  # --selftest: the monitor + parser half without a VM. A private dbus-daemon session, the same `busctl --user monitor` line the
+  # VM run uses, five calls shaped like the KWin probe's (nobody answers them — the bus driver returns an error — but the monitor
+  # sees every method_call), then the parser with AFTER=1500: expect added=2, first_t=2000, current=1 (one added, one removed).
+  # The KWin half (callDBus from the script, windowAdded) is only proven by the VM run; its fallback is Firefox's bus name.
+  rm -f /tmp/browser-monitor.jsonl
+  if command -v dbus-run-session >/dev/null 2>&1 && command -v busctl >/dev/null 2>&1; then
+    src="dbus-daemon session + busctl monitor"
+    dbus-run-session -- bash -c 'busctl --user monitor --json=short --match "interface=in.patienceai.fabos.browsertest" > /tmp/browser-monitor.jsonl 2>/dev/null & m=$!; sleep 1
+      for e in "existing konsole|konsole|Fab_Terminal t=1000" "loaded windows=1 t=1001" "added firefox|firefox|Mozilla_Firefox t=2000" "added firefox|firefox|Fab_OS_Mozilla_Firefox t=2600" "removed firefox|firefox|Mozilla_Firefox t=2900"; do
+        busctl --user call org.freedesktop.DBus /org/freedesktop/DBus in.patienceai.fabos.browsertest event s "$e" >/dev/null 2>&1; done
+      sleep 1; kill $m 2>/dev/null; wait $m 2>/dev/null; true'
+    echo "    monitor lines: $(grep -c method_call /tmp/browser-monitor.jsonl 2>/dev/null || echo 0) method_call(s) captured"
+  else
+    src="synthetic monitor log (no dbus-run-session/busctl on this host)"
+    python3 - <<'PY2'
+import json
+rows = [("existing konsole|konsole|Fab_Terminal t=1000"), ("loaded windows=1 t=1001"), ("added firefox|firefox|Mozilla_Firefox t=2000"),
+        ("added firefox|firefox|Fab_OS_Mozilla_Firefox t=2600"), ("removed firefox|firefox|Mozilla_Firefox t=2900")]
+with open("/tmp/browser-monitor.jsonl", "w") as f:
+    for r in rows:
+        f.write(json.dumps({"type": "method_call", "member": "event", "interface": "in.patienceai.fabos.browsertest", "payload": {"type": "s", "data": [r]}}) + "\n")
+PY2
+  fi
+  j=$(python3 build/browser-ffwin.py 1500); echo "    parser ($src): $j"
+  if [ "$(echo "$j" | jget '["added"]')" = 2 ] && [ "$(echo "$j" | jget '["first_t"]')" = 2000 ] && [ "$(echo "$j" | jget '["current"]')" = 1 ]; then
+    verdict PASS "window probe monitor + parser: added=2 first_t=2000 current=1 ($src)"
+  else verdict FAIL "window probe monitor + parser: unexpected $j ($src)"; fi
+  echo "### browser-vm --selftest: $pass PASS / $fail FAIL — log build/browser-vm.out"; [ $fail -eq 0 ]; exit $?
+fi
+
+echo "### Fab OS browser VM test — $(date -u +%FT%TZ) — budget=${BUDGET}s keep=$KEEP skip_agent=$SKIP_AGENT"
+pgrep -f qemu-system-x86_64 >/dev/null || { echo "booting VM"; BOOTED=1; (scripts/boot-vm.sh --headless --mem "${VM_MEM:-2048}" --cpus 4 > build/boot-headless.out 2>&1 &); }
+for i in $(seq 1 100); do vm true 2>/dev/null && break; sleep 3; done; vm true || { echo "no ssh to the VM"; exit 3; }
+echo "### waiting for the graphical session (plasmashell + kwin_wayland)"
+for i in $(seq 1 120); do vm "pgrep -x plasmashell >/dev/null && pgrep -x kwin_wayland >/dev/null" && break; sleep 3; done
+vm "pgrep -x plasmashell >/dev/null" || { echo "no plasmashell in the VM (is the session logged in?)"; exit 3; }
+vm "nproc; head -1 /proc/meminfo; uptime -p; grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release"
+
+# ---------------------------------------------------------------- 1. package
+echo; echo "=== 1. package"
+FFV=$(vm "dpkg-query -W -f '\${Version}' firefox 2>/dev/null"); FFM=$(vm "dpkg-query -W -f '\${Maintainer}' firefox 2>/dev/null")
+R[firefox_version]=${FFV:-absent}; R[firefox_maintainer]=${FFM:-absent}
+if echo "$FFM" | grep -q '^Mozilla'; then verdict PASS "firefox $FFV is Mozilla's build ($FFM)"; else verdict FAIL "firefox is not Mozilla's build (version='${FFV:-absent}' maintainer='${FFM:-absent}')"; fi
+if vm "dpkg -s brave-browser >/dev/null 2>&1"; then verdict FAIL "brave-browser is still installed"; else verdict PASS "brave-browser absent"; fi
+if vm "test -f /usr/lib/firefox/distribution/policies.json && python3 -m json.tool /usr/lib/firefox/distribution/policies.json >/dev/null 2>&1 && grep -q '\"SkipTermsOfUse\": true' /usr/lib/firefox/distribution/policies.json"; then verdict PASS "policies.json shipped, valid, SkipTermsOfUse on ($(vm "grep -c '\"' /usr/lib/firefox/distribution/policies.json") quoted lines)"; else verdict FAIL "policies.json missing, invalid or without SkipTermsOfUse at /usr/lib/firefox/distribution/policies.json"; fi
+vm "test -f /etc/apparmor.d/firefox && aa-status 2>/dev/null | grep -qE '^ +firefox$'" && echo "    apparmor: firefox profile (userns) loaded" || echo "    apparmor: firefox profile not reported by aa-status (needs sudo, or not loaded)"
+
+# ---------------------------------------------------------------- 2. default browser
+echo; echo "=== 2. default browser"
+DB=$(vms "xdg-settings get default-web-browser 2>/dev/null" | tail -1); MM=$(vms "xdg-mime query default x-scheme-handler/https 2>/dev/null" | tail -1)
+R[default_browser]=${DB:-none}; R[mime_https]=${MM:-none}
+[ "$DB" = firefox.desktop ] && verdict PASS "xdg-settings get default-web-browser = firefox.desktop" || verdict FAIL "xdg-settings get default-web-browser = '${DB:-}' (want firefox.desktop)"
+[ "$MM" = firefox.desktop ] && verdict PASS "xdg-mime query default x-scheme-handler/https = firefox.desktop" || verdict FAIL "xdg-mime query default x-scheme-handler/https = '${MM:-}' (want firefox.desktop)"
+
+# ---------------------------------------------------------------- window probe: install in the VM (files written above)
 $SCP build/browser-kwin.js build/browser-ffwin.py fabos@127.0.0.1:/tmp/ >/dev/null
 vms "pkill -f 'busctl --user monitor' 2>/dev/null; rm -f /tmp/browser-monitor.jsonl; setsid -f sh -c 'busctl --user monitor --json=short --match \"interface=in.patienceai.fabos.browsertest\" > /tmp/browser-monitor.jsonl 2>&1'"
 sleep 1
@@ -192,6 +228,8 @@ sleep 3
 if [ "$WINPROBE" = kwin ]; then
   j=$(ffwin 0); W_CUR=$(echo "$j" | jget '["current"]')
   [ "${W_CUR:-0}" = 1 ] && verdict PASS "exactly one Firefox window after first launch (no first-run extras; policies.json)" || verdict FAIL "Firefox window count after first launch = ${W_CUR:-?} (want 1): $(echo "$j" | jget '["captions"]')"
+  caps=$(echo "$j" | jget '["captions"]')
+  if echo "$caps" | grep -qiE 'terms.of.use|privacy.notice|welcome|choose.what.to.import'; then verdict FAIL "a first-run screen is showing (caption): $caps"; else verdict PASS "no first-run caption (Terms of Use / Privacy Notice / Welcome): captions=$caps"; fi
 else verdict SKIP "window count not measurable without the KWin probe"; fi
 echo "    bus names: $(vms "busctl --user list --no-legend 2>/dev/null | grep -o 'org.mozilla.firefox[^ ]*' | head -2 | tr '\n' ' '")"
 vms "rm -f /tmp/browser-firefox.png; spectacle -b -n -f -o /tmp/browser-firefox.png >/dev/null 2>&1"

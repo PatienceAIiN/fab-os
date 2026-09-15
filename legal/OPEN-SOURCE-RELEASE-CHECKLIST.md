@@ -34,7 +34,7 @@ external step is needed). Evidence is noted so the check can be repeated.
 | B11 | Plymouth (GPL-2.0-or-later) unmodified, Fab OS theme only | PASS | `packages/fabos-branding/usr/share/plymouth/themes/fabos`; GPL-2.0 text now present |
 | B12 | PyQt6 (GPL-3) used by Apache-2.0 Fab OS apps | PASS | Fab OS apps are distributed as Apache-2.0 source; GPL-3 governs the combined distribution (`ATTRIBUTIONS.md`); Apache-2.0 is GPL-3-compatible |
 
-## C. Browser (Mozilla; Brave Software for the 1.0-3 / 1.0-4 images of 2026-09-15 only)
+## C. Browser (Mozilla Firefox; the 1.0-3 / 1.0-4 images of 2026-09-15 shipped a different browser, ADR-0016)
 
 | # | Item | Status | Evidence |
 |---|------|--------|----------|
@@ -42,7 +42,8 @@ external step is needed). Evidence is noted so the check can be repeated.
 | C2 | Firefox not renamed or re-branded by Fab OS | PASS | no `firefox` rule in `rebrand-catalogs`, `rebrand-binaries` or `rebrand-desktop-entries`; only the FabOS icon theme maps the launcher tile to a generic "public" (globe) glyph, not the Firefox logo; the only added file is Mozilla's documented `policies.json` with unlocked first-run defaults |
 | C3 | Statement that we ship Mozilla's unmodified package | PASS | stated in `ATTRIBUTIONS.md`, `LICENSING.md`, `NOTICE`, `README.md`, `legal/TRADEMARKS.md`, `legal/THIRD-PARTY.md`, `legal/UBUNTU-DERIVATIVE-COMPLIANCE.md` #13 |
 | C4 | MPL-2.0 text present | PASS | `THIRD_PARTY_LICENSES/MPL-2.0.txt` |
-| C5 | Brave repository, keyring, defaults file, setuid helper and trademark lines removed | PASS | the Containerfile fails the build if `brave-browser`/`brave-keyring`, `/opt/brave.com` or `/etc/default/brave-browser` remain; `tests/security/suid-baseline.txt` is Ubuntu's stock set again; the legal files carry the Mozilla lines; ADR-0016 is kept as the record of the two Brave images |
+| C5 | Previous browser's repository, keyring, defaults file, setuid helper and trademark lines removed | PASS | the Containerfile and `tests/branding-check.sh` fail if any of its packages, its apt source, keyring, defaults file or `/opt` tree remain; `tests/security/suid-baseline.txt` is Ubuntu's stock set again; the legal files carry the Mozilla lines; ADR-0016 is kept as the record of the two images that shipped it; a system installed from them is moved to Firefox by `fabos-browser-migrate.service` (ADR-0018), which also removes that browser's package set while leaving the user's data in place |
+| C6 | Firefox Terms of Use: `SkipTermsOfUse` policy shipped | PASS (representation) | `policies.json` sets `SkipTermsOfUse: true` so the Terms of Use / Privacy Notice screen never appears at first start. Mozilla's condition for that policy (policy-templates, fetched 2026-09-15): *"You represent that you accept and have the authority to accept the Terms of Use on behalf of all individuals to whom you provide access to this browser."* By shipping it, Patience AI makes that representation for Fab OS users (README "How updates work" says so; ADR-0018). Reverse by deleting the key if the owner prefers users to accept themselves (one click at first start) |
 
 ## D. Other third-party components
 

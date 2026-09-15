@@ -1,4 +1,8 @@
 #!/bin/sh
 set -e
-case "$1" in remove|deconfigure) systemctl unmask plymouth-quit.service plymouth-quit-wait.service 2>/dev/null || true ;; esac
+case "$1" in remove|deconfigure)
+  systemctl unmask plymouth-quit.service plymouth-quit-wait.service 2>/dev/null || true
+  systemctl disable fabos-browser-migrate.service 2>/dev/null || true
+  rm -f /var/lib/fabos/browser-migrate-pending
+;; esac
 exit 0

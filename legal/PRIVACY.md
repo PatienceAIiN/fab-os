@@ -45,9 +45,12 @@
 - Firefox is a third-party application shipped exactly as Mozilla publishes
   it. Fab OS adds only Mozilla's documented enterprise-policy file
   (`/usr/lib/firefox/distribution/policies.json`, ADR-0018), which turns off
-  Firefox telemetry and studies, the first-run tour, the default-browser
-  prompt and sponsored tiles and sets the home page; nothing is locked, and
-  Firefox's own settings govern everything else it sends.
+  Firefox telemetry and studies, the Terms of Use / Privacy Notice startup
+  screen (`SkipTermsOfUse` — Patience AI accepts Mozilla's Firefox Terms of Use
+  on behalf of Fab OS users; legal/OPEN-SOURCE-RELEASE-CHECKLIST.md C6; Mozilla's
+  Privacy Notice still applies to what Firefox itself does), the first-run
+  tour, the default-browser prompt and sponsored tiles and sets the home page;
+  nothing is locked, and Firefox's own settings govern everything else it sends.
 - Applicable law: Digital Personal Data Protection Act 2023 (India) and GDPR
   where users are in the EU. Because nothing is collected, no consent flow is
   required for the OS itself.

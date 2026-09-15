@@ -129,16 +129,20 @@ in root-only files under `/etc/NetworkManager/system-connections/`; the agent's 
 is Mozilla's unmodified official build from Mozilla's own signed apt repository (`packages.mozilla.org`, signing key
 fingerprint-checked at build time, `Signed-By` scoped to that source only, never in `/etc/apt/trusted.gpg.d/`, origin
 pinned above Ubuntu's snap-shim `firefox`). Fab OS adds one file, `/usr/lib/firefox/distribution/policies.json` —
-Mozilla's documented enterprise-policy mechanism — which turns off Firefox telemetry and studies, the first-run tour,
-the default-browser prompt, stock bookmarks and sponsored tiles and sets the home page; nothing in it is locked, and it
-cannot weaken Firefox's own sandbox or its update path (updates come through apt from Mozilla). The build fails if any
-source other than Ubuntu's and Mozilla's appears or anything of the Brave package set (ADR-0016, one release) remains.
+Mozilla's documented enterprise-policy mechanism — which turns off Firefox telemetry and studies, the Terms of Use /
+Privacy Notice startup screen (`SkipTermsOfUse`), the first-run tour, the default-browser prompt, stock bookmarks and
+sponsored tiles and sets the home page; nothing in it is locked, and it cannot weaken Firefox's own sandbox or its update
+path (updates come through apt from Mozilla). The build fails if any source other than Ubuntu's and Mozilla's appears or
+anything of the previous browser's package set (ADR-0016, one release) remains. A system installed from those images is
+moved to Firefox by `fabos-browser-migrate.service`, a root one-shot apt job like `fabos-firstboot` (no listener, no
+socket, `MemoryHigh` set, gated on a flag the `fabos-desktop` postinst creates and the job removes only once Mozilla's
+Firefox is installed; ADR-0018).
 
 Setuid, setgid and file capabilities: the image carries **Ubuntu's stock set and nothing else**: Firefox has no setuid
 helper — its content sandbox uses unprivileged user namespaces, which Ubuntu's `/etc/apparmor.d/firefox` profile
 (`flags=(unconfined)` with `userns`, shipped by the `apparmor` package for `/usr/lib/firefox/firefox{,-bin}`) grants
-under `kernel.apparmor_restrict_unprivileged_userns=1`. Brave's `chrome-sandbox`, the one non-stock setuid file of the
-1.0-3 / 1.0-4 images (ADR-0016), left with Brave (ADR-0018). No Fab OS binary is setuid or setgid or carries a capability;
+under `kernel.apparmor_restrict_unprivileged_userns=1`. The one non-stock setuid file of the 1.0-3 / 1.0-4 images (the
+previous browser's sandbox helper, ADR-0016) is gone (ADR-0018). No Fab OS binary is setuid or setgid or carries a capability;
 every daemon Fab OS adds binds 127.0.0.1 or a unix socket, runs as the user and carries a `MemoryHigh` limit.
 `tests/branding-check.sh` and `tests/security-check.sh` compare the full `find / -xdev -perm -4000`, `-perm -2000` and
 `getcap -r /` lists of the built image against explicit allowlists / the saved baselines in `tests/security/` (any new
