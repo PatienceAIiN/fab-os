@@ -1180,3 +1180,43 @@ built from this tree. What was verified on 2026-09-15, and what the next run mus
   launcher list, `tests/layout-js-dry-run.js`, the agent daemon's `open_app` description / system prompt / `_app_name`
   table, and the four `tests/agent-test.py` assertions that expect "Brave". Fab AI Controls' `APP_NAMES` and its "Try
   asking" chip were switched here. The 1.0-3 / 1.0-4 records above and `legal/source-offer/*` keep their Brave lines as history.
+
+### Window shadow track — one shadow source, seen in a real KWin (ADR-0019 amendment + second pass, 2026-09-16)
+
+The owner, on the 1.0-5 desktop: "there is a shadow of a sharp edge like a rectangle; before the curve a visible sharp edge in
+each app; remove the side edges." Sources changed (`kwinrc [Round-Corners]`, the Aurorae frame, tests, docs); **no number above
+moved** — no image has been built from this tree. `PKG_REVISION` is bumped to **6** here (fabos-desktop content changed); the
+image-side "all 10 fabos packages at 1.0-5 in the manifest" check moves to 1.0-6 when that image exists. What was measured on
+2026-09-16, every number from a run that day (logs under `build/`, not committed):
+
+- **What ships.** One shadow: the KDE-Rounded-Corners effect draws it (`UseNativeDecorationShadows=false`, `ShadowSize=40`,
+  `InactiveShadowSize=36`, black 128/64); the Aurorae frame is flat (no gradient / mask / filter / shadow path — `grep` counts 0
+  for `linearGradient`, `radialGradient`, `<mask`, `<filter`, `url(#`, `stop-color`; 16 carrier rects at `fill-opacity:0.004`;
+  padding 32; borders 0 with `BorderSize=None`). `brand/gen/aurorae_theme.py --out` regenerated and `diff -r` against the
+  committed `FabOS` / `FabOSLight`: identical.
+- **`tests/corners-live-test.sh` — the shadow as KWin draws it, inside `localhost/fabos:vm`, no VM: 8 PASS / 0 FAIL.**
+  `kwin_wayland --virtual` (kwin-wayland 4:6.6.6-0ubuntu0.1, fabos-rounded-corners 0.10.0-0fabos1, kwin-style-aurorae
+  6.6.6-0ubuntu0.1) on the host's render node: `Compositing Type: OpenGL` (AMD Radeon renoir, Mesa 26.0.8-1ubuntu0.3),
+  `shapecorners loaded=1 supported=true`, KWin reads `UseNativeDecorationShadows=false ShadowSize=40 InactiveShadowSize=36
+  Size=14 BorderSize=None`. Probe window 600×400 + 36 px title bar at (340, 182); `spectacle -b -n -f -o`; `tests/corners-sample.py`
+  against a reference shot of the bare backdrop, Fab Dark and Fab Light, active and inactive — all four PASS with the same
+  numbers in both schemes: **shadow present** 2 px outside top / bottom dev **75 / 124** active, **28 / 55** inactive; corners
+  round (`d(corner, inside)` 205–333 vs `d(corner, outside)` 5–21); diagonals weaker than the edge at every k, corner ratio
+  0.17–0.35 at k = 1, 2, **background from 8 px on (max dev 0 top / 3 bottom, limit 10)**, max step 10, no rise; along each edge
+  from the corner past the arc start max step 7, max drop 0 (no step "before the curve"); 2..6 px outside each edge midpoint
+  steps ≤ 9, monotone. `build/corners-live/{dark,light}-corners.png` looked at: one soft shadow around every arc, no ledge.
+- **Negative control (`--control`): 4 PASS.** Same session with the carrier at alpha 0: **no shadow at all** (dev 0 / 0 active
+  and inactive) — the shader's `if (tex.a == 0.0) return tex;` observed. The carrier is load-bearing; it is asserted by the
+  render test and the branding checks.
+- **Why 40, not the first draft's 45 (`--set Round-Corners/ShadowSize=45`, Fab Light): 3 PASS / 1 FAIL.** Active bottom corners
+  read dev **13 / 11** at k = 8..12 on the diagonal (a faint square smudge; the brief said 8 px out must equal the background) and
+  the sampler fails it; inactive (36) passes. With 40: 3.
+- **`tests/decoration-render-test.sh` (KSvg in the image, Fab Dark + Fab Light, active + inactive): PASS.** 40 704 padding-ring
+  pixels and 42 notch pixels all alpha 0.0039 (min = max); title bar 1.0000; client 0.0000; 2 px outside the arc on the diagonal
+  0.0039, 2 px inside 1.0000. `build/decoration-preview-{dark,light}.png` looked at: flat rounded bar, no halo.
+- **`python3 tests/corners-sample.py --selftest`: SELFTEST PASS** (Size-40 model passes; the 1.0-5 square-cornered band and a
+  square window fail).
+- **`tests/branding-check.sh`: 211 PASS / 0 FAIL (2026-09-16, against `localhost/fabos:vm`).** Three widened frame labels renamed to say what they accept; this track's
+  own appended kwinrc check follows 40 + `*ShadowUseCustom=true`; three checks appended (live gate, 8 px rule, records).
+- **Not run here:** `tests/corners-vm.sh` in the booted VM (QEMU is the orchestrator's step; every ssh/scp call in it is under
+  `timeout 60`) — real wallpaper, Fab Editor, installed 1.0-6 packages. Expect the same sampler verdicts as the live test.

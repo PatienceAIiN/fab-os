@@ -32,7 +32,7 @@ element that lies under the client is never shown (KWin renders only the border 
 
 ONE shadow source (2026-09-16, ADR-0019 amendment; ISO 1.0-5 showed a rectangular shadow with a hard step "before the curve"):
   The shadow of every window is drawn by the KDE-Rounded-Corners KWin effect alone (kwinrc [Round-Corners]
-  UseNativeDecorationShadows=false, ShadowSize=45, InactiveShadowSize=36). This frame paints NO shadow: no gradients, no
+  UseNativeDecorationShadows=false, ShadowSize=40, InactiveShadowSize=36). This frame paints NO shadow: no gradients, no
   masks, no shadow paths; the frame is flat. Until 1.0-5 the frame carried its own 28 px gradient shadow, built for a square
   window (L-shaped corner paths that faded to 0.06 at the box corner while the straight edges stayed at 0.37, and square
   bottom corners), and the effect kept it (`UseNativeDecorationShadows=true`: its `getNativeShadow` only re-interpolates the
@@ -55,9 +55,11 @@ ONE shadow source (2026-09-16, ADR-0019 amendment; ISO 1.0-5 showed a rectangula
   Padding 32 (was 28): the effect clamps its ShadowSize to the length of (PaddingLeft, PaddingTop) (Shader.cpp:
   `max_shadow_size = frameOffset.length()`), and the visible reach outside a straight edge is
   ShadowSize - R - sqrt(ShadowSize) at the top and the sides (the shadow centre sits sqrt(ShadowSize) inside) and
-  ShadowSize - R at the bottom (`getCustomShadow`). 45 needs a clamp of >= 45 -> padding 32 (45.25); it reaches 24 px at
-  the top/sides and 31 px at the bottom (0.29 / 0.42 alpha at the edge with ActiveShadowAlpha=128); inactive 36 reaches
-  16 / 22 px. The literal values 24 / 16 that 1.0-5 wrote for the never-used custom shadow would give 5 px / none.
+  ShadowSize - R at the bottom (`getCustomShadow`). Padding 32 gives a clamp of 45.25, room for any size up to 45; the shipped
+  40 reaches 20 px at the top/sides and 26 px at the bottom (0.24 / 0.39 alpha at the edge with ActiveShadowAlpha=128) and is
+  the plain background again 8 px out on every corner diagonal; inactive 36 reaches 16 / 22 px. The literal values 24 / 16
+  that 1.0-5 wrote for the never-used custom shadow would give 5 px / none. Verified as KWin draws it: tests/corners-live-test.sh
+  (KWin's virtual backend inside the image) and, on the booted VM, tests/corners-vm.sh.
 
 Radius 14, not 20 (2026-09-15, ADR-0019): the four corners of every window are cut by the KDE-Rounded-Corners KWin
   effect (kwinrc [Round-Corners] Size=14, circular arcs: UseSquircleShape=false). The effect masks the whole frame

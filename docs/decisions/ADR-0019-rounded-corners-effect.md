@@ -205,9 +205,10 @@ real corner geometry: the effect.
   `ShadowSize − r − √ShadowSize` at the top/sides and `ShadowSize − r` at the bottom. `Shader.cpp`: `const qreal
   max_shadow_size = frameOffset.length(); const auto shadowSize = std::min(window.currentConfig.shadowSize * scale,
   max_shadow_size);` — ShadowSize is clamped to the length of (PaddingLeft, PaddingTop).
-  Simulated with these formulas (host python): Size 45 → reach 24.3 px top/sides, 31 px bottom, alpha at the edge 0.291 /
-  0.417 (alpha 128); Size 36 at alpha 64 → 16 / 22 px, 0.098 / 0.179; the literal **24 / 16 of 1.0-5 → 5.1 px / none** (top
-  reach −2 px for 16). Hence padding 32 (`32·√2 = 45.25 ≥ 45`) and Sizes 45 / 36.
+  Simulated with these formulas (host python): Size 40 → reach 19.7 px top/sides, 26 px bottom, alpha at the edge 0.24 /
+  0.39 (alpha 128); Size 45 → 24.3 / 31 px, 0.291 / 0.417; Size 36 at alpha 64 → 16 / 22 px, 0.098 / 0.179; the literal
+  **24 / 16 of 1.0-5 → 5.1 px / none** (top reach −2 px for 16). Hence padding 32 (`32·√2 = 45.25`: room for any size up to
+  45) and Sizes **40** / 36 — 40, not the first draft's 45, because of the brief's 8 px corner rule (second pass below).
 - **Colour** (`src/WindowConfig.cpp` `resolveColor()`): `usePalette ? palette.color(group, role) : customColor`, then
   `setAlpha(alpha)` — the `*UseCustom` keys only drive the KCM's radio buttons. Measured in the image through the KDE platform
   theme (PyQt6, `QT_QPA_PLATFORMTHEME=kde`, kdeglobals `ColorScheme=`): `QPalette::Shadow` (role 11) = `#738cce` on Fab Dark,
@@ -237,10 +238,12 @@ real corner geometry: the effect.
 
 ### Decision
 
-1. `/etc/xdg/kwinrc [Round-Corners]`: `UseNativeDecorationShadows=false ShadowSize=45 InactiveShadowSize=36
+1. `/etc/xdg/kwinrc [Round-Corners]`: `UseNativeDecorationShadows=false ShadowSize=40 InactiveShadowSize=36
    ShadowColor=0,0,0 InactiveShadowColor=0,0,0 ActiveShadowAlpha=128 InactiveShadowAlpha=64 ActiveShadowUsePalette=false
-   InactiveShadowUsePalette=false ActiveShadowUseCustom=false InactiveShadowUseCustom=false ActiveShadowPalette=11
-   InactiveShadowPalette=11` (the last six are the kcfg defaults, written out so the KCM and the file agree). Everything else
+   InactiveShadowUsePalette=false ActiveShadowUseCustom=true InactiveShadowUseCustom=true ActiveShadowPalette=11
+   InactiveShadowPalette=11` (`*UsePalette` / `*Palette` are the kcfg defaults; `*UseCustom=true` is read by the KCM only —
+   `KCM.ui` pairs `kcfg_ActiveShadowUsePalette` and `kcfg_ActiveShadowUseCustom` as one radio group — so its "custom colour"
+   radio shows the state that is in force instead of neither radio checked). Everything else
    in the group is unchanged (radius 14, circular, 1 px outline, square when maximised / tiled / full-screen).
 2. The Aurorae frame paints **no shadow**: no gradients, masks, filters or shadow paths; padding 32 on all sides filled, together
    with the two top notches, by one uniform alpha-1/255 carrier (`fill-opacity:0.004`), which is what lets the effect paint its
@@ -255,12 +258,57 @@ real corner geometry: the effect.
 
 ### Consequences
 
-- Every normal window and dialog has one soft black shadow that follows all four radius-14 corners: 24 px reach at the top and
-  sides, 31 px at the bottom (active); 16 / 22 px (inactive). The 1 px outline is unchanged.
+- Every normal window and dialog has one soft black shadow that follows all four radius-14 corners: 20 px reach at the top and
+  sides, 26 px at the bottom (active); 16 / 22 px (inactive); from 8 px out on every corner diagonal the backdrop is untouched.
+  The 1 px outline is unchanged.
 - Without OpenGL compositing (the effect not loaded) windows have **no shadow** at all now (before: the frame's rectangular
   one). Accepted: KWin's QPainter fallback is not a supported Fab OS configuration.
 - `expandedGeometry` grows by 4 px per side (padding 28 → 32): a slightly larger offscreen texture per window; negligible.
-- The effect's KCM will show "Use Custom Shadows" selected with sizes 45 / 36; a user who re-enables native shadows gets no
+- The effect's KCM will show "Use Custom Shadows" selected with sizes 40 / 36; a user who re-enables native shadows gets no
   shadow (the frame is flat) — the KCM state is honest about that.
-- Not verified here: the booted-VM run of `tests/corners-vm.sh` (the orchestrator's VM step) — the numbers above are from the
-  shader formulas, the KSvg render in the image and the sampler's synthetic self-test, not from a live KWin screenshot.
+- Observed, not inferred (second pass below): the whole chain — carrier → KWin's decoration-shadow texture → the effect's
+  offscreen texture → `tex.a != 0` → `getCustomShadow` — was watched in a real composited kwin_wayland 6.6.6 inside the image
+  (`tests/corners-live-test.sh`). Still pending: the booted-VM run of `tests/corners-vm.sh` (the orchestrator's VM step, on
+  the rebuilt image) — same sampler, real wallpaper, Fab Editor instead of the probe window.
+
+### Second pass (2026-09-16, after review)
+
+The review's one major point: the visible outcome rested on a chain nobody had watched in a composited KWin — if KWin
+flattened a 1/255-alpha decoration shadow anywhere, every window would ship with no shadow at all. Resolved by observing it:
+
+- **`tests/corners-live-test.sh`** (new; harness `tests/corners-live-harness/`): inside `localhost/fabos:vm` (fabos-rounded-corners
+  0.10.0-0fabos1, kwin-wayland 4:6.6.6-0ubuntu0.1, kwin-style-aurorae 6.6.6-0ubuntu0.1) a real `kwin_wayland --virtual` composites
+  with OpenGL through GBM on the host's DRM render node (`podman --device /dev/dri/renderD128`; the container copies
+  `/usr/bin/kwin_wayland` to drop its file capability, spectacle is let through with the screenshot plugin's own
+  `KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1` knob). THIS checkout's kwinrc and Aurorae theme are placed in the session's `~/.config`
+  and `~/.local/share/aurorae/themes` (KConfig cascade / Aurorae v2 lookup order), one colour scheme per run (`kdeglobals` with
+  the scheme's `[Colors:*]` groups). A frameless maximised light-gradient window is the backdrop, a 600×400 magenta client gets
+  the Fab OS frame (active), a small window then steals focus (inactive); `spectacle -b -n -f -o` after each step, and
+  `tests/corners-sample.py` — the same sampler `tests/corners-vm.sh` runs in the VM — compares each shot with the bare backdrop.
+  Run 2026-09-16 (`build/corners-live.out`): **8 PASS / 0 FAIL** — `Compositing Type: OpenGL` (AMD Radeon renoir, Mesa 26.0.8),
+  `shapecorners loaded=1 supported=true`, KWin reads `UseNativeDecorationShadows=false ShadowSize=40 InactiveShadowSize=36 Size=14`,
+  probe frame 600×436 at (340, 182). Shadow present: 2 px outside the top / bottom edge the backdrop darkens by **75 / 124** RGB
+  units active, **28 / 55** inactive (identical in Fab Dark and Fab Light — the frame's colour does not matter to the effect's
+  shadow). Corners: `d(corner, inside)` 205–333, `d(corner, outside)` 5–21 (round, not square). Diagonals: weaker than the edge at
+  every k, corner ratio 0.17–0.35 at k = 1, 2, **background from k = 8 on (max dev 0 at the top corners, 3 at the bottom ones)**,
+  max step 10, max rise 0. Along the edges from each corner past the arc start: max step ≤ 7, max drop 0 (no step "before the
+  curve"). 2..6 px outside each edge midpoint: steps ≤ 9, monotone. `build/corners-live/{dark,light}-corners.png` (4× crops of
+  all four corners, active / inactive / reference) were looked at: one soft shadow hugging every arc, no ledge.
+- **Negative control** (`--control`: the carrier's `fill-opacity:0.004` set to 0 in the theme under test, nothing else changed):
+  same session, same effect loaded, **no shadow at all** — 2 px outside top / bottom dev **0 / 0**, active and inactive
+  (`build/corners-live-control.out`, 4 PASS). That is the shader's `if (tex.a == 0.0) return tex;` observed: the carrier is what
+  gives the effect pixels to paint into, and a decoration with no padding alpha ships no shadow.
+- **8 px corner rule, ShadowSize 45 → 40** (review minor: the brief said 8 px along each corner diagonal must equal the background;
+  the sampler had been relaxed to 12 px). Measured with `--set Round-Corners/ShadowSize=45` on Fab Light: the biased bottom
+  corners read dev **13 / 11** at k = 8..12 (the model's alpha 0.028 — a faint square smudge), and the sampler now fails it;
+  with 40 the same points read 3 (model 0.0066; top corners 0.0000). `tests/corners-sample.py`: `BG_FROM = 8`, `dev ≤ 10` (the
+  screenshot noise floor) for every k = 8..12; the "inside" reference pixel of the top corners moved to (r, 3) — inside the arc
+  but above the window icon, which sits exactly at (r, r) and was read on the first real render. Self-test models Size 40.
+- **KCM radios** (review minor): `ActiveShadowUseCustom=true`, `InactiveShadowUseCustom=true` (KCM-only keys; rendering unchanged).
+- **`tests/branding-check.sh`** (review minor: three widened labels no longer said what they assert): the three labels now name
+  both accepted alternatives; nothing removed. The track's own appended kwinrc check follows the shipped 40 and the UseCustom keys
+  (it was written in this unpublished branch, so amending it breaks no published baseline); three checks appended (live gate,
+  8 px rule, records).
+- **Packaging**: `brand/brand.conf PKG_REVISION` 5 → 6 (fabos-desktop content changed: kwinrc, FabOSrc/FabOSLightrc,
+  decoration.svg); the image-side "all 10 fabos packages at 1.0-5 in the manifest" check moves to 1.0-6 when that image exists
+  (precedent: round 4b). `docs/QA.md` has this track's entry.

@@ -48,8 +48,13 @@ re-interpolates the 2 px next to the window box (`getNativeShadow`). Now the sha
   frame offset by the padding into the decoration (`paint()`), so the notch shows what the SVG draws: with the carrier there,
   the effect's shadow is continuous across the notch and the box corner instead of leaving a lighter square.
 - **Padding 32** (was 28): the effect clamps `ShadowSize` to `|(PaddingLeft, PaddingTop)|` (`Shader.cpp`:
-  `max_shadow_size = frameOffset.length()`), so a 45 px falloff needs `32·√2 = 45.25`. The margins of the rendered frame are
-  L 46 / T 68 / R 46 / B 32.
+  `max_shadow_size = frameOffset.length()`), so `32·√2 = 45.25` leaves room for any falloff up to 45 (the shipped 40 and the
+  first draft's 45 alike). The margins of the rendered frame are L 46 / T 68 / R 46 / B 32.
+- **Seen working in a real KWin (2026-09-16, `tests/corners-live-test.sh`):** kwin_wayland 6.6.6 with its virtual backend on
+  OpenGL inside the image, this theme + kwinrc, a probe window in Fab Dark and Fab Light — the effect's shadow appears through the
+  carrier (2 px outside the top / bottom edge the backdrop darkens by 75 / 124 RGB units active, 28 / 55 inactive) and follows
+  all four arcs; with the carrier set to alpha 0 (`--control`) the same session draws no shadow at all, which is the shader's
+  `tex.a == 0.0` rule observed, not inferred.
 - No `mask-*` elements: in Aurorae they only feed KWin's blur region (`setBlurRegion`), never the window shape, and blur
   behind an opaque title bar is wasted GPU work.
 - No opaque overlays over the client area to fake a radius; the client's own top edge sits under the title bar.
@@ -84,29 +89,37 @@ from the effect's `src/kcm/options.kcfg` — 39 keys written, all checked agains
 - **Shadow — the only one (2026-09-16):** `UseNativeDecorationShadows=false`; the effect's `getCustomShadow()` draws a soft
   shadow whose falloff circles are centred on the corner arcs (top corners `r + √Size` inside on both axes, bottom corners `r`
   inside: a downward bias, like a real drop shadow) so it follows all four radius-14 corners and never has a square corner.
-  `ShadowSize=45` / `InactiveShadowSize=36` are **falloff radii, not reaches**: the visible reach outside a straight edge is
-  `Size − 14 − √Size` at the top and the sides and `Size − 14` at the bottom → **24 px / 31 px** active, **16 px / 22 px**
-  inactive, with alpha at the edge 0.29 / 0.42 (active) and 0.10 / 0.18 (inactive) at `ActiveShadowAlpha=128`,
-  `InactiveShadowAlpha=64` (the shape is `parametricBlend(1 − d/Size)`). The literal 24 / 16 that 1.0-5 carried for the then
-  unused custom shadow would reach 5 px / nothing. Colour **black** (`ShadowColor=0,0,0`, `InactiveShadowColor=0,0,0`,
-  `*ShadowUsePalette=false`): the palette option was measured through the KDE platform theme in the image and
-  `QPalette::Shadow` (role 11, the kcfg default) resolves to `#738cce` on Fab Dark and `#9db5ef` on Fab Light — KColorScheme
-  tints it with the accent, which would be a blue glow, not a shadow. The frame's flat carrier (previous section) is what gives
-  the effect the room and the alpha it needs; `tests/corners-vm.sh` measures the result in the booted VM.
+  `ShadowSize=40` / `InactiveShadowSize=36` are **falloff radii, not reaches**: the visible reach outside a straight edge is
+  `Size − 14 − √Size` at the top and the sides and `Size − 14` at the bottom → **20 px / 26 px** active, **16 px / 22 px**
+  inactive, with alpha at the edge 0.24 / 0.39 (active) and 0.10 / 0.18 (inactive) at `ActiveShadowAlpha=128`,
+  `InactiveShadowAlpha=64` (the shape is `parametricBlend(1 − d/Size)`). **Corner rule:** 8 px out on every corner diagonal the
+  shadow must be the plain background (the brief's "no shadow rectangle"); 40 gives alpha 0.0000 there at the top corners and
+  0.0066 at the biased bottom ones (the first draft's 45 left 0.028 — a faint square smudge, 13/255 deep on a light backdrop in
+  the live render — so it was lowered). The literal 24 / 16 that 1.0-5 carried for the then unused custom shadow would reach
+  5 px / nothing. Colour **black** (`ShadowColor=0,0,0`, `InactiveShadowColor=0,0,0`, `*ShadowUsePalette=false`,
+  `*ShadowUseCustom=true` — the latter is read by the KCM only, so its radio button shows the state in force): the palette option
+  was measured through the KDE platform theme in the image and `QPalette::Shadow` (role 11, the kcfg default) resolves to
+  `#738cce` on Fab Dark and `#9db5ef` on Fab Light — KColorScheme tints it with the accent, which would be a blue glow, not a
+  shadow. The frame's flat carrier (previous section) is what gives the effect the room and the alpha it needs;
+  `tests/corners-live-test.sh` measures the result on a real KWin inside the image, `tests/corners-vm.sh` on the booted VM.
 - **Motion:** `AnimationDuration=160` (the effect's own active/inactive fade; it does not read `AnimationDurationFactor`).
 - **Requirement:** OpenGL compositing (`Effect::supported()`); under KWin's QPainter fallback the frame's own radius-14
   top corners remain and there is no shadow. The effect also writes `breezerc [Common] OutlineIntensity=OutlineOff,
   RoundedCorners=false, OutlineEnabled=false` while loaded (upstream behaviour for Breeze users; Fab OS uses Aurorae, so it is
   inert here).
 - **Tests:** `tests/branding-check.sh` (plugin, KCM, shaders, package, kwinrc keys incl. the shadow block, flat frame, padding
-  32, no build tools left); `tests/decoration-render-test.sh` (the frame through KSvg, dark + light); `tests/corners-vm.sh`
-  (in the VM over SSH, every call under `timeout 60`: `loadedEffects` lists the effect, `UseNativeDecorationShadows=false`,
-  the frame is flat; Fab Editor placed at a known geometry, `spectacle -b -n -f -o`, and `tests/corners-sample.py` compares
-  the shot with a reference shot of the bare desktop in Fab Dark and Fab Light: the four corner pixels vs 14 px inside, 12 px
-  along each corner diagonal — weaker than beside the straight edge, clearly so at the corner, soft, back to the background —
-  a 2 px-out walk from each corner past the arc start with no step, 2..6 px outside each edge midpoint as a soft gradient, and
-  the shadow present at all; `--selftest` runs the same rules on synthetic screenshots: round + soft passes, the 1.0-5
-  rectangle and a square window fail).
+  32, no build tools left); `tests/decoration-render-test.sh` (the frame through KSvg, dark + light); `tests/corners-live-test.sh`
+  (a real kwin_wayland 6.6 with the virtual backend on OpenGL inside the image — needs the host's `/dev/dri/renderD*` —, this
+  kwinrc + theme, a probe window, `spectacle`, then the sampler below on active and inactive in Fab Dark and Fab Light;
+  `--control` proves the carrier: with it at alpha 0 there is no shadow); `tests/corners-vm.sh` (in the VM over SSH, every call
+  under `timeout 60`: `loadedEffects` lists the effect, `UseNativeDecorationShadows=false`, the frame is flat; Fab Editor placed
+  at a known geometry, `spectacle -b -n -f -o`, and `tests/corners-sample.py` compares the shot with a reference shot of the bare
+  desktop in Fab Dark and Fab Light: the four corner pixels vs the inside (14 px in at the bottom; at the top (14, 3) — inside the
+  arc, above the icon and the buttons), 12 px along each corner diagonal — weaker than beside the straight edge, clearly so at
+  the corner, soft, and **the plain background from 8 px on** (dev ≤ 10, the screenshot noise floor) — a 2 px-out walk from each
+  corner past the arc start with no step, 2..6 px outside each edge midpoint as a soft gradient, and the shadow present at all;
+  `--selftest` runs the same rules on synthetic screenshots: round + soft (Size 40) passes, the 1.0-5 rectangle and a square
+  window fail).
 
 ## Voice states (fabos-voice)
 

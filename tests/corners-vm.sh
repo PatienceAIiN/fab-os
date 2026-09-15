@@ -9,12 +9,16 @@
 #      screen, and tests/corners-sample.py compares the two screenshots (every value is printed):
 #        corners   the four frame-corner pixels vs 14 px inside and the diagonal outside neighbour (a square corner == inside);
 #        diagonal  12 px outward from each box corner: weaker than beside the straight edge, clearly so at the corner (a
-#                  square-cornered shadow is equal there), soft, and back to the background — no shadow rectangle;
+#                  square-cornered shadow is equal there), soft, and the plain background from 8 px on (the brief's rule;
+#                  dev <= 10 = screenshot noise) — no shadow rectangle;
 #        along     2 px outside the top/bottom/side edges from each corner past the arc start: one smooth ramp, no step
 #                  "before the curve";
 #        edges     2..6 px outside each edge midpoint: a soft gradient, no hard step;  and the shadow exists at all.
 #      `python3 tests/corners-sample.py --selftest` shows the rules on synthetic screenshots (round+soft passes, the 1.0-5
 #      rectangle and a square window fail).
+#   The same sampler runs without a VM in tests/corners-live-test.sh (a real kwin_wayland --virtual inside the image on the
+#   host's render node), which is the gate for the shadow chain itself; this script adds the real wallpaper, Fab Editor and
+#   the installed packages of the booted image.
 #   Every ssh/scp call is wrapped in `timeout 60` (SSH_TIMEOUT to change): a dying SSH child can never block the script — the
 #   round-5 run hung in a bare wait. Overall the script also bounds its own boot wait (100 x 3 s) and session wait (120 x 3 s).
 #   tests/corners-vm.sh [--keep] [--radius N]      Output: build/corners-vm.out, build/corners-<scheme>.png, build/corners-<scheme>-ref.png

@@ -12,15 +12,22 @@ before the curve a visible sharp edge").
 dev(p) below is the RGB distance between the shot and the reference at pixel p: 0 = the background shows through untouched,
 larger = more shadow (or window). Checks, each printed with its values:
   1. corners (per corner): the frame's corner pixel is NOT the window colour (distance > 8; a square corner gives exactly the
-     window colour) and is closer to its diagonal outside neighbour than to the pixel `radius` px inside; for the top corners
-     the inside pixel equals the title bar's mid-top pixel (the geometry landed). Threshold 8 is a noise floor, not a contrast
-     requirement (next to a Fab Dark window the shadowed dark wallpaper can be within ~30 of the window colour).
-  2. diagonal (per corner, k = 1..12 px outward from the box corner along the diagonal; the first 8 are the ones the owner's
-     rectangle showed up in): a ROUND shadow is weaker on the diagonal than beside the straight edge at the same k (the diagonal
-     point is farther from the arc), so dev(diag_k) <= dev(edge_k) + 8 for every k and, right at the corner (k = 1, 2), clearly so:
-     dev(diag_k) <= 0.8 * dev(edge_k) + 4 — a square-cornered radial shadow gives the SAME value on both, which is the rectangle
-     test proper; it reaches the background: dev(diag_12) <= 10 (the effect's bottom shadow is biased downwards and its last few
-     percent die out between 8 and 12 px); and it is soft: adjacent steps <= 12 and never rising by more than 6.
+     window colour) and is closer to its diagonal outside neighbour than to the "inside" pixel; inside is `radius` px in on both
+     axes for the bottom corners (client area) and (radius, 3) for the top corners — inside the arc (distance 11 from its centre,
+     within the title bar's flat colour) but ABOVE the window icon / the buttons, which start 4 px below the top edge and sit
+     exactly at (radius, radius) (on the first real KWin render the icon's orange was read there and the check misfired); for the
+     top corners the inside pixel must equal the title bar's mid-top pixel (the geometry landed). Threshold 8 is a noise floor, not
+     a contrast requirement (next to a Fab Dark window the shadowed dark wallpaper can be within ~30 of the window colour).
+  2. diagonal (per corner, k = 1..12 px outward from the box corner along the diagonal): a ROUND shadow is weaker on the diagonal
+     than beside the straight edge at the same k (the diagonal point is farther from the arc), so dev(diag_k) <= dev(edge_k) + 8
+     for every k and, right at the corner (k = 1, 2), clearly so: dev(diag_k) <= 0.8 * dev(edge_k) + 4 — a square-cornered radial
+     shadow gives the SAME value on both, which is the rectangle test proper; from 8 px on it IS the background (the brief's rule:
+     "8 pixels along the diagonal outside the radius must equal the background — no shadow rectangle"): dev(diag_k) <= 10 for
+     every k = 8..12, where 10 is the noise floor of a screenshot pair, not a shadow allowance. What this admits is fixed by
+     geometry: a point k px out on the diagonal is sqrt(2)*(k + r + s) from the shadow's centre against k + r + s for the point
+     beside the straight edge (s = the effect's inset), so the diagonal always dies first; with kwinrc ShadowSize=40 the effect's
+     model (below) gives alpha 0.0000 at k = 8 for the top corners and 0.0066 (dev 2.4 on a light backdrop) for the biased bottom
+     ones — the 1.0-5 frame's rectangular shadow measures ~70 there. And it is soft: adjacent steps <= 12, never rising by more than 6.
   2b. "before the curve" (per top corner along the top edge and down each side, per bottom corner along the bottom edge, 2 px
      outside, t = 0..radius+8 from the box corner inward): one smooth ramp — adjacent steps <= 12 and no drop > 6 while moving
      away from the corner. The old frame's shadow stopped where the arc began, which showed as a step here.
@@ -28,13 +35,14 @@ larger = more shadow (or window). Checks, each printed with its values:
      A hard step (the frame's old 0.37 band starting right at the edge, or a border line) shows as a jump.
   4. shadow present: at 2 px outside the bottom or the top edge dev >= 6 in at least one place (the effect's shadow exists at
      all; with UseNativeDecorationShadows=false and a flat frame it is the only shadow there is).
-The self-test models the effect's getCustomShadow (ShadowSize 45, alpha 0.5) for the passing case and the 1.0-5 frame's
-square-cornered 0.37 band for the failing one; a square window (no rounding) must fail check 1.
+The self-test models the effect's getCustomShadow (ShadowSize 40, alpha 0.5, the shipped kwinrc) for the passing case and the
+1.0-5 frame's square-cornered 0.37 band for the failing one; a square window (no rounding) must fail check 1. The same rules
+run on real KWin output in tests/corners-live-test.sh (KWin's virtual backend inside the image) and tests/corners-vm.sh (the VM).
 """
 import math
 import sys
 
-STEP_MAX, RISE_MAX, BG_MAX, DIAG_SLACK, PRESENT_MIN = 12, 6, 10, 8, 6
+STEP_MAX, RISE_MAX, BG_MAX, BG_FROM, DIAG_SLACK, PRESENT_MIN = 12, 6, 10, 8, 8, 6
 
 
 def dist(a, b):
@@ -47,7 +55,8 @@ def analyse(im, rf, x, y, w, h, r, out=print):
     dev = lambda p: dist(px(p), rp(p))
     ok = True
     corner = {"TL": (x, y), "TR": (x + w - 1, y), "BL": (x, y + h - 1), "BR": (x + w - 1, y + h - 1)}
-    inside = {"TL": (x + r, y + r), "TR": (x + w - 1 - r, y + r), "BL": (x + r, y + h - 1 - r), "BR": (x + w - 1 - r, y + h - 1 - r)}
+    # top corners: inside the arc but above the icon / buttons (they start 4 px below the top edge; (r, r) is the icon's middle)
+    inside = {"TL": (x + r, y + 3), "TR": (x + w - 1 - r, y + 3), "BL": (x + r, y + h - 1 - r), "BR": (x + w - 1 - r, y + h - 1 - r)}
     outside = {"TL": (x - 2, y - 2), "TR": (x + w + 1, y - 2), "BL": (x - 2, y + h + 1), "BR": (x + w + 1, y + h + 1)}
     sign = {"TL": (-1, -1), "TR": (1, -1), "BL": (-1, 1), "BR": (1, 1)}
     top = px((x + w // 2, y + 2))
@@ -74,8 +83,7 @@ def analyse(im, rf, x, y, w, h, r, out=print):
         good = max(steps) <= STEP_MAX and max(rises) <= rise_max
         out("%s dev=%s  max step %.0f (<= %d) max rise %.0f (<= %d)  %s" % (label, " ".join("%.0f" % v for v in vals), max(steps), STEP_MAX, max(rises), rise_max, "ok" if good else "BAD"))
         return good
-    # 2. diagonals: 12 px outward from each box corner (the first 8 are the ones that must show the background through; the
-    # effect's bottom shadow is biased downwards, so the tail to 12 is where the last few percent die out)
+    # 2. diagonals: 12 px outward from each box corner; from k = BG_FROM (8) on every sample must be the background (<= BG_MAX)
     for k in ("TL", "TR", "BL", "BR"):
         sx, sy = sign[k]; cx, cy = corner[k]
         d = [dev((cx + sx * j, cy + sy * j)) for j in range(1, 13)]
@@ -84,11 +92,12 @@ def analyse(im, rf, x, y, w, h, r, out=print):
         # a ROUND shadow is clearly weaker on the diagonal right at the corner (the point is sqrt(2) farther from the arc than the
         # edge point is from the edge); a square-cornered radial shadow gives the same value on both -> the rectangle test proper
         rnd = all(dj <= 0.8 * ej + 4 for dj, ej in zip(d[:2], e[:2]))
-        bg = d[-1] <= BG_MAX
+        tail = d[BG_FROM - 1:]
+        bg = max(tail) <= BG_MAX
         good = soft(d, "diagonal %s (k=1..12 outward)" % k) and weaker and rnd and bg
-        out("diagonal %s vs %s edge (k=1..12): %s; corner ratio k=1,2: %.2f %.2f (<= 0.8 + 4/edge) %s; background at k=12: dev %.0f (<= %d) %s"
+        out("diagonal %s vs %s edge (k=1..12): %s; corner ratio k=1,2: %.2f %.2f (<= 0.8 + 4/edge) %s; background from k=%d: max dev %.0f (<= %d) %s"
             % (k, ename, "weaker everywhere" if weaker else "NOT weaker than the edge", d[0] / max(e[0], 1e-6), d[1] / max(e[1], 1e-6),
-               "round" if rnd else "SQUARE-CORNERED SHADOW", d[-1], BG_MAX, "ok" if bg else "BAD"))
+               "round" if rnd else "SQUARE-CORNERED SHADOW", BG_FROM, max(tail), BG_MAX, "ok" if bg else "BAD"))
         ok = ok and good
     # 2b. "before the curve": the shadow 2 px outside the top edge, walking from the box corner inward past the arc start (t = 0..r+8),
     # and the same 2 px outside each side edge walking down from the top corner. It must be one smooth ramp: no step > STEP_MAX and
@@ -129,7 +138,7 @@ def synth(kind, size=(320, 240), geo=(60, 50, 200, 130), r=14):
     im = bg.copy()
     x, y, w, h = geo
     win = (30, 36, 52)
-    size_a = 45.0; sh = math.sqrt(size_a); rr = r if kind != "square" else 0
+    size_a = 40.0; sh = math.sqrt(size_a); rr = r if kind != "square" else 0     # kwinrc [Round-Corners] ShadowSize=40
 
     def blend(t):
         s = t * t; return s / (2 * (s - t) + 1)

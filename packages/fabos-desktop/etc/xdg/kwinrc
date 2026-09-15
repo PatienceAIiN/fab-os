@@ -57,12 +57,17 @@ kwin4_effect_shapecornersEnabled=true
 # getCustomShadow() is centred on the corner arcs (top: r+sqrt(size) inside both ways, bottom: r inside), so it follows all four
 # radius-14 corners with a downward bias. ShadowSize is a falloff radius, not a reach: the visible reach outside a straight edge is
 # ShadowSize - 14 - sqrt(ShadowSize) at the top and the sides and ShadowSize - 14 at the bottom, and Shader.cpp clamps ShadowSize to
-# the length of (PaddingLeft, PaddingTop) = 32*sqrt(2) = 45.25. 45 -> 24 px at the top/sides (alpha 0.29 at the edge), 31 px at
-# the bottom (0.42); inactive 36 -> 16 / 22 px (0.10 / 0.18). The literal 24 / 16 of 1.0-5 would reach 5 px / nothing.
+# the length of (PaddingLeft, PaddingTop) = 32*sqrt(2) = 45.25. 40 -> 20 px at the top/sides (alpha 0.24 at the edge), 26 px at
+# the bottom (0.39); inactive 36 -> 16 / 22 px (0.10 / 0.18). The literal 24 / 16 of 1.0-5 would reach 5 px / nothing. 40 rather
+# than 45 (the first draft) so that 8 px out on a corner diagonal is the plain background again (alpha 0.0000 top / 0.0066 bottom;
+# 45 left 0.028 at the biased bottom corners, a faint square smudge 13/255 deep on a light backdrop in the live KWin render):
+# nothing of the shadow may read as a rectangle at the corners. Measured as KWin draws it: tests/corners-live-test.sh.
 # Colour: black at 128/255 active, 64/255 inactive (ActiveShadowAlpha / InactiveShadowAlpha). ShadowColor / InactiveShadowColor
-# are used whenever *ShadowUsePalette=false (WindowConfig.cpp resolveColor(): usePalette ? palette role : custom colour; the
-# *ShadowUseCustom keys only drive the KCM's radio buttons; KConfig writes colours as r,g,b). The palette option (*ShadowUsePalette=true
-# with the QPalette role in *ShadowPalette, 11 = QPalette::Shadow) is OFF on purpose: measured through the KDE platform theme in the image,
+# are used whenever *ShadowUsePalette=false (WindowConfig.cpp resolveColor(): usePalette ? palette role : custom colour; KConfig
+# writes colours as r,g,b). The *ShadowUseCustom keys are not read by the effect at all — they only back the KCM's second radio
+# button of the colour pair (KCM.ui: QRadioButton kcfg_ActiveShadowUsePalette / kcfg_ActiveShadowUseCustom), so they are true here
+# to make the KCM show the state that is in force: custom colour, black. The palette option (*ShadowUsePalette=true with the QPalette
+# role in *ShadowPalette, 11 = QPalette::Shadow) is OFF on purpose: measured through the KDE platform theme in the image,
 # QPalette::Shadow resolves to #738cce on Fab Dark and #9db5ef on Fab Light (KColorScheme tints it with the accent), which would
 # make a blue glow, not a shadow. A shadow is an absence of light: black in both schemes.
 # AnimationDuration is the effect's own active/inactive transition (it does not read AnimationDurationFactor): 160 ms, the
@@ -73,7 +78,7 @@ InactiveCornerRadius=14
 UseSquircleShape=false
 AnimationDuration=160
 UseNativeDecorationShadows=false
-ShadowSize=45
+ShadowSize=40
 InactiveShadowSize=36
 ShadowColor=0,0,0
 InactiveShadowColor=0,0,0
@@ -81,8 +86,8 @@ ActiveShadowAlpha=128
 InactiveShadowAlpha=64
 ActiveShadowUsePalette=false
 InactiveShadowUsePalette=false
-ActiveShadowUseCustom=false
-InactiveShadowUseCustom=false
+ActiveShadowUseCustom=true
+InactiveShadowUseCustom=true
 ActiveShadowPalette=11
 InactiveShadowPalette=11
 OutlineThickness=1
