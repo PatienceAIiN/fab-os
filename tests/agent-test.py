@@ -845,8 +845,13 @@ class Daemon(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix="fabos-agent-test-")
+        # The daemon's own environment carries what agent.env would: a provider key and a token-like variable, plus the
+        # session's ssh-agent socket (a real unix socket at $XDG_RUNTIME_DIR/openssh_agent, Ubuntu's ssh-agent.socket path).
+        # test_25 proves none of it reaches a shell step.
+        cls.agent_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); cls.agent_sock.bind(os.path.join(cls.tmp, "openssh_agent")); cls.agent_sock.listen(1)
         env = dict(os.environ, XDG_RUNTIME_DIR=cls.tmp, FABOS_AGENT_DATA=os.path.join(cls.tmp, "data"), XDG_CONFIG_HOME=os.path.join(cls.tmp, "cfg"),
-                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT="18790", HOME=os.path.join(cls.tmp, "home"), PATH="/usr/bin:/bin")
+                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT="18790", HOME=os.path.join(cls.tmp, "home"), PATH="/usr/bin:/bin",
+                   ANTHROPIC_API_KEY="sk-ant-LEAKTEST-0000", MY_SERVICE_TOKEN="LEAKTEST-token", SSH_AUTH_SOCK=os.path.join(cls.tmp, "openssh_agent"))
         os.makedirs(env["HOME"]); cls.env = env
         cls.proc = subprocess.Popen([sys.executable, DAEMON], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for _ in range(50):
@@ -1159,6 +1164,23 @@ class Daemon(unittest.TestCase):
         self.assertTrue(all("hmac" in json.loads(l) for l in lines[1:]))
         self.assertEqual(self.cli("audit", "export", "--out", os.path.join(self.tmp, "does-not-exist")).get("http"), 409)
 
+    def test_25_no_daemon_secret_or_agent_socket_reaches_run_shell(self):
+        """The daemon was started with ANTHROPIC_API_KEY, a *_TOKEN variable and SSH_AUTH_SOCK (a live socket at
+        $XDG_RUNTIME_DIR/openssh_agent). A shell step printing `env` must show none of them — sandboxed or not — while the
+        session variables a command needs (HOME, PATH, XDG_RUNTIME_DIR) are there; inside bubblewrap the socket is masked."""
+        r = self.cli("do", "--mode", "bypass", "show the environment"); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        out = json.loads([s for s in t["steps"] if s["name"] == "run_shell"][0]["output"]); env_text = out["stdout"]
+        self.assertEqual(out["exit_code"], 0, out)
+        self.assertNotIn("LEAKTEST", json.dumps(t["steps"]))                                   # neither the key nor the token, anywhere in the history
+        self.assertNotIn("ANTHROPIC_API_KEY", env_text); self.assertNotIn("MY_SERVICE_TOKEN", env_text)
+        self.assertNotIn("FABOS_AGENT_", env_text)                                             # the daemon's own knobs stay its own
+        self.assertIn("SOCK=unset", env_text)                                                  # no ssh-agent for tool commands
+        self.assertIn("HOME=" + self.env["HOME"], env_text); self.assertIn("XDG_RUNTIME_DIR=" + self.tmp, env_text); self.assertIn("PATH=", env_text)
+        if out["sandbox"] == "bwrap":
+            self.assertIn("agent-socket-masked", env_text)                                     # /dev/null sits over the socket file
+        else:
+            self.assertIn("AGENT-SOCKET-VISIBLE", env_text)                                    # fallback: only the variable is gone (documented)
+
 
 class SecurityUnits(unittest.TestCase):
     """In-process checks of the enterprise controls (ADR-0017): policy clamps, HMAC audit chain, pkexec argv + authz record,
@@ -1385,8 +1407,25 @@ class SecurityUnits(unittest.TestCase):
         record("who", uid=uid + 1); rc, out = run(["rootexec", "who"]); self.assertIn("another user", out["error"])
         rc, out = run(["rootexec", "x"], {"PKEXEC_UID": "0"}); self.assertIn("root already", out["error"])
         os.chmod(d, 0o755); record("dirloose"); rc, out = run(["rootexec", "dirloose"]); self.assertIn("private (0700)", out["error"]); os.chmod(d, 0o700)
-        self.assertNotIn("SUDO_UID", open(ROOTEXEC).read().split("def caller_uid")[0])                                          # sudo is the documented fallback only
         self.assertIn("in.patienceai.fabos.rootexec", open(ROOTEXEC).read())
+        # the sudo launcher (an administrator's own rule) is honoured ONLY when /etc/fabos/policy.json says
+        # require_password_for_root: false — otherwise a stray NOPASSWD rule would re-create the 1.0-3 escalation
+        pol = os.path.join(self.tmp, "policy.json"); sudo_env = {"SUDO_UID": str(uid)}
+        record("s1"); rc, out = run(["rootexec", "s1"], sudo_env, policy_file=os.path.join(self.tmp, "absent.json")); self.assertEqual(rc, 2); self.assertIn("refusing the sudo launcher", out["error"])
+        self.assertTrue(os.path.exists(os.path.join(d, "s1.json")))                                                            # refused before the record is touched
+        with open(pol, "w") as f:
+            json.dump({"require_password_for_root": True}, f)
+        rc, out = run(["rootexec", "s1"], sudo_env, policy_file=pol); self.assertIn("refusing the sudo launcher", out["error"])
+        with open(pol, "w") as f:
+            f.write("{not json")
+        rc, out = run(["rootexec", "s1"], sudo_env, policy_file=pol); self.assertIn("refusing the sudo launcher", out["error"])   # malformed = not opted in
+        with open(pol, "w") as f:
+            json.dump({"require_password_for_root": False}, f)
+        rc, out = run(["rootexec", "s1"], sudo_env, policy_file=pol); self.assertEqual(rc, 0); self.assertEqual(out["stdout"].strip(), "root-ok")
+        record("p1"); rc, out = run(["rootexec", "p1"], env, policy_file=os.path.join(self.tmp, "absent.json")); self.assertEqual(rc, 0)   # pkexec never needs the opt-in
+        self.assertFalse(rx.sudo_path_allowed(os.path.join(self.tmp, "absent.json"))); self.assertTrue(rx.sudo_path_allowed(pol))
+        self.assertFalse(rx.sudo_path_allowed(pol, require_root_owner=True))                                                  # as real root: a user-owned policy file is no opt-in
+        self.assertTrue(rx.sudo_path_allowed(pol, require_root_owner=False))
 
     def test_sandbox_argv_shape(self):
         fa.RUN_DIR = os.path.join(self.tmp, "run", "fabos-agent"); fa.CONF_DIR = os.path.join(self.tmp, "cfg", "fabos", "agent"); fa.DATA_DIR = os.path.join(self.tmp, "data")
@@ -1406,6 +1445,64 @@ class SecurityUnits(unittest.TestCase):
             self.assertFalse(fa.sandbox_available())
         finally:
             del os.environ["FABOS_AGENT_SANDBOX"]
+
+    def test_child_environment_allowlist(self):
+        """clean_env keeps desktop-session variables and drops credentials, the daemon's own knobs and systemd bookkeeping —
+        whatever the source (the daemon's environment AND the session manager's, which may hold a user's exported key)."""
+        src = {"PATH": "/usr/bin", "HOME": "/h", "XDG_RUNTIME_DIR": "/run/user/1", "WAYLAND_DISPLAY": "wayland-0", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/b",
+               "QT_QPA_PLATFORM": "wayland", "LC_ALL": "C.UTF-8", "XAUTHORITY": "/x", "SSH_AUTH_SOCK": "/s", "KDE_FULL_SESSION": "true",
+               "ANTHROPIC_API_KEY": "k", "OPENAI_API_KEY": "k", "MY_SERVICE_TOKEN": "t", "DB_PASSWORD": "p", "AWS_SECRET_ACCESS_KEY": "s", "GOOGLE_OAUTH_CLIENT": "c",
+               "FABOS_AGENT_PORT": "1", "FABOS_AGENT_PROVIDER": "fake", "INVOCATION_ID": "i", "JOURNAL_STREAM": "j", "MANAGERPID": "1", "CREDENTIALS_DIRECTORY": "/c",
+               "NOTIFY_SOCKET": "/n", "LISTEN_FDS": "1", "QT_SOMETHING_TOKEN": "x", "RANDOM_APP_VAR": "v"}
+        got = fa.clean_env(src)
+        self.assertEqual(sorted(got), ["DBUS_SESSION_BUS_ADDRESS", "HOME", "KDE_FULL_SESSION", "LC_ALL", "PATH", "QT_QPA_PLATFORM", "SSH_AUTH_SOCK", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR"])
+        self.assertEqual(fa.clean_env({"HOME": "/session"}, {"HOME": "/daemon"})["HOME"], "/daemon")                        # later source wins
+        self.assertNotIn("SSH_AUTH_SOCK", fa.clean_env(src, drop=fa.AGENT_SOCKET_VARS))
+        # through the Agent: session_env keeps the ssh agent for applications, tool_env drops it for commands; neither leaks the key
+        saved = dict(os.environ); os.environ.update(ANTHROPIC_API_KEY="sk-ant-LEAKTEST-unit", SSH_AUTH_SOCK="/tmp/x", GPG_AGENT_INFO="/tmp/g:0:1", FABOS_AGENT_SANDBOX="0")
+        try:
+            a = fa.Agent.__new__(fa.Agent); senv = fa.Agent.session_env(a); tenv = fa.Agent.tool_env(a, senv)
+        finally:
+            os.environ.clear(); os.environ.update(saved)
+        self.assertNotIn("ANTHROPIC_API_KEY", senv); self.assertNotIn("FABOS_AGENT_SANDBOX", senv); self.assertEqual(senv["SSH_AUTH_SOCK"], "/tmp/x")
+        for k in fa.AGENT_SOCKET_VARS:
+            self.assertNotIn(k, tenv)
+        self.assertEqual(tenv["XDG_RUNTIME_DIR"], senv["XDG_RUNTIME_DIR"]); self.assertIn("PATH", tenv)
+        self.assertTrue(all(not fa.ENV_DENY.search(k) for k in senv), sorted(senv))
+
+    def test_sandbox_masks_agent_sockets_in_the_runtime_dir(self):
+        """$XDG_RUNTIME_DIR stays bound (Wayland, D-Bus, PipeWire) but its key-agent parts do not: gnupg/, gcr/, keyring/ become
+        empty tmpfs and the ssh-agent socket files (openssh_agent, whatever SSH_AUTH_SOCK names) get /dev/null bound over them.
+        With bubblewrap available the argv is executed for real."""
+        rt = os.path.join(self.tmp, "rt"); os.makedirs(os.path.join(rt, "gnupg"))
+        for n in ("S.gpg-agent", "S.gpg-agent.ssh"):
+            open(os.path.join(rt, "gnupg", n), "w").close()
+        s1 = socket.socket(socket.AF_UNIX); s1.bind(os.path.join(rt, "openssh_agent")); s1.listen(1)
+        other = os.path.join(self.tmp, "kde-agent.sock"); s2 = socket.socket(socket.AF_UNIX); s2.bind(other); s2.listen(1)
+        os.makedirs(os.path.join(rt, "bus-dir")); open(os.path.join(rt, "wayland-0"), "w").close()
+        saved = os.environ.get("XDG_RUNTIME_DIR"); os.environ["XDG_RUNTIME_DIR"] = rt
+        try:
+            hidden = fa.sandbox_hidden(); masked = fa.sandbox_masked({"SSH_AUTH_SOCK": other})
+            self.assertIn(os.path.join(rt, "gnupg"), hidden); self.assertIn(os.path.join(rt, "gcr"), hidden); self.assertIn(os.path.join(rt, "keyring"), hidden)
+            self.assertEqual(sorted(masked), sorted([os.path.realpath(os.path.join(rt, "openssh_agent")), os.path.realpath(other)]))
+            self.assertEqual(fa.sandbox_masked({"SSH_AUTH_SOCK": os.path.join(rt, "gnupg", "S.gpg-agent.ssh")}), [os.path.realpath(os.path.join(rt, "openssh_agent"))])   # inside a hidden dir: skipped
+            self.assertEqual(fa.sandbox_masked({"SSH_AUTH_SOCK": "/nonexistent/agent"}), [os.path.realpath(os.path.join(rt, "openssh_agent"))])
+            a = fa.sandbox_argv(self.tmp, env={"SSH_AUTH_SOCK": other})
+            self.assertIn(os.path.join(rt, "gnupg"), [a[i + 1] for i, x in enumerate(a) if x == "--tmpfs"])
+            devnull = [a[i + 2] for i, x in enumerate(a) if x == "--ro-bind" and a[i + 1] == "/dev/null"]
+            self.assertIn(os.path.realpath(os.path.join(rt, "openssh_agent")), devnull); self.assertIn(os.path.realpath(other), devnull)
+            if not fa.sandbox_available():
+                self.skipTest("bubblewrap cannot create namespaces here")
+            probe = "test -S %s && echo A-VISIBLE || echo a-masked; test -S %s && echo B-VISIBLE || echo b-masked; ls -A %s | wc -l; test -e %s && echo wayland-ok" % (
+                os.path.join(rt, "openssh_agent"), other, os.path.join(rt, "gnupg"), os.path.join(rt, "wayland-0"))
+            r = subprocess.run(a + ["bash", "-c", probe], capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr); self.assertEqual(r.stdout.split(), ["a-masked", "b-masked", "0", "wayland-ok"])
+        finally:
+            s1.close(); s2.close()
+            if saved is None:
+                os.environ.pop("XDG_RUNTIME_DIR", None)
+            else:
+                os.environ["XDG_RUNTIME_DIR"] = saved
 
 
 class PolicyDaemon(unittest.TestCase):

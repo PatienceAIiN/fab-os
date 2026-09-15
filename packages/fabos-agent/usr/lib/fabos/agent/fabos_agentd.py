@@ -26,8 +26,10 @@ HTTP API on 127.0.0.1:8790 (bearer token in $XDG_RUNTIME_DIR/fabos-agent/token, 
   GET  /policy  POST /policy/reload                 the administrator policy (/etc/fabos/policy.json, also reloaded on SIGHUP)
   GET  /audit/verify                                checks the HMAC chain over the activity log; POST /audit/export {since, out_dir?} writes JSONL
 Security (docs/ENTERPRISE.md, SECURITY.md): root only through `pkexec rootexec` (polkit, the user's own password in every mode);
-run_shell inside bubblewrap when available; the agent's secrets, token and history are unreadable to tools; the activity log is
-a tamper-evident HMAC chain keyed from systemd-creds; every user setting is clamped to the administrator's policy.json.
+run_shell inside bubblewrap when available; the agent's secrets, token and history are unreadable to tools; children get an
+allowlisted session environment (never the daemon's own, which holds the provider key) and tool commands no ssh/gpg agent;
+the activity log is a tamper-evident HMAC chain keyed from systemd-creds; every user setting is clamped to the administrator's
+policy.json.
 Providers: Claude (Anthropic), OpenAI, Google Gemini, DeepSeek, or any OpenAI-compatible chat endpoint (local llama-server).
 Mail: the user's OWN account (Gmail, Outlook/Hotmail, Yahoo, Zoho, iCloud presets, or any IMAP/SMTP server) — settings
 mail.provider / mail.address / mail.from_name, secret mail_password (an app password where the provider requires one) or
@@ -683,9 +685,89 @@ def check_protected(path):
         raise PermissionError("refused: %s holds the agent's own secrets or session token; no tool may read or write it, whatever the approval" % path)
 
 
-# run_shell sandbox (bubblewrap). Hidden = replaced by an empty tmpfs; read-only = visible but not writable.
+# ----------------------------------------------------------------------------- the environment handed to children
+# The daemon's own environment is not the user's: the unit loads EnvironmentFile /etc/fabos/agent.env and
+# ~/.config/fabos/agent.env (ANTHROPIC_API_KEY is a documented key source), systemd adds its bookkeeping, and the session
+# manager (`systemctl --user show-environment`) may hold whatever the user exported. A child — a shell step inside
+# bubblewrap, a watch command, an application — therefore gets an ALLOWLIST of desktop-session variables, and on top of
+# that a deny pattern: a name that smells like a credential is dropped even when its prefix is allowed. Without this the
+# tmpfs over ~/.config/fabos would be theatre: `env` inside the sandbox would print the provider key.
+ENV_ALLOW = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TZDIR", "TERM", "COLORTERM", "TMPDIR", "HOSTNAME",
+             "EDITOR", "VISUAL", "PAGER", "BROWSER", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS",
+             "DESKTOP_SESSION", "XMODIFIERS", "INPUT_METHOD", "SSH_AUTH_SOCK"}
+ENV_ALLOW_PREFIX = ("XDG_", "LC_", "QT_", "KDE_", "GTK_", "GDK_", "XCURSOR_", "PIPEWIRE_", "PULSE_", "MOZ_", "ELECTRON_", "SDL_",
+                    "PLASMA_", "KWIN_", "SAL_", "LIBVA_", "MESA_", "__GL", "VDPAU_", "GBM_", "WLR_")
+ENV_DENY = re.compile(r"API_?KEY|TOKEN|SECRET|PASSW|PASSPHRASE|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY|OAUTH|COOKIE|^FABOS_|^ANTHROPIC_|^OPENAI_|"
+                      r"^GEMINI_|^GOOGLE_|^DEEPSEEK_|^AWS_|^AZURE_|^GH_|^GITHUB_|^HF_|^INVOCATION_ID$|^JOURNAL_STREAM$|^MANAGERPID$|"
+                      r"^CREDENTIALS_DIRECTORY$|^NOTIFY_SOCKET$|^LISTEN_", re.I)
+# the user's key agents: applications launched for the user keep them (a launcher would), tool commands never see them
+AGENT_SOCKET_VARS = ("SSH_AUTH_SOCK", "SSH_AGENT_PID", "SSH_AGENT_LAUNCHER", "GPG_AGENT_INFO", "GNUPGHOME", "GPG_TTY")
+
+
+def env_allowed(name):
+    if ENV_DENY.search(name):
+        return False
+    return name in ENV_ALLOW or name.startswith(ENV_ALLOW_PREFIX)
+
+
+def clean_env(*sources, drop=()):
+    """Merge environment mappings (later sources win) keeping only allowed names; `drop` removes names on top."""
+    env = {}
+    for src in sources:
+        for k, v in src.items():
+            if isinstance(k, str) and isinstance(v, str) and env_allowed(k) and k not in drop:
+                env[k] = v
+    return env
+
+
+def session_environment():
+    """The desktop session's variables as the user manager holds them (`systemctl --user show-environment`); {} when absent."""
+    out = {}
+    try:
+        text = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, text=True, timeout=5).stdout
+        for line in text.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                out[k] = v
+    except Exception:
+        pass
+    return out
+
+
+# run_shell sandbox (bubblewrap). Hidden = replaced by an empty tmpfs; read-only = visible but not writable; masked = a
+# socket file replaced by /dev/null.
+def sandbox_runtime_dir():
+    return os.environ.get("XDG_RUNTIME_DIR") or os.path.dirname(RUN_DIR)
+
+
 def sandbox_hidden():
-    return [os.path.expanduser("~/.ssh"), os.path.expanduser("~/.gnupg"), os.path.dirname(CONF_DIR), os.path.expanduser("~/.local/share/kwalletd"), RUN_DIR]
+    """Directories replaced by an empty tmpfs: the user's keys, a wallet, the agent's own configuration and runtime dir, and
+    the key agents' socket directories inside $XDG_RUNTIME_DIR (gnupg: gpg-agent + its ssh socket; gcr: GNOME keyring's
+    ssh agent; keyring: gnome-keyring control) — the runtime dir itself stays bound for Wayland, D-Bus and PipeWire."""
+    rt = sandbox_runtime_dir()
+    return [os.path.expanduser("~/.ssh"), os.path.expanduser("~/.gnupg"), os.path.dirname(CONF_DIR), os.path.expanduser("~/.local/share/kwalletd"), RUN_DIR,
+            os.path.join(rt, "gnupg"), os.path.join(rt, "gcr"), os.path.join(rt, "keyring")]
+
+
+def sandbox_masked(env=None):
+    """Socket files replaced by /dev/null inside the sandbox: Ubuntu's ssh-agent.socket ($XDG_RUNTIME_DIR/openssh_agent) and
+    whatever SSH_AUTH_SOCK names in the session (KDE's ssh-agent, a manual ssh-agent under /tmp). Paths that do not exist or
+    already sit inside a hidden directory are skipped."""
+    rt = sandbox_runtime_dir()
+    cands = [os.path.join(rt, "openssh_agent")]
+    s = (env if env is not None else os.environ).get("SSH_AUTH_SOCK")
+    if s and s.startswith("/"):
+        cands.append(s)
+    hidden = sandbox_hidden()
+    out = []
+    for p in cands:
+        p = os.path.realpath(p) if os.path.exists(p) else p
+        if not os.path.exists(p) or os.path.isdir(p) or p in out:
+            continue
+        if any(p == h or p.startswith(h + os.sep) for h in hidden):
+            continue
+        out.append(p)
+    return out
 
 
 def sandbox_readonly():
@@ -707,12 +789,15 @@ def sandbox_available():
         return False
 
 
-def sandbox_argv(cwd, network=True):
+def sandbox_argv(cwd, network=True, env=None):
     """The bubblewrap prefix for run_shell: the whole system read-only; the home directory writable EXCEPT the user's keys
     (~/.ssh, ~/.gnupg), a wallet if one exists, and the agent's own configuration (empty tmpfs over each); the agent's
     history read-only; the agent's runtime directory (API token, root authorization records) hidden — so a task cannot
     approve its own steps through the API; /tmp shared with the session; a fresh /dev (plus the GPU nodes) and /proc; the
-    session runtime dir kept so Wayland/D-Bus/PipeWire clients work; own PID namespace; killed with the daemon."""
+    session runtime dir kept so Wayland/D-Bus/PipeWire clients work, minus the key agents' socket directories (tmpfs) and
+    socket files (/dev/null over them; `env` is the session environment that names SSH_AUTH_SOCK); own PID namespace;
+    killed with the daemon. What the runtime dir still exposes is the desktop itself: the Wayland socket, the session
+    D-Bus, PipeWire — the same as any application the user starts."""
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     a = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--bind", "/tmp", "/tmp"]
     if os.path.isdir("/var/tmp"):
@@ -729,6 +814,8 @@ def sandbox_argv(cwd, network=True):
     for p in sandbox_hidden():
         if os.path.isdir(p):
             a += ["--tmpfs", p]
+    for p in sandbox_masked(env):
+        a += ["--ro-bind", "/dev/null", p]
     a += ["--unshare-pid", "--die-with-parent", "--chdir", cwd if os.path.isdir(cwd) else HOME]
     if not network:
         a += ["--unshare-net"]
@@ -810,11 +897,14 @@ class Tools:
         # Sandbox: bubblewrap when it works here (see sandbox_argv), else the plain shell with the step marked sandbox=none.
         # Inside the sandbox every process the command started ends with it (own PID namespace): background servers do not
         # survive the step — long-running programs go through open_app, which runs in the session.
+        # Environment: the allowlisted session variables only (Agent.tool_env) — never the daemon's own environment, which
+        # carries the provider key from agent.env — and without the user's ssh/gpg agent sockets, sandboxed or not.
         import tempfile
         sandbox = self.agent.sandbox_name()
-        argv = (sandbox_argv(cwd, POLICY.sandbox_network()) if sandbox == "bwrap" else []) + ["bash", "-lc", inp["command"]]
+        senv = self.agent.session_env()
+        argv = (sandbox_argv(cwd, POLICY.sandbox_network(), env=senv) if sandbox == "bwrap" else []) + ["bash", "-lc", inp["command"]]
         fo = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace"); fe = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
-        p = subprocess.Popen(argv, cwd=cwd, stdout=fo, stderr=fe, text=True, env=self.agent.session_env(), start_new_session=True)
+        p = subprocess.Popen(argv, cwd=cwd, stdout=fo, stderr=fe, text=True, env=self.agent.tool_env(senv), start_new_session=True)
         self.agent.procs.setdefault(task_id, set()).add(p)
         try:
             p.wait(timeout=to)
@@ -1459,6 +1549,9 @@ class FakeProvider:
             plan = [tu("read_file", {"path": os.path.join(RUN_DIR, "token")})]
         elif "list the agent secrets" in low:
             plan = [tu("list_dir", {"path": os.path.join(CONF_DIR, "secrets")})]
+        elif "show the environment" in low:
+            # a shell step prints its environment and probes the ssh-agent socket: no daemon secret, no agent socket may be visible
+            plan = [tu("run_shell", {"command": "env | sort; echo SOCK=${SSH_AUTH_SOCK:-unset}; test -S \"$XDG_RUNTIME_DIR/openssh_agent\" && echo AGENT-SOCKET-VISIBLE || echo agent-socket-masked"})]
         elif re.search(r"\bsay hi\b", low):
             plan = [tu("run_shell", {"command": "echo hi"})]
         elif re.search(r"\bfetch\s+(https?://\S+)", low):
@@ -1572,21 +1665,25 @@ class Agent:
             self.start(r["id"])
 
     def session_env(self):
-        env = dict(os.environ)
-        # inherit the desktop session's environment (theme, display, D-Bus, PATH) so launched apps look and behave like user-launched ones
-        try:
-            out = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, text=True, timeout=5).stdout
-            for line in out.splitlines():
-                if "=" in line and not line.startswith(("INVOCATION_ID", "JOURNAL_STREAM", "MANAGERPID")):
-                    k, v = line.split("=", 1)
-                    env.setdefault(k, v)
-        except Exception:
-            pass
+        """The environment for applications launched for the user (open_app, type_text, the OAuth browser): the desktop
+        session's variables (theme, display, D-Bus, PATH) so they look and behave like user-launched ones — filtered through
+        the allowlist (clean_env): the daemon's own environment carries the provider key from agent.env and must not be
+        inherited by anything. The daemon's values win over the session manager's (HOME, XDG_RUNTIME_DIR, PATH are what the
+        daemon itself computed its paths from)."""
+        env = clean_env(session_environment(), os.environ)
         env.setdefault("XDG_RUNTIME_DIR", os.path.dirname(RUN_DIR))
         env.setdefault("WAYLAND_DISPLAY", "wayland-0")
         env.setdefault("DISPLAY", ":0")
         env.setdefault("XDG_SESSION_TYPE", "wayland")
         env.setdefault("QT_QPA_PLATFORM", "wayland")
+        return env
+
+    def tool_env(self, session=None):
+        """The environment for tool commands (run_shell, schedule_watch), sandboxed or not: session_env without the user's
+        ssh/gpg agent variables — a command must not sign, decrypt or log in with cached keys it cannot read."""
+        env = dict(session if session is not None else self.session_env())
+        for k in AGENT_SOCKET_VARS:
+            env.pop(k, None)
         return env
 
     def ai_enabled(self):
@@ -1867,8 +1964,9 @@ class Watcher(threading.Thread):
                     hit = msgs[0]
                     spec["seen_uids"] = (spec.get("seen_uids") or []) + [m["uid"] for m in msgs]
             elif w["kind"] == "command":
-                prefix = sandbox_argv(HOME, POLICY.sandbox_network()) if self.agent.sandbox_name() == "bwrap" else []
-                r = subprocess.run(prefix + ["bash", "-lc", spec.get("command") or "true"], capture_output=True, text=True, timeout=120, env=self.agent.session_env())
+                senv = self.agent.session_env()
+                prefix = sandbox_argv(HOME, POLICY.sandbox_network(), env=senv) if self.agent.sandbox_name() == "bwrap" else []
+                r = subprocess.run(prefix + ["bash", "-lc", spec.get("command") or "true"], capture_output=True, text=True, timeout=120, env=self.agent.tool_env(senv))
                 if re.search(spec.get("expect") or ".", r.stdout + r.stderr):
                     hit = {"output": (r.stdout + r.stderr)[-2000:]}
         except Exception as e:

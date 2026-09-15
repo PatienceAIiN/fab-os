@@ -18,6 +18,22 @@ asks for the **user's own password** in the system dialog (`auth_admin_keep`, re
 `bypass` included. A user who is not an administrator is asked for an administrator's password (Ubuntu's
 `49-ubuntu-admin.rules`: the `sudo` group). There is no `NOPASSWD` rule anywhere (`tests/security-check.sh` asserts it).
 
+The five-minute cache is a trade-off you can remove. While it is warm, a further `as_root` step of the same user — including
+one driven through the daemon's API by another process of that user, in `bypass` mode — runs without a new prompt. To ask
+for the password on **every** root step, install one polkit rule (root-owned, `/etc/polkit-1/rules.d/40-fabos-rootexec.rules`):
+
+```js
+polkit.addRule(function(action, subject) {
+    if (action.id == "in.patienceai.fabos.rootexec") { return polkit.Result.AUTH_ADMIN; }
+});
+```
+
+`pkaction --verbose --action-id in.patienceai.fabos.rootexec` shows the shipped defaults; `tests/security-check.sh` fails if
+any rule *weakens* the action, never if one tightens it. The reverse — unattended root on a kiosk — is a rule returning
+`polkit.Result.YES` **plus** `"require_password_for_root": false` in the policy file: `rootexec` accepts the `sudo` launcher
+(an administrator's own sudoers rule) only when the policy says so, and refuses it otherwise, so a stray `NOPASSWD` line
+cannot quietly bring the 1.0-3 escalation back.
+
 ## 2. Deploying the policy file
 
 Write `/etc/fabos/policy.json` with your configuration management (Ansible, Puppet, cloud-init, a `.deb` of your own — it is
@@ -91,12 +107,26 @@ Three records exist, all append-only from the user's point of view:
   its own steps — a fresh `/dev` and `/proc`, its own PID namespace (everything a command started ends with it), network kept
   unless `sandbox_network` is `false`. When bubblewrap cannot create namespaces the step runs unsandboxed and the history says
   `"sandbox": "none"`; `GET /status` reports the mode in use.
+- **The environment a command sees is not the daemon's.** The unit loads `/etc/fabos/agent.env` and `~/.config/fabos/agent.env`
+  (a provider key may live there), so a child that inherited the daemon's environment would read the key the tmpfs hides.
+  Instead every child gets an allowlist of desktop-session variables (`PATH`, `HOME`, `XDG_*`, `WAYLAND_DISPLAY`, `DISPLAY`,
+  `DBUS_SESSION_BUS_ADDRESS`, locale, `QT_*`/`KDE_*`/`GTK_*`…) with credential-like names (`*_API_KEY`, `*TOKEN*`, `*SECRET*`,
+  `*PASSW*`, `*CREDENTIAL*`, `FABOS_*`, `CREDENTIALS_DIRECTORY`…) dropped whatever their source — the session manager's
+  environment included. Shell and watch commands additionally lose the ssh/gpg agent variables, and inside the sandbox the
+  agents' sockets are unreachable: `$XDG_RUNTIME_DIR/gnupg`, `/gcr`, `/keyring` are empty tmpfs and the ssh-agent socket
+  files (`$XDG_RUNTIME_DIR/openssh_agent`, whatever `SSH_AUTH_SOCK` names) have `/dev/null` bound over them. What the runtime
+  dir still exposes is the desktop itself (Wayland socket, session D-Bus, PipeWire), as for any application the user starts.
+  Applications launched *for* the user (`open_app`) keep their ssh agent, as a launcher would — they are the user's programs.
+  The shell is a login shell: `~/.profile` inside the sandbox is the user's own file in the writable home.
 - `read_file`, `write_file`, `list_dir` refuse the agent's secrets directory and runtime directory even when approved.
-- **AppArmor**: `fabos-voiced` (the "Hey Fab" listener) and `fabos-llama` (the local model server) run in **enforce** mode —
-  the voice daemon can reach its models, the audio sockets and 127.0.0.1 and write only `$XDG_RUNTIME_DIR/fabos-voice` and
-  `~/.local/state/fabos-voice`; the model server can read only `/usr/share/fabos/models` and `/var/lib/fabos/models` and
-  never a home directory. `fabos-agentd` ships in **complain** mode with the path to enforce written in the profile
-  (`/etc/apparmor.d/fabos-agentd`). Denials: `journalctl -k | grep apparmor`.
+- **AppArmor**: `fabos-llama` (the local model server) runs in **enforce** mode — it can read only `/usr/share/fabos/models`
+  and `/var/lib/fabos/models` and never a home directory. `fabos-voiced` (the "Hey Fab" listener) and `fabos-agentd` ship in
+  **complain** mode: their rule sets list everything the code executes and reads (the voice profile was re-derived from every
+  subprocess call, including `wpctl`, the `true` -> `gnutrue` symlink the `systemd-run` probe execs, the `ffplay`/`mpv`
+  playback fallbacks and Ubuntu 26.04's Rust coreutils under `/usr/lib/cargo/bin/coreutils/`), but they have not yet run
+  under an AppArmor kernel, and an enforce-mode gap would silently break the wake word or every task. The path to enforce is
+  written in each profile (`/etc/apparmor.d/fabos-voiced`, `/etc/apparmor.d/fabos-agentd`): boot, run `tests/voice-vm.sh` and
+  the agent ladder, and `journalctl -k | grep 'profile="fabos-'` must stay empty before `complain` is removed.
 - Kernel: `/etc/sysctl.d/70-fabos-hardening.conf` (ptrace only of descendants, hidden kernel pointers, restricted dmesg,
   protected symlinks/hardlinks/FIFOs/regular files in sticky directories, no setuid core dumps, strict reverse-path
   filtering, SYN cookies, hardened BPF JIT). Ubuntu's `apparmor_restrict_unprivileged_userns=1` stays on; bubblewrap works
@@ -116,10 +146,16 @@ come from Brave's own signed repository. Ubuntu packages are unmodified: their C
 
 ## 7. Verifying an ISO and an installation
 
-- Checksum and signature: every release publishes `SHA256SUMS` and `SHA256SUMS.gpg` next to the ISO (`scripts/publish-iso.sh`);
-  `sha256sum -c SHA256SUMS` and `gpg --verify SHA256SUMS.gpg SHA256SUMS` with the Fab OS Archive key
-  (`/usr/share/keyrings/fabos-archive-keyring.gpg` on an installed system, published on the download page). The QA record
-  (`docs/QA.md`) lists the checksum of the image it describes.
+- Checksum and signature: `scripts/release-checksums.sh` writes `SHA256SUMS` and a detached OpenPGP signature `SHA256SUMS.gpg`
+  with the Fab OS Archive key (the key that signs the apt repository; same `APT_GNUPGHOME`), and `scripts/publish-iso.sh` /
+  `scripts/release-github.sh` call it and publish both files next to the ISO (the download directory and the GitHub release
+  assets) together with the public key `fabos-archive-key.asc`. Verify with `sha256sum -c SHA256SUMS` and
+  `gpg --verify SHA256SUMS.gpg SHA256SUMS` after importing the key — the same key is served at
+  `https://fabos.patienceai.in/apt/fabos-archive-key.asc` (`scripts/publish-apt.sh`) and installed as
+  `/usr/share/keyrings/fabos-archive-keyring.gpg` on a Fab OS system. **Said plainly:** the 1.0 pre-release ISO on the download
+  page today was published before this script existed and carries only `<iso>.sha256` (an unsigned checksum); the first
+  release published with the current scripts is the first with a signature (§8). The QA record (`docs/QA.md`) lists the
+  checksum of the image it describes.
 - The installer preselects LUKS2 full-disk encryption (`enableLuksAutomatedPartitioning: true`); Secure Boot works with
   Ubuntu's signed shim, GRUB and kernel, which Fab OS does not modify.
 - On an installed system: `tests/security-check.sh` cannot run (it inspects a container image), but the same facts are
@@ -144,8 +180,13 @@ Said plainly so nobody plans around it:
 - **The audit chain is per user and keyed per user** (see §4). Export it if you need evidence the user cannot re-sign.
 - **Cloud providers see what is sent to them.** With `cloud_allowed` true, requests and tool results go to the selected
   provider under its terms; Fab OS adds no proxy, redaction or DLP.
-- **`fabos-agentd` is not yet AppArmor-enforced** (complain mode, path documented in the profile); Brave runs under its
-  own upstream profiles; the rest of the desktop is Ubuntu's stock confinement.
+- **`fabos-agentd` and `fabos-voiced` are not yet AppArmor-enforced** (complain mode, path documented in each profile;
+  only `fabos-llama` is enforced); Brave runs under its own upstream profiles; the rest of the desktop is Ubuntu's stock
+  confinement.
+- **The ISO currently on the download page is not signed.** It predates `scripts/release-checksums.sh` and has only an
+  unsigned `<iso>.sha256`; releases published from now on carry `SHA256SUMS` + `SHA256SUMS.gpg` (§7).
+- **The polkit authorization for root is cached for five minutes** by default (`auth_admin_keep`); §1 shows the one-line
+  rule that makes every root step ask again.
 - **The Fab OS apt repository is served over HTTP** until a certificate is issued for the host; integrity is protected by
   signatures, package names are not private (SECURITY.md "Posture").
 - **The `vm` image profile** has autologin, SSH and a known password by design and is never distributed.

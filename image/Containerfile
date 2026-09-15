@@ -131,7 +131,8 @@ RUN apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update && apt-get
 # Enterprise hardening (ADR-0017, docs/ENTERPRISE.md, asserted by tests/security-check.sh):
 #  - mDNS off: avahi-daemon (service + socket) disabled — a discovery surface nothing in the image needs (no KDE Connect, no
 #    cups-browsed); re-enable with `systemctl enable --now avahi-daemon.socket avahi-daemon.service`.
-#  - the three Fab OS AppArmor profiles (fabos-voiced + fabos-llama enforce, fabos-agentd complain) must parse with the
+#  - the three Fab OS AppArmor profiles (fabos-llama enforce; fabos-voiced + fabos-agentd complain until a VM run under an
+#    AppArmor kernel shows no denials — ADR-0017 amendment 9) must parse with the
 #    image's own apparmor_parser (-Q -K: compile only; the build container has no AppArmor interface), and the kernel
 #    hardening sysctl file must be in place; the polkit action for the agent's root path must be well-formed XML.
 #  - no NOPASSWD rule may exist in sudoers (the fabos-live rule of the iso profile is written later and deleted by the installer).

@@ -85,9 +85,11 @@ profile fabos-agentd /usr/lib/fabos/agent/fabos_agentd.py flags=(complain,attach
   # children. bubblewrap: Ubuntu's own profile (it grants the user namespace bwrap needs; its children are stripped of
   # capabilities). pkexec is setuid-root and must run unconfined; so do the user's applications and the fallback shell
   # (open_app/setsid/xdg-open/bash), exactly as an interactive session would run them. Helpers inherit this profile.
+  # AppArmor matches the RESOLVED path: on Ubuntu 26.04 /usr/bin/sudo -> sudo.ws, /usr/bin/true -> gnutrue and the coreutils
+  # (/usr/bin/env, cat, sleep ...) are symlinks into /usr/lib/cargo/bin/coreutils/ (Rust coreutils); both names are listed.
   /usr/bin/bwrap px -> bwrap,
   /usr/bin/pkexec Ux,
-  /usr/bin/sudo Ux,
+  /usr/bin/{sudo,sudo.ws} Ux,
   /usr/bin/bash Ux,
   /usr/bin/setsid Ux,
   /usr/bin/xdg-open Ux,
@@ -96,7 +98,7 @@ profile fabos-agentd /usr/lib/fabos/agent/fabos_agentd.py flags=(complain,attach
   /usr/bin/wtype ix,
   /usr/bin/systemctl ix,
   /usr/bin/systemd-creds ix,
-  /usr/bin/true ix,
+  /usr/bin/{true,gnutrue} ix,
   /usr/lib/cargo/bin/coreutils/* ix,
   owner @{run}/user/@{uid}/wayland-* rw,
   owner @{run}/user/@{uid}/bus rw,

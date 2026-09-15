@@ -16,12 +16,17 @@ its command (a record whose command differs from what was approved is refused), 
 (single use). Every decision is written to the audit log: syslog (authpriv) and /var/log/fabos/rootexec.log (root:adm 0640);
 the daemon records the same step in its own HMAC-chained activity log.
 
+Launcher: pkexec is the path Fab OS ships. A `sudo` rule an administrator installs themselves is honoured only when their
+/etc/fabos/policy.json sets require_password_for_root to false (sudo_path_allowed); otherwise the sudo launcher is refused,
+so a stray NOPASSWD rule cannot quietly re-create the passwordless path of 1.0-3.
+
 Output: one JSON line on stdout — {exit_code, stdout, stderr} or {"error": reason} (exit 2)."""
 import hashlib, json, os, stat, subprocess, sys, syslog, time
 
 MAX_AGE_S = 600
 RUN_BASE = "/run/user"
 LOG_DIR = "/var/log/fabos"
+POLICY_FILE = "/etc/fabos/policy.json"
 AUDIT = True             # tests switch the audit sinks off
 
 
@@ -30,14 +35,38 @@ def fail(msg, code=2):
     return code
 
 
-def caller_uid(env):
-    """The invoking user's uid as set by the setuid launcher (pkexec sets PKEXEC_UID; an administrator's own sudo rule
-    would set SUDO_UID). Both scrub the environment, so a caller cannot forge these unless it is already root."""
-    for var in ("PKEXEC_UID", "SUDO_UID"):
-        v = env.get(var)
-        if v and v.isdigit():
-            return int(v), var
-    return None, None
+def sudo_path_allowed(policy_file, require_root_owner=None):
+    """An administrator's own `sudo` rule for this program is honoured ONLY when their /etc/fabos/policy.json says
+    require_password_for_root: false (unattended kiosks). Otherwise a sudo rule someone installed re-creates the 1.0-3
+    escalation (any process of the user writes a record and runs `sudo -n rootexec`), so the sudo launcher is refused.
+    Running as root (the real case) the policy file must also be root-owned and not group/world-writable — a file the user
+    could edit is not the administrator's opt-in; tests pass require_root_owner=False for their temp files."""
+    require_root_owner = (os.geteuid() == 0) if require_root_owner is None else require_root_owner
+    try:
+        st = os.stat(policy_file)
+        if require_root_owner and (st.st_uid != 0 or st.st_mode & 0o022):
+            return False
+        with open(policy_file) as f:
+            pol = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(pol, dict) and pol.get("require_password_for_root") is False
+
+
+def caller_uid(env, policy_file=None):
+    """The invoking user's uid as set by the setuid launcher: pkexec sets PKEXEC_UID (the polkit path, always accepted);
+    sudo sets SUDO_UID (accepted only when sudo_path_allowed). Both launchers scrub the environment, so a caller cannot forge
+    these unless it is already root. Returns (uid, launcher, refusal)."""
+    v = env.get("PKEXEC_UID")
+    if v and v.isdigit():
+        return int(v), "pkexec", None
+    v = env.get("SUDO_UID")
+    if v and v.isdigit():
+        if sudo_path_allowed(policy_file or POLICY_FILE):
+            return int(v), "sudo", None
+        return None, "sudo", ("refusing the sudo launcher: %s does not set require_password_for_root to false; root goes through "
+                              "pkexec (polkit action in.patienceai.fabos.rootexec)" % (policy_file or POLICY_FILE))
+    return None, None, None
 
 
 def audit(line):
@@ -99,13 +128,16 @@ def load_record(uid, aid, run_base, now):
     return rec, None
 
 
-def main(argv, env, run_base=RUN_BASE, euid=None, now=None):
+def main(argv, env, run_base=RUN_BASE, euid=None, now=None, policy_file=None):
     euid = os.geteuid() if euid is None else euid
     now = time.time() if now is None else now
     if len(argv) != 2 or not argv[1].isalnum() or len(argv[1]) > 64:
         return fail("usage: rootexec <authz-id>")
     aid = argv[1]
-    uid, via = caller_uid(env)
+    uid, via, refusal = caller_uid(env, policy_file)
+    if refusal:
+        audit("REFUSED id=%s via=%s reason=%s" % (aid, via, refusal))
+        return fail(refusal)
     if uid is None or euid != 0:
         return fail("must be run through pkexec (polkit action in.patienceai.fabos.rootexec)")
     if uid == 0:
