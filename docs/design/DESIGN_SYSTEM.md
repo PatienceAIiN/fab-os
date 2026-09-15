@@ -20,33 +20,48 @@ must be visible and truthful.
 
 Source: `brand/gen/aurorae_theme.py` → `/usr/share/aurorae/themes/FabOS` (+ `FabOSLight`), rendered by KWin's Aurorae v2
 engine (ADR-0012). Geometry at 1x: title bar 36, **radius 14 on the two top corners** (the same circle as the KWin corner
-effect below, ADR-0019; it was 20 until 2026-09-15), square bottom corners in the frame itself, no side or
-bottom borders (`BorderSize=None`), 28 px shadow padding (gradients plus one luminance `<mask>` per top corner; no SVG filters), 28 px buttons with 3 px rounded-cap strokes.
+effect below, ADR-0019; it was 20 until 2026-09-15), square bottom corners in the frame itself (the effect rounds them), no
+side or bottom borders (kwinrc `BorderSize=None` + `BorderSizeAuto=false`; the theme rc's `BorderLeft/Right/Bottom=0` — Aurorae
+v2's `DecorationTheme::borders()` zeroes left/right/bottom for `BorderSize::None` whatever the theme says, so there is no square
+border to see), **32 px padding that carries no shadow** (below), 28 px buttons with 3 px rounded-cap strokes.
 Colours: `ColorScheme-HeaderBackground` for the bar, `ColorScheme-Text` for glyphs, `ColorScheme-Highlight` on hover,
 `ColorScheme-NegativeText` for the close hover — all rewritten from the active scheme by KSvg, so the same SVGs serve Fab
 Dark and Fab Light; only the caption colour is per variant.
 
-How the rounded corner actually appears (verified 2026-09-15 against `aurorae/v2/decoration.cpp` and by rendering the
-frame through KSvg in the image, `tests/decoration-render-test.sh`): Aurorae paints the whole frame, offset by the
-padding, into the decoration texture and cuts the shadow at the window's bounding box. The pixels between the arc and
-the box corner (the *notch*) are therefore shown exactly as the SVG draws them. They must be **fully transparent**; the
-first release put the corner shadow gradient there (19-38 % black) and every window looked square-cornered. Rules:
+**The frame is flat: one shadow source (2026-09-16, ADR-0019 amendment).** Until package 1.0-5 the frame painted its own
+28 px gradient shadow, shaped for a square window: L-shaped top-corner paths tapered to 0.06 at the box corner while the
+straight edges stayed at 0.37, and square radial bottom corners. Once the KWin effect rounded all four corners, that shadow
+read as a rectangle behind the rounded window with a hard edge where the straight shadow met the arc — the owner's "shadow of a
+sharp edge like a rectangle … before the curve". The effect's shader kept it because `UseNativeDecorationShadows=true` only
+re-interpolates the 2 px next to the window box (`getNativeShadow`). Now the shadow of every window comes from the effect alone
+(`UseNativeDecorationShadows=false`, next section) and the frame draws none. Rules:
 
-- Corner shadows are L-shaped paths that stop at the window box; nothing is drawn in the notch.
-- Each top-corner shadow is multiplied by a luminance `<mask>` (radial: black at the box corner, white from 0.9 R outwards),
-  so it fades out along the two notch edges instead of ending in a hard step (a faint square "ghost" corner) and is at full
-  strength where the arc meets the straight edge. Measured through KSvg: 0.06 just above the notch vs 0.37 above the top
-  edge. QtSvg renders `<mask>` since 6.7 (the image has 6.10); SVG filters are still not used. Mask ids are `taper*`/`tp*`,
-  never `mask-*`.
+- `decoration.svg` has **no** `linearGradient`, `radialGradient`, `<mask>`, `<filter>`, `url(#…)` or `stop-color`
+  (`tests/branding-check.sh` greps for each). The active and inactive frames are identical; the effect's shadow is what differs.
+- The padding ring **and** the two top notches (inside the window box, outside the arc) carry one uniform **alpha-1/255
+  carrier** (`fill-opacity:0.004`, black). It is invisible on its own (a 0.4 % darkening), but it is required: the effect's
+  shader (`src/shaders/shapecorners_shadows.glsl`, v0.10.0) shades only inside the padding the decoration reserves —
+  `isDrawingShadows() { return hasExpandedSize() && (usesNativeShadows || shadowColor.a > 0.0); }` with
+  `hasExpandedSize() { return windowTopLeft.x >= 1.0 && windowTopLeft.y >= 1.0; }` — and only pixels with alpha, since `run()`
+  begins `if (tex.a == 0.0) { return tex; }`. Aurorae v2 cuts the window box out of the frame for the KDecoration shadow
+  (`updateShadow()`: `CompositionMode_DestinationOut` of `innerRect`, `setPadding(m_theme->padding())`) and paints the same
+  frame offset by the padding into the decoration (`paint()`), so the notch shows what the SVG draws: with the carrier there,
+  the effect's shadow is continuous across the notch and the box corner instead of leaving a lighter square.
+- **Padding 32** (was 28): the effect clamps `ShadowSize` to `|(PaddingLeft, PaddingTop)|` (`Shader.cpp`:
+  `max_shadow_size = frameOffset.length()`), so a 45 px falloff needs `32·√2 = 45.25`. The margins of the rendered frame are
+  L 46 / T 68 / R 46 / B 32.
 - No `mask-*` elements: in Aurorae they only feed KWin's blur region (`setBlurRegion`), never the window shape, and blur
   behind an opaque title bar is wasted GPU work.
 - No opaque overlays over the client area to fake a radius; the client's own top edge sits under the title bar.
 - Buttons stay 3 px / rounded caps; hover discs radius 13 in a 28 px box; close hover uses the negative colour.
+- Where the effect cannot run (KWin's QPainter fallback) windows keep this radius-14 title bar and simply have no shadow.
 - After editing the generator: `python3 brand/gen/aurorae_theme.py --out packages/fabos-desktop/usr/share/aurorae/themes`,
-  then `tests/decoration-render-test.sh` (notch alpha 0, header alpha 1, corner taper below 40 % of the edge shadow, full
-  strength where the arc starts) and commit the SVGs.
+  then `tests/decoration-render-test.sh` — it renders the frame through KSvg in the image for Fab Dark and Fab Light (kdeglobals
+  with the scheme's `[Colors:*]` groups, which is what KColorScheme reads) and requires: every padding-ring pixel (40 704) and
+  every notch pixel (42) at alpha 0.0039 with max − min ≤ 1/255, title bar 1.00, client 0.00; it writes
+  `build/decoration-preview-{dark,light}.png` (active + inactive over a backdrop) to look at — then commit the SVGs.
 
-## Windows (four rounded corners — the KWin effect)
+## Windows (four rounded corners and the one shadow — the KWin effect)
 
 A decoration can only shape what it draws: the title bar. The client's own bottom corners stayed square, and on the owner's
 device the top ones read as sharp too. Since 2026-09-15 (ADR-0019) the **compositor** rounds every window: the
@@ -54,7 +69,7 @@ KDE-Rounded-Corners KWin effect (GPL-3.0 per its LICENSE, two source headers GPL
 `kwin4_effect_shapecorners`), compiled from its v0.10.0 release
 inside the image against the exact KWin (`image/rounded-corners-build.sh` → package `fabos-rounded-corners`), enabled and
 configured in `/etc/xdg/kwinrc` (`[Plugins] kwin4_effect_shapecornersEnabled=true`, group `[Round-Corners]`; every key is
-from the effect's `src/kcm/options.kcfg`).
+from the effect's `src/kcm/options.kcfg` — 39 keys written, all checked against the kcfg).
 
 - **Radius 14, circular** (`Size=14`, `InactiveCornerRadius=14`, `UseSquircleShape=false`) — the "field" step of the radius
   scale (docs/design/BRANDING.md). The effect masks the whole frame, decoration included, so the visible corner is the
@@ -66,15 +81,32 @@ from the effect's `src/kcm/options.kcfg`).
 - **Outline:** one 1 px hairline in `QPalette::WindowText` at 22 % active / 14 % inactive (`ActiveOutlineUsePalette=true`,
   `ActiveOutlinePalette=0`, `ActiveOutlineAlpha=56`; inactive 36) — dark on Fab Light, light on Fab Dark. Second and outer
   outlines off.
-- **Shadow:** the Aurorae shadow is kept (`UseNativeDecorationShadows=true`; the shader bends it around the arc).
-  `ShadowSize=24` / `InactiveShadowSize=16` only apply if a user turns native shadows off in the effect's settings page.
+- **Shadow — the only one (2026-09-16):** `UseNativeDecorationShadows=false`; the effect's `getCustomShadow()` draws a soft
+  shadow whose falloff circles are centred on the corner arcs (top corners `r + √Size` inside on both axes, bottom corners `r`
+  inside: a downward bias, like a real drop shadow) so it follows all four radius-14 corners and never has a square corner.
+  `ShadowSize=45` / `InactiveShadowSize=36` are **falloff radii, not reaches**: the visible reach outside a straight edge is
+  `Size − 14 − √Size` at the top and the sides and `Size − 14` at the bottom → **24 px / 31 px** active, **16 px / 22 px**
+  inactive, with alpha at the edge 0.29 / 0.42 (active) and 0.10 / 0.18 (inactive) at `ActiveShadowAlpha=128`,
+  `InactiveShadowAlpha=64` (the shape is `parametricBlend(1 − d/Size)`). The literal 24 / 16 that 1.0-5 carried for the then
+  unused custom shadow would reach 5 px / nothing. Colour **black** (`ShadowColor=0,0,0`, `InactiveShadowColor=0,0,0`,
+  `*ShadowUsePalette=false`): the palette option was measured through the KDE platform theme in the image and
+  `QPalette::Shadow` (role 11, the kcfg default) resolves to `#738cce` on Fab Dark and `#9db5ef` on Fab Light — KColorScheme
+  tints it with the accent, which would be a blue glow, not a shadow. The frame's flat carrier (previous section) is what gives
+  the effect the room and the alpha it needs; `tests/corners-vm.sh` measures the result in the booted VM.
 - **Motion:** `AnimationDuration=160` (the effect's own active/inactive fade; it does not read `AnimationDurationFactor`).
 - **Requirement:** OpenGL compositing (`Effect::supported()`); under KWin's QPainter fallback the frame's own radius-14
-  top corners remain. The effect also writes `breezerc [Common] OutlineIntensity=OutlineOff, RoundedCorners=false,
-  OutlineEnabled=false` while loaded (upstream behaviour for Breeze users; Fab OS uses Aurorae, so it is inert here).
-- **Tests:** `tests/branding-check.sh` (plugin, KCM, shaders, package, kwinrc keys, radius 14 in the frame, no build tools
-  left); `tests/corners-vm.sh` (in the VM over SSH: `loadedEffects` lists the effect; Fab Editor placed at a known geometry,
-  `spectacle -b -n -f -o`, the four corner pixels vs 14 px inside, in Fab Dark and Fab Light).
+  top corners remain and there is no shadow. The effect also writes `breezerc [Common] OutlineIntensity=OutlineOff,
+  RoundedCorners=false, OutlineEnabled=false` while loaded (upstream behaviour for Breeze users; Fab OS uses Aurorae, so it is
+  inert here).
+- **Tests:** `tests/branding-check.sh` (plugin, KCM, shaders, package, kwinrc keys incl. the shadow block, flat frame, padding
+  32, no build tools left); `tests/decoration-render-test.sh` (the frame through KSvg, dark + light); `tests/corners-vm.sh`
+  (in the VM over SSH, every call under `timeout 60`: `loadedEffects` lists the effect, `UseNativeDecorationShadows=false`,
+  the frame is flat; Fab Editor placed at a known geometry, `spectacle -b -n -f -o`, and `tests/corners-sample.py` compares
+  the shot with a reference shot of the bare desktop in Fab Dark and Fab Light: the four corner pixels vs 14 px inside, 12 px
+  along each corner diagonal — weaker than beside the straight edge, clearly so at the corner, soft, back to the background —
+  a 2 px-out walk from each corner past the arc start with no step, 2..6 px outside each edge midpoint as a soft gradient, and
+  the shadow present at all; `--selftest` runs the same rules on synthetic screenshots: round + soft passes, the 1.0-5
+  rectangle and a square window fail).
 
 ## Voice states (fabos-voice)
 

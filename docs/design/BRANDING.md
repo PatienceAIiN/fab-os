@@ -44,7 +44,7 @@ gradients do not band on 8-bit panels. Sizes measured on a generator run of 2026
 | App tiles (icon theme) | `icon-theme/scalable/apps/*.svg` + `<s>x<s>/apps/*.png` | scalable + 16…512 | `/usr/share/icons/FabOS/` | SVG first, PNG for exact sizes |
 | 3D mark | `3d/fabos-mark.glb`, `.obj` | mesh | `/usr/share/fabos/3d/` | — |
 
-| Window frame (Aurorae theme) | `brand/gen/aurorae_theme.py` → `packages/fabos-desktop/usr/share/aurorae/themes/FabOS/{decoration,minimize,maximize,restore,close}.svg` (generated offline, committed; the image build does not run the generator) | vector; buttons 28 px, title bar 36 px, shadow padding 28 px | `/usr/share/aurorae/themes/FabOS/` + `FabOSLight/` (rc + metadata.desktop; SVGs are symlinks to FabOS) | Aurorae v2 (`org.kde.kwin.aurorae.v2`) through KSvg FrameSvg; scales with the decoration button-size factor and the output scale |
+| Window frame (Aurorae theme) | `brand/gen/aurorae_theme.py` → `packages/fabos-desktop/usr/share/aurorae/themes/FabOS/{decoration,minimize,maximize,restore,close}.svg` (generated offline, committed; the image build does not run the generator) | vector; buttons 28 px, title bar 36 px, 32 px padding with no shadow of its own (the KWin corner effect draws the one shadow; ADR-0019 amendment) | `/usr/share/aurorae/themes/FabOS/` + `FabOSLight/` (rc + metadata.desktop; SVGs are symlinks to FabOS) | Aurorae v2 (`org.kde.kwin.aurorae.v2`) through KSvg FrameSvg; scales with the decoration button-size factor and the output scale |
 | Status / tray icons (monochrome) | `icon-theme/scalable/{status,devices,actions,places}/*.svg` (63 glyph files + 339 alias symlinks = 402 names) | 22-unit viewBox, no PNGs | `/usr/share/icons/FabOS/scalable/<context>/` | SVG only, so KIconLoader can recolour it at any size |
 
 Icon theme `index.theme`: `[Icon Theme]` keeps `FollowsColorScheme=true`; `Directories=` lists the monochrome
@@ -81,7 +81,8 @@ The buttons are our own glyphs, 3 px rounded strokes in a 28 px box inside a 36 
 maximize = rounded square, restore = two offset rounded squares, close = rounded X. Hover puts a disc behind the glyph —
 accent (`ColorScheme-Highlight`) for minimize/maximize/restore, red (`ColorScheme-NegativeText`) with a white X for
 close; pressed is a stronger disc; inactive windows dim the glyphs. The title-bar fill is `ColorScheme-HeaderBackground`,
-the shadow is gradient-only (QtSvg has no filters) in a 28 px padding. Every fill is a KSvg `current-color-scheme`
+the frame paints no shadow at all (since 2026-09-16 the KDE-Rounded-Corners KWin effect draws the only window shadow; the
+32 px padding carries an invisible alpha-1/255 carrier the effect's shader needs, docs/design/DESIGN_SYSTEM.md "Windows"). Every fill is a KSvg `current-color-scheme`
 class, so the frame follows the **system** colour scheme (Fab Dark or Fab Light) live.
 
 **Caption colour — known limitation.** The one value Aurorae cannot take from the scheme is the caption colour:

@@ -23,46 +23,61 @@ not run this script. After editing, re-run:  python3 brand/gen/aurorae_theme.py 
 
 Geometry (1x, Aurorae scales with the button-size factor):
   radius 14 on the two top corners, title bar 36 px, buttons 28 px in a 36 px bar, 3 px glyph strokes,
-  shadow padding 28 px on every side (gradients plus one luminance <mask> per top corner; no SVG filters), side/bottom borders 0 (BorderSize=None).
+  side/bottom borders 0 (BorderSize=None), 32 px padding on every side that carries NO shadow of its own (see below).
 
 FrameSvg layout of decoration.svg: the corner elements are painted into (leftWidth x topHeight) rectangles where
 leftWidth is the width of the `-left` element and topHeight the height of the `-top` element, so the rounded
 corner (which needs R px INSIDE the window edge) only fits if `-left` is padding + radius wide. The part of each
 element that lies under the client is never shown (KWin renders only the border quads + the shadow).
 
-Why the corner NOTCHES are transparent (2026-09-15; ISO 1.0 rev 2 showed square top corners):
-  Aurorae v2 (aurorae/v2/decoration.cpp, Plasma 6.6) resizes this frame to window + Padding* and paints it into the
-  decoration rect offset by (-PaddingLeft, -PaddingTop) (`paint()`); the shadow is the same frame with the window
-  rectangle cut out (`updateShadow()`: DestinationOut of innerRect) and KWin draws it only OUTSIDE the window box.
-  So every pixel of `-topleft` / `-topright` that lies inside the window's bounding box but outside the arc (the notch)
-  is shown exactly as drawn here. The first version filled the notch with the corner shadow gradient (19-38 % black,
-  measured through KSvg by tests/decoration-render-test.sh), which reads as a dark square corner on any wallpaper.
-  The corner shadow is therefore an L-shaped path that stops at the window box and the notch is left fully transparent,
-  as Breeze does. Because KWin never draws shadow inside the box, the shadow left outside would end in a hard step along
-  the two notch edges (a faint square "ghost" corner); each corner's L path is therefore multiplied by a luminance <mask>
-  (radial: black at the window-box corner, white from 0.9 R outwards), so the shadow fades out along those edges and is at
-  full strength where the arcs meet the straight edges. Measured through KSvg in the image (tests/decoration-render-test.sh):
-  0.06 just above the notch vs 0.37 above the top edge, active frame; QtSvg renders <mask> since 6.7, the image has 6.10.
-  `mask-*` elements are deliberately absent: in Aurorae they only define KWin's blur region
-  (`updateBlur()` -> `setBlurRegion`; v1 aurorae.qml `decorationMask` -> `updateBlur`), never the window shape, and a
-  blur region behind an opaque title bar would only cost GPU time.
+ONE shadow source (2026-09-16, ADR-0019 amendment; ISO 1.0-5 showed a rectangular shadow with a hard step "before the curve"):
+  The shadow of every window is drawn by the KDE-Rounded-Corners KWin effect alone (kwinrc [Round-Corners]
+  UseNativeDecorationShadows=false, ShadowSize=45, InactiveShadowSize=36). This frame paints NO shadow: no gradients, no
+  masks, no shadow paths; the frame is flat. Until 1.0-5 the frame carried its own 28 px gradient shadow, built for a square
+  window (L-shaped corner paths that faded to 0.06 at the box corner while the straight edges stayed at 0.37, and square
+  bottom corners), and the effect kept it (`UseNativeDecorationShadows=true`: its `getNativeShadow` only re-interpolates the
+  pixels within 2 px of the window box). Two shadow shapes on one window read as a rectangle behind the rounded frame.
 
-Radius 14, not 20 (2026-09-15, ADR-0019): the four corners of every window are now cut by the KDE-Rounded-Corners KWin
+  Why the padding and a 1/255 "carrier" fill stay (read in the effect's v0.10.0 sources, src/shaders/shapecorners_shadows.glsl
+  and variables.glsl): the effect renders the window into a texture the size of KWin's expandedGeometry, i.e. the frame plus
+  the decoration's shadow padding — `bool hasExpandedSize() { return windowTopLeft.x >= 1.0 && windowTopLeft.y >= 1.0; }` and
+  `bool isDrawingShadows() { return hasExpandedSize() && (usesNativeShadows || shadowColor.a > 0.0); }` — so with no padding
+  there is no room and no shadow at all; and `run()` begins with `if (tex.a == 0.0) { return tex; }`, so a fully transparent
+  pixel is returned untouched and the effect's shadow is painted only where the decoration left alpha > 0. Aurorae v2
+  (aurorae/v2/decoration.cpp, Plasma 6.6, `updateShadow()`) makes the KDecoration shadow from this frame with the window box
+  cut out (`CompositionMode_DestinationOut` of `innerRect`) and `setPadding(m_theme->padding())`, and `paint()` paints the
+  same frame offset by (-PaddingLeft, -PaddingTop) into the decoration, so the corner notches (inside the window box, outside
+  the arc) are shown as drawn here. The frame therefore fills the padding ring AND the two notches with one uniform fill of
+  alpha 1/255 (`fill-opacity:0.004`, black): invisible on its own (a 0.4 % darkening), but every pixel the effect must shade
+  is non-zero, so its soft shadow is continuous across the notch and the box corner. Where the effect cannot run (KWin
+  without OpenGL compositing) windows have this radius-14 title bar and no shadow.
+
+  Padding 32 (was 28): the effect clamps its ShadowSize to the length of (PaddingLeft, PaddingTop) (Shader.cpp:
+  `max_shadow_size = frameOffset.length()`), and the visible reach outside a straight edge is
+  ShadowSize - R - sqrt(ShadowSize) at the top and the sides (the shadow centre sits sqrt(ShadowSize) inside) and
+  ShadowSize - R at the bottom (`getCustomShadow`). 45 needs a clamp of >= 45 -> padding 32 (45.25); it reaches 24 px at
+  the top/sides and 31 px at the bottom (0.29 / 0.42 alpha at the edge with ActiveShadowAlpha=128); inactive 36 reaches
+  16 / 22 px. The literal values 24 / 16 that 1.0-5 wrote for the never-used custom shadow would give 5 px / none.
+
+Radius 14, not 20 (2026-09-15, ADR-0019): the four corners of every window are cut by the KDE-Rounded-Corners KWin
   effect (kwinrc [Round-Corners] Size=14, circular arcs: UseSquircleShape=false). The effect masks the whole frame
   (decoration included), so the visible top corner is the INTERSECTION of the effect's arc and this frame's arc; the two
-  must be the same circle or a sliver of the effect's 1 px outline would show inside this frame's transparent notch (or
+  must be the same circle or a sliver of the effect's 1 px outline would show inside this frame's notch (or
   this frame's arc would show inside the effect's). R here therefore equals the effect's Size, and both are 14 — the
   "field" radius of the design scale (docs/design/BRANDING.md), smaller than the 24 of Plasma popups, which stay as they are.
-  Without the effect (KWin without OpenGL compositing) this frame still gives radius-14 top corners on its own.
+  `mask-*` elements are deliberately absent: in Aurorae they only define KWin's blur region
+  (`updateBlur()` -> `setBlurRegion`), never the window shape, and a blur region behind an opaque title bar would only cost
+  GPU time.
 
 Usage: aurorae_theme.py --out <dir>   (writes <dir>/FabOS and <dir>/FabOSLight)
 """
 import argparse, os
 
-P, R, TH = 28, 14, 36            # shadow padding, corner radius (= the KWin effect's [Round-Corners] Size, ADR-0019), title-bar height
+P, R, TH = 32, 14, 36            # shadow padding (carrier only), corner radius (= the KWin effect's [Round-Corners] Size, ADR-0019), title-bar height
 LW, TOPH, BH = P + R, P + TH, P  # frame border thicknesses: left/right, top, bottom
-BW, BHT = 2 * LW + 8, TOPH + 8 + BH   # one 9-slice block: 92 x 100 (2*LW+8 x TOPH+8+BH)
+BW, BHT = 2 * LW + 8, TOPH + 8 + BH   # one 9-slice block: 100 x 108 (2*LW+8 x TOPH+8+BH)
 BTN = 28                          # button element size
+CARRIER = 'style="fill:#000;fill-opacity:0.004"'   # alpha 1/255: the KWin effect shades only pixels with alpha > 0 (see docstring)
 
 STYLE = ('<style type="text/css" id="current-color-scheme">'
          '.ColorScheme-Text{color:#e6eaf0;}.ColorScheme-Background{color:#0f1420;}.ColorScheme-HeaderBackground{color:#0f1420;}'
@@ -76,85 +91,53 @@ def cls(name, opacity=1.0, extra=""):
 
 
 # ---------- decoration.svg ----------
-def stops(t0, a):
-    """Shadow falloff from the window edge (offset t0) to the outer edge of the padding (offset 1)."""
-    return "".join('<stop offset="%.4f" stop-color="#000" stop-opacity="%.3f"/>' % (t, v) for t, v in
-                   ((t0, a), (t0 + 0.35 * (1 - t0), a * 0.42), (t0 + 0.7 * (1 - t0), a * 0.12), (1.0, 0.0)))
-
-
-def gradients(s, a):
-    """Gradient set for one prefix (suffix s, shadow strength a) in block-local coordinates."""
-    g = []
-    lin = lambda i, x1, y1, x2, y2, t0: g.append('<linearGradient id="%s%s" gradientUnits="userSpaceOnUse" x1="%d" y1="%d" x2="%d" y2="%d">%s</linearGradient>' % (i, s, x1, y1, x2, y2, stops(t0, a)))
-    rad = lambda i, cx, cy, r, t0: g.append('<radialGradient id="%s%s" gradientUnits="userSpaceOnUse" cx="%d" cy="%d" r="%d">%s</radialGradient>' % (i, s, cx, cy, r, stops(t0, a)))
-    lin("shL", P, 0, 0, 0, 0)                       # left band: strong at x=P, fades to x=0
-    lin("shR", BW - P, 0, BW, 0, 0)                 # right band
-    lin("shT", 0, P, 0, 0, 0)                       # top band
-    lin("shB", 0, TOPH + 8, 0, BHT, 0)              # bottom band: strong at the window bottom edge
-    rad("shTL", LW, LW, LW, R / float(LW))          # top-left: centred on the arc centre, window edge at R
-    rad("shTR", BW - LW, LW, LW, R / float(LW))
-    rad("shBL", P, TOPH + 8, P, 0)                  # bottom corners are square: centred on the window corner
-    rad("shBR", BW - P, TOPH + 8, P, 0)
-    # Corner taper: a luminance mask (black at the window-box corner, white from 0.9 R outwards, in the L path's own user
-    # space) multiplies the top-corner shadow, so it fades to nothing along the two notch edges instead of ending in a hard
-    # step where the transparent notch begins. Ids start with "taper"/"tp", never "mask-" (that prefix is Aurorae's blur region).
-    for tag, cx, x0 in (("TL", P, 0), ("TR", BW - P, BW - LW)):
-        g.append('<radialGradient id="tp%s%s" gradientUnits="userSpaceOnUse" cx="%d" cy="%d" r="%d">'
-                 '<stop offset="0" stop-color="#000"/><stop offset="0.9" stop-color="#fff"/><stop offset="1" stop-color="#fff"/></radialGradient>'
-                 '<mask id="taper%s%s" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="%d" y="0" width="%d" height="%d">'
-                 '<rect x="%d" y="0" width="%d" height="%d" fill="url(#tp%s%s)"/></mask>'
-                 % (tag, s, cx, P, R, tag, s, x0, LW, LW, x0, LW, LW, tag, s))
-    return "".join(g)
-
-
-def frame_block(prefix, s, dx):
-    """The nine `prefix-*` elements of one 9-slice frame, translated by dx."""
+def frame_block(prefix, dx):
+    """The nine `prefix-*` elements of one 9-slice frame, translated by dx. Active and inactive frames are identical: the
+    effect's shadow (not this frame) is what differs between the two states."""
     yb = TOPH + 8                                   # y of the window's bottom edge (top of the bottom border)
     hb = cls("HeaderBackground")
     keep = 'style="fill:#000;fill-opacity:0"'      # invisible bounds keeper so element sizes are exact
-    e = {}
-    # Corner shadow as an L-shaped path that stops at the window's bounding box: the notch between the arc and the box
-    # corner stays fully transparent (Aurorae shows it as drawn; a shadow there reads as a square corner, see docstring).
-    e["topleft"] = ('<path d="M0 0H%dV%dH%dV%dH0Z" fill="url(#shTL%s)" mask="url(#taperTL%s)"/>' % (LW, P, P, LW, s, s) +
-                    '<rect x="0" y="%d" width="%d" height="%d" fill="url(#shL%s)"/>' % (LW, P, TOPH - LW, s) +
-                    '<path d="M%d %d V%d A%d %d 0 0 1 %d %d V%d Z" %s/>' % (P, TOPH, LW, R, R, LW, P, TOPH, hb))
-    e["top"] = ('<rect x="%d" y="0" width="8" height="%d" fill="url(#shT%s)"/>' % (LW, P, s) +
-                '<rect x="%d" y="%d" width="8" height="%d" %s/>' % (LW, P, TH, hb))
     x0 = BW - LW                                    # left edge of the right column
-    e["topright"] = ('<path d="M%d 0H%dV%dH%dV%dH%dZ" fill="url(#shTR%s)" mask="url(#taperTR%s)"/>' % (x0, BW, LW, BW - P, P, x0, s, s) +
-                     '<rect x="%d" y="%d" width="%d" height="%d" fill="url(#shR%s)"/>' % (BW - P, LW, P, TOPH - LW, s) +
+    e = {}
+    # Top corners: the carrier covers the whole element (padding ring + notch), the header arc is painted on top of it.
+    e["topleft"] = ('<rect x="0" y="0" width="%d" height="%d" %s/>' % (LW, TOPH, CARRIER) +
+                    '<path d="M%d %d V%d A%d %d 0 0 1 %d %d V%d Z" %s/>' % (P, TOPH, LW, R, R, LW, P, TOPH, hb))
+    e["top"] = ('<rect x="%d" y="0" width="8" height="%d" %s/>' % (LW, P, CARRIER) +
+                '<rect x="%d" y="%d" width="8" height="%d" %s/>' % (LW, P, TH, hb))
+    e["topright"] = ('<rect x="%d" y="0" width="%d" height="%d" %s/>' % (x0, LW, TOPH, CARRIER) +
                      '<path d="M%d %d A%d %d 0 0 1 %d %d V%d H%d Z" %s/>' % (x0, P, R, R, x0 + R, LW, TOPH, x0, hb))
+    # Sides: the carrier over the padding; the R px inside the window box stay fully transparent (BorderSize=None: under the client).
     e["left"] = ('<rect x="0" y="%d" width="%d" height="8" %s/>' % (TOPH, LW, keep) +
-                 '<rect x="0" y="%d" width="%d" height="8" fill="url(#shL%s)"/>' % (TOPH, P, s))
+                 '<rect x="0" y="%d" width="%d" height="8" %s/>' % (TOPH, P, CARRIER))
     e["center"] = '<rect x="%d" y="%d" width="8" height="8" %s/>' % (LW, TOPH, keep)
     e["right"] = ('<rect x="%d" y="%d" width="%d" height="8" %s/>' % (x0, TOPH, LW, keep) +
-                  '<rect x="%d" y="%d" width="%d" height="8" fill="url(#shR%s)"/>' % (BW - P, TOPH, P, s))
-    e["bottomleft"] = ('<rect x="0" y="%d" width="%d" height="%d" fill="url(#shBL%s)"/>' % (yb, P, BH, s) +
-                       '<rect x="%d" y="%d" width="%d" height="%d" fill="url(#shB%s)"/>' % (P, yb, R, BH, s))
-    e["bottom"] = '<rect x="%d" y="%d" width="8" height="%d" fill="url(#shB%s)"/>' % (LW, yb, BH, s)
-    e["bottomright"] = ('<rect x="%d" y="%d" width="%d" height="%d" fill="url(#shBR%s)"/>' % (BW - P, yb, P, BH, s) +
-                        '<rect x="%d" y="%d" width="%d" height="%d" fill="url(#shB%s)"/>' % (x0, yb, R, BH, s))
+                  '<rect x="%d" y="%d" width="%d" height="8" %s/>' % (BW - P, TOPH, P, CARRIER))
+    # Bottom: carrier only (the frame has no bottom border; the effect rounds and shades the client's bottom corners).
+    e["bottomleft"] = '<rect x="0" y="%d" width="%d" height="%d" %s/>' % (yb, LW, BH, CARRIER)
+    e["bottom"] = '<rect x="%d" y="%d" width="8" height="%d" %s/>' % (LW, yb, BH, CARRIER)
+    e["bottomright"] = '<rect x="%d" y="%d" width="%d" height="%d" %s/>' % (x0, yb, LW, BH, CARRIER)
     body = "".join('<g id="%s-%s">%s</g>' % (prefix, n, e[n]) for n in
                    ("topleft", "top", "topright", "left", "center", "right", "bottomleft", "bottom", "bottomright"))
     return '<g transform="translate(%d 0)">%s</g>' % (dx, body)
 
 
 def decoration_svg():
-    defs = STYLE + gradients("", 0.38) + gradients("i", 0.20)
-    blocks = frame_block("decoration", "", 0) + frame_block("decoration-inactive", "i", BW + 8)
+    blocks = frame_block("decoration", 0) + frame_block("decoration-inactive", BW + 8)
     # maximized: square, only the center element is used (Aurorae disables the borders and stretches it)
     mx = 2 * (BW + 8)
     blocks += '<g id="decoration-maximized-center"><rect x="%d" y="0" width="8" height="8" %s/></g>' % (mx, cls("HeaderBackground"))
     blocks += '<g id="decoration-maximized-inactive-center"><rect x="%d" y="0" width="8" height="8" %s/></g>' % (mx + 16, cls("HeaderBackground"))
     w = mx + 32
-    # <desc> is ignored by QtSvg/KSvg; it records the two facts a reader of the SVG needs (tests/branding-check.sh greps "notch").
-    desc = ('<desc>Fab OS window frame for the Aurorae v2 engine. The corner notches inside the window box are transparent on '
-            'purpose: Aurorae paints this frame offset by the padding into the decoration rect, so anything drawn there shows '
-            'as a square corner. No mask-* elements: in Aurorae they only set the blur region, never the window shape '
-            '(brand/gen/aurorae_theme.py). The top-corner shadows are multiplied by a luminance mask (ids taper*/tp*) so they fade '
-            'out along the notch edges instead of ending in a hard step.</desc>')
+    # <desc> is ignored by QtSvg/KSvg; it records the facts a reader of the SVG needs (tests/branding-check.sh greps "notch" and "carrier").
+    desc = ('<desc>Fab OS window frame for the Aurorae v2 engine. Flat: this frame paints no shadow (no gradients, no masks, no '
+            'filters); the shadow of every window comes from the KDE-Rounded-Corners KWin effect alone (kwinrc [Round-Corners] '
+            'UseNativeDecorationShadows=false). The 32 px padding and the corner notches inside the window box carry one uniform '
+            'alpha-1/255 carrier fill (fill-opacity 0.004), because the effect shades only pixels whose alpha is not 0 and only '
+            'inside the padding the decoration reserves (shapecorners_shadows.glsl: hasExpandedSize, tex.a == 0.0 returns tex). '
+            'Aurorae paints this frame offset by the padding into the decoration, so the notch is shown as drawn. No mask-* '
+            'elements: in Aurorae they only set the blur region, never the window shape (brand/gen/aurorae_theme.py).</desc>')
     return ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">%s<defs>%s</defs>%s</svg>\n'
-            % (w, BHT, w, BHT, desc, defs, blocks))
+            % (w, BHT, w, BHT, desc, STYLE, blocks))
 
 
 # ---------- buttons ----------
@@ -199,6 +182,9 @@ def button_svg(kind):
 
 # ---------- rc + metadata ----------
 def rc(active_text, inactive_text):
+    # Border* = 0 and kwinrc BorderSize=None (BorderSizeAuto=false) together give no side or bottom border: Aurorae v2's
+    # DecorationTheme::borders() zeroes left/right/bottom for BorderSize::None regardless of these values, and these values
+    # keep the frame borderless if a user ever picks another size in the KCM. Padding* is the shadow room described above.
     return "\n".join([
         "[General]",
         "ActiveTextColor=%s" % active_text, "InactiveTextColor=%s" % inactive_text,
