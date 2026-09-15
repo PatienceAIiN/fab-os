@@ -6,9 +6,11 @@
 they cannot drift), the ladder's own checks (tests/ladder/checks.py imported as a module, answer key from
 tests/ladder/expected.json), a fresh ~/Ladder, PASS/FAIL per task decided by the checker — never by what the agent says.
 
-Plus four HELD-OUT tasks (level "h", HELDOUT below) of the same shapes as the L2 tasks whose idioms appear as worked examples in
+Plus six HELD-OUT tasks (level "h", HELDOUT below): four of the same shapes as the L2 tasks whose idioms appear as worked examples in
 the driver's executor prompt (a CSV column sum, a rename by extension, a largest/smallest file, a file count) — a different column
-name, extension, tree and folder, generated here and named in no prompt, so the table has rows the prompt cannot have memorised.
+name, extension, tree and folder, generated here and named in no prompt, so the table has rows the prompt cannot have memorised —
+and two the owner asked for (round 6, ADR-0022 §"local model web + multi-step"): h-e fetches the daemon's own /health with web_fetch
+(the check also requires that a web_fetch step really ran) and h-f is a three-step task (a folder, two files, an index of the names).
 
 Runs anywhere a daemon (FABOS_AGENT_PROVIDER=local) and a llama-server /v1 endpoint are reachable; the intended
 place is the Fab OS image, driven by tests/local-driver-image.sh (which also starts both processes and a wtype shim, since a
@@ -48,9 +50,15 @@ HELDOUT = [
     ("h-c", "Find the single smallest file anywhere under /tmp/heldout/tree and write just its file name (the base name, no directory path) into ~/Ladder/smallest.txt"),
     ("h-d", "Count how many files are in the folder /tmp/heldout/logs (regular files only). Do not create or change any file. "
             "End your reply with a line in exactly this form: FILE COUNT: <number>"),
+    # round 6 (owner: "local model unable to perform web fetching and multipart"): the URL is rewritten to the daemon under test (as l2-e's is)
+    ("h-e", "fetch http://127.0.0.1:8790/health and save it to ~/Ladder/h.json"),
+    ("h-f", "Create the folder ~/Ladder/pack, write two files inside it — a.txt containing the word apple and b.txt containing the word banana — "
+            "then list the names of the files in that folder into ~/Ladder/pack/index.txt, one per line."),
 ]
 HELDOUT_WHAT = {"h-a": "held-out: sum the qty column of two CSVs into ~/Ladder/qty-total.txt", "h-b": "held-out: rename every .log in ~/Ladder/logs-copy to .bak (a .md file stays)",
-                "h-c": "held-out: smallest file under /tmp/heldout/tree, base name into ~/Ladder/smallest.txt", "h-d": "held-out: count the files in /tmp/heldout/logs, answer FILE COUNT: n"}
+                "h-c": "held-out: smallest file under /tmp/heldout/tree, base name into ~/Ladder/smallest.txt", "h-d": "held-out: count the files in /tmp/heldout/logs, answer FILE COUNT: n",
+                "h-e": "held-out: web_fetch the daemon's /health and save it to ~/Ladder/h.json (a web_fetch step must run)",
+                "h-f": "held-out: three steps — folder ~/Ladder/pack, a.txt=apple + b.txt=banana, index.txt listing the names"}
 
 
 def prepare_heldout():
@@ -142,6 +150,42 @@ def check_heldout(name, key, home, task, numbers):
         if not re.search(r"FILE COUNT:\s*%d([^0-9]|$)" % len(real), said):
             return False, "agent text has no 'FILE COUNT: %d' (said: %s)" % (len(real), " ".join(said[:160].split()))
         return True, "agent answered 'FILE COUNT: %d'; /tmp/heldout/logs really contains %d files and is unchanged" % (len(real), len(real))
+    if name == "h-e":
+        tools = [s.get("name") for s in task.get("steps") or [] if s.get("kind") == "tool_call" and (s.get("decision") or "") not in ("denied", "expired")]
+        text = read(os.path.join(ladder, "h.json"))
+        if text is None:
+            return False, "~/Ladder/h.json was not created (tools: %s)" % (" > ".join(tools) or "none")
+        try:
+            doc = json.loads(text)
+            how = "strict"
+        except json.JSONDecodeError:
+            m = re.search(r"\{.*\}", text, re.S)
+            try:
+                doc = json.loads(m.group(0)) if m else None
+            except json.JSONDecodeError:
+                doc = None
+            how = "embedded-object"
+        if not isinstance(doc, dict) or not doc.get("ok"):
+            return False, "h.json does not hold the health JSON with ok=true: %r (tools: %s)" % (" ".join(text.split())[:120], " > ".join(tools) or "none")
+        if "web_fetch" not in tools:
+            return False, "h.json is right but no web_fetch step ran (tools: %s) — the task is about the web fetch tool" % (" > ".join(tools) or "none")
+        return True, "h.json parses (%s) with ok=%r app=%r and a web_fetch step ran (tools: %s)" % (how, doc["ok"], doc.get("app"), " > ".join(tools))
+    if name == "h-f":
+        d = os.path.join(ladder, "pack")
+        if not os.path.isdir(d):
+            return False, "~/Ladder/pack was not created"
+        a, b, idx = read(os.path.join(d, "a.txt")), read(os.path.join(d, "b.txt")), read(os.path.join(d, "index.txt"))
+        if a is None or b is None:
+            return False, "missing %s in ~/Ladder/pack (has: %s)" % (" and ".join(n for n, v in (("a.txt", a), ("b.txt", b)) if v is None), sorted(os.listdir(d)))
+        if a.strip().lower() != "apple" or b.strip().lower() != "banana":
+            return False, "a.txt=%r b.txt=%r, expected apple / banana" % (a.strip()[:40], b.strip()[:40])
+        if idx is None:
+            return False, "~/Ladder/pack/index.txt was not created (files: %s)" % sorted(os.listdir(d))
+        lines = [ln.strip() for ln in idx.splitlines() if ln.strip()]
+        names = {os.path.basename(ln.rstrip("/")) for ln in lines}
+        if not {"a.txt", "b.txt"} <= names:
+            return False, "index.txt lists %s, expected at least a.txt and b.txt one per line" % (lines[:6],)
+        return True, "pack/a.txt=apple, pack/b.txt=banana, index.txt lists %s (%d lines)" % (sorted(names)[:4], len(lines))
     return False, "no such held-out task"
 
 
@@ -157,7 +201,7 @@ def ladder_tasks(expected, daemon_url):
     out = {}
     with open(LADDER_SH, encoding="utf-8") as f:
         for line in f:
-            m = re.match(r'^\s*run_task\s+(l[12]-[a-f])\s+\$T(\d)\s+auto\s+"(.*)"\s*$', line)
+            m = re.match(r'^\s*run_task\s+(l[12]-[a-g])\s+\$T(\d)\s+auto\s+"(.*)"\s*$', line)
             if not m:
                 continue
             text = m.group(3)
@@ -165,7 +209,7 @@ def ladder_tasks(expected, daemon_url):
                 text = text.replace(k, v)
             text = text.replace("http://127.0.0.1:8790/", daemon_url.rstrip("/") + "/")     # L2-e fetches the daemon's own /health
             out[m.group(1)] = (int(m.group(2)), text)
-    for want in ("l1-a", "l1-b", "l1-c", "l1-d", "l1-e", "l1-f", "l2-a", "l2-b", "l2-c", "l2-d", "l2-e", "l2-f"):
+    for want in ("l1-a", "l1-b", "l1-c", "l1-d", "l1-e", "l1-f", "l2-a", "l2-b", "l2-c", "l2-d", "l2-e", "l2-f", "l2-g"):
         if want not in out:
             die("could not find the task text for %s in %s" % (want, LADDER_SH))
     return out
@@ -365,7 +409,7 @@ def main():
                      "result": " ".join(((t.get("result") or t.get("error") or ""))[:400].split()), "note": note})
         print(">>> %s: %s — %s" % (status, name, evidence[:300]), flush=True)
 
-    for name in ("l1-a", "l1-b", "l1-c", "l1-d", "l1-e", "l1-f", "l2-a", "l2-b", "l2-c", "l2-d", "l2-e", "l2-f"):
+    for name in ("l1-a", "l1-b", "l1-c", "l1-d", "l1-e", "l1-f", "l2-a", "l2-b", "l2-c", "l2-d", "l2-e", "l2-f", "l2-g"):
         level, text = tasks[name]
         if level not in levels or (a.only and name not in a.only.split(",")):
             continue
@@ -374,6 +418,13 @@ def main():
                          "seconds": 0, "steps": 0, "tools": "none", "task_status": "", "approved": 0, "result": "", "note": "optional"})
             print(">>> SKIP: l2-f — optional mail task (no credentials)", flush=True)
             continue
+        if name == "l2-g":
+            cap = (d.call("GET", "/status").get("images") or {})
+            if not cap.get("ready"):                          # the built-in model has no image API; an OpenAI/Gemini key or images.local_endpoint would (ADR-0021)
+                rows.append({"task": name, "level": level, "status": "SKIP", "evidence": "optional: the active provider cannot generate images (%s)" % cap.get("detail", ""),
+                             "seconds": 0, "steps": 0, "tools": "none", "task_status": "", "approved": 0, "result": "", "note": "optional"})
+                print(">>> SKIP: l2-g — optional image task (%s)" % cap.get("detail", ""), flush=True)
+                continue
         if name == "l1-c":
             subprocess.run(["pkill", "-x", "konsole"], capture_output=True)
             time.sleep(1)
@@ -428,6 +479,11 @@ def main():
                     ok, ev = False, "file is right but the editor was never opened (tools=%s) | %s" % (tools, ev)
         elif name == "l2-e":
             ok, ev = run_check(checks, "l2e")
+        elif name == "l2-g":
+            ok, ev = step_order(t, "generate_image")
+            if ok:
+                ok, ev2 = run_check(checks, "l2g")
+                ev += " | " + ev2
         else:
             ok, ev = False, "not graded here"
         verdict(name, level, "PASS" if ok else "FAIL", ev if ok else ev + " | task=" + str(t["status"]), t)

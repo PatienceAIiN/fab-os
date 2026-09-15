@@ -17,7 +17,10 @@ TASKS = [("l1-a", "create ~/Ladder/one/hello.txt with the exact text"), ("l1-b",
          ("l2-e", "web_fetch the daemon's /health, save the JSON unchanged"), ("l2-f", "type a hi note in Fab Editor and mail it (needs a mail account)"),
          # held-out (tests/local-driver-test.py HELDOUT): the L2 shapes whose idioms are worked examples in the executor prompt, with other names — in no prompt
          ("h-a", "held-out: sum the qty column of two CSVs into ~/Ladder/qty-total.txt"), ("h-b", "held-out: rename every .log in ~/Ladder/logs-copy to .bak (a .md file stays)"),
-         ("h-c", "held-out: smallest file under /tmp/heldout/tree, base name into ~/Ladder/smallest.txt"), ("h-d", "held-out: count the files in /tmp/heldout/logs, answer FILE COUNT: n")]
+         ("h-c", "held-out: smallest file under /tmp/heldout/tree, base name into ~/Ladder/smallest.txt"), ("h-d", "held-out: count the files in /tmp/heldout/logs, answer FILE COUNT: n"),
+         # round 6 (ADR-0022): the owner's "web fetching and multipart" — a web_fetch task whose check requires the web_fetch step, and a three-step task
+         ("h-e", "held-out: web_fetch the daemon's /health and save it to ~/Ladder/h.json (a web_fetch step must run)"),
+         ("h-f", "held-out: three steps — folder ~/Ladder/pack, a.txt=apple + b.txt=banana, index.txt listing the names")]
 
 
 def cell(row):
@@ -41,7 +44,7 @@ def main(paths):
         if name.startswith("h-") and not any(name in rows for _, _, rows in runs):
             continue                                                           # a run without the held-out tasks (before they existed): no empty rows
         print("| %s | %s |" % (name, what) + "".join(" %s |" % cell(rows.get(name)) for _, _, rows in runs))
-    print("| **Score** | L1 of 6 · L2 of 5 · held-out of 4 |" + "".join(" **L1 %s · L2 %s · held-out %s** |" % (d["summary"].get("l1", "—"), d["summary"].get("l2", "—"), d["summary"].get("h", "not run")) for _, d, _ in runs))
+    print("| **Score** | L1 of 6 · L2 of 5 · held-out of 6 |" + "".join(" **L1 %s · L2 %s · held-out %s** |" % (d["summary"].get("l1", "—"), d["summary"].get("l2", "—"), d["summary"].get("h", "not run")) for _, d, _ in runs))
     print("| llama-server peak RSS (`VmHWM`) | after the whole run |" + "".join(" %.2f GB |" % (d.get("server_vmhwm_kb", 0) / 1e6) for _, d, _ in runs))
     return 0
 

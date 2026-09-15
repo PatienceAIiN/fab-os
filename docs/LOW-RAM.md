@@ -147,6 +147,26 @@ What failed in the shipped run, in the checker's own words (`tests/ladder/checks
 
 The honest reading — **L1 6/6, L2 5/5, held-out 1/4** (before the driver: L1 2/6, L2 0/5, held-out not run; the cloud providers score 21/21 on the ladder's checks): the stepwise driver turns a model that "did one thing and said done" into one that finishes short, concrete desktop tasks — in the shipped run it creates a folder and a file with the exact text, counts the files of a folder and answers in the asked form, opens Fab Terminal, writes today's date from the clock, copies a folder (source intact), opens Fab Editor and types where you can watch, sums a column across three CSV files, renames a folder of notes to another extension, names the largest file under a tree, types a sentence into Fab Editor and saves it, fetches a local URL and saves the body unchanged and counts the files of another folder (held-out) — and, when it cannot, **fails with the step named** instead of claiming success. What still failed: h-a (sums the qty column of two CSVs (held-out); the agent claimed success); h-b (renames .log files to .bak and leaves the .md file alone (held-out); the agent reported the failure itself); h-c (names the smallest file under another tree (held-out); the agent claimed success). Three of the five L2 tasks (l2-a, l2-b, l2-c) and l1-b match worked examples or hints in the driver's prompt, so the L1/L2 score is partly a test of those examples; the **held-out 1/4** row is the one the prompt cannot have memorised (ADR-0020 §3). It is not a cloud model: a 1.5B model still needs the driver's deterministic checks to catch commands that exit 0 without doing the work, its plans need the request-derived repairs described in ADR-0020, and one run is a sample, not a guarantee — run-to-run variance at temperature 0.2 is real. Tasks took 12–124 s each. For hard tasks a cloud provider is one dropdown away. Rerun: `tests/local-driver-image.sh --label after --extra-args --no-repack` (this tree; L1, L2 and the held-out tasks) and `--label before --agent-src build/baseline --llama-start build/baseline/llama-start.sh` after extracting the previous daemon and wrapper there (`git show <rev>:packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py > build/baseline/fabos_agentd.py`, same for `packages/fabos-ai/usr/lib/fabos/ai/llama-start.sh`); then `python3 tests/local-driver-docs.py` splices the table, the failures and this paragraph into the three documents.
 
+## Ollama and larger local models (ADR-0022)
+
+Ollama is not part of Fab OS (not in the Ubuntu archive; its installer downloads about 1 GB). When the user installs it, the
+agent's *Ollama (on this computer)* provider picks **the largest pulled model that fits `MemTotal`** unless `ollama.model` is set:
+
+| RAM | model size the agent picks by default | typical pulls |
+|---|---|---|
+| up to 4.5 GiB | ≤ 3B parameters | `qwen2.5:3b`, `llama3.2:3b`, `qwen2.5:1.5b` |
+| up to 8.5 GiB | ≤ 8B | `llama3.1:8b`, `qwen2.5:7b` |
+| up to 16.5 GiB | ≤ 14B | `qwen2.5:14b`, `phi4:14b` |
+| up to 32.5 GiB | ≤ 34B | `qwen2.5:32b` |
+| more | ≤ 72B | `llama3.3:70b` |
+
+Ollama keeps the model loaded for five minutes after the last request by default (its own `OLLAMA_KEEP_ALIVE`), so on a 4 GB machine the
+built-in model (unloaded after ten idle minutes) and an Ollama 3B model should not both be warm; pick one provider. Models of 7B and more
+with native tool calling run the free-form loop; smaller ones run the stepwise driver above. **The built-in llama.cpp is CPU-only in this
+image**: `libggml0-backend-vulkan` exists in the 26.04.1 archive (56 MB) but is not installed; measured in the image on a GPU-less host it
+finds no device (`llvmpipe` is not used), costs about 3 % of generation speed and 56 MB of RSS, and its gain on a real iGPU is unmeasured
+(ADR-0022). Ollama brings its own GPU runtimes and is the path to acceleration on this release.
+
 ## Minimum requirements
 
 - 2 GB RAM (with the zram swap above; 4 GB recommended for large office documents and many browser tabs)

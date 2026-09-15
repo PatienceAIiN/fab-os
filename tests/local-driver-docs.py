@@ -19,7 +19,8 @@ CAN = {"l1-a": "creates a folder and a file with the exact text", "l1-b": "count
        "l2-a": "sums a column across three CSV files", "l2-b": "renames a folder of notes to another extension", "l2-c": "names the largest file under a tree",
        "l2-d": "types a sentence into Fab Editor and saves it", "l2-e": "fetches a local URL and saves the body unchanged",
        "h-a": "sums the qty column of two CSVs (held-out)", "h-b": "renames .log files to .bak and leaves the .md file alone (held-out)",
-       "h-c": "names the smallest file under another tree (held-out)", "h-d": "counts the files of another folder (held-out)"}
+       "h-c": "names the smallest file under another tree (held-out)", "h-d": "counts the files of another folder (held-out)",
+       "h-e": "fetches a URL with web_fetch and saves the body (held-out)", "h-f": "does a three-step folder/files/index task (held-out)"}
 
 
 def splice(path, pairs):

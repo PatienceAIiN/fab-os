@@ -14,6 +14,9 @@ HTTP API on 127.0.0.1:8790 (bearer token in $XDG_RUNTIME_DIR/fabos-agent/token, 
   POST /providers/test {provider, api_key?, base_url?, model?} -> {ok, latency_ms, detail, models_sample?}
        a real, lightweight authenticated call to the provider (its model list); 401/403 = "key rejected",
        network failure = "cannot reach provider". Keys are never logged.
+  GET  /providers/ollama/models -> [{name,size,parameter_size,quantization,...}] (from Ollama's /api/tags; 503 when it is down)
+  GET  /providers/ollama/status -> {installed, running, models, model, model_source, ram_gib, max_parameters_b, install_command}
+  POST /providers/ollama/install {confirm: true} -> runs the official installer as root through the polkit path (ADR-0022)
   POST /speech/transcribe {audio_b64, format} -> {ok, text, backend}     POST /speech/say {text} -> {ok, audio_b64, format, backend}
        cloud speech through the configured provider (OpenAI or Gemini); other providers answer ok=false so the caller
        falls back to the offline engine (fabos-voice).
@@ -30,7 +33,9 @@ run_shell inside bubblewrap when available; the agent's secrets, token and histo
 allowlisted session environment (never the daemon's own, which holds the provider key) and tool commands no ssh/gpg agent;
 the activity log is a tamper-evident HMAC chain keyed from systemd-creds; every user setting is clamped to the administrator's
 policy.json.
-Providers: Claude (Anthropic), OpenAI, Google Gemini, DeepSeek, or any OpenAI-compatible chat endpoint (local llama-server).
+Providers: Claude (Anthropic), OpenAI, Google Gemini, DeepSeek, Ollama (the user's own install, ADR-0022), or any OpenAI-compatible chat
+endpoint (local llama-server). Images (ADR-0021): the generate_image tool draws with the user's OpenAI or Gemini key (or an OpenAI-compatible
+local image endpoint, setting images.local_endpoint) and saves PNGs under ~/Pictures/Fab OS; other providers get a plain "cannot generate images".
 Mail: the user's OWN account (Gmail, Outlook/Hotmail, Yahoo, Zoho, iCloud presets, or any IMAP/SMTP server) — settings
 mail.provider / mail.address / mail.from_name, secret mail_password (an app password where the provider requires one) or
 the Google refresh token mail_oauth_refresh. The feedback relay (fabos-feedback) is a separate channel and is not used here.
@@ -411,6 +416,11 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["email_reply", "command"]}, "from_contains": {"type": "string"}, "subject_contains": {"type": "string"}, "command": {"type": "string"}, "expect": {"type": "string"}, "interval_minutes": {"type": "integer", "default": 5}, "expires_hours": {"type": "integer", "default": 72}, "notify_message": {"type": "string"}, "followup_task": {"type": "string", "description": "optional natural-language task to run automatically when the watch fires (the matched content is appended)"}}, "required": ["kind", "notify_message"]}},
     {"name": "web_fetch", "description": "Fetch a URL (GET) and return the text content (HTML tags stripped, up to 100 KB).",
      "input_schema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
+    {"name": "generate_image",
+     "description": "Generate an image (a picture, drawing, illustration, logo, poster, wallpaper, icon) from a text prompt with the user's AI provider and save it as a PNG under ~/Pictures/Fab OS/. Returns the saved path, width, height and the provider used. Use it whenever the user asks you to draw, generate, create or make an image; then tell the user the path. If it answers that the provider cannot generate images, repeat that message to the user and stop — never try to draw with shell tools.",
+     "input_schema": {"type": "object", "properties": {"prompt": {"type": "string", "description": "what the image shows, in one or two sentences"},
+                                                       "size": {"type": "string", "default": "1024x1024", "description": "WIDTHxHEIGHT: 1024x1024 (square), 1536x1024 (landscape) or 1024x1536 (portrait)"},
+                                                       "n": {"type": "integer", "default": 1, "minimum": 1, "maximum": 4}}, "required": ["prompt"]}},
     {"name": "notify_user", "description": "Show a desktop notification to the user (also logged in history).",
      "input_schema": {"type": "object", "properties": {"title": {"type": "string"}, "message": {"type": "string"}}, "required": ["message"]}},
     {"name": "ask_user",
@@ -608,6 +618,8 @@ def classify(tool, inp):
         return "LOW", "opens an application in the session"
     if tool == "type_text":
         return "MEDIUM", "types into the focused window"
+    if tool == "generate_image":
+        return "MEDIUM", "creates an image file"
     if tool == "write_file":
         p = os.path.abspath(os.path.expanduser(inp.get("path", "")))
         if not p.startswith(HOME + os.sep):
@@ -1087,6 +1099,27 @@ class Tools:
             text = _strip_html(text)
         return {"url": inp["url"], "content_type": ct, "text": text[:100000]}
 
+    def t_generate_image(self, task_id, inp):
+        """generate_image (ADR-0021): the picture is made by the user's image provider (image_provider) and saved as a PNG under
+        ~/Pictures/Fab OS/<yyyy-mm-dd>-<slug>-<n>.png. The prompt goes to that provider and nowhere else (legal/PRIVACY.md)."""
+        prompt = " ".join(str(inp.get("prompt") or "").split())
+        if not prompt:
+            raise RuntimeError("generate_image needs a prompt that describes the picture")
+        size = image_size(inp.get("size"))
+        try:
+            n = max(1, min(int(inp.get("n") or 1), 4))
+        except (TypeError, ValueError):
+            n = 1
+        kind, model, blobs = generate_images(self.store, prompt, size, n)
+        saved = save_images(blobs, prompt, size)
+        self.store.activity("agent", "image_generated", task_id, "%s/%s %dx%d -> %s%s" % (kind, model, saved[0]["width"], saved[0]["height"], saved[0]["path"],
+                                                                                          (" (+%d more)" % (len(saved) - 1)) if len(saved) > 1 else ""))
+        out = {"path": saved[0]["path"], "width": saved[0]["width"], "height": saved[0]["height"], "provider": kind, "model": model, "prompt": prompt,
+               "count": len(saved), "folder": images_dir()}
+        if len(saved) > 1:
+            out["paths"] = [x["path"] for x in saved]
+        return out
+
     def t_notify_user(self, task_id, inp):
         ok = notify(inp.get("title") or APP, inp["message"])
         self.store.activity("agent", "notify", task_id, inp["message"])
@@ -1114,6 +1147,7 @@ How to work:
 - Applications: every installed app (system, Flatpak, user) is available to you the moment it is installed. Use list_apps to discover names, launch commands and supported file types, open_app to launch them (kate = Fab Editor, dolphin = Fab Files, konsole = Fab Terminal, firefox = Firefox for the web), and their CLI or D-Bus interfaces via run_shell (KDE apps: qdbus6 / kdialog / kioclient). Installed now ({app_count} apps): {app_names}.
 - System administration (packages, services, kernel modules, sysctl, disks, files under /etc or /usr) is done with run_shell(as_root=true). It is CRITICAL risk: the user approves it unless their mode is bypass. Never put sudo in the command; as_root already runs it as root. Verify the result afterwards (e.g. systemctl is-active, dpkg -s, lsmod).
 - Every tool call passes a deterministic policy check (risk LOW/MEDIUM/HIGH/CRITICAL against the user's permission mode). A denied call returns an error: respect it, explain, and find an allowed way or stop.
+- Images: when the user asks you to draw, generate, create or make an image, a picture, a logo, a poster, a wallpaper or an icon, call generate_image with a clear prompt (and the size they want) and tell them the path it returns — the file is under ~/Pictures/Fab OS/. If the tool answers that the provider cannot generate images, say exactly that (which key to add in Settings) and stop; never paint with shell tools instead.
 - Never fabosate results. Report exactly what happened, including partial failures. Keep the final message short: what was done, where outputs are, what the user should look at.
 - Current user: {user}. Home: {home}. Date/time: {now}. Permission mode: {mode}."""
 
@@ -1197,6 +1231,8 @@ def narration_for(name, inp, show_raw=False):
         return "I will keep a watch on that."
     if name == "list_apps":
         return "Checking which apps are installed."
+    if name == "generate_image":
+        return "Generating the image now."
     return "Working on it."
 
 
@@ -1235,6 +1271,8 @@ def narration_done_for(name, inp, out, error=False):
         return "The watch is set; I will tell you when it happens."
     if name == "list_apps":
         return "Got the list of apps."
+    if name == "generate_image":
+        return "Done, the image is saved in Pictures."
     return "Done."
 
 
@@ -1245,7 +1283,7 @@ def approval_narration(name, inp):
                "read_file": "read %s" % _base(inp.get("path")), "list_dir": "look inside %s" % _base(inp.get("path")), "open_app": "open %s" % _app_name(inp),
                "type_text": "type into the focused window", "send_email": "send a mail to %s" % (inp.get("to") or "someone"), "check_email": "check your mail",
                "schedule_watch": "set up a background watch", "web_fetch": "fetch %s" % _host(inp.get("url")), "notify_user": "show a notification",
-               "ask_user": "ask you a question", "list_apps": "look up installed apps"}.get(name, (name or "do something").replace("_", " "))
+               "ask_user": "ask you a question", "list_apps": "look up installed apps", "generate_image": "generate an image and save it in Pictures"}.get(name, (name or "do something").replace("_", " "))
     return "This needs your permission: %s. Shall I go ahead?" % summary
 
 
@@ -1256,10 +1294,17 @@ PROVIDERS = {
                "help": "Paste an API key from Google AI Studio."},
     "openai": {"label": "OpenAI", "secret": "openai_api_key", "base_url": "https://api.openai.com/v1", "model": "gpt-4.1", "help": "Paste an API key from your OpenAI account."},
     "deepseek": {"label": "DeepSeek", "secret": "deepseek_api_key", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat", "help": "Paste an API key from the DeepSeek platform."},
-    "local": {"label": "Local model", "secret": "local_api_key", "base_url": "http://127.0.0.1:8080/v1", "model": "local",
+    "local": {"label": "Local model", "secret": "local_api_key", "base_url": "http://127.0.0.1:8080/v1", "model": "local", "no_key": True,
               "help": "Runs on this computer (llama-server or any OpenAI-compatible endpoint). No account, no key needed."},
+    # Ollama (ADR-0022): the user's own Ollama install on this computer, OpenAI-compatible at /v1, no key. NOT bundled — its installer
+    # downloads about 1 GB and Ollama is not in the Ubuntu archive; `fabos ollama install` prints the official command and runs it only
+    # with --yes through the polkit root path. model "" = the largest installed model that fits this machine's RAM (ollama_pick_model).
+    "ollama": {"label": "Ollama (on this computer)", "secret": "ollama_api_key", "base_url": "http://127.0.0.1:11434/v1", "model": "", "no_key": True,
+               "help": "Uses the Ollama you installed yourself (ollama.com; `fabos ollama install`). Small and large models, GPU when Ollama finds one. No key needed."},
 }
-SECRET_NAMES = ("claude_api_key", "openai_api_key", "gemini_api_key", "deepseek_api_key", "local_api_key", "mail_password", "mail_oauth_refresh")
+SECRET_NAMES = ("claude_api_key", "openai_api_key", "gemini_api_key", "deepseek_api_key", "local_api_key", "ollama_api_key", "mail_password", "mail_oauth_refresh")
+# Providers whose key is optional (a loopback server): the agent runs without a stored secret.
+NO_KEY_PROVIDERS = tuple(k for k, v in PROVIDERS.items() if v.get("no_key"))
 # Providers with cloud speech (transcription / text-to-speech) through the same key; the rest fall back to the offline engine
 SPEECH_PROVIDERS = ("openai", "gemini")
 INDIAN_ENGLISH_STYLE = "Speak in warm, natural Indian English, like a helpful colleague from India; clear and unhurried."
@@ -1308,7 +1353,7 @@ def compact_messages(messages, limit):
 # (deterministic check + a yes/no self-check; up to STEP_RETRIES retries with the error shown) -> FINISH (one short summary).
 # Cloud providers keep the free-form loop unchanged; agent.driver=freeform forces it for the local model too.
 # save_result (driver-only) writes the previous tool call's output to a file verbatim, so the model never retypes data.
-STEP_TOOLS = ("run_shell", "write_file", "save_result", "read_file", "list_dir", "open_app", "type_text", "web_fetch", "send_email", "check_email", "notify_user", "reply")
+STEP_TOOLS = ("run_shell", "write_file", "save_result", "read_file", "list_dir", "open_app", "type_text", "web_fetch", "generate_image", "send_email", "check_email", "notify_user", "reply")
 # Driver-only tool (never offered to the free-form loop): a 1.5B model mangles data it has to retype inside JSON arguments
 # (measured: the fetched {"ok": true, "app": "Fab OS"} came back as "ok\napp=Fab OS"). save_result names a path; the driver writes
 # the previous tool call's output there byte for byte through the real write_file tool (same risk gate, same record).
@@ -1337,10 +1382,10 @@ You get ONE step of a plan at a time. Do exactly that step with ONE tool call, t
 - Never say a step is done before its result is verified. If the last result shows an error, change the command or the arguments and try again.
 - Show your work: text the user will read (a note, a letter, a mail body) is typed where they can watch it: open_app kate with the file path, then type_text the text, then write_file the same text to the same path.
 Tools and their JSON arguments:
-- run_shell {{"command": "<bash>"}} -> {{"exit_code", "stdout", "stderr"}}. Files, folders, copy, rename, count, sum, dates, downloads (curl).
+- run_shell {{"command": "<bash>"}} -> {{"exit_code", "stdout", "stderr"}}. Files, folders, copy, rename, count, sum, dates.
 - write_file {{"path": "...", "content": "..."}} creates folders and writes the content exactly (nothing added).
 - save_result {{"path": "..."}} writes the previous tool call's output (stdout, fetched text, typed text) to that file unchanged; never retype data.
-- read_file {{"path"}} · list_dir {{"path"}} · web_fetch {{"url"}} -> the page text (needs internet) · open_app {{"app": "kate|konsole|dolphin|{browser}|libreoffice", "args": ["/path"]}} · type_text {{"text": "...", "delay_ms": 1500}} types into the window opened in the previous step · notify_user {{"message"}} · send_email {{"to", "subject", "body"}}.
+- read_file {{"path"}} · list_dir {{"path"}} · web_fetch {{"url"}} -> the page text (needs internet) · open_app {{"app": "kate|konsole|dolphin|{browser}|libreoffice", "args": ["/path"]}} · type_text {{"text": "...", "delay_ms": 1500}} types into the window opened in the previous step · generate_image {{"prompt": "..."}} makes a picture and saves the PNG itself (never draw with commands) · notify_user {{"message"}} · send_email {{"to", "subject", "body"}}.
 Worked examples (step -> the one call):
 - save the word hi into ~/Documents/a.txt -> write_file {{"path": "{home}/Documents/a.txt", "content": "hi\\n"}}
 - count the regular files in /tmp/x -> run_shell {{"command": "find /tmp/x -maxdepth 1 -type f | wc -l"}}
@@ -1349,11 +1394,12 @@ Worked examples (step -> the one call):
 - the largest file under /tmp/x, name only, into ~/big.txt -> run_shell {{"command": "find /tmp/x -type f -printf '%s %f\\n' | sort -n | tail -1 | cut -d' ' -f2- > {home}/big.txt"}}
 - open Fab Editor and type hello -> open_app {{"app": "kate"}} ; then the next step -> type_text {{"text": "hello", "delay_ms": 1500}}
 - save what the previous step fetched or printed into ~/Documents/out.json -> save_result {{"path": "{home}/Documents/out.json"}}
+- draw a blue circle -> generate_image {{"prompt": "a blue circle"}}
 Apps: Fab Editor = kate, Fab Terminal = konsole, Fab Files = dolphin, browser = {browser}. Permission mode: {mode}."""
 
 PLAN_SYSTEM = """You plan a desktop task for the {app} agent as a short numbered list of steps; each step is done by ONE tool call. Home: {home}. The task's files and folders are on this computer.
-Tools: run_shell (a bash command: files, folders, copy, rename, count, sum, dates, curl), write_file (create a text file with exact content the user gave), save_result (write the previous step's output to a file exactly as it is), read_file, list_dir, web_fetch (fetch a URL's text), open_app (kate = Fab Editor, konsole = Fab Terminal, dolphin = Fab Files, {browser} = the browser, libreoffice), type_text (type into the app opened in the previous step), send_email, notify_user, reply (the final answer text, only when the user asked a question or for a report line).
-Rules: as few steps as possible; ONE run_shell step when a command does the whole job, including writing a computed value into a file with '>' (dates: date +%F; copying: cp, the source stays; a column total in CSV files: python3's csv module by column name). To count or list the files of a folder use list_dir: it returns the total and the names. Use web_fetch only when the task names a web page or URL; never invent a URL. Tool names are not shell commands. If the user names the tools or the order (open X, then type Y), plan exactly those steps in that order. Each step does one thing: web_fetch and read_file only return text, so saving what they return is a separate save_result step right after. write_file is for text the user gave literally; save_result for output a previous step produced. Show your work: when the user asks to WRITE or COMPOSE text they will read (a note, a letter, a mail body, a message, a document, code) or wants to watch it typed: open_app kate with the file path, then type_text, then write_file the same text to that path. Pure file or system operations (copy, rename, count, a value into a file) need no window. No step for checking: verification is automatic. Never create a file the task does not name; a count, a question or a report line ends with a reply step, not a file. Do not invent facts, values or paths. Do not answer the task yourself.
+Tools: run_shell (a bash command: files, folders, copy, rename, count, sum, dates, curl), write_file (create a text file with exact content the user gave), save_result (write the previous step's output to a file exactly as it is), read_file, list_dir, web_fetch (fetch a URL's text), generate_image (a picture, drawing, logo, poster or wallpaper from a description; it saves the PNG itself), open_app (kate = Fab Editor, konsole = Fab Terminal, dolphin = Fab Files, {browser} = the browser, libreoffice), type_text (type into the app opened in the previous step), send_email, notify_user, reply (the final answer text, only when the user asked a question or for a report line).
+Rules: as few steps as possible; ONE run_shell step when a command does the whole job, including writing a computed value into a file with '>' (dates: date +%F; copying: cp, the source stays; a column total in CSV files: python3's csv module by column name). To count or list the files of a folder use list_dir: it returns the total and the names. Use web_fetch only when the task names a web page or URL; never invent a URL. An image the user asks for is ONE generate_image step, never a command. Tool names are not shell commands. If the user names the tools or the order (open X, then type Y), plan exactly those steps in that order. Each step does one thing: web_fetch and read_file only return text, so saving what they return is a separate save_result step right after. write_file is for text the user gave literally; save_result for output a previous step produced. Show your work: when the user asks to WRITE or COMPOSE text they will read (a note, a letter, a mail body, a message, a document, code) or wants to watch it typed: open_app kate with the file path, then type_text, then write_file the same text to that path. Pure file or system operations (copy, rename, count, a value into a file) need no window. No step for checking: verification is automatic. Never create a file the task does not name; a count, a question or a report line ends with a reply step, not a file. Do not invent facts, values or paths. Do not answer the task yourself.
 Example — "How big is ~/Pictures? Reply SIZE: <bytes>" -> {{"steps": [{{"tool": "run_shell", "goal": "print the total size of ~/Pictures in bytes"}}, {{"tool": "reply", "goal": "SIZE: the number printed"}}]}}
 Return only JSON: {{"steps": [{{"tool": "...", "goal": "what the step must achieve, in words, with the exact paths and values — never a command"}}]}}"""
 
@@ -1364,11 +1410,16 @@ FINISH_SYSTEM = ("You write the closing message of the {app} agent to the user: 
                  "and where the outputs are. Only facts from the step results below; never invent, never add offers or questions.")
 
 
+PLAN_CLAUSE_RE = re.compile(r"\s[—–]\s|;|,?\s(then|after that|afterwards|finally)\s", re.I)
+
+
 def plan_max_steps(request):
-    """How many steps a plan for this request may have: two more than the request has sentences, at least 3, at most
-    PLAN_MAX_STEPS — enforced through the JSON schema, so a one-line task cannot come back as a seven-step story (measured)."""
-    n = len([s for s in re.split(r"[.!?;]+\s", " ".join((request or "").split())) if s.strip()])
-    return max(3, min(PLAN_MAX_STEPS, 2 + n))
+    """How many steps a plan for this request may have: two more than the request has sentences plus its explicit clause breaks (an
+    em dash, a semicolon, "then", "finally"), at least 3, at most PLAN_MAX_STEPS — enforced through the JSON schema, so a one-line
+    task cannot come back as a seven-step story (measured), while a one-sentence task that lists four things is not squeezed into three."""
+    text = " ".join((request or "").split())
+    n = len([s for s in re.split(r"[.!?;]+\s", text) if s.strip()])
+    return max(3, min(PLAN_MAX_STEPS, 2 + n + len(PLAN_CLAUSE_RE.findall(text))))
 
 
 def plan_schema(allowed, max_steps=PLAN_MAX_STEPS):
@@ -1378,12 +1429,20 @@ def plan_schema(allowed, max_steps=PLAN_MAX_STEPS):
                                                "properties": {"tool": {"type": "string", "enum": list(allowed)}, "goal": {"type": "string", "maxLength": 240}}}}}}
 
 
-def driver_name(store, kind):
-    """'stepwise' or 'freeform' for a provider kind: the setting agent.driver wins, else local => stepwise, everything else free-form."""
+def driver_name(store, kind, prov=None):
+    """'stepwise' or 'freeform' for a provider kind: the setting agent.driver wins, else local => stepwise, ollama => stepwise when the
+    chosen model has no native tool calling or fewer than OLLAMA_FREEFORM_MIN_B parameters (ADR-0022; the provider object carries what
+    /api/show said), everything else free-form."""
     s = (store.setting("agent.driver", "") or "").strip().lower()
     if s in ("stepwise", "freeform"):
         return s
-    return "stepwise" if kind == "local" else "freeform"
+    if kind == "local":
+        return "stepwise"
+    if kind == "ollama":
+        if prov is not None:
+            return "stepwise" if (getattr(prov, "text_tools", False) or (getattr(prov, "param_b", None) or 0) < OLLAMA_FREEFORM_MIN_B) else "freeform"
+        return "stepwise"                 # /status without a live provider: the conservative answer for a small local model
+    return "freeform"
 
 
 def _private_host(host):
@@ -1537,6 +1596,11 @@ def step_check(tool, inp, out, err):
         return bool(out.get("sent")), "sent to %s" % out.get("to") if out.get("sent") else "not sent"
     if tool == "check_email":
         return "messages" in out, "%s messages" % out.get("count")
+    if tool == "generate_image":
+        p = os.path.expanduser(str(out.get("path") or ""))
+        if not p or not os.path.isfile(p):
+            return False, "no image file was saved"
+        return True, "image saved: %s (%sx%s, %s)" % (p, out.get("width"), out.get("height"), out.get("provider"))
     return True, "done"
 
 
@@ -1551,6 +1615,10 @@ OPEN_WORDS_RE = re.compile(r"\b(open|opens|typ(e|es|ed|ing)|window|editor|termin
 COMPOSE_RE = re.compile(r"\b(write|writes|writing|compose|composes|composing|draft|drafts|drafting|pen|jot down)\b(?:(?!\binto\b)[^.;]){0,60}?"
                         r"\b(note|notes|letter|letters|mail|e-?mail|message|memo|document|essay|poem|story|paragraph|summary|report|reply|body|code|script|program)\b")
 SAVE_VERBATIM_RE = re.compile(r"\b(unchanged|exactly as|as[- ]is|verbatim|without (any )?changes?|what (it|you) (got|returned|fetched)|the (json|text|body|output) you get)\b")
+# An image request (ADR-0021): a drawing verb, or a make/create verb together with an image noun. "Take a screenshot" and "open the
+# picture" are not requests to generate one; "make an image of", "a picture of", "draw", "wallpaper" are.
+IMAGE_RE = re.compile(r"\b(draw|sketch|paint|illustrate)\b(?!\s+(up|out)\b)|\b(generate|make|create|design|render|produce|give me|i (want|need))\b[^.;]{0,40}?\b(an? |the |some |\d+ )?(image|images|picture|pictures|photo|photos|drawing|drawings|logo|logos|poster|posters|wallpaper|wallpapers|illustration|illustrations|icon|icons|banner|artwork|sticker)s?\b(?!\s+(file|files|folder|viewer|of the (folder|directory)))"
+                      r"|\b(a|an|the) (picture|image|drawing|illustration|photo) of\b")
 # The desktop's brand names -> the executable open_app must start. When the task names exactly one of them, an open_app step
 # that starts something else is a failed step (measured: "Open the Fab Terminal" opened dolphin).
 APP_NAMES = {"konsole": ("fab terminal", "terminal", "konsole"), "kate": ("fab editor", "text editor", "kate"),
@@ -1738,6 +1806,19 @@ def plan_sanity(request, plan):
             if plan[i]["tool"] == "write_file" and plan[i - 1]["tool"] in ("web_fetch", "read_file"):
                 plan[i]["tool"] = "save_result"
                 notes.append("step %d saves the fetched text with save_result instead of retyping it: the task says to keep it unchanged" % (i + 1))
+    # An image request is ONE generate_image step (ADR-0021): the small model plans `convert`/`python3 -c PIL` drawings instead, or a
+    # write_file of an SVG. Such steps go; a generate_image step is put first when the plan has none. Never empties the plan.
+    if IMAGE_RE.search(low):
+        tools = [s["tool"] for s in plan]
+        if "generate_image" not in tools:
+            drawing = [s for s in plan if s["tool"] in ("run_shell", "write_file", "save_result", "open_app", "type_text")
+                       and re.search(r"\b(draw|paint|render|convert|magick|pil|pillow|svg|png|jpe?g|image|picture|circle|logo|poster|wallpaper|icon|canvas)\b", s["goal"].lower())]
+            keep = [s for s in plan if s not in drawing]
+            if drawing:
+                notes.append("dropped %d step(s) that would draw with commands or files: an image is made with generate_image" % len(drawing))
+            keep.insert(0, {"tool": "generate_image", "goal": "generate the image the user described: %s" % " ".join(request.split())[:160]})
+            plan[:] = keep[:PLAN_MAX_STEPS]
+            notes.append("added a generate_image step first: the task asks for an image")
     # The task asks for an answer (a count, a question, "end your reply with ...") and the plan never replies: add the reply step.
     if ANSWER_RE.search(low) and "reply" not in [s["tool"] for s in plan] and len(plan) < PLAN_MAX_STEPS:
         plan.append({"tool": "reply", "goal": "answer the user in exactly the form the task asks, using the results above"})
@@ -1766,6 +1847,8 @@ def render_result(tool, out):
         return "launched: " + str(out.get("launched"))
     if tool == "type_text":
         return "typed %s characters" % out.get("typed_chars")
+    if tool == "generate_image":
+        return "image saved to %s (%sx%s, made by %s)" % (out.get("path"), out.get("width"), out.get("height"), out.get("provider"))
     return json.dumps(out)
 
 
@@ -1955,13 +2038,87 @@ class ClaudeProvider:
         return {"content": content, "stop_reason": d.get("stop_reason"), "stop_details": d.get("stop_details")}
 
 
+TEXT_TOOL_KEYS = ("tool", "name", "function", "tool_name")
+TEXT_ARG_KEYS = ("args", "arguments", "input", "parameters", "params")
+
+
+def parse_text_tool_call(text, names=()):
+    """The JSON-in-text tool protocol (ADR-0022): a model without native tool calling answers with ONE JSON object such as
+    {"tool": "run_shell", "args": {"command": "ls"}} — also accepted: name/function/tool_name for the tool, arguments/input/parameters
+    for the arguments (a dict, or a JSON string holding one), the OpenAI nesting {"function": {"name", "arguments"}}, and the object
+    wrapped in a ```json fence or prose. Returns (tool_name, args_dict, (start, end)) for the FIRST object naming a known tool, else None.
+    `names` empty = any tool name is accepted."""
+    if not text:
+        return None
+    body = re.sub(r"```[a-zA-Z]*\n?", "", text).replace("```", "")
+    dec = json.JSONDecoder()
+    pos = 0
+    while True:
+        i = body.find("{", pos)
+        if i < 0:
+            return None
+        try:
+            obj, end = dec.raw_decode(body, i)
+        except ValueError:
+            pos = i + 1
+            continue
+        pos = i + 1
+        if not isinstance(obj, dict):
+            continue
+        name, args = None, None
+        fn = obj.get("function")
+        if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+            name, args = fn["name"], fn.get("arguments", fn.get("args", fn.get("input")))
+        else:
+            for k in TEXT_TOOL_KEYS:
+                if isinstance(obj.get(k), str):
+                    name = obj[k]
+                    break
+            for k in TEXT_ARG_KEYS:
+                if k in obj:
+                    args = obj[k]
+                    break
+        if not name:
+            continue
+        name = name.strip()
+        if names and name not in names:
+            continue
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = {"_raw": args}
+        if args is None:
+            args = {k: v for k, v in obj.items() if k not in TEXT_TOOL_KEYS + TEXT_ARG_KEYS} if not isinstance(fn, dict) else {}
+        if not isinstance(args, dict):
+            args = {"_raw": json.dumps(args)}
+        return name, args, (i, end)
+
+
+def text_tool_protocol(tools, required=False):
+    """The system-prompt suffix that replaces native tool calling: every tool as one line `name {args...}`, and the answer shape."""
+    lines = ["", "TOOLS (this model has no tool-calling API, so you call a tool by answering with ONE JSON object and nothing else):",
+             '{"tool": "<name>", "args": {...}}']
+    for t in tools:
+        props = (t.get("input_schema") or {}).get("properties") or {}
+        req = (t.get("input_schema") or {}).get("required") or []
+        sig = ", ".join(('"%s": <%s>' % (k, (v or {}).get("type", "value"))) + ("" if k in req else "?") for k, v in props.items())
+        lines.append("- %s {%s} — %s" % (t["name"], sig, " ".join((t.get("description") or "").split())[:160]))
+    lines.append("Answer with the JSON object only when you call a tool%s. Plain text (no JSON) means you are finished and it is your final message."
+                 % (" (a tool call is REQUIRED for this turn)" if required else ""))
+    return "\n".join(lines)
+
+
 class OpenAICompatProvider:
-    """Any /v1/chat/completions endpoint with tool calling (llama-server, vLLM, other vendors)."""
+    """Any /v1/chat/completions endpoint with tool calling (llama-server, vLLM, Ollama, other vendors). With text_tools=True the
+    endpoint is used WITHOUT the tools API: the tools are described in the system prompt and the model's JSON answer is parsed
+    (parse_text_tool_call) — for Ollama models whose /api/show capabilities lack "tools" (ADR-0022)."""
     name = "openai-compatible"
     result_limit = RESULT_LIMIT_CLOUD
 
-    def __init__(self, base_url, api_key, model, name=None, result_limit=None):
+    def __init__(self, base_url, api_key, model, name=None, result_limit=None, text_tools=False, param_b=None):
         self.base, self.key, self.model = base_url.rstrip("/"), api_key or "none", model
+        self.text_tools, self.param_b = bool(text_tools), param_b
         if name:
             self.name = name
         if result_limit:
@@ -1969,7 +2126,7 @@ class OpenAICompatProvider:
         # Sampling per request: temperature 0.2 for every provider (as before); the local model also gets top_p 0.9 and
         # repeat_penalty 1.05 (Qwen2.5's own generation_config value; without it the 1.5B model looped ". | . | . | ..." inside
         # tool arguments) — llama-server accepts these llama.cpp fields on /v1/chat/completions; cloud requests keep their shape.
-        self.sampling = {"temperature": 0.2, "top_p": 0.9, "repeat_penalty": 1.05} if self.name == "local" else {"temperature": 0.2}
+        self.sampling = {"temperature": 0.2, "top_p": 0.9, "repeat_penalty": 1.05} if self.name == "local" else ({"temperature": 0.2, "top_p": 0.9} if self.name == "ollama" else {"temperature": 0.2})
         self.json_schema_ok = None                 # None = untried; False after the endpoint rejected response_format once
 
     def _post(self, body):
@@ -2019,7 +2176,8 @@ class OpenAICompatProvider:
         return (d["choices"][0]["message"].get("content") or "").strip()
 
     def step(self, system, messages, tools, on_usage=None, **opts):
-        msgs = [{"role": "system", "content": system}]
+        text_mode = bool(tools) and self.text_tools
+        msgs = [{"role": "system", "content": system + (text_tool_protocol(tools, bool(opts.get("tool_choice"))) if text_mode else "")}]
         for m in messages:
             if m["role"] == "user":
                 if isinstance(m["content"], str):
@@ -2027,19 +2185,27 @@ class OpenAICompatProvider:
                     continue
                 for b in m["content"]:
                     if b["type"] == "tool_result":
-                        msgs.append({"role": "tool", "tool_call_id": b["tool_use_id"], "content": b["content"] if isinstance(b["content"], str) else json.dumps(b["content"])})
+                        res = b["content"] if isinstance(b["content"], str) else json.dumps(b["content"])
+                        if text_mode:          # no tools API: the result travels as a plain user turn
+                            msgs.append({"role": "user", "content": "Tool result:\n" + res})
+                        else:
+                            msgs.append({"role": "tool", "tool_call_id": b["tool_use_id"], "content": res})
                     elif b["type"] == "text":
                         msgs.append({"role": "user", "content": b["text"]})
             else:
                 text = "".join(b.get("text", "") for b in m["content"] if b["type"] == "text")
-                calls = [{"id": b["id"], "type": "function", "function": {"name": b["name"], "arguments": json.dumps(b["input"])}} for b in m["content"] if b["type"] == "tool_use"]
+                uses = [b for b in m["content"] if b["type"] == "tool_use"]
+                if text_mode:
+                    msgs.append({"role": "assistant", "content": (text + "\n" if text else "") + "\n".join(json.dumps({"tool": b["name"], "args": b["input"]}) for b in uses) or text or ""})
+                    continue
+                calls = [{"id": b["id"], "type": "function", "function": {"name": b["name"], "arguments": json.dumps(b["input"])}} for b in uses]
                 am = {"role": "assistant", "content": text or None}
                 if calls:
                     am["tool_calls"] = calls
                 msgs.append(am)
         body = {"model": self.model, "messages": msgs}
         body.update(self.sampling)
-        if tools:
+        if tools and not text_mode:
             body["tools"] = [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}} for t in tools]
             if opts.get("tool_choice"):
                 body["tool_choice"] = opts["tool_choice"]        # "required": the stepwise driver wants exactly a tool call this turn
@@ -2048,6 +2214,17 @@ class OpenAICompatProvider:
         d = self._post(body)
         ch = d["choices"][0]["message"]
         content = []
+        if text_mode:
+            hit = parse_text_tool_call(ch.get("content") or "", [t["name"] for t in tools])
+            if hit:
+                name, args, (i, j) = hit
+                before = (ch.get("content") or "")[:i].strip().strip("`").strip()
+                if before and not before.lower().startswith("json"):
+                    content.append({"type": "text", "text": before})
+                content.append({"type": "tool_use", "id": "call_" + uuid.uuid4().hex[:12], "name": name, "input": args})
+                if on_usage and d.get("usage"):
+                    on_usage(d["usage"].get("prompt_tokens", 0), d["usage"].get("completion_tokens", 0))
+                return {"content": content, "stop_reason": "tool_use"}
         if ch.get("content"):
             content.append({"type": "text", "text": ch["content"]})
         for tc in ch.get("tool_calls") or []:
@@ -2134,6 +2311,10 @@ class FakeProvider:
             return [("run_shell", "compute the answer", {"command": "echo 42"}, None)]          # never writes the file the request names
         if "stepwise: type into the editor" in low:
             return [("open_app", "open Fab Editor", {"app": "kate"}, None), ("type_text", "type hello", {"text": "hello", "delay_ms": 100}, None)]
+        m = re.search(r"stepwise: draw (.+?)(?: and tell me where you saved it)?$", req, re.I)
+        if m:                                                                       # an image task: one generate_image step, then the path in the reply
+            return [("generate_image", "generate the image the user described: %s" % m.group(1), {"prompt": m.group(1), "size": "256x256"}, None),
+                    ("reply", "tell the user where the image was saved", None, None)]
         m = re.search(r"stepwise: write a short note saying (.+?) and save it as (\S+)", req, re.I)
         if m:                                                                       # show your work: the window (a stand-in process) and the typing come before the file
             text, path = m.group(1), m.group(2)
@@ -2164,6 +2345,9 @@ class FakeProvider:
         tool, goal, inp, retry_inp = plan[idx]
         failed = "previous attempt at this step failed" in text
         if tool == "reply":
+            img = re.search(r"Result of step \d+ \(generate_image\): image saved to (.+?) \(\d+x\d+,", text)
+            if img:
+                return {"content": [{"type": "text", "text": "Done, the image is saved at %s." % img.group(1)}], "stop_reason": "end_turn"}
             label = "FILE COUNT" if "FILE COUNT" in goal else "WORDS"
             return {"content": [{"type": "text", "text": "%s: %s" % (label, last_out)}], "stop_reason": "end_turn"}
         if "stepwise: no tool" in req.lower() and not failed:
@@ -2226,6 +2410,22 @@ class FakeProvider:
                 path = (m2.group(1) if m2 else "~/") + path
             plan = [tu("write_file", {"path": path, "content": word + "\n"})]
             final = "Done, I have created %s with the word %s. Anything else?" % (path, word)
+        elif IMAGE_RE.search(low):
+            # ladder L2-g / ask-bar fixture "draw a cat": ONE generate_image step, then the saved path in the closing line (read from the
+            # tool result, never invented)
+            m = re.search(r"\b(?:draw|paint|sketch|make|create|generate|design)\b\s+(?:me\s+)?(?:a|an|the|some)?\s*(.+?)(?:\s+and\b|[.,;]|$)", req, re.I)
+            subject = " ".join((m.group(1) if m else req).split())
+            plan = [tu("generate_image", {"prompt": subject, "size": "512x512"})]
+            saved = ""
+            for mm in messages:
+                if mm["role"] == "user" and not isinstance(mm["content"], str):
+                    for b in mm["content"]:
+                        if b.get("type") == "tool_result":
+                            try:
+                                saved = json.loads(b["content"]).get("path") or saved
+                            except (ValueError, AttributeError, TypeError):
+                                pass
+            final = "Done, I drew %s and saved it at %s. Anything else?" % (subject, saved or "~/Pictures/Fab OS")
         elif re.search(r"\btype\s+['\"]?[^'\"]+?['\"]?\s+into\b", req, re.I) and ("editor" in low or "kate" in low):
             # ladder L1-f "type 'hello' into a new Fab Editor window": show your work = open the app FIRST, then type
             text = re.search(r"\btype\s+['\"]?([^'\"]+?)['\"]?\s+into\b", req, re.I).group(1).strip()
@@ -2436,10 +2636,20 @@ class Agent:
         if kind in PROVIDERS:
             pre = PROVIDERS[kind]
             key = get_secret(pre["secret"])
-            if not key and kind != "local":
+            if not key and kind not in NO_KEY_PROVIDERS:
                 raise RuntimeError("No %s API key configured. Open Fab AI Controls → Settings → AI provider." % pre["label"])
             base = self.store.setting(kind + ".base_url", pre["base_url"])
             POLICY.require_host(urllib.parse.urlparse(base).hostname, "the %s endpoint" % pre["label"])
+            if kind == "ollama":
+                # ADR-0022: the model is the user's choice or the largest installed one that fits RAM; what /api/show says about it decides
+                # the tool protocol (native tools API vs JSON-in-text) and, with its size, the driver (driver_name).
+                model = (self.store.setting("ollama.model", "") or "").strip() or ollama_default_model(self.store, base)
+                if not model:
+                    models, err = ollama_models_cached(base, force=True)
+                    raise RuntimeError(err or "Ollama is running at %s but has no models installed. Pull one, e.g. `ollama pull qwen2.5:3b`, or pick another provider." % base)
+                tools_ok, param_b = ollama_capabilities(model, base)
+                return OpenAICompatProvider(base, key, model, name="ollama", result_limit=RESULT_LIMIT_LOCAL if (param_b or 0) < OLLAMA_FREEFORM_MIN_B else RESULT_LIMIT_CLOUD,
+                                            text_tools=(tools_ok is False), param_b=param_b)
             return OpenAICompatProvider(base, key, self.store.setting(kind + ".model", pre["model"]),
                                         name=kind, result_limit=RESULT_LIMIT_LOCAL if kind == "local" else RESULT_LIMIT_CLOUD)
         raise RuntimeError("unknown provider " + kind)
@@ -2456,7 +2666,7 @@ class Agent:
 
     def driver_for(self, prov):
         """'stepwise' (small-model driver, ADR-0020) or 'freeform' (the cloud loop) for this provider — see driver_name()."""
-        return driver_name(self.store, getattr(prov, "name", ""))
+        return driver_name(self.store, getattr(prov, "name", ""), prov)
 
     def model_step(self, tid, prov, system, messages, usage, tools=None, **opts):
         """One provider call. If the conversation no longer fits the model's context, compact earlier tool outputs and retry
@@ -2998,8 +3208,10 @@ def test_provider(store, kind, api_key=None, base_url=None, model=None):
     key = (api_key or "").strip() or get_secret(pre["secret"]) or (os.environ.get("ANTHROPIC_API_KEY") if kind == "claude" else None) or ""
     model = (model or store.setting(kind + ".model") or pre["model"]).strip()
     base = (base_url or store.setting(kind + ".base_url") or pre.get("base_url") or "").strip().rstrip("/")
-    if not key and kind != "local":
+    if not key and kind not in NO_KEY_PROVIDERS:
         return {"ok": False, "detail": "no API key", "latency_ms": 0, "provider": kind, "model": model}
+    if kind == "ollama" and not model:
+        model = ollama_default_model(store, base) or ""
     t0 = time.time()
     try:
         if kind == "claude":
@@ -3027,6 +3239,8 @@ def test_provider(store, kind, api_key=None, base_url=None, model=None):
         why = getattr(e, "reason", None) or e
         if kind == "local":
             return {"ok": False, "detail": "cannot reach provider — the local model server is not running at %s" % base, "latency_ms": ms, "provider": kind, "model": model}
+        if kind == "ollama":
+            return {"ok": False, "detail": "cannot reach Ollama at %s — is it installed and running? (`fabos ollama install`, then `ollama serve` or its service)" % base, "latency_ms": ms, "provider": kind, "model": model}
         return {"ok": False, "detail": "cannot reach provider (%s)" % str(why)[:80], "latency_ms": ms, "provider": kind, "model": model}
     ms = int((time.time() - t0) * 1000)
     ids = []
@@ -3036,7 +3250,9 @@ def test_provider(store, kind, api_key=None, base_url=None, model=None):
             if mid:
                 ids.append(str(mid).split("/")[-1])
     out = {"ok": True, "latency_ms": ms, "detail": "Connected", "models_sample": ids[:8], "provider": kind, "model": model}
-    if ids and model and model != "local" and not any(model == i or model in i for i in ids):
+    if kind == "ollama" and not ids:
+        out["detail"] = "Connected, but no models are installed — pull one first, e.g. `ollama pull qwen2.5:3b` (fits 4 GB) or `ollama pull llama3.1:8b` (8 GB)"
+    elif ids and model and model != "local" and not any(model == i or model in i for i in ids):
         out["detail"] = "Connected (the model %s is not in the provider's list — check its name)" % model
     return out
 
@@ -3650,6 +3866,454 @@ def speech_say(store, text):
     return {"ok": True, "audio_b64": base64.b64encode(wav).decode(), "format": "wav", "backend": "gemini:" + model}
 
 
+# ----------------------------------------------------------------------------- images (ADR-0021): generate_image by the user's own provider
+IMAGE_PROVIDERS = ("openai", "gemini")           # cloud providers with an image API behind the same key the user already pasted
+IMAGE_TIMEOUT = 180
+IMAGE_SIZE_RE = re.compile(r"^\s*(\d{2,4})\s*[xX×]\s*(\d{2,4})\s*$")
+IMAGE_DEFAULT_SIZE = (1024, 1024)
+IMAGE_NO_PROVIDER = "This provider cannot generate images; add an OpenAI or Gemini key in Settings, or a local image endpoint"
+IMAGE_MODELS = {"openai": "gpt-image-1", "openai_fallback": "dall-e-3", "gemini": "gemini-2.5-flash-image"}
+IMAGE_SETTINGS = {"images.provider": "", "images.local_endpoint": "", "images.local_model": "", "images.openai_model": IMAGE_MODELS["openai"], "images.gemini_model": IMAGE_MODELS["gemini"]}
+IMAGE_PROVIDER_CHOICES = ("", "auto", "openai", "gemini", "local")
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def images_dir():
+    """~/Pictures/Fab OS — created on first use."""
+    return os.path.join(HOME, "Pictures", APP)
+
+
+def image_slug(prompt, limit=40):
+    slug = re.sub(r"[^a-z0-9]+", "-", (prompt or "").lower()).strip("-")
+    slug = slug[:limit].rstrip("-")
+    return slug or "image"
+
+
+def image_size(value):
+    """(width, height) from 'WxH' (64..4096 each), else the default 1024x1024."""
+    m = IMAGE_SIZE_RE.match(str(value or ""))
+    if not m:
+        return IMAGE_DEFAULT_SIZE
+    w, h = int(m.group(1)), int(m.group(2))
+    if not (64 <= w <= 4096 and 64 <= h <= 4096):
+        return IMAGE_DEFAULT_SIZE
+    return w, h
+
+
+def png_size(data):
+    """(width, height) read from a PNG's IHDR, or None when the bytes are not a PNG."""
+    if not data or not data.startswith(PNG_SIG) or len(data) < 24:
+        return None
+    import struct
+    w, h = struct.unpack(">II", data[16:24])
+    return (w, h) if w and h else None
+
+
+def image_ext(data):
+    if data.startswith(PNG_SIG):
+        return ".png"
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return ".png"
+
+
+def _openai_size(w, h):
+    """gpt-image-1 accepts 1024x1024, 1536x1024 and 1024x1536: the nearest one by orientation."""
+    if w == h:
+        return "1024x1024"
+    return "1536x1024" if w > h else "1024x1536"
+
+
+GEMINI_ASPECTS = ("1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16", "21:9")     # gemini-2.5-flash-image's imageConfig.aspectRatio values
+IMAGEN_ASPECTS = ("1:1", "4:3", "3:4", "16:9", "9:16")                                          # Imagen's parameters.aspectRatio values
+
+
+def _aspect(w, h, allowed=GEMINI_ASPECTS):
+    """The documented aspect ratio nearest to w:h (1536x1024 -> 3:2 for Gemini, 4:3 for Imagen; 1920x1080 -> 16:9)."""
+    import math
+    want = math.log(w / float(h))
+    return min(allowed, key=lambda a: abs(math.log(int(a.split(":")[0]) / float(a.split(":")[1])) - want))
+
+
+def image_provider(store):
+    """Which provider makes the pictures: the setting images.provider when set (openai | gemini | local), else the active provider when it
+    can (openai, gemini, fake, or local/ollama with images.local_endpoint), else — 'auto' — the first of OpenAI key, Gemini key, local
+    endpoint the user has configured. Returns (kind, detail) with kind None when nothing can make an image (detail = the friendly error).
+    No network."""
+    want = (store.setting("images.provider", "") or "").strip().lower()
+    active = os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude")
+    endpoint = (store.setting("images.local_endpoint", "") or "").strip()
+
+    def ok(kind):
+        if not POLICY.provider_allowed(kind):
+            return False
+        if kind == "openai":
+            return bool(get_secret("openai_api_key"))
+        if kind == "gemini":
+            return bool(get_secret("gemini_api_key"))
+        if kind == "local":
+            return bool(endpoint)
+        return kind == "fake"
+    if want and want != "auto":
+        if want not in IMAGE_PROVIDER_CHOICES:
+            return None, "images.provider must be one of openai, gemini, local (or empty for automatic)"
+        if ok(want):
+            return want, "images.provider=" + want
+        return None, {"openai": "images.provider is openai but no OpenAI key is stored: add it in Settings", "gemini": "images.provider is gemini but no Gemini key is stored: add it in Settings",
+                      "local": "images.provider is local but images.local_endpoint is empty: set it to your image server's /v1 URL"}[want]
+    if active == "fake":
+        return "fake", "the test provider draws a placeholder"
+    if active in IMAGE_PROVIDERS and ok(active):
+        return active, "the active provider (%s) generates images with the same key" % PROVIDERS[active]["label"]
+    if active in ("local", "ollama") and ok("local"):
+        return "local", "the local image endpoint " + endpoint
+    for kind in ("openai", "gemini", "local"):
+        if ok(kind):
+            return kind, "the active provider (%s) cannot generate images; using the %s the user configured" % (
+                PROVIDERS.get(active, {}).get("label", active), {"openai": "OpenAI key", "gemini": "Gemini key", "local": "local image endpoint"}[kind])
+    return None, IMAGE_NO_PROVIDER
+
+
+def image_capability(store):
+    """For /status and the ladder: {provider, ready, detail} without touching the network."""
+    kind, detail = image_provider(store)
+    return {"provider": kind or "", "ready": bool(kind), "detail": detail}
+
+
+def _image_post(url, headers, body, timeout=IMAGE_TIMEOUT, label="the image provider"):
+    """POST JSON, return the parsed JSON; HTTP errors become RuntimeErrors carrying the status and the provider's own message."""
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=dict(headers, **{"Content-Type": "application/json", "Accept": "application/json"}), method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")[:1500]
+        try:
+            err = json.loads(raw).get("error", raw)
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+        except Exception:
+            msg = raw
+        if e.code in (401, 403):
+            raise ImageHTTPError(e.code, "%s rejected the key (HTTP %d): %s" % (label, e.code, (msg or "").strip()[:300]))
+        raise ImageHTTPError(e.code, "%s error HTTP %d: %s" % (label, e.code, (msg or "").strip()[:300]))
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise RuntimeError("cannot reach %s at %s: %s" % (label, url.split("?")[0], getattr(e, "reason", None) or e))
+
+
+class ImageHTTPError(RuntimeError):
+    def __init__(self, status, msg):
+        super().__init__(msg)
+        self.status = status
+
+
+def _b64_images(items, key):
+    out = []
+    for it in items or []:
+        if isinstance(it, dict) and it.get(key):
+            try:
+                out.append(base64.b64decode(it[key]))
+            except (ValueError, TypeError):
+                continue
+    return out
+
+
+def openai_images(base, key, model, prompt, size, n):
+    """POST {base}/v1/images/generations (gpt-image-1 returns base64 PNG by default; dall-e-* needs response_format=b64_json). When
+    gpt-image-1 is refused for this account (a 400/403/404 that names the model or a verification), the call is retried once with dall-e-3."""
+    w, h = size
+    POLICY.require_host(urllib.parse.urlparse(base).hostname, "the OpenAI image API")
+    headers = {"Authorization": "Bearer " + key}
+
+    def call(m, count):
+        body = {"model": m, "prompt": prompt, "n": count, "size": _openai_size(w, h) if m.startswith("gpt-image") else {"1024x1024": "1024x1024", "1536x1024": "1792x1024", "1024x1536": "1024x1792"}[_openai_size(w, h)]}
+        if m.startswith("dall-e"):
+            body["response_format"] = "b64_json"
+        return _b64_images(_image_post(base.rstrip("/") + "/images/generations", headers, body, label="OpenAI").get("data"), "b64_json")
+    try:
+        return model, call(model, n)
+    except ImageHTTPError as e:
+        low = str(e).lower()
+        if model != IMAGE_MODELS["openai_fallback"] and e.status in (400, 403, 404) and re.search(r"model|verif|not (found|available|supported)|access", low):
+            LOG("openai images: %s refused (%s) — falling back to %s" % (model, str(e)[:120], IMAGE_MODELS["openai_fallback"]))
+            blobs = []
+            for _ in range(n):
+                blobs += call(IMAGE_MODELS["openai_fallback"], 1)        # dall-e-3 accepts n=1 per request
+            return IMAGE_MODELS["openai_fallback"], blobs
+        raise
+
+
+def gemini_images(base, key, model, prompt, size, n):
+    """The documented Gemini API shapes for an API key: models/{model}:generateContent with responseModalities IMAGE+TEXT (image-capable
+    models such as gemini-2.5-flash-image; the picture comes back as inlineData), or models/imagen-*:predict (Imagen; predictions[].bytesBase64Encoded)."""
+    w, h = size
+    native = gemini_native_base(base)
+    POLICY.require_host(urllib.parse.urlparse(native).hostname, "the Gemini image API")
+    headers = {"x-goog-api-key": key}
+    if model.startswith("imagen"):
+        d = _image_post("%s/models/%s:predict" % (native, model), headers, {"instances": [{"prompt": prompt}], "parameters": {"sampleCount": n, "aspectRatio": _aspect(w, h, IMAGEN_ASPECTS)}}, label="Gemini (Imagen)")
+        return model, _b64_images(d.get("predictions"), "bytesBase64Encoded")
+    blobs = []
+    for _ in range(n):
+        body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseModalities": ["TEXT", "IMAGE"], "imageConfig": {"aspectRatio": _aspect(w, h)}}}
+        d = _image_post("%s/models/%s:generateContent" % (native, model), headers, body, label="Gemini")
+        for cand in d.get("candidates") or []:
+            for part in ((cand.get("content") or {}).get("parts") or []):
+                blob = part.get("inlineData") or part.get("inline_data")
+                if isinstance(blob, dict) and blob.get("data"):
+                    try:
+                        blobs.append(base64.b64decode(blob["data"]))
+                    except (ValueError, TypeError):
+                        pass
+        if not blobs:
+            block = (d.get("promptFeedback") or {}).get("blockReason")
+            text = " ".join(p.get("text", "") for c in d.get("candidates") or [] for p in ((c.get("content") or {}).get("parts") or []) if p.get("text"))
+            raise RuntimeError("Gemini returned no image%s%s" % ((" (blocked: %s)" % block) if block else "", (": " + text[:200]) if text else ""))
+    return model, blobs
+
+
+def local_images(endpoint, key, model, prompt, size, n):
+    """Any OpenAI-compatible /v1/images/generations on this computer or the LAN (stable-diffusion.cpp's server, an Automatic1111 with the
+    OpenAI-compatible extension, LocalAI): images.local_endpoint is the /v1 base or the full /images/generations URL."""
+    w, h = size
+    url = endpoint.rstrip("/")
+    if not url.endswith("/images/generations"):
+        url += "/images/generations"
+    POLICY.require_host(urllib.parse.urlparse(url).hostname, "the local image endpoint")
+    headers = {"Authorization": "Bearer " + (key or "none")}
+    body = {"prompt": prompt, "n": n, "size": "%dx%d" % (w, h), "response_format": "b64_json"}
+    if model:
+        body["model"] = model
+    d = _image_post(url, headers, body, label="the local image endpoint")
+    blobs = _b64_images(d.get("data"), "b64_json")
+    for it in d.get("data") or []:                # a server that only answers with URLs: fetch them (same host policy)
+        if isinstance(it, dict) and it.get("url") and not it.get("b64_json"):
+            POLICY.require_host(urllib.parse.urlparse(it["url"]).hostname, "the local image endpoint")
+            with urllib.request.urlopen(urllib.request.Request(it["url"], headers={"User-Agent": "FabOS-agent/1.0"}), timeout=60) as r:
+                blobs.append(r.read(50_000_000))
+    return model or "local", blobs
+
+
+def fake_images(prompt, size, n):
+    """The test provider's placeholder: a real PNG (a filled disc whose colour follows the prompt) drawn with zlib only — so the
+    ask-bar fixture, the ladder and the unit tests get a genuine file under ~/Pictures/Fab OS without any network."""
+    import struct
+    import zlib
+    w, h = min(size[0], 1024), min(size[1], 1024)
+    low = (prompt or "").lower()
+    colour = next((c for name, c in (("blue", (59, 110, 245)), ("red", (220, 60, 60)), ("green", (52, 168, 83)), ("yellow", (250, 204, 21)), ("black", (20, 20, 20)), ("orange", (245, 130, 32)))
+                   if name in low), (120, 90, 200))
+    cx, cy, r = w / 2.0, h / 2.0, min(w, h) * 0.32
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)
+        for x in range(w):
+            inside = (x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= r * r
+            raw += bytes(colour if inside else (250, 250, 252))
+
+    def chunk(kind, data):
+        c = struct.pack(">I", len(data)) + kind + data
+        return c + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+    png = PNG_SIG + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b"")
+    return "fake-disc", [png] * n
+
+
+def generate_images(store, prompt, size, n):
+    """(provider_kind, model, [image bytes]) for the prompt, or a RuntimeError the user can act on."""
+    kind, detail = image_provider(store)
+    if not kind:
+        raise RuntimeError(detail)
+    if kind == "fake":
+        model, blobs = fake_images(prompt, size, n)
+    elif kind == "openai":
+        model, blobs = openai_images(store.setting("openai.base_url", PROVIDERS["openai"]["base_url"]), get_secret("openai_api_key"),
+                                     (store.setting("images.openai_model") or IMAGE_MODELS["openai"]).strip(), prompt, size, n)
+    elif kind == "gemini":
+        model, blobs = gemini_images(store.setting("gemini.base_url", PROVIDERS["gemini"]["base_url"]), get_secret("gemini_api_key"),
+                                     (store.setting("images.gemini_model") or IMAGE_MODELS["gemini"]).strip(), prompt, size, n)
+    else:
+        model, blobs = local_images(store.setting("images.local_endpoint", ""), get_secret("local_api_key"), (store.setting("images.local_model") or "").strip(), prompt, size, n)
+    blobs = [b for b in blobs if b]
+    if not blobs:
+        raise RuntimeError("%s returned no image data for this prompt" % kind)
+    return kind, model, blobs
+
+
+def save_images(blobs, prompt, size):
+    """Write every image to ~/Pictures/Fab OS/<yyyy-mm-dd>-<slug>-<n>.png (a suffix -2, -3… when the name is taken); returns [{path, width, height}]."""
+    folder = images_dir()
+    os.makedirs(folder, exist_ok=True)
+    day = datetime.now().strftime("%Y-%m-%d")
+    slug = image_slug(prompt)
+    out = []
+    for i, data in enumerate(blobs, 1):
+        ext = image_ext(data)
+        base = "%s-%s-%d" % (day, slug, i)
+        path = os.path.join(folder, base + ext)
+        k = 2
+        while os.path.exists(path):
+            path = os.path.join(folder, "%s-%d%s" % (base, k, ext))
+            k += 1
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        wh = png_size(data) or size
+        out.append({"path": path, "width": wh[0], "height": wh[1]})
+    return out
+
+
+# ----------------------------------------------------------------------------- Ollama (ADR-0022): the user's own install, OpenAI-compatible at /v1
+OLLAMA_TIMEOUT = 5
+OLLAMA_CACHE_S = 30
+OLLAMA_FREEFORM_MIN_B = 7.0             # a model this size or larger WITH native tool calling runs the free-form loop; smaller ones the stepwise driver
+# The default model is the largest installed one that fits this machine's RAM (documented in README and ADR-0022):
+#   MemTotal up to 4.5 GiB -> up to 3B parameters · up to 8.5 GiB -> 8B · up to 16.5 GiB -> 14B · up to 32.5 GiB -> 34B · more -> 72B
+OLLAMA_RAM_TABLE = ((4.5, 3.0), (8.5, 8.0), (16.5, 14.0), (32.5, 34.0), (None, 72.0))
+OLLAMA_CLASS_SLACK = 1.10               # "3B" means the 3B class: Ollama reports qwen2.5:3b as 3.1B and llama3.2:3b as 3.2B, qwen3:14b as 14.8B
+OLLAMA_INSTALL_CMD = "curl -fsSL https://ollama.com/install.sh | sh"
+OLLAMA_INSTALL_TIMEOUT = 1800
+_ollama_cache = {"at": 0.0, "base": "", "models": None, "error": ""}
+_ollama_lock = threading.Lock()
+
+
+def ollama_native_base(base_url):
+    """The stored endpoint is the OpenAI-compatible one (…:11434/v1); the native API (/api/tags, /api/show) sits one level up."""
+    b = (base_url or PROVIDERS["ollama"]["base_url"]).rstrip("/")
+    return b[:-3] if b.endswith("/v1") else b
+
+
+def parse_param_b(text):
+    """'7.6B' -> 7.6, '1.5b' -> 1.5, '137M' -> 0.137, else None."""
+    m = re.match(r"^\s*([\d.]+)\s*([bBmMkK])\b", str(text or ""))
+    if not m:
+        return None
+    try:
+        v = float(m.group(1))
+    except ValueError:
+        return None
+    return v / 1000.0 if m.group(2) in "mM" else (v / 1e6 if m.group(2) in "kK" else v)
+
+
+def ollama_models(base_url=None, timeout=OLLAMA_TIMEOUT):
+    """GET /api/tags -> [{name, size, parameter_size, quantization, family, modified_at, parameter_b}] (largest first). Raises RuntimeError
+    with a message the user can act on when Ollama is not running."""
+    native = ollama_native_base(base_url)
+    POLICY.require_host(urllib.parse.urlparse(native).hostname, "Ollama")
+    try:
+        with urllib.request.urlopen(urllib.request.Request(native + "/api/tags", headers={"Accept": "application/json"}), timeout=timeout) as r:
+            d = json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        raise RuntimeError("Ollama answered HTTP %d on /api/tags at %s" % (e.code, native))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        raise RuntimeError("cannot reach Ollama at %s (%s) — is it installed and running? `fabos ollama install` prints the official installer; `ollama serve` or its systemd service starts it"
+                           % (native, getattr(e, "reason", None) or e))
+    out = []
+    for m in d.get("models") or []:
+        det = m.get("details") or {}
+        out.append({"name": m.get("name") or m.get("model") or "?", "size": int(m.get("size") or 0), "parameter_size": det.get("parameter_size") or "",
+                    "quantization": det.get("quantization_level") or "", "family": det.get("family") or "", "modified_at": m.get("modified_at") or "",
+                    "parameter_b": parse_param_b(det.get("parameter_size"))})
+    out.sort(key=lambda x: (-(x["parameter_b"] or 0), -x["size"], x["name"]))
+    return out
+
+
+def ollama_models_cached(base_url=None, force=False, refresh=True):
+    """(models, error) with a 30 s cache. refresh=False never touches the network (the /status poll); force=True ignores the cache."""
+    native = ollama_native_base(base_url)
+    with _ollama_lock:
+        fresh = _ollama_cache["base"] == native and time.time() - _ollama_cache["at"] < OLLAMA_CACHE_S
+        if (fresh and not force) or not refresh:
+            return (_ollama_cache["models"] if _ollama_cache["base"] == native else None), (_ollama_cache["error"] if _ollama_cache["base"] == native else "")
+    try:
+        models, err = ollama_models(base_url), ""
+    except RuntimeError as e:
+        models, err = None, str(e)
+    with _ollama_lock:
+        _ollama_cache.update(at=time.time(), base=native, models=models, error=err)
+    return models, err
+
+
+def mem_total_bytes():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def ollama_max_params_b(mem_bytes=None):
+    """The largest model size (billions of parameters) OLLAMA_RAM_TABLE allows for this much RAM."""
+    gib = (mem_bytes if mem_bytes is not None else mem_total_bytes()) / float(2 ** 30)
+    for bound, max_b in OLLAMA_RAM_TABLE:
+        if bound is None or gib <= bound:
+            return max_b
+    return OLLAMA_RAM_TABLE[-1][1]
+
+
+def ollama_pick_model(models, mem_bytes=None):
+    """The default model: the largest installed one whose parameter count fits the RAM table; when none fits, the smallest installed one
+    (Ollama will still try, and the README says why it may be slow); None without models. Models without a known size count as fitting."""
+    if not models:
+        return None
+    limit = ollama_max_params_b(mem_bytes) * OLLAMA_CLASS_SLACK
+    fit = [m for m in models if (m.get("parameter_b") or 0) <= limit]
+    pool = fit or sorted(models, key=lambda m: (m.get("parameter_b") or 0, m.get("size") or 0))[:1]
+    return max(pool, key=lambda m: (m.get("parameter_b") or 0, m.get("size") or 0))["name"]
+
+
+def ollama_default_model(store, base_url=None, refresh=True):
+    """The setting ollama.model, else the picked default from the (cached) model list ('' when Ollama is down or empty)."""
+    chosen = (store.setting("ollama.model", "") or "").strip()
+    if chosen:
+        return chosen
+    models, _err = ollama_models_cached(base_url or store.setting("ollama.base_url", PROVIDERS["ollama"]["base_url"]), refresh=refresh)
+    return ollama_pick_model(models) or ""
+
+
+def ollama_show(model, base_url=None, timeout=OLLAMA_TIMEOUT):
+    """POST /api/show {model} -> the model's record (capabilities, details, model_info) or {} when unavailable."""
+    native = ollama_native_base(base_url)
+    try:
+        req = urllib.request.Request(native + "/api/show", data=json.dumps({"model": model}).encode(), headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read().decode() or "{}")
+        return d if isinstance(d, dict) else {}
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return {}
+
+
+def ollama_capabilities(model, base_url=None):
+    """(tools, parameter_b) for a model: tools True/False from /api/show's capabilities list, None when Ollama did not say (older
+    servers) — the provider then uses the native tools API and lets the server complain. parameter_b from details.parameter_size."""
+    d = ollama_show(model, base_url)
+    caps = d.get("capabilities")
+    tools = ("tools" in caps) if isinstance(caps, list) else None
+    param_b = parse_param_b((d.get("details") or {}).get("parameter_size"))
+    if param_b is None:
+        for m in ollama_models_cached(base_url, refresh=False)[0] or []:
+            if m["name"] == model:
+                param_b = m.get("parameter_b")
+    return tools, param_b
+
+
+def ollama_status(store, refresh=True):
+    """One JSON object for `fabos ollama status` and the UIs: installed (the binary), running (/api/tags answers), the models, the
+    effective model and how it was chosen, the RAM bound. refresh=False = cached only (never a network call)."""
+    base = store.setting("ollama.base_url", PROVIDERS["ollama"]["base_url"])
+    models, err = ollama_models_cached(base, refresh=refresh)
+    mem = mem_total_bytes()
+    chosen = (store.setting("ollama.model", "") or "").strip()
+    picked = ollama_pick_model(models)
+    return {"installed": bool(shutil.which("ollama")), "running": models is not None, "base_url": base, "native_url": ollama_native_base(base), "error": err,
+            "models": models or [], "model": chosen or picked or "", "model_source": "setting ollama.model" if chosen else ("largest installed model that fits %.1f GiB of RAM" % (mem / 2 ** 30) if picked else "none"),
+            "ram_gib": round(mem / 2 ** 30, 1), "max_parameters_b": ollama_max_params_b(mem), "install_command": OLLAMA_INSTALL_CMD, "bundled": False,
+            "driver": driver_name(store, "ollama") if not chosen and not picked else None}
+
+
 def parse_since(v):
     """'24h' | '7d' | '90m' | epoch seconds | ISO 8601 date/time | None -> epoch seconds (0 = everything)."""
     if v in (None, "", 0, "0"):
@@ -3709,7 +4373,7 @@ def make_handler(store, agent, token):
             if p == "/status":
                 counts = {r["status"]: r["n"] for r in store.all("SELECT status, COUNT(*) n FROM tasks GROUP BY status")}
                 prov = os.environ.get("FABOS_AGENT_PROVIDER") or store.setting("provider", "claude")
-                ready = prov == "fake" or prov == "local" or (prov in PROVIDERS and (has_secret(PROVIDERS[prov]["secret"]) or (prov == "claude" and bool(os.environ.get("ANTHROPIC_API_KEY")))))
+                ready = prov == "fake" or prov in NO_KEY_PROVIDERS or (prov in PROVIDERS and (has_secret(PROVIDERS[prov]["secret"]) or (prov == "claude" and bool(os.environ.get("ANTHROPIC_API_KEY")))))
                 mcfg = mail_config(store)
                 return self._send(200, {"mode": agent.mode(), "mode_setting": store.setting("mode", "auto"), "provider": prov, "provider_ready": ready and POLICY.provider_allowed(prov),
                                         "provider_allowed": POLICY.provider_allowed(prov), "ai_enabled": agent.ai_enabled(),
@@ -3719,7 +4383,9 @@ def make_handler(store, agent, token):
                                         # driver: how this provider's tasks run (ADR-0020); network: the cached online probe (non-blocking here)
                                         "driver": driver_name(store, prov), "network": network_cached(),
                                         "provider_label": PROVIDERS[prov]["label"] if prov in PROVIDERS else prov,
-                                        "provider_model": store.setting(prov + ".model", PROVIDERS[prov]["model"]) if prov in PROVIDERS else "",
+                                        "provider_model": (ollama_default_model(store, refresh=False) if prov == "ollama" else store.setting(prov + ".model", PROVIDERS[prov]["model"])) if prov in PROVIDERS else "",
+                                        # images (ADR-0021): which provider would make a picture right now (no network); the ladder SKIPs L2-g on ready=false
+                                        "images": image_capability(store),
                                         "ui_show_raw": store.setting("ui.show_raw", "false") == "true",
                                         "voice": {k[len("voice."):]: store.setting(k, d) for k, d in VOICE_DEFAULTS.items()},
                                         "providers": {k: {"label": v["label"], "has_key": has_secret(v["secret"])} for k, v in PROVIDERS.items()},
@@ -3741,6 +4407,9 @@ def make_handler(store, agent, token):
                     s.setdefault(k + ".model", v["model"])
                     if "base_url" in v:
                         s.setdefault(k + ".base_url", v["base_url"])
+                for k, d in IMAGE_SETTINGS.items():      # images (ADR-0021): "" = automatic (the active provider, else the key the user has)
+                    s.setdefault(k, d)
+                s["images"] = image_capability(store)
                 s.setdefault("mail.provider", "gmail")
                 s.setdefault("mail.address", s.get("mail.user", ""))
                 s.setdefault("mail.from_name", "")
@@ -3781,6 +4450,14 @@ def make_handler(store, agent, token):
                 return self._send(200, flow.status())
             if p == "/policy":
                 return self._send(200, POLICY.status())
+            if p == "/providers/ollama/models":
+                # [{name, size, parameter_size, quantization, ...}] from GET http://127.0.0.1:11434/api/tags (ADR-0022); 503 with the reason when Ollama is down
+                models, err = ollama_models_cached(store.setting("ollama.base_url", PROVIDERS["ollama"]["base_url"]), force=qs.get("refresh") == "1")
+                if models is None:
+                    return self._send(503, {"error": err or "Ollama is not reachable", "models": []})
+                return self._send(200, models)
+            if p == "/providers/ollama/status":
+                return self._send(200, ollama_status(store))
             if p == "/audit/verify":
                 return self._send(200, store.audit_verify())
             if p == "/watches":
@@ -3811,6 +4488,21 @@ def make_handler(store, agent, token):
                     return self._send(200, store.audit_export(since, b.get("out_dir")))
                 except (RuntimeError, OSError) as e:
                     return self._send(409, {"error": str(e)})
+            if p == "/providers/ollama/install":
+                # `fabos ollama install --yes`: the official installer, as root through the polkit path (the user types their password in the
+                # system dialog; nothing runs silently). Without confirm=true the command is only shown. Ollama is NOT bundled: ~1 GB download.
+                if not b.get("confirm"):
+                    return self._send(400, {"ok": False, "error": "confirm=true is required; the command that would run: " + OLLAMA_INSTALL_CMD, "command": OLLAMA_INSTALL_CMD})
+                if shutil.which("ollama") and not b.get("force"):
+                    return self._send(200, {"ok": True, "already_installed": True, "path": shutil.which("ollama"), "detail": "ollama is already installed; the installer also upgrades — pass force=true to run it again"})
+                store.activity("user", "ollama_install_requested", None, OLLAMA_INSTALL_CMD)
+                out = agent.tools.run_as_root(None, OLLAMA_INSTALL_CMD, HOME, OLLAMA_INSTALL_TIMEOUT)
+                ok = not out.get("error") and out.get("exit_code") == 0
+                store.activity("user", "ollama_install_" + ("done" if ok else "failed"), None, (out.get("error") or ("exit %s" % out.get("exit_code")))[:300])
+                with _ollama_lock:
+                    _ollama_cache.update(at=0.0)
+                return self._send(200, {"ok": ok, "exit_code": out.get("exit_code"), "error": out.get("error"), "stdout": (out.get("stdout") or "")[-3000:], "stderr": (out.get("stderr") or "")[-3000:],
+                                        "installed": bool(shutil.which("ollama")), "command": OLLAMA_INSTALL_CMD})
             if p == "/providers/test":
                 kind = b.get("provider") or store.setting("provider", "claude")
                 r = test_provider(store, kind, b.get("api_key"), b.get("base_url"), b.get("model"))
@@ -3917,8 +4609,12 @@ def make_handler(store, agent, token):
                         return self._send(400, {"error": "mail.provider must be one of " + ", ".join(MAIL_PROVIDER_ORDER) + " (or empty to infer it from the address)"})
                     if k == "mail.auth" and str(v).lower() not in ("password", "oauth", ""):
                         return self._send(400, {"error": "mail.auth must be password or oauth (or empty)"})
-                    if k in ("secrets", "providers", "mail_providers", "mail_provider_order", "mail_oauth", "mail_ready"):
+                    if k in ("secrets", "providers", "mail_providers", "mail_provider_order", "mail_oauth", "mail_ready", "images"):
                         continue
+                    if k == "images.provider" and str(v).strip().lower() not in IMAGE_PROVIDER_CHOICES:
+                        return self._send(400, {"error": "images.provider must be openai, gemini, local or empty (automatic)"})
+                    if k == "images.local_endpoint" and str(v).strip() and not str(v).strip().startswith(("http://", "https://")):
+                        return self._send(400, {"error": "images.local_endpoint must be an http(s) URL (an OpenAI-compatible /v1 base or its /images/generations)"})
                     if k == "ai.enabled":
                         v = "true" if str(v).lower() in ("true", "1", "on", "yes") else "false"
                         notify(APP, "System-Wide AI is now %s" % ("ON" if v == "true" else "OFF"))
