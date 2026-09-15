@@ -21,7 +21,7 @@ COPY packages /src/packages
 # Mozilla's official apt signing key, shipped in fabos-branding so Firefox keeps updating from Mozilla (no snap). Fingerprint pinned
 # (35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3, re-checked 2026-09-15 against https://packages.mozilla.org/apt/repo-signing-key.gpg):
 # the build FAILS on any other key, so a key rotation is reviewed, never silently trusted (ADR-0018).
-RUN wget -qO /tmp/moz.asc https://packages.mozilla.org/apt/repo-signing-key.gpg && gpg --show-keys --with-fingerprint --with-colons /tmp/moz.asc | grep -q '^fpr:::::::::35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3:' \
+RUN wget -4 -qO /tmp/moz.asc https://packages.mozilla.org/apt/repo-signing-key.gpg && gpg --show-keys --with-fingerprint --with-colons /tmp/moz.asc | grep -q '^fpr:::::::::35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3:' \
  && install -d /src/packages/fabos-branding/usr/share/keyrings && gpg --dearmor -o /src/packages/fabos-branding/usr/share/keyrings/packages.mozilla.org.gpg /tmp/moz.asc
 COPY build/bin /src/bin
 COPY --from=assets /assets /src/assets
