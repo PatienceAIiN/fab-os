@@ -19,7 +19,7 @@ cat > "$OUT/NOTES.md" <<MD
 # Fab OS $TAG (pre-release)
 
 Ubuntu 26.04 LTS based desktop by Patience AI with KDE Plasma 6, the Fab OS look, and the built-in Fab OS agent
-(Anthropic Claude / Google Gemini / OpenAI / DeepSeek / local models with a real connection check; ask / auto / bypass permission modes; System-Wide AI switch).
+(Anthropic Claude / Google Gemini / OpenAI / DeepSeek / Ollama / the built-in offline model, with a real connection check; ask / auto / bypass permission modes; System-Wide AI switch).
 
 ## Download
 One file, one click: **https://fabos.patienceai.in/download/$base**  (about $(awk -v s="$(stat -c %s "$ISO")" 'BEGIN{printf "%.1f GB", s/1e9}')).
@@ -36,6 +36,7 @@ Fab OS is an independent project. Ubuntu is a trademark of Canonical Ltd.; KDE a
 Fab OS is not endorsed by either. Licences: LICENSING.md, ATTRIBUTIONS.md, THIRD_PARTY_LICENSES/, legal/.
 Corresponding source for the shipped GPL packages: legal/SOURCE-OFFER.md.
 MD
+[ -s build/release-notes-extra.md ] && { printf '\n'; cat build/release-notes-extra.md; } >> "$OUT/NOTES.md"   # per-release "what changed" section, written by the operator
 echo "== creating release $TAG on $REPO"
 gh release create "$TAG" -R "$REPO" $DRAFT --prerelease --title "Fab OS $TAG" --notes-file "$OUT/NOTES.md" "$OUT"/* 
 echo "== done: https://github.com/$REPO/releases/tag/$TAG"
