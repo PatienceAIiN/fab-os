@@ -1308,7 +1308,52 @@ profile**, not in the ISO or installed systems.
 
 ## The published image and its proofs
 
-<!-- R6-RESULTS -->
+The published image is the **second** ISO built in this round, after the shellprocess fix: build id
+**20260916T022740Z-iso**, `fabos-1.0-desktop-amd64.iso`, **3.63 GiB (3,892,424,704 bytes)**,
+SHA-256 `34b8facacbd7875bc169a99fd735d0a4aa9b0b303e2bd66196dbf46f0244d820`, GPL source-offer record
+`legal/source-offer/20260916T022740Z-iso/` (3,096 source URIs resolved, 14 unresolved listed). Rebuilt-image checks:
+Calamares offline audit 163 / 163, branding 219 / 219, security 72 / 72 (`build/*-check-iso.rerun.out`).
+
+**Automated installation of this ISO** (`tests/install-vm.sh`, QEMU/OVMF, 2.5 GB RAM, 24 GB virtual disk; evidence under
+`build/install-vm-<variant>/`, serial logs `build/install-vm-<variant>-serial-{1,2}.log`):
+
+| variant | Calamares | installed disk boots alone | result |
+|---|---|---|---|
+| plain (ESP + /boot + ext4 root) | 36 / 36 jobs, finished page reached, session log intact (795 lines), guest time 261 s | yes — firmware entry "Fab OS" → shim → `FABOS_INSTALLED_OK` in 213 s (includes the 180 s offline first-boot wait) | **PASS** (7 / 7) |
+| luks (ESP + /boot + LUKS2 root) | 36 / 36 jobs, finished page reached, session log intact (837 lines), guest time 236 s; `luksDump` shows a LUKS2 container | yes — passphrase typed at the Plymouth prompt, `FABOS_INSTALLED_OK` in 219 s | **PASS** (8 / 8) |
+
+Honest footnote: in the run itself one line per variant read FAIL — "EFI system partition holds EFI/ubuntu/grubx64.efi +
+EFI/boot/bootx64.efi". The ESP listing in the evidence has both files (`EFI/BOOT/BOOTX64.EFI`, `EFI/BOOT/grubx64.efi`,
+`EFI/BOOT/mmx64.efi`, `EFI/BOOT/fbx64.efi`, `EFI/ubuntu/{shimx64,grubx64,mmx64}.efi`); the check compared lowercase names
+against FAT's uppercase ones and was fixed afterwards (`30dad92`), which is why the counts above are 7 / 7 and 8 / 8 while
+the raw logs say 6 / 1 and 7 / 1.
+
+**Live boot of the published ISO** (`tests/iso-boot-test.sh`, QEMU/OVMF, 2.5 GB): PASS on all five markers — `FABOS_LIVE_OK`,
+live user present, SDDM active, Calamares present, autoinstall helper present (`build/iso-test.out`, `build/serial-iso.log`).
+
+**Signed update channel** (`tests/update-channel-test.sh`, an older installed disk booted without the ISO, pulling from the
+public repository `https://fabos.patienceai.in/apt`, suite `loom`): **PASS** — the disk was at `fabos-desktop 1.0-4`, the
+channel offered newer packages with a trusted origin (`Patience AI / Fab OS / fabos.patienceai.in`), the same helper Fab
+Updates uses installed them, and the installed version afterwards was **1.0-6** (`build/update-channel-test.out`).
+The public `Packages` index lists all ten `fabos-*` packages at 1.0-6 (`InRelease` dated 2026-09-16 03:37 UTC); `loom-beta`
+carries the same build.
+
+**Publication (2026-09-16, 04:15–04:20 UTC):**
+- `https://fabos.patienceai.in/download/fabos-1.0-desktop-amd64.iso` — the file above (hard-linked from the staging copy
+  whose checksum was verified on the server), with `.sha256`, `SHA256SUMS`, `SHA256SUMS.gpg` (Fab OS Archive key
+  `95ECC957B94A5F25482423CA051A2C5C37FE1497`) and the key beside it. After the CDN purge the served `.sha256` equals the local
+  one and the first MiB of the served ISO hashes the same as the local file.
+- Website: hero and updates page now describe the shipped agent (they said "coming soon" / "not published yet" since
+  v1.0.1); feed item for 1.0-6 in `updates.xml`.
+- GitHub: pre-release `v1.0.5` on `PatienceAIiN/fab-os` with `SHA256SUMS`, `SHA256SUMS.gpg`, the ISO `.sha256`, the archive
+  key, `MANIFEST.txt` (every package and version in the image) and notes; the ISO itself is served only from
+  fabos.patienceai.in (GitHub's 2 GiB asset limit).
+
+**Image generation, end to end in the VM** (`tests/agent-ladder-vm.sh --only l2-g` with `FABOS_IMAGE_PROVIDER=fake`, the
+daemon's built-in test renderer, Claude as planner): result recorded in `build/ladder-l2g-fake.out` /
+`build/agent-ladder-report.md` — see the line below.
+
+**PASS (10 s)** — with `images.provider=local` and `images.local_endpoint` pointing at `tests/image-stub-server.py` running inside the VM (a `/v1/images/generations` endpoint that returns a real PNG), the task "Draw a simple picture of a blue circle and tell me where you saved it" produced exactly one `generate_image` step; the daemon's real local-endpoint client fetched the image and saved `~/Pictures/Fab OS/2026-09-16-a-simple-minimalistic-blue-circle-center-1.png` (512×512 PNG, 1,880 bytes, IHDR read by the checker), and the reply named that path. An earlier attempt with `FABOS_IMAGE_PROVIDER=fake` was a SKIP, because the daemon's test renderer applies only when the whole agent runs as the test provider — that attempt proved nothing and is recorded here so the log (`build/ladder-l2g-fake.out`) is not misread. Cloud image providers were not exercised: no such key is held; their clients share the same save-and-card path.
 
 ## Known limits carried by this release
 
