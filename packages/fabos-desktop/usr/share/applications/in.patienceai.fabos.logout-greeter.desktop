@@ -1,0 +1,15 @@
+[Desktop Entry]
+# Not a launcher. KWin hands the Wayland window list (org_kde_plasma_window_management) only to processes whose
+# application entry asks for it in X-KDE-Wayland-Interfaces and whose Exec resolves to the running binary
+# (kwin: utils/serviceutils.h fetchRequestedInterfaces). plasma-workspace ships no such entry for its logout greeter,
+# so this one lets the @DISTRO_NAME@ leave screen (look-and-feel contents/logout/Logout.qml) list the open windows and
+# flag unsaved work. Same mechanism as org.kde.plasma-fallback-session-save.desktop. See docs/design/SHUTDOWN.md.
+Type=Application
+Name=@DISTRO_NAME@ leave screen
+Comment=Shut down, restart and log out confirmation with the list of open apps
+Exec=/usr/lib/x86_64-linux-gnu/libexec/ksmserver-logout-greeter
+Icon=system-shutdown
+NoDisplay=true
+OnlyShowIn=KDE;
+X-KDE-StartupNotify=false
+X-KDE-Wayland-Interfaces=org_kde_plasma_window_management

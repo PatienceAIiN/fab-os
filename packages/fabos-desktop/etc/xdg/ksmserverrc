@@ -1,5 +1,16 @@
-# @DISTRO_NAME@ low-RAM defaults (docs/LOW-RAM.md): log in to an empty desktop instead of reopening every
-# application from the previous session (which puts a 2 GB machine straight into swap before it is usable).
-# Change in Fab Settings > Session > Desktop Session ("When logging in").
+# @DISTRO_NAME@ session defaults.
+#
+# Leaving (docs/design/SHUTDOWN.md): every shut down / restart / log out first shows the @DISTRO_NAME@ leave screen
+# (look-and-feel contents/logout/Logout.qml) with the open apps, an unsaved-work flag and a countdown. confirmLogout is
+# Plasma's own key (libkworkspace reads it on every request; Plasma defaults to true, written here so the behaviour is
+# explicit and survives a distribution default change). confirmLogoutCountdown is a @DISTRO_NAME@ key read by the leave
+# screen: seconds before the chosen action runs by itself; 0 waits for a click. It never counts down while a window
+# looks unsaved. Change "Ask before closing" in Fab Settings > Session > Desktop Session ("Confirm logout").
+#
+# Low-RAM (docs/LOW-RAM.md): log in to an empty desktop instead of reopening every application from the previous
+# session (which puts a 2 GB machine straight into swap before it is usable). To get the previous session back, choose
+# Fab Settings > Session > Desktop Session > "When logging in: Restore previous session".
 [General]
+confirmLogout=true
+confirmLogoutCountdown=30
 loginMode=emptySession
