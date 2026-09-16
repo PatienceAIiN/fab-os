@@ -1423,4 +1423,4 @@ Fab OS Archive key. No ISO was rebuilt or uploaded and no GitHub release was mad
 owner verifies on real hardware; this over-the-air push was explicitly requested).
 
 **Public update-channel test** (`tests/update-channel-test.sh`, the same 1.0-6 disk pulling from the public repository):
-**PASS** (2026-09-17, 00:00 IST) — newer fabos packages offered by the channel; fabos-desktop updated 1.0-4 -> 1.0-6 (`build/update-channel-test.out`, `build/r7-update-channel.out`).
+<!-- R7-PUBLIC -->
