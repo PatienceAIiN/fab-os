@@ -17,6 +17,11 @@ HTTP API on 127.0.0.1:8790 (bearer token in $XDG_RUNTIME_DIR/fabos-agent/token, 
   GET  /providers/ollama/models -> [{name,size,parameter_size,quantization,...}] (from Ollama's /api/tags; 503 when it is down)
   GET  /providers/ollama/status -> {installed, running, models, model, model_source, ram_gib, max_parameters_b, install_command}
   POST /providers/ollama/install {confirm: true} -> runs the official installer as root through the polkit path (ADR-0022)
+  GET  /system/disk-unlock -> {encrypted, device, prompt_at_boot, keyfile_present, keyfile_in_initramfs, consistent, detail, available}
+  POST /system/disk-unlock {prompt_at_boot: bool, passphrase?} -> the Start-up setting "Ask for the disk password when the computer
+       starts" (ADR-0021 layout: unencrypted /boot + LUKS2 root). false stores a LUKS key in the initramfs on /boot (anyone who starts
+       the computer can use it), true removes it again; disk_unlock.sh runs as root through the polkit path, CRITICAL in the
+       activity log; the passphrase reaches the helper on its stdin from a private tmpfs file, never a command line or a log.
   POST /speech/transcribe {audio_b64, format} -> {ok, text, backend}     POST /speech/say {text} -> {ok, audio_b64, format, backend}
        cloud speech through the configured provider (OpenAI or Gemini); other providers answer ok=false so the caller
        falls back to the offline engine (fabos-voice).
@@ -471,6 +476,9 @@ def installed_apps():
 DANGER = [
     (r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\b", "HIGH", "recursive delete"),
     (r"\b(mkfs|dd\s+if=|wipefs|fdisk|sfdisk|parted|cryptsetup)\b", "CRITICAL", "disk or partition operation"),
+    # the start-up disk unlock surface (disk_unlock.sh, its keyfile, crypttab, the cryptsetup initramfs hook, the initramfs itself):
+    # a task that touches any of it is changing whether the computer asks for the disk password
+    (r"disk_unlock\.sh|luks-unlock\.key|/etc/crypttab|cryptsetup-initramfs|cryptroot/keyfiles|\bupdate-initramfs\b", "CRITICAL", "start-up disk unlock (LUKS key in the initramfs)"),
     (r"\bsudo\b|\bpkexec\b|\bdoas\b|(^|[;&|]\s*)su\s", "CRITICAL", "privileged execution"),
     (r"\b(apt|apt-get|dpkg|snap|flatpak)\s+(install|remove|purge|upgrade|dist-upgrade)\b", "HIGH", "package change"),
     (r"\bsystemctl\s+(disable|mask|stop|start|enable|restart)\b", "HIGH", "service change"),
@@ -679,6 +687,88 @@ def root_argv(aid, policy=None):
     if shutil.which("pkexec") or policy.require_password_for_root():
         return ["pkexec", ROOTEXEC, aid]
     return ["sudo", "-n", ROOTEXEC, aid]
+
+
+# ---- Start-up: "Ask for the disk password when the computer starts" (Fab AI Controls › Settings › General). The root helper
+# disk_unlock.sh {status|off|on} does the work (a LUKS keyfile in the initramfs on the unencrypted /boot, ADR-0021 layout); the
+# daemon only classifies it (CRITICAL), reaches root the one way it has (pkexec rootexec, the user's own password in the system
+# dialog) and keeps the passphrase off every command line and log. FABOS_DISK_UNLOCK_HELPER lets the tests point at a stub.
+DISK_UNLOCK_HELPER = os.environ.get("FABOS_DISK_UNLOCK_HELPER", "/usr/lib/fabos/agent/disk_unlock.sh")
+DISK_UNLOCK_RISK = "CRITICAL"
+DISK_UNLOCK_TIMEOUT = 900        # s: update-initramfs -u -k all on a slow disk, twice when a failure rolls back
+DISK_UNLOCK_MAX_PASSPHRASE = 512
+
+
+def disk_unlock_status(helper=None):
+    """`disk_unlock.sh status` as the user (no root needed: crypttab and findmnt are world-readable; whether the key is inside
+    a root-only initrd is reported as null then). Runs through bash — the one interpreter the AppArmor profile lets the daemon
+    exec unconfined. Never raises; a missing helper reads as not encrypted + available=false."""
+    helper = helper or DISK_UNLOCK_HELPER
+    if not os.path.isfile(helper):
+        return {"encrypted": False, "prompt_at_boot": False, "available": False, "risk": DISK_UNLOCK_RISK,
+                "error": "the disk unlock helper is not installed (%s)" % helper}
+    try:
+        r = subprocess.run(["bash", helper, "status"], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        if not isinstance(out, dict):
+            raise ValueError("not an object")
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError) as e:
+        return {"encrypted": False, "prompt_at_boot": False, "available": True, "risk": DISK_UNLOCK_RISK, "error": "disk unlock status failed: %s" % e}
+    out.setdefault("available", True)
+    out["risk"] = DISK_UNLOCK_RISK
+    return out
+
+
+def disk_unlock_apply(agent, prompt_at_boot, passphrase=None, helper=None):
+    """Runs `disk_unlock.sh on|off` as root through Tools.run_as_root — pkexec rootexec with a one-time record, the user's own
+    password in the polkit dialog, the same path as every as_root step. For `off` the passphrase is written to a private file in
+    the agent's runtime directory (tmpfs, 0600 inside the 0700 directory that protected_path hides from every tool) and handed to
+    the helper as its STDIN by a shell redirection: it is on no command line, in no authorization record, in no log (the record and
+    the activity rows carry only the file's path). The file is overwritten and removed the moment the helper returns."""
+    helper = helper or DISK_UNLOCK_HELPER
+    cmd = shlex.quote(helper) + (" on" if prompt_at_boot else " off")
+    pw_path = None
+    if not prompt_at_boot:
+        os.makedirs(RUN_DIR, mode=0o700, exist_ok=True)
+        os.chmod(RUN_DIR, 0o700)
+        pw_path = os.path.join(RUN_DIR, "disk-unlock-" + uuid.uuid4().hex)
+        fd = os.open(pw_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(passphrase + "\n")
+        cmd += " < " + shlex.quote(pw_path)
+    try:
+        r = agent.tools.run_as_root(None, cmd, "/", DISK_UNLOCK_TIMEOUT)
+    finally:
+        if pw_path:
+            try:
+                with open(pw_path, "r+b") as f:
+                    f.write(b"\0" * (len(passphrase) + 1))
+            except OSError:
+                pass
+            try:
+                os.remove(pw_path)
+            except FileNotFoundError:
+                pass
+    if not isinstance(r, dict):
+        return {"ok": False, "prompt_at_boot": None, "error": "root execution gave no result", "risk": DISK_UNLOCK_RISK}
+    if r.get("error"):
+        return {"ok": False, "prompt_at_boot": None, "error": r["error"], "risk": DISK_UNLOCK_RISK}
+    out = None
+    for line in reversed((r.get("stdout") or "").strip().splitlines()):
+        if line.startswith("{"):
+            try:
+                out = json.loads(line)
+                break
+            except ValueError:
+                continue
+    if not isinstance(out, dict):
+        err = ((r.get("stderr") or "").strip().splitlines() or ["the helper gave no result"])[-1]
+        out = {"ok": r.get("exit_code") == 0, "prompt_at_boot": None, "error": None if r.get("exit_code") == 0 else err[:300]}
+    out["exit_code"] = r.get("exit_code")
+    out["risk"] = DISK_UNLOCK_RISK
+    if out.get("ok") is not True and not out.get("error"):
+        out["error"] = "the helper failed (exit %s)" % r.get("exit_code")
+    return out
 
 
 def protected_path(path):
@@ -4503,6 +4593,8 @@ def make_handler(store, agent, token):
                 return self._send(200, models)
             if p == "/providers/ollama/status":
                 return self._send(200, ollama_status(store))
+            if p == "/system/disk-unlock":
+                return self._send(200, disk_unlock_status())
             if p == "/audit/verify":
                 return self._send(200, store.audit_verify())
             if p == "/watches":
@@ -4561,6 +4653,30 @@ def make_handler(store, agent, token):
                     _ollama_cache.update(at=0.0)
                 return self._send(200, {"ok": ok, "exit_code": out.get("exit_code"), "error": out.get("error"), "stdout": (out.get("stdout") or "")[-3000:], "stderr": (out.get("stderr") or "")[-3000:],
                                         "installed": bool(shutil.which("ollama")), "command": OLLAMA_INSTALL_CMD})
+            if p == "/system/disk-unlock":
+                # The Start-up setting. prompt_at_boot=false needs the current passphrase (one line; it travels on the helper's stdin,
+                # see disk_unlock_apply) and stores the unlock key in the initramfs on the unencrypted /boot; true removes it again.
+                # CRITICAL: root through the polkit path (the user's password in the system dialog) and audited before and after.
+                # Not an agent step, so no approval row — the person clicking the switch is the approver, like the Ollama installer.
+                want = b.get("prompt_at_boot")
+                if not isinstance(want, bool):
+                    return self._send(400, {"ok": False, "error": "prompt_at_boot must be true or false", "risk": DISK_UNLOCK_RISK})
+                pw = b.get("passphrase")
+                if not want:
+                    if not isinstance(pw, str) or not pw:
+                        return self._send(400, {"ok": False, "error": "the current disk passphrase is required to stop asking for it", "risk": DISK_UNLOCK_RISK})
+                    if "\n" in pw or "\r" in pw or "\0" in pw or len(pw) > DISK_UNLOCK_MAX_PASSPHRASE:
+                        return self._send(400, {"ok": False, "error": "the passphrase must be one line of at most %d characters" % DISK_UNLOCK_MAX_PASSPHRASE, "risk": DISK_UNLOCK_RISK})
+                status = disk_unlock_status()
+                if not status.get("encrypted"):
+                    return self._send(409, {"ok": False, "risk": DISK_UNLOCK_RISK, "status": status,
+                                            "error": status.get("error") or "this computer's disk is not encrypted, so there is no disk password to ask for"})
+                store.activity("user", "disk_unlock_requested", None, "risk=%s prompt_at_boot=%s device=%s via %s" % (DISK_UNLOCK_RISK, want, status.get("device"), root_argv("x")[0]))
+                out = disk_unlock_apply(agent, want, pw)
+                ok = out.get("ok") is True
+                store.activity("user", "disk_unlock_" + ("done" if ok else "failed"), None,
+                               "risk=%s prompt_at_boot=%s %s" % (DISK_UNLOCK_RISK, out.get("prompt_at_boot"), (out.get("error") or out.get("detail") or "")[:300]))
+                return self._send(200, out)
             if p == "/providers/test":
                 kind = b.get("provider") or store.setting("provider", "claude")
                 r = test_provider(store, kind, b.get("api_key"), b.get("base_url"), b.get("model"))
