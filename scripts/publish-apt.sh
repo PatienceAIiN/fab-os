@@ -23,23 +23,55 @@ rm -rf "$DEBS"; mkdir -p "$DEBS"
 c=$(podman create fabos:pkgs); podman cp "$c":/out/. "$DEBS"/; podman rm "$c" >/dev/null
 ls -1 "$DEBS"
 
-echo "== 2. assemble repository (apt-ftparchive inside Ubuntu)"
+echo "== 2. assemble repository (apt-ftparchive inside Ubuntu; offline dpkg-scanpackages fallback when the archive is unreachable)"
 rm -rf "$OUT"; mkdir -p "$OUT/pool/$SUITE" "$OUT/dists/$SUITE/$COMPONENT"   # one dists+pool tree per suite (pool/<suite>), merged by rsync without --delete
 cp "$DEBS"/*.deb "$OUT/pool/$SUITE/"
-podman run --rm -v "$PWD/$OUT:/repo:Z" -e SUITE="$SUITE" -e COMPONENT="$COMPONENT" -e ORIGIN="$VENDOR_NAME" -e LABEL="$DISTRO_NAME" docker.io/library/ubuntu:26.04 bash -euo pipefail -c '
-  apt-get update -qq >/dev/null && apt-get install -y -qq apt-utils dpkg-dev >/dev/null 2>&1
-  cd /repo
-  for a in amd64 all; do
-    mkdir -p dists/$SUITE/$COMPONENT/binary-$a
-    apt-ftparchive --arch $a packages pool/$SUITE > dists/$SUITE/$COMPONENT/binary-$a/Packages
-    gzip -9kf dists/$SUITE/$COMPONENT/binary-$a/Packages
-    printf "Archive: %s\nComponent: %s\nOrigin: %s\nLabel: %s\nArchitecture: %s\n" "$SUITE" "$COMPONENT" "$ORIGIN" "$LABEL" "$a" > dists/$SUITE/$COMPONENT/binary-$a/Release
-  done
-  # (apt-ftparchive --arch amd64 already includes Architecture: all packages)
-  apt-ftparchive -o APT::FTPArchive::Release::Origin="$ORIGIN" -o APT::FTPArchive::Release::Label="$LABEL" -o APT::FTPArchive::Release::Suite="$SUITE" \
-     -o APT::FTPArchive::Release::Codename="$SUITE" -o APT::FTPArchive::Release::Architectures="amd64 all" -o APT::FTPArchive::Release::Components="$COMPONENT" \
-     -o APT::FTPArchive::Release::Description="$LABEL package updates by $ORIGIN" release dists/$SUITE > dists/$SUITE/Release
-  chown -R --reference=/repo/pool /repo/dists 2>/dev/null || true'
+assemble_online() {
+  podman run --rm -v "$PWD/$OUT:/repo:Z" -e SUITE="$SUITE" -e COMPONENT="$COMPONENT" -e ORIGIN="$VENDOR_NAME" -e LABEL="$DISTRO_NAME" docker.io/library/ubuntu:26.04 bash -euo pipefail -c '
+    apt-get update -qq >/dev/null && apt-get install -y -qq apt-utils dpkg-dev >/dev/null 2>&1
+    cd /repo
+    for a in amd64 all; do
+      mkdir -p dists/$SUITE/$COMPONENT/binary-$a
+      apt-ftparchive --arch $a packages pool/$SUITE > dists/$SUITE/$COMPONENT/binary-$a/Packages
+      gzip -9kf dists/$SUITE/$COMPONENT/binary-$a/Packages
+      printf "Archive: %s\nComponent: %s\nOrigin: %s\nLabel: %s\nArchitecture: %s\n" "$SUITE" "$COMPONENT" "$ORIGIN" "$LABEL" "$a" > dists/$SUITE/$COMPONENT/binary-$a/Release
+    done
+    # (apt-ftparchive --arch amd64 already includes Architecture: all packages)
+    apt-ftparchive -o APT::FTPArchive::Release::Origin="$ORIGIN" -o APT::FTPArchive::Release::Label="$LABEL" -o APT::FTPArchive::Release::Suite="$SUITE" \
+       -o APT::FTPArchive::Release::Codename="$SUITE" -o APT::FTPArchive::Release::Architectures="amd64 all" -o APT::FTPArchive::Release::Components="$COMPONENT" \
+       -o APT::FTPArchive::Release::Description="$LABEL package updates by $ORIGIN" release dists/$SUITE > dists/$SUITE/Release
+    chown -R --reference=/repo/pool /repo/dists 2>/dev/null || true'
+}
+assemble_offline() {   # same layout and Release header fields, indices from dpkg-scanpackages inside our own package-build image (no network)
+  rm -rf "$OUT/dists"; mkdir -p "$OUT/dists/$SUITE/$COMPONENT"
+  podman run --rm --network none -v "$PWD/$OUT:/repo:Z" -e SUITE="$SUITE" -e COMPONENT="$COMPONENT" -e ORIGIN="$VENDOR_NAME" -e LABEL="$DISTRO_NAME" localhost/fabos:pkgs bash -euo pipefail -c '
+    cd /repo
+    for a in amd64 all; do
+      mkdir -p dists/$SUITE/$COMPONENT/binary-$a
+      dpkg-scanpackages --arch $a pool/$SUITE > dists/$SUITE/$COMPONENT/binary-$a/Packages 2>/dev/null
+      gzip -9kf dists/$SUITE/$COMPONENT/binary-$a/Packages
+      printf "Archive: %s\nComponent: %s\nOrigin: %s\nLabel: %s\nArchitecture: %s\n" "$SUITE" "$COMPONENT" "$ORIGIN" "$LABEL" "$a" > dists/$SUITE/$COMPONENT/binary-$a/Release
+    done
+    python3 - "$SUITE" "$COMPONENT" "$ORIGIN" "$LABEL" <<PY
+import hashlib, os, sys, time
+suite, comp, origin, label = sys.argv[1:5]; base = "dists/%s" % suite
+files = sorted(os.path.join(dp, f)[len(base) + 1:] for dp, _, fs in os.walk(base) for f in fs if not f.startswith(("Release", "InRelease")))
+out = ["Origin: %s" % origin, "Label: %s" % label, "Suite: %s" % suite, "Codename: %s" % suite,
+       "Date: %s" % time.strftime("%a, %d %b %Y %H:%M:%S UTC", time.gmtime()), "Architectures: amd64 all", "Components: %s" % comp,
+       "Description: %s package updates by %s" % (label, origin)]
+for name, h in (("MD5Sum", hashlib.md5), ("SHA256", hashlib.sha256), ("SHA512", hashlib.sha512)):
+    out.append(name + ":")
+    for f in files:
+        data = open(os.path.join(base, f), "rb").read(); out.append(" %s %16d %s" % (h(data).hexdigest(), len(data), f))
+open(os.path.join(base, "Release"), "w").write("\n".join(out) + "\n")
+PY
+    chown -R --reference=/repo/pool /repo/dists 2>/dev/null || true'
+}
+export OUT SUITE COMPONENT VENDOR_NAME DISTRO_NAME
+if [ "${APT_ASSEMBLE:-auto}" = offline ] || ! timeout "${APT_ASSEMBLE_TIMEOUT:-600}" bash -c "$(declare -f assemble_online); assemble_online" 2>/dev/null; then
+  echo "   (online apt-ftparchive path unavailable or slow -> offline dpkg-scanpackages inside localhost/fabos:pkgs)"; assemble_offline
+fi
+[ -s "$OUT/dists/$SUITE/$COMPONENT/binary-amd64/Packages" ] || { echo "ERROR: repository indices were not produced" >&2; exit 1; }
 
 echo "== 3. sign Release (key: $KEY)"
 gpg --batch --yes --default-key "$KEY" -abs -o "$OUT/dists/$SUITE/Release.gpg" "$OUT/dists/$SUITE/Release"
