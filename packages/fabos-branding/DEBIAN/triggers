@@ -1,0 +1,3 @@
+# Any install/upgrade of this package (Plymouth splash -> initramfs) activates fabos-updates' post-upgrade step, which
+# records that a restart finishes the update and tells logged-in users.
+activate-noawait fabos-postupgrade
