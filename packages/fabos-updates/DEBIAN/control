@@ -5,9 +5,12 @@ Priority: optional
 Architecture: all
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
 Homepage: @HOME_URL@
-Depends: python3, python3-pyqt6, polkitd, pkexec, unattended-upgrades, libnotify-bin, fabos-branding
+Depends: python3, python3-pyqt6, python3-dbus, python3-gi, polkitd, pkexec, unattended-upgrades, libnotify-bin, systemd, apt, dpkg (>= 1.17.2), fabos-branding
 Description: @DISTRO_NAME@ Updates — check/install updates, Standard or Beta channel, automatic updates
- One place for @DISTRO_NAME@ and Ubuntu updates: a Check/Install app, a daily
- check that notifies logged-in users, release channels (Standard = suite
- @DISTRO_CODENAME@, Beta = @DISTRO_CODENAME@-beta) and unattended-upgrades
- configured for both the @VENDOR_NAME@ repository and Ubuntu security.
+ One place for @DISTRO_NAME@ and Ubuntu updates: a Check/Install app, a twice-daily
+ check that notifies logged-in users from inside their session, release channels
+ (Standard = suite @DISTRO_CODENAME@, Beta = @DISTRO_CODENAME@-beta), unattended-upgrades
+ configured for both the @VENDOR_NAME@ repository and Ubuntu security, and the
+ post-upgrade follow-up (dpkg trigger fabos-postupgrade): records what changed,
+ restarts the idle agent/voice user services, tells the user whether to log out
+ and back in or restart. Never restarts the desktop session by itself.

@@ -1,0 +1,11 @@
+[Unit]
+Description=@DISTRO_NAME@ update notifications (a few minutes after login, then every few hours)
+
+[Timer]
+OnStartupSec=4min
+OnUnitActiveSec=4h
+RandomizedDelaySec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

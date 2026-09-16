@@ -53,6 +53,7 @@ case "$1" in configure)
     [ -d /run/systemd/system ] && sysctl -q -p /etc/sysctl.d/60-fabos-lowram.conf 2>/dev/null || true
   fi
   [ -x /usr/lib/fabos/rebrand-desktop-entries ] && /usr/lib/fabos/rebrand-desktop-entries || true
+  [ -x /usr/lib/fabos/desktop-postupgrade.sh ] && /usr/lib/fabos/desktop-postupgrade.sh "$2" || true   # caches + the fabos-postupgrade trigger (docs/UPDATES.md)
   # Browser migration (ADR-0018): a system installed from the 1.0-3 / 1.0-4 images has brave-browser, Brave's apt source,
   # `firefox` pinned out in the image-written 00-fabos-blocklist (no package rewrites that file, and the pin hits Mozilla's
   # build too) and no Mozilla Firefox. Flag the one-shot job and start it — it waits for this apt run to finish, installs

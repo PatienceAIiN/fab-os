@@ -1,10 +1,28 @@
-// @DISTRO_NAME@: allow unattended-upgrades to install @VENDOR_NAME@ updates and Ubuntu security updates.
+// @DISTRO_NAME@: what unattended-upgrades may install by itself (docs/UPDATES.md).
+//
+// Ubuntu's own 50unattended-upgrades lists "${distro_id}:${distro_codename}-security" — but on @DISTRO_NAME@ those
+// variables resolve to "@DISTRO_ID_TITLE@:@DISTRO_CODENAME@-security" (lsb_release -is / -cs come from our own
+// os-release), which matches no repository at all, so Ubuntu's security pocket has to be named literally here.
+// The Ubuntu archive signs its Release files with "Origin: Ubuntu" and "Suite: @BASE_CODENAME@-security".
 Unattended-Upgrade::Allowed-Origins {
+    // @DISTRO_NAME@ itself: features and fixes from @VENDOR_NAME@ (Standard channel, Beta channel)
     "@VENDOR_NAME@:@DISTRO_CODENAME@";
     "@VENDOR_NAME@:@DISTRO_CODENAME@-beta";
+    // Ubuntu security updates for the base system (literal names; see above)
+    "Ubuntu:@BASE_CODENAME@-security";
+    "UbuntuESMApps:@BASE_CODENAME@-apps-security";
+    "UbuntuESM:@BASE_CODENAME@-infra-security";
+    // kept so a system whose lsb identity is still Ubuntu's (fabos-updates on stock Ubuntu) behaves like stock Ubuntu
     "${distro_id}:${distro_codename}-security";
     "${distro_id}ESMApps:${distro_codename}-apps-security";
     "${distro_id}ESM:${distro_codename}-infra-security";
 };
+// The browser: Firefox comes from Mozilla's repository (origin-pinned 1000 in fabos-branding). Its Release file's Origin
+// is an internal path ("namespaces/moz-fx-productdelivery-.../repositories/mozilla"), so match the site instead.
+Unattended-Upgrade::Origins-Pattern {
+    "site=packages.mozilla.org";
+};
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
+// Never restart or log the user out by itself. What still needs a log out / restart is told to the user
+// (fabos-update-notify.service in the session, banner in @DISTRO_NAME@ Updates) after the dpkg trigger fabos-postupgrade.
 Unattended-Upgrade::Automatic-Reboot "false";
