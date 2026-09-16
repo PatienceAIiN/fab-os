@@ -84,7 +84,7 @@ sleep 2; kill -0 $QPID 2>/dev/null || { cat "$OUT/qemu.out"; verdict FAIL "qemu 
 
 # ---- the driver: QMP (send-key / screendump), OCR and type_text come from tests/install-vm-driver.py; the serial console is ours
 export HELPER_PATH="$HELPER"
-python3 -"$QMP" "$SER" "$OUT" "$IMAGE" "$USER_" "$PASSWORD" "$PASSPHRASE" "$HERE/tests/install-vm-driver.py" <<'PY'
+python3 - "$QMP" "$SER" "$OUT" "$IMAGE" "$USER_" "$PASSWORD" "$PASSPHRASE" "$HERE/tests/install-vm-driver.py" <<'PY'
 import importlib.machinery, importlib.util, json, os, re, socket, sys, threading, time
 QMP_PATH, SER_PATH, OUT, IMAGE, USER, PASSWORD, PASSPHRASE, DRIVER = sys.argv[1:9]
 loader = importlib.machinery.SourceFileLoader("ivd", DRIVER); spec = importlib.util.spec_from_loader("ivd", loader); ivd = importlib.util.module_from_spec(spec); loader.exec_module(ivd)
