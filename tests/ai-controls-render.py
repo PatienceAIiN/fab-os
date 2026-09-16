@@ -29,7 +29,11 @@ Quick passes (no chat seeding; the output directory stays the first argument):
               settings-general-advanced-*.png, settings-mail-{ok,fail,outlook}-*.png, settings-voice-*.png), per-tab heights against the
               560 px budget, the Mail Sign in -> app-password path -> Check connection (patched api) -> Save gating, the Voice
               check box with a fake fabos-voice (with and without `doctor` / `say --test`), and the composer mic toast reasons
-              (exit 3 / exit 4 / missing binary) — the mic never fails silently
+              (exit 3 / exit 4 / missing binary) — the mic never fails silently; the General tab's Start-up row ("Ask for the
+              disk password when the computer starts"): disabled with the reason on this unencrypted daemon, and against a patched
+              api (encrypted): OFF opens the plain-words confirmation with the passphrase field + eye toggle
+              (settings-startup-dialog-*.png) and posts the passphrase, ON posts nothing else, Cancel posts nothing, a refused
+              passphrase puts the switch back with the reason, an unencrypted disk disables the row
   --welcome   the welcome wizard's Mail page (welcome-mail-*.png) and its "Use your own mail" button
 """
 import json, os, shutil, sqlite3, subprocess, sys, tempfile, time, traceback, urllib.request
@@ -197,6 +201,86 @@ def quick_passes():
                 assert sd.persona.isVisible() and sd.show_raw.isVisible() and sd.max_turns.isVisible(), "Advanced did not reveal the general extras"
                 sp = sd.grab(); assert sp.save(os.path.join(OUT, "settings-general-advanced-%s.png" % name))
                 sd.general_adv.set_open(False); spin()
+                # --- Start-up row ("Ask for the disk password when the computer starts"). Its state comes from GET /system/disk-unlock;
+                # this daemon runs in a container (no installed helper, or an unencrypted root): the switch is disabled and the note says why
+                wait_for(lambda: sd.boot_worker is None, "disk-unlock status")
+                assert sd.boot_prompt.isVisible() and not sd.boot_prompt.isEnabled(), sd.boot_note.text()
+                assert sd.boot_note.text().startswith(cc.SettingsDialog.BOOT_PROMPT_ON) and ("unavailable" in sd.boot_note.text() or "not encrypted" in sd.boot_note.text()), sd.boot_note.text()
+                # an encrypted computer (patched api): the switch is on and live; OFF opens the plain-words confirmation with the passphrase
+                # field + eye toggle and posts {prompt_at_boot: false, passphrase}; ON posts {prompt_at_boot: true} and asks nothing;
+                # Cancel posts nothing; a refused passphrase puts the switch back and explains; an unencrypted disk disables the row
+                from PyQt6.QtCore import QTimer
+                du_state = {"encrypted": True, "device": "luks-abc", "prompt_at_boot": True, "consistent": True, "keyfile_present": False, "available": True, "risk": "CRITICAL"}
+                du_calls = []
+
+                def du_api(method, path, body=None, timeout=5):
+                    if path != "/system/disk-unlock":
+                        return real_api(method, path, body)
+                    if method == "GET":
+                        return dict(du_state)
+                    du_calls.append(dict(body))
+                    if body.get("prompt_at_boot") is False and body.get("passphrase") != "fabos-test":
+                        return {"ok": False, "prompt_at_boot": True, "error": "the passphrase was not accepted for luks-abc", "risk": "CRITICAL", "exit_code": 3}
+                    du_state["prompt_at_boot"] = body["prompt_at_boot"]
+                    return {"ok": True, "prompt_at_boot": body["prompt_at_boot"], "risk": "CRITICAL", "exit_code": 0}
+                cc.api = du_api
+                seen = {}
+                poll = QTimer(); poll.setInterval(30)
+
+                def drive():
+                    for d in app.topLevelWidgets():
+                        if isinstance(d, cc.DiskUnlockDialog) and d.isVisible():
+                            seen.setdefault("dialogs", 0); seen["dialogs"] += 1
+                            seen["title"], seen["text"] = d.title.text(), d.message.text()
+                            seen["confirm_disabled_at_open"] = not d.confirm_btn.isEnabled()
+                            seen["echo"] = d.pw.echoMode(); d.eye.click(); seen["echo_eye"] = d.pw.echoMode(); d.eye.click(); seen["echo_back"] = d.pw.echoMode()
+                            act = seen.get("act", "confirm")
+                            if act == "cancel":
+                                d.cancel_btn.click()
+                            else:
+                                d.pw.setText(seen.get("typed", "fabos-test")); seen["confirm_enabled_after_typing"] = d.confirm_btn.isEnabled()
+                                if "shot" not in seen:
+                                    spin(); pm = d.grab(); assert pm.save(os.path.join(OUT, "settings-startup-dialog-%s.png" % name)); seen["shot"] = (pm.width(), pm.height())
+                                d.confirm_btn.click()
+                        elif isinstance(d, cc.RoundedDialog) and d.isVisible() and d is not sd and not isinstance(d, cc.SettingsDialog) and d.title.text().startswith("Couldn't change"):
+                            seen["info"] = d.message.text(); d.confirm_btn.click()
+                try:
+                    sd3 = cc.SettingsDialog(w, settings, w.voice); sd3.show(); spin()
+                    wait_for(lambda: sd3.boot_worker is None, "disk-unlock status (encrypted)")
+                    assert sd3.boot_prompt.isEnabled() and sd3.boot_prompt.isChecked() and sd3.boot_note.text() == cc.SettingsDialog.BOOT_PROMPT_ON, sd3.boot_note.text()
+                    sd3.refit(); spin(); fits("general tab with the Start-up row")
+                    poll.timeout.connect(drive); poll.start()
+                    sd3.boot_prompt.click()                     # -> toggled(False) -> the modal confirmation; drive() fills and confirms it
+                    wait_for(lambda: sd3.boot_worker is None and du_calls, "disk-unlock off")
+                    assert seen.get("title") == "Stop asking for the disk password?" and seen.get("text") == cc.DiskUnlockDialog.TEXT, seen
+                    for must in ("Your files stay encrypted on the drive", "anyone who starts this computer can use it without a password", "unencrypted /boot partition", "only where the computer itself is secure"):
+                        assert must in seen["text"].replace("⁠", ""), must           # the word joiner only keeps "/boot" on one line
+                    assert seen["confirm_disabled_at_open"] and seen["confirm_enabled_after_typing"], seen
+                    assert (seen["echo"], seen["echo_eye"], seen["echo_back"]) == (cc.QLineEdit.EchoMode.Password, cc.QLineEdit.EchoMode.Normal, cc.QLineEdit.EchoMode.Password), seen
+                    assert du_calls[-1] == {"prompt_at_boot": False, "passphrase": "fabos-test"}, du_calls
+                    assert not sd3.boot_prompt.isChecked() and sd3.boot_prompt.isEnabled() and sd3.boot_note.text().startswith(cc.SettingsDialog.BOOT_PROMPT_OFF) and sd3.boot_note.text().endswith("done."), sd3.boot_note.text()
+                    print("[%s] Start-up confirmation dialog rendered %dx%d (settings-startup-dialog-%s.png)" % (name, seen["shot"][0], seen["shot"][1], name))
+                    n = len(du_calls)
+                    sd3.boot_prompt.click()                     # back ON: no dialog, one POST
+                    wait_for(lambda: sd3.boot_worker is None and len(du_calls) > n, "disk-unlock on")
+                    assert du_calls[-1] == {"prompt_at_boot": True} and sd3.boot_prompt.isChecked() and "asks for the disk password again" in sd3.boot_note.text(), (du_calls, sd3.boot_note.text())
+                    assert seen["dialogs"] == 1, seen["dialogs"]
+                    seen["act"] = "cancel"; n = len(du_calls)
+                    sd3.boot_prompt.click(); settle(200)
+                    assert len(du_calls) == n and sd3.boot_prompt.isChecked() and seen["dialogs"] == 2, "Cancel must post nothing and leave the switch on"
+                    seen["act"] = "confirm"; seen["typed"] = "wrong-one"; n = len(du_calls)
+                    sd3.boot_prompt.click()
+                    wait_for(lambda: sd3.boot_worker is None and len(du_calls) > n and "info" in seen, "disk-unlock refused")
+                    assert sd3.boot_prompt.isChecked() and "not accepted" in sd3.boot_note.text() and "not changed" in sd3.boot_note.text(), sd3.boot_note.text()
+                    assert "not accepted" in seen["info"] and "still asks for the disk password" in seen["info"], seen["info"]
+                    sd3.reject(); spin()
+                    du_state["encrypted"] = False; du_state["prompt_at_boot"] = False
+                    sd4 = cc.SettingsDialog(w, settings, w.voice); sd4.show(); spin()
+                    wait_for(lambda: sd4.boot_worker is None, "disk-unlock status (unencrypted)")
+                    assert not sd4.boot_prompt.isEnabled() and not sd4.boot_prompt.isChecked() and sd4.boot_note.text() == cc.SettingsDialog.BOOT_NOT_ENCRYPTED, sd4.boot_note.text()
+                    sd4.reject(); spin()
+                finally:
+                    poll.stop(); cc.api = real_api
                 # --- AI provider: dropdown, key, Check connection on the first level; model / endpoint / requirement under Advanced
                 sd.tabs.setCurrentIndex(1); spin()
                 assert sd.provider.isVisible() and sd.key.isVisible() and sd.check_btn.isVisible() and sd.help.isVisible()

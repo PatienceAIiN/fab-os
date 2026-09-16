@@ -3084,6 +3084,46 @@ MAIL_ORDER = ["gmail", "outlook", "yahoo", "zoho", "icloud", "other"]
 SETTINGS_TABS = {"general": 0, "provider": 1, "voice": 2, "mail": 3}
 
 
+class DiskUnlockDialog(RoundedDialog):
+    """Confirmation for turning the start-up disk password OFF (Settings › General › Start-up). Says plainly what the change
+    means and asks for the current passphrase (eye toggle shows it). Nothing runs until Confirm; the daemon then goes through
+    the polkit root path, so the system's own password dialog may follow."""
+    # U+2060 (word joiner) after the slash: the label must not wrap "/boot" into "/" + "boot"
+    TEXT = ("Your files stay encrypted on the drive, but anyone who starts this computer can use it without a password, because the "
+            "unlock key is stored in the start-up files on the unencrypted /⁠boot partition. Use this only where the computer itself is secure.")
+
+    def __init__(self, parent):
+        super().__init__(parent, "Stop asking for the disk password?", self.TEXT, "Stop asking", "Cancel", width=460)
+        lab = QLabel("Current disk passphrase")
+        lab.setObjectName("muted")
+        self.body.addWidget(lab)
+        self.pw = QLineEdit()
+        self.pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self.pw.setPlaceholderText("The passphrase you type when the computer starts")
+        self.eye = IconButton("eye", "Show the passphrase", size=32, icon_size=18)
+        self.eye.setCheckable(True)
+        self.eye.toggled.connect(self._eye)
+        box = QWidget()
+        h = QHBoxLayout(box)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        h.addWidget(self.pw, 1)
+        h.addWidget(self.eye, 0)
+        self.body.addWidget(box)
+        self.confirm_btn.setEnabled(False)
+        self.pw.textChanged.connect(lambda t: self.confirm_btn.setEnabled(bool(t)))
+        self.pw.returnPressed.connect(lambda: self.accept() if self.pw.text() else None)
+        self.pw.setFocus()
+
+    def _eye(self, on):
+        self.pw.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
+        self.eye.setToolTip("Hide the passphrase" if on else "Show the passphrase")
+        self.eye.refresh_icon()
+
+    def passphrase(self):
+        return self.pw.text()
+
+
 class SettingsDialog(RoundedDialog):
     """Settings, kept compact (owner: "remove unnecessary settings things and collapse the rest"). Four tabs whose FIRST
     level holds only what most people touch — General: permission mode, System-Wide AI · AI provider: one dropdown, the
@@ -3157,6 +3197,17 @@ class SettingsDialog(RoundedDialog):
         self.ai_switch.toggled.connect(self._ai_toggled)
         self._ai_toggled(self.ai_switch.isChecked())
         f.addRow("System-Wide AI", row(self.ai_switch, self.ai_note, stretch_last=True))
+        # --- Start-up: ask for the disk password (LUKS). A system setting applied at once through the polkit root path, not on
+        # Save; the state comes from GET /system/disk-unlock (async — the switch is disabled until it is known).
+        self.boot_prompt = Switch(self.BOOT_PROMPT_ON)
+        self.boot_prompt.setChecked(True)
+        self.boot_prompt.setEnabled(False)
+        self.boot_note = wrap(QLabel("Checking whether this computer's disk is encrypted…", objectName="muted"))
+        self.boot_state = None
+        self.boot_worker = None
+        self.boot_prompt.toggled.connect(self._boot_prompt_toggled)
+        f.addRow("Start-up", row(self.boot_prompt, self.boot_note, stretch_last=True))
+        self._load_boot_prompt()
         adv = Disclosure()
         self.general_adv = adv
         self.persona = QCheckBox("Warm Indian-English colleague, narrates each step")
@@ -3387,6 +3438,93 @@ class SettingsDialog(RoundedDialog):
     # ---- general
     def _ai_toggled(self, on):
         self.ai_note.setText("On — the agent takes tasks from the bar, the chat and voice" if on else "Off — no tasks are taken, background watches pause")
+
+    # ---- start-up: the disk password (a LUKS keyfile in the initramfs on the unencrypted /boot; ADR-0021 layout).
+    # Applied immediately through POST /system/disk-unlock (root via pkexec, CRITICAL in the activity log), never on Save.
+    BOOT_PROMPT_ON = "Ask for the disk password when the computer starts"
+    BOOT_PROMPT_OFF = "Starts without asking — the unlock key is stored in the start-up files on the unencrypted /boot partition"
+    BOOT_NOT_ENCRYPTED = "Ask for the disk password when the computer starts — not available: this computer's disk is not encrypted, so there is no disk password to ask for."
+    BOOT_BUSY_OFF = "Storing the unlock key and rebuilding the start-up files… this takes a minute or two; the system may ask for your password."
+    BOOT_BUSY_ON = "Removing the unlock key and rebuilding the start-up files… this takes a minute or two; the system may ask for your password."
+
+    def _load_boot_prompt(self):
+        w = ApiWorker("GET", "/system/disk-unlock", None, timeout=30)
+        w.done.connect(self._boot_prompt_loaded)
+        w.finished.connect(w.deleteLater)
+        self._workers.append(w)
+        self.boot_worker = w
+        w.start()
+
+    def _set_boot_switch(self, on):
+        """The switch follows the system state without running the toggle handler."""
+        self.boot_prompt.blockSignals(True)
+        self.boot_prompt.setChecked(on)
+        self.boot_prompt.blockSignals(False)
+
+    def _boot_prompt_loaded(self, st):
+        self.boot_worker = None
+        self.boot_state = st if isinstance(st, dict) else {}
+        if not isinstance(st, dict) or st.get("offline") or (st.get("error") and not st.get("encrypted")):
+            why = str((st or {}).get("error") or (st or {}).get("offline") or "the agent service did not answer") if isinstance(st, dict) else "the agent service did not answer"
+            self._set_boot_switch(True)
+            self.boot_prompt.setEnabled(False)
+            self.boot_note.setText(self.BOOT_PROMPT_ON + " — unavailable right now: " + why[:160])
+            return
+        if not st.get("encrypted"):
+            self._set_boot_switch(False)
+            self.boot_prompt.setEnabled(False)
+            self.boot_note.setText(self.BOOT_NOT_ENCRYPTED)
+            return
+        on = bool(st.get("prompt_at_boot", True))
+        self._set_boot_switch(on)
+        self.boot_prompt.setEnabled(True)
+        text = self.BOOT_PROMPT_ON if on else self.BOOT_PROMPT_OFF
+        if st.get("consistent") is False and st.get("detail"):
+            text += " — " + str(st["detail"])[:160]
+        self.boot_note.setText(text)
+
+    def _boot_prompt_toggled(self, on):
+        if on:                                   # asking again needs nothing
+            self._apply_boot_prompt(True, None)
+            return
+        dlg = DiskUnlockDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.passphrase():
+            self._set_boot_switch(True)
+            return
+        self._apply_boot_prompt(False, dlg.passphrase())
+
+    def _apply_boot_prompt(self, on, passphrase):
+        if self.boot_worker is not None:
+            return
+        self.boot_prompt.setEnabled(False)
+        self.boot_note.setText(self.BOOT_BUSY_ON if on else self.BOOT_BUSY_OFF)
+        body = {"prompt_at_boot": on}
+        if not on:
+            body["passphrase"] = passphrase
+        # up to two update-initramfs runs on a slow disk plus the polkit dialog: a long timeout; the dialog keeps painting
+        w = ApiWorker("POST", "/system/disk-unlock", body, timeout=1260)
+        w.done.connect(lambda r, on=on: self._boot_prompt_applied(on, r))
+        w.finished.connect(w.deleteLater)
+        self._workers.append(w)
+        self.boot_worker = w
+        w.start()
+
+    def _boot_prompt_applied(self, wanted, r):
+        self.boot_worker = None
+        self.boot_prompt.setEnabled(True)
+        ok = isinstance(r, dict) and r.get("ok") is True
+        if ok:
+            self._set_boot_switch(wanted)
+            self.boot_note.setText((self.BOOT_PROMPT_ON + " — done: the computer asks for the disk password again.") if wanted
+                                   else (self.BOOT_PROMPT_OFF + " — done."))
+            return
+        err = str((r.get("error") or r.get("offline") or "unknown error") if isinstance(r, dict) else r)
+        # the helper reports the state it left behind (a rollback keeps the old one); without a verdict assume nothing changed
+        state = r.get("prompt_at_boot") if isinstance(r, dict) and isinstance(r.get("prompt_at_boot"), bool) else (not wanted)
+        self._set_boot_switch(state)
+        self.boot_note.setText((self.BOOT_PROMPT_ON if state else self.BOOT_PROMPT_OFF) + " — not changed: " + err[:200])
+        RoundedDialog.info(self, "Couldn't change the start-up setting",
+                           err[:600] + ("\n\nNothing was changed: the computer still asks for the disk password." if state and not wanted else ""))
 
     def _raw_toggled(self, on):
         if on and str(self.s.get("ui.show_raw", "false")) != "true":
