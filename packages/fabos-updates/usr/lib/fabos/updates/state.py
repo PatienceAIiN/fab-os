@@ -338,6 +338,9 @@ def notify(title, body, actions=(), urgency="normal", wait=900):
         cmd += ["-A", "%s=%s" % (aid, label)]
     cmd += [title, body]
     r = run(["timeout", str(wait)] + cmd, timeout=wait + 10)
+    err = (r.stderr or "").strip()
+    if r.returncode != 0 or err:  # e.g. "Actions are not supported by this notifications server" — the popup still shows
+        print(time.strftime("%H:%M:%S"), "notify-send: rc=%s %s" % (r.returncode, err[:200]), flush=True)
     return (r.stdout or "").strip()
 
 

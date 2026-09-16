@@ -188,7 +188,16 @@ vm "systemctl is-enabled fabos-update-check.timer 2>/dev/null | grep -q enabled"
 vm "echo fabos | sudo -S unattended-upgrade --dry-run -d 2>&1 | grep -m1 'Allowed origins'" > "$OUT/uu-origins.txt"; sed 's/^/   /' "$OUT/uu-origins.txt" | cut -c1-400 | tee -a "$LOG"
 grep -q "o=$VENDOR_NAME,a=$SUITE" "$OUT/uu-origins.txt"; chk "unattended-upgrades allows origin $VENDOR_NAME:$SUITE" $?
 if [ $MODE = upgrade ]; then grep -q "o=Ubuntu,a=$BASE_CODENAME-security" "$OUT/uu-origins.txt"; chk "unattended-upgrades allows Ubuntu:$BASE_CODENAME-security (literal; distro_id here is $(vm 'lsb_release -is' 2>/dev/null | tr -d '\r'))" $?; fi
-vm "apt-cache policy 2>/dev/null | grep -m1 -oE 'o=Mozilla[^ ]*'" | tee -a "$LOG" >/dev/null; info "Mozilla origin string as apt sees it: $(vm "apt-cache policy 2>/dev/null | grep -m1 -oE 'release .*o=Mozilla[^ ]*'" 2>/dev/null | tr -d '\r' | cut -c1-120)"
+if [ $MODE = upgrade ]; then grep -q "site=packages.mozilla.org" "$OUT/uu-origins.txt"; chk "unattended-upgrades matches Firefox by site=packages.mozilla.org (Origins-Pattern)" $?; fi
+info "Mozilla release line as apt sees it: $(vm "apt-cache policy 2>/dev/null | grep -m1 -E 'packages.mozilla.org' " 2>/dev/null | tr -d '\r' | cut -c1-160)"
+vm "echo fabos | sudo -S unattended-upgrade --dry-run 2>&1 | grep -viE 'sudo|^$' | tail -3" | sed 's/^/   /' | tee -a "$LOG"
+
+# ---- 10b. the notification path itself, probed from inside the session: capabilities, a critical popup with buttons ---------------------
+vm "dbus-send --session --print-reply --dest=org.freedesktop.Notifications /org/freedesktop/Notifications org.freedesktop.Notifications.GetCapabilities 2>/dev/null | grep -oE 'string \"[a-z-]+\"' | tr -d '\"' | sed 's/string //' | tr '\n' ' '" > "$OUT/notify-caps.txt" 2>/dev/null; info "notification server capabilities: $(cat "$OUT/notify-caps.txt")"
+grep -qw actions "$OUT/notify-caps.txt"; chk "notification server supports actions (buttons)" $?
+vm "t0=\$(date +%s%N); timeout 12 notify-send -a 'Fab OS Updates' -i fabos-updates -u critical -A open='Open Fab OS Updates' -A later=Later 'probe' 'notify-send action probe (closed by the test)'; rc=\$?; echo \"rc=\$rc elapsed_ms=\$(( (\$(date +%s%N) - t0) / 1000000 ))\"" > "$OUT/notify-probe.txt" 2>&1; info "notify-send -A probe: $(tr -d '\r' < "$OUT/notify-probe.txt")"
+shot notify-probe
+vm "gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.GetServerInformation 2>/dev/null" | tr -d '\r' | sed 's/^/   /' | tee -a "$LOG"
 
 # ---- 11. the Fab Updates window with its banner (offscreen render inside the guest; same state as the session) ----------------------------
 vm "QT_QPA_PLATFORM=offscreen timeout 60 fabos-updates --screenshot /tmp/fabos-updates.png >/dev/null 2>&1; test -s /tmp/fabos-updates.png" && $SCP fabos@127.0.0.1:/tmp/fabos-updates.png "$OUT/fabos-updates-banner.png" > /dev/null 2>&1
