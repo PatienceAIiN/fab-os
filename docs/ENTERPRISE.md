@@ -153,11 +153,16 @@ root step — the user types their own password in the system dialog, in every m
 the passphrase, on cryptsetup's stdin), points `/etc/crypttab` at it (`initramfs` option added, `luks,discard` kept), sets
 `KEYFILE_PATTERN` in `/etc/cryptsetup-initramfs/conf-hook` and `UMASK=0077` in `/etc/initramfs-tools/initramfs.conf`, runs
 `update-initramfs -u -k all` and then proves the result — `lsinitramfs` must list `cryptroot/keyfiles/<name>.key` and the key must
-open the volume (`cryptsetup open --test-passphrase --key-file`) — or rolls everything back (configuration restored, slot removed,
-key deleted, initramfs rebuilt). `on` reverses it in the safe order: configuration first, initramfs rebuilt and proven free of
-the key, only then the LUKS slot removed and the key deleted. The passphrase travels on the helper's standard input from a
-private tmpfs file (`$XDG_RUNTIME_DIR/fabos-agent/`, 0600, wiped when the helper returns) — never a command line, an authorization
-record or a log. A wrong passphrase changes nothing (exit 3).
+open the volume (`cryptsetup open --test-passphrase --key-file`) — or rolls everything back. One rule governs both directions:
+an initrd on `/boot` must never name a key whose LUKS slot is gone, because cryptsetup-initramfs tries a key file exactly once
+and does not fall back to the passphrase prompt. So the rollback of `off`, once the initramfs was touched, and `on` itself both
+go configuration first, initramfs rebuilt, every initrd on `/boot` proven free of the key, and only then the LUKS slot removed
+and the key deleted. When that proof fails (the rebuild fails with the key still in an initrd, or no initrd can be checked) the
+slot and the key are kept so the computer still starts, the helper answers exit 8 with the honest state, and turning the setting
+on later finishes the reversal. Both directions refuse to run while `/boot` is listed in fstab but not mounted, and take a lock so
+two changes cannot overlap. The passphrase travels on the helper's standard input from a private tmpfs file
+(`$XDG_RUNTIME_DIR/fabos-agent/`, 0600, wiped when the helper returns) — never a command line, an authorization record or a log.
+A wrong passphrase changes nothing (exit 3).
 
 Audit: the activity chain gets `disk_unlock_requested` and `disk_unlock_done` / `disk_unlock_failed` rows (risk CRITICAL) around
 the usual `root_exec_*` rows; `/var/log/fabos/disk-unlock.log` (root:adm 0640) and the journal (`fabos-disk-unlock`, authpriv)

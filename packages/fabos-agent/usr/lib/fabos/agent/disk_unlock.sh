@@ -19,17 +19,26 @@
 #      initrd, and `cryptsetup open --test-passphrase --key-file <keyfile>` opens the slot. Any failure rolls everything back
 #      (config files restored from backups, the slot removed, the keyfile deleted, initramfs rebuilt) — the disk never ends up
 #      half-configured.
-# "on" reverses it in the SAFE order: config restored (key -> none, pattern dropped) -> initramfs rebuilt -> proven free of the
-# keyfile -> only then the LUKS slot removed (luksRemoveKey with the keyfile) and the keyfile deleted. UMASK=0077 is kept
-# (harmless, stricter). Every step is logged to /var/log/fabos/disk-unlock.log (root:adm 0640, the rootexec audit directory)
-# and syslog authpriv (tag fabos-disk-unlock). The passphrase is never logged, never on a command line, never in a file.
+# THE ONE RULE both directions obey: an initrd on /boot must never name a key whose LUKS slot is gone. cryptsetup-initramfs
+# tries a key file exactly once and does NOT fall back to the passphrase prompt (scripts/local-top/cryptroot: tries=1, then
+# "maximum number of tries exceeded" and the initramfs shell), so the slot may only be removed AFTER every initrd on /boot has
+# been rebuilt and proven free of the key. "on" does that in order: config restored (key -> none, pattern dropped) -> initramfs
+# rebuilt -> proven free of the keyfile -> only then luksRemoveKey with the keyfile and the keyfile deleted. The rollback of "off"
+# follows the same order once the initramfs was touched; when the rebuild fails and an initrd still carries the key, the slot
+# and the keyfile are KEPT (the computer still starts) and exit 8 says so — "on" finishes the reversal later. UMASK=0077 is
+# kept after "on" (harmless, stricter). Both directions refuse to run while /boot is listed in fstab but not mounted (the
+# rebuilt initrd would land on the root filesystem, not where the firmware boots from) and serialise themselves with a lock.
+# Every step is logged to /var/log/fabos/disk-unlock.log (root:adm 0640, the rootexec audit directory) and syslog authpriv
+# (tag fabos-disk-unlock). The passphrase is never logged, never on a command line, never in a file.
 #
 # Exit codes: 0 ok · 2 usage / input · 3 the passphrase was not accepted · 4 not root · 5 not encrypted / no root crypt entry ·
-# 6 a tool is missing · 7 the operation failed and was rolled back · 8 the operation failed and could NOT be fully reversed
-# (the JSON says what is left to do). The last stdout line is always one JSON object {ok, action, prompt_at_boot, error?, detail?}.
+# 6 a tool is missing · 7 the operation failed and was rolled back (or refused before anything changed) · 8 the operation
+# failed and could NOT be fully reversed (the JSON says what is left to do). The last stdout line is always one JSON object
+# {ok, action, prompt_at_boot, error?, detail?}.
 #
 # Test seams (tests/disk-unlock-test.sh runs this with stub cryptsetup/update-initramfs/lsinitramfs/findmnt on PATH):
-#   FABOS_DU_CRYPTTAB FABOS_DU_KEYFILE FABOS_DU_CONF_HOOK FABOS_DU_INITRAMFS_CONF FABOS_DU_BOOT FABOS_DU_LOG FABOS_DU_ALLOW_NONROOT=1
+#   FABOS_DU_CRYPTTAB FABOS_DU_KEYFILE FABOS_DU_CONF_HOOK FABOS_DU_INITRAMFS_CONF FABOS_DU_BOOT FABOS_DU_FSTAB FABOS_DU_LOCK
+#   FABOS_DU_IT_STATE FABOS_DU_LOG FABOS_DU_ALLOW_NONROOT=1
 set -u
 umask 077
 
@@ -38,6 +47,8 @@ KEYFILE=${FABOS_DU_KEYFILE:-/etc/fabos/luks-unlock.key}
 CONF_HOOK=${FABOS_DU_CONF_HOOK:-/etc/cryptsetup-initramfs/conf-hook}
 INITRAMFS_CONF=${FABOS_DU_INITRAMFS_CONF:-/etc/initramfs-tools/initramfs.conf}
 BOOT=${FABOS_DU_BOOT:-/boot}
+FSTAB=${FABOS_DU_FSTAB:-/etc/fstab}
+LOCK=${FABOS_DU_LOCK:-/run/lock/fabos-disk-unlock.lock}
 LOG=${FABOS_DU_LOG:-/var/log/fabos/disk-unlock.log}
 ACTION=${1:-}
 IS_ROOT=0; [ "$(id -u)" = 0 ] && IS_ROOT=1
@@ -150,6 +161,53 @@ keyfile_in_initramfs() {   # 0 = present, 1 = absent, 2 = unknown (no initrd / u
   lsinitramfs "$i" 2>/dev/null | grep -q -x -E "/?cryptroot/keyfiles/${CT_NAME}\.key" && return 0
   return 1
 }
+# the initrds that matter: one per kernel version update-initramfs manages (/var/lib/initramfs-tools/<version> — what `-k all`
+# rebuilds and what GRUB boots), else every initrd.img-* on $BOOT minus the copies nothing boots (.new, .dpkg-bak, dkms' .old-dkms)
+IT_STATE=${FABOS_DU_IT_STATE:-/var/lib/initramfs-tools}
+initrd_list() {
+  local v i n=0
+  if [ -d "$IT_STATE" ]; then
+    for v in "$IT_STATE"/*; do [ -f "$v" ] || continue; n=$((n+1)); echo "$BOOT/initrd.img-${v##*/}"; done
+  fi
+  [ "$n" -gt 0 ] && return 0
+  for i in "$BOOT"/initrd.img-*; do case "$i" in *.new|*.dpkg-bak|*.bak|*.old-dkms) continue;; *) [ -f "$i" ] && echo "$i";; esac; done
+  return 0
+}
+# EVERY initrd that matters (a partial `-k all` may have rebuilt some). 0 = at least one still carries the key, or one cannot be
+# listed, or there is none to look at — i.e. NOT proven free; 1 = every one of them is free of it.
+any_initrd_has_key() {
+  local i n=0 listing
+  while IFS= read -r i; do
+    [ -n "$i" ] && [ -f "$i" ] || continue
+    n=$((n+1))
+    listing=$(lsinitramfs "$i" 2>/dev/null) || return 0
+    printf '%s\n' "$listing" | grep -q -x -E "/?cryptroot/keyfiles/${CT_NAME}\.key" && return 0
+  done <<EOF
+$(initrd_list)
+EOF
+  [ "$n" -gt 0 ] || return 0
+  return 1
+}
+# $BOOT listed in fstab must be mounted: with it unmounted update-initramfs writes an initrd into the root filesystem that the
+# firmware never boots, while the real one on the /boot partition keeps whatever it had
+boot_mounted() {
+  [ -r "$FSTAB" ] || return 0
+  grep -q -E "^[[:space:]]*[^#[:space:]]+[[:space:]]+${BOOT}/?[[:space:]]" "$FSTAB" || return 0
+  findmnt -n "$BOOT" >/dev/null 2>&1
+}
+cur_prompt() { if [ "$CT_KEY" = none ] || [ -z "$CT_KEY" ]; then echo true; else echo false; fi; }
+# one change at a time (two helpers editing crypttab and adding slots together would leave an orphan slot)
+take_lock() {
+  command -v flock >/dev/null 2>&1 || { log "flock is not available; running without the lock"; return 0; }
+  if ! exec 9>>"$LOCK" 2>/dev/null; then log "cannot open $LOCK; running without the lock"; return 0; fi
+  flock -w 5 9 || die 7 "$(cur_prompt)" "another change of the start-up setting is still running; try again in a minute" "nothing was changed"
+}
+guard_ready() {   # both directions: the tools, the root entry, /boot mounted, the lock — before anything is touched
+  need_tools cryptsetup update-initramfs lsinitramfs findmnt
+  find_root_entry || die 5 false "the root filesystem is not on an encrypted volume listed in $CRYPTTAB"
+  boot_mounted || die 7 "$(cur_prompt)" "$BOOT is listed in $FSTAB but is not mounted; the start-up files cannot be updated" "nothing was changed"
+  take_lock
+}
 
 backup_configs() {
   BK=$(mktemp -d "${TMPDIR:-/tmp}/fabos-disk-unlock.XXXXXX") || die 7 "$1" "cannot create a backup directory"
@@ -199,8 +257,7 @@ cmd_status() {
 cmd_off() {
   [ $# -eq 0 ] || die 2 null "the passphrase is read from standard input, never from an argument"
   [ "$IS_ROOT" = 1 ] || die 4 null "must run as root (through pkexec rootexec)"
-  need_tools cryptsetup update-initramfs lsinitramfs findmnt
-  find_root_entry || die 5 false "the root filesystem is not on an encrypted volume listed in $CRYPTTAB"
+  guard_ready
   local pass=""
   if [ -t 0 ]; then die 2 true "the passphrase must be piped on standard input (one line)"; fi
   IFS= read -r pass || [ -n "$pass" ] || die 2 true "no passphrase on standard input"
@@ -218,51 +275,70 @@ cmd_off() {
   log "passphrase verified against $dev"
   backup_configs true
   local slot_added=0 initramfs_touched=0
+  # rollback <why>: 0 = fully reversed, 1 = an initrd on $BOOT still carries the key, so the slot and the keyfile were KEPT.
+  # Before the initramfs was touched the initrd on disk still asks for the passphrase and the slot can go at once. Once it was
+  # rebuilt it may name the key: configuration restored -> initramfs rebuilt -> EVERY initrd proven free of the key -> only then
+  # the slot removed and the keyfile deleted (a boot in between, or a failed rebuild, must never meet a key without its slot).
   rollback() {
     log "rolling back: $1"
     restore_configs
+    if [ "$initramfs_touched" = 1 ]; then
+      if update-initramfs -u -k all >/dev/null 2>&1; then log "initramfs rebuilt without the key"; else log "WARNING: update-initramfs failed during the rollback"; fi
+      if any_initrd_has_key; then
+        log "WARNING: an initrd on $BOOT still carries the key: the key slot and $KEYFILE are kept so the computer still starts; 'on' finishes the reversal"
+        return 1
+      fi
+      log "verified: no initrd on $BOOT carries the key"
+    fi
     if [ "$slot_added" = 1 ] && [ -f "$KEYFILE" ]; then
       if cryptsetup -q luksRemoveKey "$dev" "$KEYFILE" >/dev/null 2>&1; then log "key slot removed again"; else log "WARNING: could not remove the key slot; the keyfile is deleted so the slot is unusable"; fi
     fi
     rm -f "$KEYFILE"; log "keyfile deleted"
-    if [ "$initramfs_touched" = 1 ]; then
-      if update-initramfs -u -k all >/dev/null 2>&1; then log "initramfs rebuilt without the key"; else log "WARNING: update-initramfs failed during the rollback"; fi
-    fi
+    return 0
   }
-  # 1. keyfile (4096 random bytes, 0400 root) — on the encrypted root
+  fail_off() {   # fail_off <why> <message> [detail]: roll back, then exit 7 (fully reversed) or 8 (the key is still in use)
+    if rollback "$1"; then die 7 true "$2" "${3:-}"; fi
+    local p; case "$(keyfile_in_initramfs; echo $?)" in 0) p=false;; 1) p=true;; *) p=null;; esac
+    die 8 "$p" "$2" "the change could not be fully reversed: the start-up files on $BOOT still carry the unlock key, so the key slot and $KEYFILE were kept; turn the setting on to finish${3:+ — $3}"
+  }
+  # 1. keyfile (4096 random bytes, 0400 root) — on the encrypted root. A leftover keyfile from an earlier run gives its slot
+  #    back first (luksRemoveKey with that file removes exactly the slot it opens), so slots are not orphaned.
   mkdir -p "$(dirname "$KEYFILE")" && chmod 0755 "$(dirname "$KEYFILE")" 2>/dev/null
-  rm -f "$KEYFILE"
+  if [ -f "$KEYFILE" ]; then
+    if cryptsetup -q luksRemoveKey "$dev" "$KEYFILE" >/dev/null 2>&1; then log "leftover keyfile: its key slot removed"; else log "leftover keyfile: no key slot of its own"; fi
+    rm -f "$KEYFILE"
+  fi
   if ! ( umask 077; head -c 4096 /dev/urandom > "$KEYFILE" ) || [ "$(stat -c %s "$KEYFILE" 2>/dev/null)" != 4096 ]; then
-    rollback "could not write the keyfile"; die 7 true "could not create $KEYFILE"
+    fail_off "could not write the keyfile" "could not create $KEYFILE"
   fi
   chmod 0400 "$KEYFILE"; chown root:root "$KEYFILE" 2>/dev/null || true
   log "keyfile created: $KEYFILE (4096 bytes, 0400)"
   # 2. the key slot (the passphrase authorises it — on cryptsetup's stdin, not its command line)
   if ! printf '%s\n' "$pass" | cryptsetup -q luksAddKey "$dev" "$KEYFILE" >/dev/null 2>&1; then
-    rollback "luksAddKey failed"; die 7 true "cryptsetup could not add the key to $CT_NAME"
+    fail_off "luksAddKey failed" "cryptsetup could not add the key to $CT_NAME"
   fi
   slot_added=1; log "key slot added on $dev"
   # 3-5. crypttab / conf-hook / initramfs.conf
-  write_crypttab "$KEYFILE" "$(add_opt "$CT_OPTS" initramfs)" || { rollback "crypttab write failed"; die 7 true "could not write $CRYPTTAB"; }
+  write_crypttab "$KEYFILE" "$(add_opt "$CT_OPTS" initramfs)" || fail_off "crypttab write failed" "could not write $CRYPTTAB"
   log "crypttab: $CT_NAME key -> $KEYFILE, options $(add_opt "$CT_OPTS" initramfs)"
-  set_pattern || { rollback "conf-hook write failed"; die 7 true "could not write $CONF_HOOK"; }
+  set_pattern || fail_off "conf-hook write failed" "could not write $CONF_HOOK"
   log "conf-hook: KEYFILE_PATTERN=\"$KEYFILE\""
-  set_umask || { rollback "initramfs.conf write failed"; die 7 true "could not write $INITRAMFS_CONF"; }
+  set_umask || fail_off "initramfs.conf write failed" "could not write $INITRAMFS_CONF"
   log "initramfs.conf: UMASK=0077"
   # 6. rebuild and prove
   initramfs_touched=1
   local out
   if ! out=$(update-initramfs -u -k all 2>&1); then
     log "update-initramfs: $(printf '%s' "$out" | tail -3 | tr '\n' ' ')"
-    rollback "update-initramfs failed"; die 7 true "update-initramfs failed" "$(printf '%s' "$out" | tail -5)"
+    fail_off "update-initramfs failed" "update-initramfs failed" "$(printf '%s' "$out" | tail -5)"
   fi
   log "update-initramfs -u -k all: ok"
   if ! keyfile_in_initramfs; then
-    rollback "the keyfile is not inside the initramfs"; die 7 true "the rebuilt initramfs does not contain the unlock key (cryptroot/keyfiles/$CT_NAME.key)"
+    fail_off "the keyfile is not inside the initramfs" "the rebuilt initramfs does not contain the unlock key (cryptroot/keyfiles/$CT_NAME.key)"
   fi
   log "verified: $(initrds) contains cryptroot/keyfiles/$CT_NAME.key"
   if ! cryptsetup open --test-passphrase --key-file "$KEYFILE" "$dev" >/dev/null 2>&1; then
-    rollback "the keyfile does not open the volume"; die 7 true "the new key does not open $CT_NAME"
+    fail_off "the keyfile does not open the volume" "the new key does not open $CT_NAME"
   fi
   log "verified: the keyfile opens $dev"
   log "DONE: the computer will start without asking for the disk password"
@@ -273,8 +349,7 @@ cmd_off() {
 cmd_on() {
   [ $# -eq 0 ] || die 2 null "on takes no arguments"
   [ "$IS_ROOT" = 1 ] || die 4 null "must run as root (through pkexec rootexec)"
-  need_tools cryptsetup update-initramfs lsinitramfs findmnt
-  find_root_entry || die 5 false "the root filesystem is not on an encrypted volume listed in $CRYPTTAB"
+  guard_ready
   local dev; dev=$(crypt_device)
   log "root is $ROOT_SRC (crypttab entry $CT_NAME, key ${CT_KEY}, options ${CT_OPTS:-none})"
   local kin; keyfile_in_initramfs; kin=$?
@@ -305,7 +380,13 @@ cmd_on() {
     restore_configs; update-initramfs -u -k all >/dev/null 2>&1 || true
     die 7 false "the rebuilt initramfs still contains the unlock key; the previous configuration was restored"
   fi
-  log "verified: the initramfs no longer contains cryptroot/keyfiles/$CT_NAME.key"
+  # not proven = not done: an initrd that cannot be listed, or none found where the firmware boots from, keeps its slot
+  if [ "$kin" != 1 ] || any_initrd_has_key; then
+    log "WARNING: cannot prove every initrd on $BOOT is free of the key; the key slot and $KEYFILE are kept"
+    emit false null "the start-up files on $BOOT could not be checked after the rebuild; the unlock key was kept so the computer still starts — run 'on' again" "keyfile kept at $KEYFILE"
+    exit 8
+  fi
+  log "verified: no initrd on $BOOT contains cryptroot/keyfiles/$CT_NAME.key"
   # 3. the slot and the keyfile
   if [ -f "$KEYFILE" ]; then
     if cryptsetup -q luksRemoveKey "$dev" "$KEYFILE" >/dev/null 2>&1; then

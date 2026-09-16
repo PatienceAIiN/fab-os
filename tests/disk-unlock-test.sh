@@ -22,14 +22,21 @@ chk()  { if eval "$2" >/dev/null 2>&1; then ok "$1"; else fail "$1"; fi; }
 UUID=1c2db46b-c108-47de-aa78-72cb6ff4904c; NAME=luks-$UUID; PASS=fabos-test; KERNEL=$(uname -r)
 mkdir -p "$T/bin" "$T/etc/fabos" "$T/etc/cryptsetup-initramfs" "$T/etc/initramfs-tools" "$T/boot"
 export FABOS_DU_CRYPTTAB=$T/etc/crypttab FABOS_DU_KEYFILE=$T/etc/fabos/luks-unlock.key FABOS_DU_CONF_HOOK=$T/etc/cryptsetup-initramfs/conf-hook \
-       FABOS_DU_INITRAMFS_CONF=$T/etc/initramfs-tools/initramfs.conf FABOS_DU_BOOT=$T/boot FABOS_DU_LOG=$T/log/disk-unlock.log FABOS_DU_ALLOW_NONROOT=1
+       FABOS_DU_INITRAMFS_CONF=$T/etc/initramfs-tools/initramfs.conf FABOS_DU_BOOT=$T/boot FABOS_DU_LOG=$T/log/disk-unlock.log FABOS_DU_ALLOW_NONROOT=1 \
+       FABOS_DU_FSTAB=$T/etc/fstab FABOS_DU_LOCK=$T/disk-unlock.lock FABOS_DU_IT_STATE=$T/var/lib/initramfs-tools
 export STUB_LOG=$T/calls.log STUB_STDIN=$T/stdin.log STUB_PASS=$PASS STUB_INITRD=$T/boot/initrd.img-$KERNEL STUB_KEYFILE=$FABOS_DU_KEYFILE STUB_NAME=$NAME
-export STUB_ROOT_SRC=/dev/mapper/$NAME STUB_FAIL_UPDATE=0 STUB_HIDE_KEY=0 STUB_FAIL_REMOVE=0
+export STUB_ROOT_SRC=/dev/mapper/$NAME STUB_FAIL_UPDATE=0 STUB_HIDE_KEY=0 STUB_FAIL_REMOVE=0 STUB_FAIL_UPDATE_FROM=0 STUB_FAIL_KEYTEST=0 STUB_BOOT_UNMOUNTED=0 STUB_UI_COUNT=$T/ui.count
+# the installed layout (ADR-0021): /boot is its own partition, listed in fstab — the helper must see it mounted; one kernel version
+# registered with initramfs-tools (what `update-initramfs -k all` rebuilds and GRUB boots)
+printf 'UUID=root / ext4 defaults 0 1\nUUID=boot %s ext4 defaults 0 2\nUUID=esp /boot/efi vfat umask=0077 0 1\n' "$FABOS_DU_BOOT" > "$FABOS_DU_FSTAB"
+mkdir -p "$FABOS_DU_IT_STATE" && : > "$FABOS_DU_IT_STATE/$KERNEL"
 
 # ---- stubs (record argv; cryptsetup also records what it read on stdin and checks the passphrase)
 cat > "$T/bin/findmnt" <<'EOF'
 #!/bin/sh
-echo "findmnt $*" >> "$STUB_LOG"; echo "$STUB_ROOT_SRC"
+echo "findmnt $*" >> "$STUB_LOG"
+case " $* " in *" $FABOS_DU_BOOT "*) [ "${STUB_BOOT_UNMOUNTED:-0}" = 1 ] && exit 1; echo "$FABOS_DU_BOOT"; exit 0;; esac
+echo "$STUB_ROOT_SRC"
 EOF
 cat > "$T/bin/cryptsetup" <<'EOF'
 #!/bin/bash
@@ -38,6 +45,7 @@ for a in "$@"; do [ "$a" = "$STUB_PASS" ] && { echo "PASSPHRASE ON ARGV" >> "$ST
 case " $* " in
   *" --test-passphrase "*)
     if [[ " $* " == *" --key-file "* ]]; then
+      [ "${STUB_FAIL_KEYTEST:-0}" = 1 ] && exit 2
       kf=$(sed -n 's/.*--key-file \([^ ]*\).*/\1/p' <<<" $* "); [ -f "$kf" ] && [ -f "$STUB_KEYFILE.slot" ] && cmp -s "$kf" "$STUB_KEYFILE.slot" && exit 0; exit 2
     fi
     IFS= read -r p; printf '%s' "$p" >> "$STUB_STDIN"; echo >> "$STUB_STDIN"; [ "$p" = "$STUB_PASS" ] && exit 0; exit 2;;
@@ -54,7 +62,8 @@ cat > "$T/bin/update-initramfs" <<'EOF'
 #!/bin/bash
 # rebuilds the fake initrd: a listing file. The key goes in when the crypttab entry names an existing keyfile matching conf-hook's pattern.
 echo "update-initramfs $*" >> "$STUB_LOG"
-[ "$STUB_FAIL_UPDATE" = 1 ] && { echo "update-initramfs: failed to create the image (simulated)" >&2; exit 1; }
+n=$(( $(cat "$STUB_UI_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_UI_COUNT"      # STUB_FAIL_UPDATE_FROM=N: the Nth call on fails
+if [ "$STUB_FAIL_UPDATE" = 1 ] || { [ "${STUB_FAIL_UPDATE_FROM:-0}" -gt 0 ] && [ "$n" -ge "$STUB_FAIL_UPDATE_FROM" ]; }; then echo "update-initramfs: failed to create the image (simulated)" >&2; exit 1; fi
 { echo "."; echo "init"; echo "cryptroot"; echo "cryptroot/crypttab"; } > "$STUB_INITRD"
 key=$(awk -v n="$STUB_NAME" '$1==n {print $3}' "$FABOS_DU_CRYPTTAB")
 pat=$(sed -n 's/^KEYFILE_PATTERN="\([^"]*\)".*/\1/p' "$FABOS_DU_CONF_HOOK" 2>/dev/null | tail -1)
@@ -73,8 +82,8 @@ reset_system() {   # a freshly installed Fab OS (ADR-0021): crypttab from Calama
   printf '# Configuration options for the cryptroot initramfs hook.\n#KEYFILE_PATTERN=\n' > "$FABOS_DU_CONF_HOOK"
   printf '# initramfs.conf\nMODULES=most\nBUSYBOX=auto\nCOMPRESS=zstd\n' > "$FABOS_DU_INITRAMFS_CONF"
   rm -f "$FABOS_DU_KEYFILE" "$FABOS_DU_KEYFILE.slot" "$STUB_LOG" "$STUB_STDIN"; : > "$STUB_LOG"; : > "$STUB_STDIN"
-  STUB_FAIL_UPDATE=0 STUB_HIDE_KEY=0 STUB_FAIL_REMOVE=0
-  update-initramfs -u -k all >/dev/null; : > "$STUB_LOG"
+  STUB_FAIL_UPDATE=0 STUB_HIDE_KEY=0 STUB_FAIL_REMOVE=0 STUB_FAIL_UPDATE_FROM=0 STUB_FAIL_KEYTEST=0 STUB_BOOT_UNMOUNTED=0
+  update-initramfs -u -k all >/dev/null; : > "$STUB_LOG"; rm -f "$STUB_UI_COUNT"
   cp "$FABOS_DU_CRYPTTAB" "$T/crypttab.orig"; cp "$FABOS_DU_CONF_HOOK" "$T/conf-hook.orig"; cp "$FABOS_DU_INITRAMFS_CONF" "$T/initramfs.conf.orig"
 }
 last_json() { tail -1 "$1"; }
@@ -131,7 +140,7 @@ chk "on: crypttab byte-identical to the fresh install (key none, initramfs optio
 chk "on: conf-hook has no KEYFILE_PATTERN= line left, Ubuntu's comment kept" "! grep -q '^KEYFILE_PATTERN=' $FABOS_DU_CONF_HOOK && grep -q '^# Configuration options' $FABOS_DU_CONF_HOOK"
 chk "on: UMASK=0077 stays (stricter, harmless)" "grep -qx 'UMASK=0077' $FABOS_DU_INITRAMFS_CONF"
 chk "on: keyfile deleted, slot removed with the keyfile, initrd free of the key" "[ ! -e $FABOS_DU_KEYFILE ] && [ ! -e $FABOS_DU_KEYFILE.slot ] && grep -q \"^cryptsetup -q luksRemoveKey /dev/disk/by-uuid/$UUID $FABOS_DU_KEYFILE\" $STUB_LOG && ! grep -q keyfiles $STUB_INITRD"
-chk "on: order = update-initramfs, lsinitramfs, THEN luksRemoveKey" "[ \"\$(grep -E '^(update-initramfs|lsinitramfs|cryptsetup)' $STUB_LOG | cut -d' ' -f1 | tr '\\n' '|')\" = 'lsinitramfs|update-initramfs|lsinitramfs|cryptsetup|' ]"
+chk "on: order = update-initramfs, lsinitramfs (running kernel + every initrd on /boot), THEN luksRemoveKey" "[ \"\$(grep -E '^(update-initramfs|lsinitramfs|cryptsetup)' $STUB_LOG | cut -d' ' -f1 | tr '\\n' '|')\" = 'lsinitramfs|update-initramfs|lsinitramfs|lsinitramfs|cryptsetup|' ]"
 "$HELPER" status > "$T/st3.json"
 chk "status after on: prompt_at_boot=true, no keyfile, consistent" "[ \"\$(jget $T/st3.json prompt_at_boot)\" = true ] && [ \"\$(jget $T/st3.json keyfile_present)\" = false ] && [ \"\$(jget $T/st3.json consistent)\" = true ]"
 : > "$STUB_LOG"; "$HELPER" on > "$T/on2.json" 2>/dev/null; rc=$?
@@ -187,6 +196,76 @@ if [ -r "$HOOK" ]; then
 else
   echo "SKIP  image hook assumptions ($HOOK not present here; run inside localhost/fabos:vm)"
 fi
+
+# ---- 12. the one rule: no initrd on /boot may name a key whose slot is gone (cryptsetup-initramfs tries a key file once, no prompt fallback)
+# 12a. off's rollback after the initramfs was touched: configuration restored -> rebuilt -> proven free of the key -> THEN the slot removed
+reset_system; export STUB_HIDE_KEY=1
+printf '%s\n' "$PASS" | "$HELPER" off > "$T/ord.json" 2>/dev/null; rc=$?
+chk "rollback order (initramfs touched): update-initramfs, lsinitramfs proof, THEN luksRemoveKey — never the slot first" \
+    "[ $rc = 7 ] && [ \"\$(grep -E '^(update-initramfs|lsinitramfs|cryptsetup -q luksRemoveKey)' $STUB_LOG | cut -d' ' -f1 | tr '\\n' '|')\" = 'update-initramfs|lsinitramfs|update-initramfs|lsinitramfs|cryptsetup|' ]"
+export STUB_HIDE_KEY=0
+# 12b. the rollback's own rebuild fails while the initrd carries the key: the slot and the keyfile are KEPT (the computer still starts), exit 8,
+#      prompt_at_boot=false is the truth, the configuration is back; a later `on` finishes the reversal in the safe order
+reset_system; export STUB_FAIL_KEYTEST=1 STUB_FAIL_UPDATE_FROM=2
+printf '%s\n' "$PASS" | "$HELPER" off > "$T/keep.json" 2>/dev/null; rc=$?
+chk "rollback rebuild fails with the key in the initrd: exit 8, ok=false, prompt_at_boot=false, 'could not be fully reversed'" \
+    "[ $rc = 8 ] && [ \"\$(jget $T/keep.json ok)\" = false ] && [ \"\$(jget $T/keep.json prompt_at_boot)\" = false ] && grep -q 'could not be fully reversed' $T/keep.json"
+chk "rollback rebuild fails: configuration restored, keyfile AND slot kept, no luksRemoveKey, initrd still has the key, WARNING logged" \
+    "cmp -s $FABOS_DU_CRYPTTAB $T/crypttab.orig && cmp -s $FABOS_DU_CONF_HOOK $T/conf-hook.orig && [ -e $FABOS_DU_KEYFILE ] && [ -e $FABOS_DU_KEYFILE.slot ] && ! grep -q luksRemoveKey $STUB_LOG && grep -q keyfiles $STUB_INITRD && grep -q 'WARNING: an initrd on .* still carries the key' $FABOS_DU_LOG"
+"$HELPER" status > "$T/st5.json"
+chk "status in that state: consistent=false (a leftover key while crypttab asks for the passphrase)" "[ \"\$(jget $T/st5.json consistent)\" = false ] && [ \"\$(jget $T/st5.json keyfile_present)\" = true ]"
+export STUB_FAIL_KEYTEST=0 STUB_FAIL_UPDATE_FROM=0; : > "$STUB_LOG"
+"$HELPER" on > "$T/keep-on.json" 2>/dev/null; rc=$?
+chk "'on' afterwards finishes the reversal: exit 0, rebuilt + proven first, slot removed, keyfile deleted, initrd free" \
+    "[ $rc = 0 ] && [ ! -e $FABOS_DU_KEYFILE ] && [ ! -e $FABOS_DU_KEYFILE.slot ] && ! grep -q keyfiles $STUB_INITRD && [ \"\$(grep -E '^(update-initramfs|cryptsetup -q luksRemoveKey)' $STUB_LOG | cut -d' ' -f1 | tr '\\n' '|')\" = 'update-initramfs|cryptsetup|' ]"
+# 12c. /boot listed in fstab but not mounted: nothing is touched in either direction
+reset_system; export STUB_BOOT_UNMOUNTED=1
+printf '%s\n' "$PASS" | "$HELPER" off > "$T/unm.json" 2>/dev/null; rc=$?
+chk "off with /boot unmounted: exit 7, 'not mounted', prompt_at_boot=true, no cryptsetup / update-initramfs call, files identical" \
+    "[ $rc = 7 ] && grep -q 'not mounted' $T/unm.json && [ \"\$(jget $T/unm.json prompt_at_boot)\" = true ] && ! grep -q '^cryptsetup' $STUB_LOG && ! grep -q '^update-initramfs' $STUB_LOG && cmp -s $FABOS_DU_CRYPTTAB $T/crypttab.orig && [ ! -e $FABOS_DU_KEYFILE ]"
+export STUB_BOOT_UNMOUNTED=0; printf '%s\n' "$PASS" | "$HELPER" off >/dev/null 2>&1; cp "$FABOS_DU_CRYPTTAB" "$T/crypttab.off"; export STUB_BOOT_UNMOUNTED=1; : > "$STUB_LOG"
+"$HELPER" on > "$T/unm-on.json" 2>/dev/null; rc=$?
+chk "on with /boot unmounted: exit 7, 'not mounted', prompt_at_boot=false, crypttab still names the key, slot + keyfile kept" \
+    "[ $rc = 7 ] && grep -q 'not mounted' $T/unm-on.json && [ \"\$(jget $T/unm-on.json prompt_at_boot)\" = false ] && cmp -s $FABOS_DU_CRYPTTAB $T/crypttab.off && [ -e $FABOS_DU_KEYFILE ] && [ -e $FABOS_DU_KEYFILE.slot ] && ! grep -q '^update-initramfs' $STUB_LOG && ! grep -q luksRemoveKey $STUB_LOG"
+export STUB_BOOT_UNMOUNTED=0
+# 12d. on cannot find an initrd where the firmware boots from (not proven = not done): the slot and the keyfile stay, exit 8; a later on finishes
+mkdir -p "$T/boot-empty"; : > "$STUB_LOG"
+FABOS_DU_BOOT=$T/boot-empty "$HELPER" on > "$T/noinitrd.json" 2>/dev/null; rc=$?
+chk "on with no initrd to prove: exit 8, ok=false, no luksRemoveKey, keyfile + slot kept" \
+    "[ $rc = 8 ] && [ \"\$(jget $T/noinitrd.json ok)\" = false ] && ! grep -q luksRemoveKey $STUB_LOG && [ -e $FABOS_DU_KEYFILE ] && [ -e $FABOS_DU_KEYFILE.slot ]"
+"$HELPER" on > "$T/noinitrd-on.json" 2>/dev/null; rc=$?
+chk "on again with /boot in view: exit 0, slot removed, keyfile deleted" "[ $rc = 0 ] && [ ! -e $FABOS_DU_KEYFILE ] && [ ! -e $FABOS_DU_KEYFILE.slot ]"
+# 12e. one change at a time
+reset_system
+( flock 9; sleep 8 ) 9>>"$FABOS_DU_LOCK" & LOCKER=$!; sleep 0.5
+"$HELPER" on > "$T/lock.json" 2>/dev/null; rc=$?
+chk "a second run while the lock is held: exit 7, 'another change', nothing run" "[ $rc = 7 ] && grep -q 'another change' $T/lock.json && ! grep -q '^update-initramfs' $STUB_LOG"
+wait $LOCKER 2>/dev/null
+"$HELPER" on > "$T/lock2.json" 2>/dev/null; rc=$?
+chk "after the lock is released the same run succeeds" "[ $rc = 0 ]"
+# 12f. off over a leftover keyfile (crypttab names it, the initrd lacks it): its old slot is given back before the new key is added
+reset_system; printf '%s\n' "$PASS" | "$HELPER" off >/dev/null 2>&1
+STUB_HIDE_KEY=1 update-initramfs -u -k all >/dev/null; : > "$STUB_LOG"
+printf '%s\n' "$PASS" | "$HELPER" off > "$T/left.json" 2>/dev/null; rc=$?
+chk "off over a leftover keyfile: exit 0, luksRemoveKey (old slot) BEFORE luksAddKey (new slot), the slot holds the new key" \
+    "[ $rc = 0 ] && [ \"\$(grep -E '^cryptsetup -q luks(RemoveKey|AddKey)' $STUB_LOG | awk '{print \$3}' | tr '\\n' '|')\" = 'luksRemoveKey|luksAddKey|' ] && cmp -s $FABOS_DU_KEYFILE $FABOS_DU_KEYFILE.slot"
+# 12g. copies nothing boots (dkms' .old-dkms, dpkg's .dpkg-bak, a .new) that still carry the key must not block `on`, with the version list
+#      (/var/lib/initramfs-tools) and with the glob fallback alike; a second REGISTERED kernel whose initrd still has the key (a partial
+#      `-k all`) must block the slot removal (exit 8) until that initrd is rebuilt or gone
+cp "$STUB_INITRD" "$STUB_INITRD.old-dkms"; cp "$STUB_INITRD" "$STUB_INITRD.dpkg-bak"; cp "$STUB_INITRD" "$STUB_INITRD.new"
+"$HELPER" on > "$T/stray.json" 2>/dev/null; rc=$?
+chk "on with stray .old-dkms/.dpkg-bak/.new copies carrying the key (version list): exit 0, slot removed" "[ $rc = 0 ] && [ ! -e $FABOS_DU_KEYFILE.slot ] && grep -q keyfiles $STUB_INITRD.old-dkms"
+reset_system; printf '%s\n' "$PASS" | "$HELPER" off >/dev/null 2>&1; cp "$STUB_INITRD" "$STUB_INITRD.old-dkms"
+FABOS_DU_IT_STATE=$T/absent "$HELPER" on > "$T/stray2.json" 2>/dev/null; rc=$?
+chk "on with a stray .old-dkms copy (glob fallback, no version list): exit 0, slot removed" "[ $rc = 0 ] && [ ! -e $FABOS_DU_KEYFILE.slot ]"
+rm -f "$STUB_INITRD".old-dkms "$STUB_INITRD".dpkg-bak "$STUB_INITRD".new
+reset_system; printf '%s\n' "$PASS" | "$HELPER" off >/dev/null 2>&1; cp "$STUB_INITRD" "$T/boot/initrd.img-6.0.0-1-other"; : > "$FABOS_DU_IT_STATE/6.0.0-1-other"; : > "$STUB_LOG"
+"$HELPER" on > "$T/other.json" 2>/dev/null; rc=$?
+chk "on while a second registered kernel's initrd still carries the key: exit 8, slot + keyfile kept, no luksRemoveKey" \
+    "[ $rc = 8 ] && [ -e $FABOS_DU_KEYFILE ] && [ -e $FABOS_DU_KEYFILE.slot ] && ! grep -q luksRemoveKey $STUB_LOG"
+rm -f "$T/boot/initrd.img-6.0.0-1-other" "$FABOS_DU_IT_STATE/6.0.0-1-other"
+"$HELPER" on > "$T/other2.json" 2>/dev/null; rc=$?
+chk "on once that initrd is gone: exit 0, slot removed, keyfile deleted" "[ $rc = 0 ] && [ ! -e $FABOS_DU_KEYFILE ] && [ ! -e $FABOS_DU_KEYFILE.slot ]"
 
 echo "### disk-unlock-test: $PASS_N passed, $FAIL_N failed"
 [ $FAIL_N = 0 ]

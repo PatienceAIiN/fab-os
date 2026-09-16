@@ -1614,6 +1614,27 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         self.assertEqual(open(log).read().count("argv=off"), n); self.assertEqual(pw_files(), [])
         self.assertIn("root_exec_refused", [e["kind"] for e in self.cli("log")][:4])
         self.assertFalse(any(PASS in json.dumps(e) for e in self.cli("log", "--limit", "200")))
+        # bypass mode changes nothing about this: the setting still reaches root only through pkexec (the polkit dialog), and a dismissed
+        # dialog still means nothing ran — the endpoint never consults the permission mode
+        self.cli("mode", "bypass"); self.addCleanup(lambda: self.cli("mode", "auto")); self.assertEqual(self.cli("settings")["mode"], "bypass")
+        n_pk = open(log).read().count("pkexec argv=")
+        st, r = call("POST", "/system/disk-unlock", {"prompt_at_boot": True}); self.assertEqual(st, 200, r); self.assertTrue(r["ok"], r)
+        self.assertEqual(open(log).read().count("pkexec argv="), n_pk + 1, "bypass mode must still go through pkexec")
+        open(flag_dismiss, "w").close(); n = open(log).read().count("argv=off")
+        st, r = call("POST", "/system/disk-unlock", {"prompt_at_boot": False, "passphrase": PASS}); os.remove(flag_dismiss)
+        self.assertFalse(r["ok"]); self.assertIn("dismissed the password dialog", r["error"]); self.assertEqual(open(log).read().count("argv=off"), n); self.assertEqual(pw_files(), [])
+        # and an agent task in bypass mode that wants root gets it only through the same dialog: the step is CRITICAL, run_as_root goes to
+        # pkexec, and with the dialog dismissed the step is refused — the agent cannot silently reach the disk-unlock helper (or any root)
+        open(flag_dismiss, "w").close(); n_pk = open(log).read().count("pkexec argv=")
+        try:
+            t = self.wait(self.cli("do", "--mode", "bypass", "show me the system as root")["id"])
+        finally:
+            os.remove(flag_dismiss)
+        step = [s for s in t["steps"] if s["name"] == "run_shell"][0]
+        self.assertEqual(step["risk"], "CRITICAL"); self.assertIn("dismissed the password dialog", step["output"])
+        self.assertEqual(open(log).read().count("pkexec argv="), n_pk + 1, "the bypass-mode agent's root step must go through pkexec")
+        rows = self.cli("log", "--limit", "30"); ref = [e for e in rows if e["kind"] == "root_exec_refused"][0]
+        self.assertIn("dismissed", ref["detail"]); self.assertIn("via pkexec", [e for e in rows if e["kind"] == "root_exec_requested"][0]["detail"])
 
 
 class StepwiseUnits(unittest.TestCase):
