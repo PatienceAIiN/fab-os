@@ -285,8 +285,6 @@ verdict(r1["up_at"] is not None and r1["typed_at"] is not None, "boot 1: the LUK
 if r1["up_at"] is None: log("STAGE_RESULT failed (boot 1)"); ivd.shutdown(q, hard=True); sys.exit(1)
 out = run_phase(ser, "1", CMD1, 1200)
 if out is None: log("STAGE_RESULT failed (phase 1)"); ivd.shutdown(q, hard=True); sys.exit(1)
-wait_marker(ser, 0, r1, 60)      # fabos-firstboot (offline: ~3 min after the login screen) has usually finished during `off`; the guest waited for it before rebooting
-verdict(r1["marker_at"] is not None, "boot 1: FABOS_INSTALLED_OK on ttyS0 (fabos-firstboot ExecStartPost) at +%s s" % ("%.0f" % r1["marker_at"] if r1["marker_at"] else "never"))
 local_sha = subprocess.run(["sha256sum", os.environ["HELPER_PATH"]], capture_output=True, text=True).stdout[:16]
 verdict(("sha256 " + local_sha) in out, "boot 1: the working-tree helper is what runs in the guest (sha256 %s… via fw_cfg)" % local_sha)
 before = section(out, "state-before")
@@ -308,8 +306,15 @@ verdict("DONE: the computer will start without asking" in lg and "keyfile create
 verdict(num(part(after, "passphrase-in-log")) == 0 and part(after, "logmode").startswith("640 root:adm"), "boot 1: the passphrase is not in the root log; disk-unlock.log is 0640 root:adm")
 rc, _, st = jline(out, "status2")
 verdict(st and st.get("prompt_at_boot") is False and st.get("keyfile_in_initramfs") is True and st.get("consistent") is True, "boot 1: status -> prompt_at_boot=false keyfile_in_initramfs=true consistent=true")
-mark2 = ser.mark(); log("the guest reboots itself (boot 2 must unlock from the keyfile; nothing is typed)")
-verdict(ser.expect(r"BdsDxe: starting Boot", 240, mark2) is not None, "boot 2: firmware restarted the disk (BdsDxe on ttyS0)")
+def reboot_boundary(since, label):
+    """The guest reboots itself after its phase (it first lets fabos-firstboot finish, whose ExecStartPost prints FABOS_INSTALLED_OK).
+    Returns the serial position of the firmware's restart line: everything before it belongs to the boot that just ended."""
+    m = ser.expect(r"BdsDxe: starting Boot", 300, since)
+    verdict(m is not None, "%s: firmware restarted the disk (BdsDxe on ttyS0)" % label)
+    return (since + m.end()) if m else ser.mark()
+mk = ser.mark(); log("the guest reboots itself (boot 2 must unlock from the keyfile; nothing is typed)")
+mark2 = reboot_boundary(mk, "boot 2")
+verdict("FABOS_INSTALLED_OK" in ser.text(0)[:mark2], "boot 1: FABOS_INSTALLED_OK on ttyS0 before the reboot (fabos-firstboot ExecStartPost; offline it comes ~3 min after the login screen)")
 
 # ------------------------------------------------------------------ boot 2: no passphrase typed
 r2 = watch_boot(ser, mark2, "boot2", expect_prompt=False, timeout=300)
@@ -318,8 +323,6 @@ verdict(r2["up_at"] is not None and r2["prompt_seen"] is None, "boot 2: the disk
 if r2["up_at"] is None: log("STAGE_RESULT failed (boot 2)"); ivd.shutdown(q, hard=True); sys.exit(1)
 out = run_phase(ser, "2", CMD2, 1200)
 if out is None: log("STAGE_RESULT failed (phase 2)"); ivd.shutdown(q, hard=True); sys.exit(1)
-wait_marker(ser, mark2, r2, 240)
-verdict(r2["marker_at"] is not None, "boot 2: FABOS_INSTALLED_OK on ttyS0 in the boot where nothing was typed (fabos-firstboot ExecStartPost)")
 b2 = section(out, "state-boot2")
 verdict("/dev/mapper/" in part(b2, "root") and num(part(out, "plymouth-asked")) == 0, "boot 2: root is the LUKS mapper device and this boot's journal records no password request (uptime %s s)" % part(out, "uptime"))
 rc, _, st = jline(out, "status1")
@@ -333,8 +336,9 @@ verdict(slots_on == slots_before, "boot 2: LUKS slot removed (%s -> %s)" % (slot
 verdict("DONE: the computer asks for the disk password" in part(a2, "log"), "boot 2: disk-unlock.log records the reversal")
 rc, _, st = jline(out, "status2")
 verdict(st and st.get("prompt_at_boot") is True and st.get("consistent") is True, "boot 2: status -> prompt_at_boot=true consistent=true")
-mark3 = ser.mark(); log("the guest reboots itself (boot 3 must ask for the passphrase again)")
-verdict(ser.expect(r"BdsDxe: starting Boot", 240, mark3) is not None, "boot 3: firmware restarted the disk (BdsDxe on ttyS0)")
+mk = ser.mark(); log("the guest reboots itself (boot 3 must ask for the passphrase again)")
+mark3 = reboot_boundary(mk, "boot 3")
+verdict("FABOS_INSTALLED_OK" in ser.text(mark2)[:mark3 - mark2], "boot 2: FABOS_INSTALLED_OK on ttyS0 in the boot where nothing was typed (between the two firmware restarts)")
 
 # ------------------------------------------------------------------ boot 3: the prompt is back
 r3 = watch_boot(ser, mark3, "boot3", expect_prompt=True, timeout=360, blind_after=150)
@@ -346,8 +350,7 @@ if r3["up_at"] is not None:
     if out:
         rc, _, st = jline(out, "status1")
         verdict(st and st.get("prompt_at_boot") is True and st.get("consistent") is True and st.get("keyfile_present") is False, "boot 3: status -> prompt_at_boot=true, no keyfile, consistent")
-    wait_marker(ser, mark3, r3, 30)
-    log("boot 3: FABOS_INSTALLED_OK %s" % ("received" if r3["marker_at"] else "not received before power-off (informational; the login screen after the passphrase is the proof)"))
+    log("boot 3: FABOS_INSTALLED_OK %s" % ("received" if "FABOS_INSTALLED_OK" in ser.text(mark3) else "not received before power-off (informational; the login screen after the passphrase is the proof)"))
 ivd.shutdown(q)
 log("STAGE_RESULT %s (%d check(s) failed)" % ("ok" if not fails else "failed", len(fails)))
 sys.exit(1 if fails else 0)
