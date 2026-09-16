@@ -1254,3 +1254,69 @@ image-side "all 10 fabos packages at 1.0-5 in the manifest" check moves to 1.0-6
   own appended kwinrc check follows 40 + `*ShadowUseCustom=true`; three checks appended (live gate, 8 px rule, records).
 - **Not run here:** `tests/corners-vm.sh` in the booted VM (QEMU is the orchestrator's step; every ssh/scp call in it is under
   `timeout 60`) — real wallpaper, Fab Editor, installed 1.0-6 packages. Expect the same sampler verdicts as the live test.
+
+# Release v1.0.5 (round 6) — 2026-09-16
+
+Package version **1.0-6**. This is the first release whose installer was proven by an automated installation in a virtual
+machine before publication; it replaces v1.0.4 (round 5), which was built on 2026-09-15 and **withheld** after the owner's
+real-device installation of v1.0.3 failed with "Package Manager error".
+
+## What the two installer failures were, and what closed them
+
+1. **Real device, v1.0.3 — "Package Manager error".** `packages.conf` asked apt to remove a package that was never installed;
+   apt returned non-zero and Calamares stopped. Fix (`692a6f0`): `try_remove` of `casper` and `calamares` only, `update_db:
+   false`. An offline audit of every Calamares module configuration (`tests/calamares-jobs-test.sh`, run inside the ISO image
+   with the network off) found six more defects — empty mount/machineid/umount configurations, the `services-systemd` list
+   format, `grubcfg` keys, `efiBootloaderId`, the partition layout (ESP 512 MiB + `/boot` 2 GiB ext4 + LUKS2 root, because
+   the signed GRUB cannot open argon2 headers) and `requiredRam` — all fixed under ADR-0021.
+2. **VM, first ISO of this round (build 20260916T001755Z) — job 30 of 36.** With the packages job now passing (48 s), the
+   `shellprocess` job failed: `ERROR: Missing variables: QList("f", "f", "f")`. Calamares expands `$name`/`${name}` inside
+   every shellprocess command line itself (that is how `$ROOT` and `$USER` work), so the `$f` of a `for f in …` loop was an
+   undefined *Calamares* variable and the remaining jobs (initramfs, grubcfg, bootloader) were skipped. The offline audit had
+   replayed the lines with `sh -c`, which is not what Calamares does. Fix (`ecc1e8e`): both shellprocess lines are now the
+   paths of shipped scripts (`/usr/lib/fabos/install-finish.sh`, `/usr/lib/fabos/install-efi-fallback.sh`); the audit rejects
+   any `$` in a shellprocess line, requires the lines to be those executable scripts, and replays the scripts (163 checks,
+   0 failures on 2026-09-16). The LUKS variant of the same run stalled on the test driver, not the installer: OCR missed the
+   grey "Passphrase" placeholder and the failure handler then waited for the guest's own 45-minute deadline; the driver now
+   finds the field from the "Encrypt system" label and returns within a minute on driver-side failures.
+
+## What this round added (all in the ISO; nothing to download)
+
+Quick-settings pane v3 (wide, animated, customisable tiles, speed always shown, Wi-Fi from nmcli); dock with uniform gaps,
+running/active indicators and hover magnify; one window shadow source (ADR-0019 amendment); ask bar: "Do it" disabled when
+empty, cloud-model hint, inline image cards; **image generation** (`generate_image`: a cloud provider with an image API behind the user's
+own key, a local image server, or the built-in test renderer; PNGs under `~/Pictures/Fab OS`; tap to enlarge,
+save/copy/open/set-as-wallpaper/regenerate); **Ollama** as a provider with model listing, now also in the Fab AI Controls
+dropdown (`052d507`); the built-in offline model and Ollama run multi-step tasks with web access through the step-wise
+driver; enterprise security baseline (polkit action instead of NOPASSWD sudo, bwrap sandbox, policy clamps, HMAC-chained
+audit log, sysctl/AppArmor hardening, SBOM). A polkit grant rule and screen-autolock-off exist **only in the vm test
+profile**, not in the ISO or installed systems.
+
+## Numbers from the round-6 chain (vm and iso images of this tree, 2026-09-15/16, `build/final-chain.out`)
+
+| check | result | note |
+|---|---|---|
+| host unit tests (agent 129, voice 72, ask bar JS 26, quick settings JS 24, Calamares audit 163) | all pass | gate before any image |
+| branding (iso) / security (iso) | 219 / 219 · 72 / 72 | |
+| live agent suite (Claude) | 15 pass / 1 fail | the failure is the mail task without a signed-in account |
+| voice in the VM (emulated sound device) | 24 pass / 2 fail | offline speech-to-text refused: not enough free memory in a 2 GB VM |
+| graded ladder, Claude, L1–L4 | 21 pass / 0 fail / 3 skip | skips: two mail tasks (no account), the image task (no cloud image key) |
+| graded ladder, built-in 1.5B model, L1–L2 | L1 6/6 · L2 1 pass / 4 fail / 2 skip | honest: the small model is unreliable on multi-step tasks |
+| browser | 5 pass, then the direct-launch section hangs | a test bug; Firefox launch verified by hand in about 4 s |
+| rounded corners in the VM | 3 / 6 automated | the VM had locked its screen; corners verified by hand (`build/manual-corner-*.png`) |
+| perf probes | 6 pass / 4 fail | weak probes, not measurements — unmeasured |
+
+## The published image and its proofs
+
+<!-- R6-RESULTS -->
+
+## Known limits carried by this release
+
+- The built-in 1.5B model varies run to run on multi-step tasks (7–9 of 11 in this round's runs); use a cloud provider or a
+  larger Ollama model for reliability — the UI says so.
+- Offline speech-to-text needs about 600 MB free; on a 2 GB machine under load it declines and says why.
+- On the live ISO, root actions from the passwordless live user show a polkit prompt.
+- The Google OAuth consent screen is still in Testing mode (Gmail sign-in works for listed test users only).
+- A global-menu applet was added to the panel without being asked for; it can be removed.
+- Performance is unmeasured (the perf probes are weak); the browser test's direct-launch section is a known test bug.
+- The public website's updates page reads `/api/releases` from the main-site backend, which currently returns test entries.

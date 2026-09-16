@@ -111,7 +111,7 @@ chk "disk: cryptsetup + initramfs hooks installed (LUKS)"     "R 'dpkg -s crypts
 if [ "$PROFILE" = iso ]; then
   chk "iso: shim-signed + grub-efi-amd64-signed (Secure Boot)" "R 'dpkg -s shim-signed >/dev/null 2>&1 && dpkg -s grub-efi-amd64-signed >/dev/null 2>&1'"
   chk "iso: installer preselects LUKS2 full-disk encryption"  "grep -q '^enableLuksAutomatedPartitioning: true' $SRC/image/overlay/iso/etc/calamares/modules/partition.conf && grep -q '^luksGeneration: luks2' $SRC/image/overlay/iso/etc/calamares/modules/partition.conf"
-  chk "iso: live NOPASSWD rule + autologin removed by the installer" "grep -q '/etc/sudoers.d/fabos-live' $SRC/image/overlay/iso/etc/calamares/modules/shellprocess.conf && grep -q '20-autologin-live.conf' $SRC/image/overlay/iso/etc/calamares/modules/shellprocess.conf"
+  chk "iso: live NOPASSWD rule + autologin removed by the installer" "grep -q '/usr/lib/fabos/install-finish.sh' $SRC/image/overlay/iso/etc/calamares/modules/shellprocess.conf && grep -q '/etc/sudoers.d/fabos-live' $SRC/image/overlay/iso/usr/lib/fabos/install-finish.sh && grep -q '20-autologin-live.conf' $SRC/image/overlay/iso/usr/lib/fabos/install-finish.sh && R 'test -x /usr/lib/fabos/install-finish.sh && grep -q /etc/sudoers.d/fabos-live /usr/lib/fabos/install-finish.sh'"
 fi
 
 # ---- source-tree checks (this checkout)
