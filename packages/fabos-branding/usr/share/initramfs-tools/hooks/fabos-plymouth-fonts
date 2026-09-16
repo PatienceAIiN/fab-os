@@ -1,0 +1,16 @@
+#!/bin/sh
+# @DISTRO_NAME@: put Inter, the boot splash font (Font= / TitleFont= in fabos.plymouth), into the initramfs.
+# Ubuntu's plymouth hook copies only the Ubuntu font, so without this the splash labels ("Disk password" prompt, the
+# shutdown title) fall back to it. Runs after the plymouth hook (PREREQ) and only when that hook set up fontconfig,
+# i.e. for a graphical theme. Never fails the initramfs build.
+PREREQ="plymouth"
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0;; esac
+. /usr/share/initramfs-tools/hook-functions
+[ -d "${DESTDIR}/etc/fonts" ] || exit 0
+for f in /usr/share/fonts/opentype/inter/Inter-Regular.otf /usr/share/fonts/opentype/inter/Inter-Light.otf /usr/share/fonts/opentype/inter/Inter-Medium.otf; do
+  [ -e "$f" ] || continue
+  mkdir -p "${DESTDIR}/usr/share/fonts/opentype/inter" && cp -a "$f" "${DESTDIR}/usr/share/fonts/opentype/inter/" || true
+done
+fc-cache -s -y "${DESTDIR}" >/dev/null 2>&1 || true
+exit 0

@@ -5,8 +5,7 @@ Priority: optional
 Architecture: all
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
 Homepage: @HOME_URL@
-Depends: base-files, plymouth, plymouth-label, dpkg (>= 1.15)
-Recommends: fonts-inter
+Depends: base-files, plymouth, plymouth-label, plymouth-theme-spinner, fonts-inter, dpkg (>= 1.15)
 Description: @DISTRO_NAME@ system identity, boot splash and legal notices
  Rebrands an Ubuntu 26.04 LTS base as @DISTRO_NAME@ by @VENDOR_NAME@:
  os-release, lsb-release, issue, legal text, MOTD, dpkg origin, GRUB title,

@@ -26,7 +26,9 @@ case "$1" in configure)
   for f in /etc/update-motd.d/50-motd-news /etc/update-motd.d/91-contract-ua-esm-status /etc/update-motd.d/88-esm-announce /etc/update-motd.d/95-hwe-eol; do
     [ -e "$f" ] && chmod -x "$f" || true
   done
-  # boot splash
+  # boot splash (two-step plugin, fabos.plymouth). The initramfs hook that adds Inter must be executable (build-debs.sh
+  # normalises data files to 0644); then every installed kernel's initramfs is rebuilt so the new theme boots on the next start.
+  chmod 755 /usr/share/initramfs-tools/hooks/fabos-plymouth-fonts 2>/dev/null || true
   update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/fabos/fabos.plymouth 200
   update-alternatives --set default.plymouth /usr/share/plymouth/themes/fabos/fabos.plymouth
   if command -v update-initramfs >/dev/null 2>&1 && ls /boot/vmlinuz-* >/dev/null 2>&1; then update-initramfs -u -k all || true; fi
