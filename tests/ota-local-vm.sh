@@ -196,12 +196,22 @@ vm "echo fabos | sudo -S unattended-upgrade --dry-run 2>&1 | grep -viE 'sudo|^$'
 vm "dbus-send --session --print-reply --dest=org.freedesktop.Notifications /org/freedesktop/Notifications org.freedesktop.Notifications.GetCapabilities 2>/dev/null | grep -oE 'string \"[a-z-]+\"' | tr -d '\"' | sed 's/string //' | tr '\n' ' '" > "$OUT/notify-caps.txt" 2>/dev/null; info "notification server capabilities: $(cat "$OUT/notify-caps.txt")"
 grep -qw actions "$OUT/notify-caps.txt"; chk "notification server supports actions (buttons)" $?
 vm "t0=\$(date +%s%N); timeout 12 notify-send -a 'Fab OS Updates' -i fabos-updates -u critical -A open='Open Fab OS Updates' -A later=Later 'probe' 'notify-send action probe (closed by the test)'; rc=\$?; echo \"rc=\$rc elapsed_ms=\$(( (\$(date +%s%N) - t0) / 1000000 ))\"" > "$OUT/notify-probe.txt" 2>&1; info "notify-send -A probe: $(tr -d '\r' < "$OUT/notify-probe.txt")"
-shot notify-probe
+shot notify-send-probe
+if [ $MODE = upgrade ]; then
+  # the shipped path (state.py notify_dbus): a critical popup with "Open Fab OS Updates" / "Later", held 6 s for the screenshot
+  (sleep 3; python3 "$OUT/qmp.py" "$QMP" screendump "$OUT/notify-dbus-probe.png" > /dev/null 2>&1) &
+  vm "python3 /usr/lib/fabos/updates/state.py notify-probe 6" > "$OUT/notify-dbus-probe.txt" 2>&1; wait
+  info "D-Bus notify probe: $(tr -d '\r' < "$OUT/notify-dbus-probe.txt" | tail -1)"
+  grep -q '"closed_by": "probe"' "$OUT/notify-dbus-probe.txt"; chk "notification via D-Bus with action buttons shown and closed in the session ($OUT/notify-dbus-probe.png)" $?
+  grep -q "notify-send: rc=\|Actions are not supported" "$OUT/notify-journal.log" && chk "notifier used the D-Bus path (no notify-send fallback message in its journal)" 1 || chk "notifier used the D-Bus path (no notify-send fallback message in its journal)" 0
+fi
 vm "gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.GetServerInformation 2>/dev/null" | tr -d '\r' | sed 's/^/   /' | tee -a "$LOG"
 
 # ---- 11. the Fab Updates window with its banner (offscreen render inside the guest; same state as the session) ----------------------------
-vm "QT_QPA_PLATFORM=offscreen timeout 60 fabos-updates --screenshot /tmp/fabos-updates.png >/dev/null 2>&1; test -s /tmp/fabos-updates.png" && $SCP fabos@127.0.0.1:/tmp/fabos-updates.png "$OUT/fabos-updates-banner.png" > /dev/null 2>&1
-chk "Fab Updates window rendered in the guest ($OUT/fabos-updates-banner.png)" $([ -s "$OUT/fabos-updates-banner.png" ] && echo 0 || echo 1)
+if [ $MODE = upgrade ]; then   # --screenshot exists from 1.0-7 on; a NO-OP run still has the older app
+  vm "QT_QPA_PLATFORM=offscreen timeout 60 fabos-updates --screenshot /tmp/fabos-updates.png >/dev/null 2>&1; test -s /tmp/fabos-updates.png" && $SCP fabos@127.0.0.1:/tmp/fabos-updates.png "$OUT/fabos-updates-banner.png" > /dev/null 2>&1
+  chk "Fab Updates window rendered in the guest ($OUT/fabos-updates-banner.png)" $([ -s "$OUT/fabos-updates-banner.png" ] && echo 0 || echo 1)
+fi
 shot end
 say "OTA LOCAL VM ($MODE, $REPO_UPD): $([ $fail = 0 ] && echo PASS || echo FAIL)  ($npass passed, $nfail failed)"
 exit $fail

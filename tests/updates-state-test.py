@@ -52,7 +52,7 @@ shim("timeout", 'shift; exec "$@"')
 shim("fabos-updates", 'exit 0')
 
 env = dict(os.environ, PATH=BIN + ":" + os.environ["PATH"], FABOS_UPDATES_STATE_DIR=STATE, FABOS_UPDATES_RUN_USER=RUNUSER_DIR,
-           FABOS_UPDATES_RUNUSER=os.path.join(BIN, "runuser"),
+           FABOS_UPDATES_RUNUSER=os.path.join(BIN, "runuser"), FABOS_UPDATES_NOTIFY="notify-send",  # never the host's session bus
            XDG_STATE_HOME=XSTATE, XDG_RUNTIME_DIR=os.path.join(T, "xdg-runtime"), FABOS_TEST_FAKE=FAKE, FABOS_TEST_LOG=LOG)
 os.makedirs(env["XDG_RUNTIME_DIR"])
 for k, v in env.items():

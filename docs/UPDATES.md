@@ -42,7 +42,9 @@ Two timers, one notifier, always inside the user's own session:
 3. **`fabos-update-notify.service` (user, oneshot)** runs `state.py session-check`:
    * if `apt list --upgradable` (the lists root refreshed) offers fabos-* packages: one notification
      **"Fab OS update available — Fab OS 1.0-7 is ready to install — open Fab OS Updates."** with an
-     **Open Fab OS Updates** button (`notify-send -A`, the session bus, the icon theme). Remembered per offered
+     **Open Fab OS Updates** button (`org.freedesktop.Notifications.Notify` on the session bus, done directly with
+     python3-dbus: libnotify 0.8's `notify-send -A` drops its buttons on Plasma 6 with "Actions are not supported by
+     this notifications server" although the server lists `actions`; `notify-send` stays as the fallback). Remembered per offered
      version and per boot in `~/.local/state/fabos/updates-notify.json`, so it is said once, not every 4 hours.
    * after an update was installed (section 4): the "finish it" notification, once per event.
 

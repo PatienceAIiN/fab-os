@@ -329,19 +329,79 @@ def agent_busy():
         return False  # not running or not answering: a restart cannot interrupt anything
 
 
+NOTIFY_BACKEND = os.environ.get("FABOS_UPDATES_NOTIFY", "dbus")   # "notify-send" forces the fallback (tests shim it)
+URGENCY = {"low": 0, "normal": 1, "critical": 2}
+
+
+def notify_dbus(title, body, actions, urgency, wait):
+    """org.freedesktop.Notifications.Notify on the session bus, then wait (bounded) for ActionInvoked / NotificationClosed.
+    Done directly because libnotify 0.8's notify-send drops the buttons on Plasma 6 ("Actions are not supported by this
+    notifications server", although GetCapabilities lists actions). Returns the pressed action id or ''."""
+    import dbus, dbus.mainloop.glib
+    from gi.repository import GLib
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SessionBus()
+    iface = dbus.Interface(bus.get_object("org.freedesktop.Notifications", "/org/freedesktop/Notifications"), "org.freedesktop.Notifications")
+    acts = []
+    for aid, label in actions:
+        acts += [aid, label]
+    hints = {"urgency": dbus.Byte(URGENCY.get(urgency, 1)), "desktop-entry": "fabos-updates", "category": "device"}
+    nid = int(iface.Notify(APP, dbus.UInt32(0), "fabos-updates", title, body, acts, hints, dbus.Int32(-1)))
+    result = {"action": "", "closed": False}
+    loop = GLib.MainLoop()
+
+    def on_action(i, key):
+        if int(i) == nid:
+            result["action"] = str(key)
+            loop.quit()
+
+    def on_closed(i, reason):
+        if int(i) == nid:
+            result["closed"] = True
+            loop.quit()
+    bus.add_signal_receiver(on_action, "ActionInvoked", "org.freedesktop.Notifications")
+    bus.add_signal_receiver(on_closed, "NotificationClosed", "org.freedesktop.Notifications")
+    if actions:
+        GLib.timeout_add_seconds(int(wait), loop.quit)
+        loop.run()
+    result["id"] = nid
+    return result
+
+
 def notify(title, body, actions=(), urgency="normal", wait=900):
-    """notify-send on the session bus; with action buttons it waits (bounded) and returns the pressed action id or ''.
-    urgency "critical" = Plasma keeps the popup on screen until the user answers (the "finish your update" case, so
-    someone who was away still sees it); "normal" popups time out and go to the history."""
+    """Show a notification in this session and return the pressed action id or ''. urgency "critical" = Plasma keeps the
+    popup on screen until the user answers (the "finish your update" case, so someone who was away still sees it);
+    "normal" popups time out and go to the history. D-Bus directly (notify_dbus); notify-send as the fallback."""
+    if NOTIFY_BACKEND != "notify-send":
+        try:
+            return notify_dbus(title, body, actions, urgency, wait)["action"]
+        except Exception as e:  # no python3-dbus / no session bus / no server: fall through to notify-send
+            print(time.strftime("%H:%M:%S"), "notify: dbus path failed (%s); using notify-send" % str(e)[:120], flush=True)
     cmd = ["notify-send", "-a", APP, "-i", "fabos-updates", "-u", urgency]
     for aid, label in actions:
         cmd += ["-A", "%s=%s" % (aid, label)]
     cmd += [title, body]
     r = run(["timeout", str(wait)] + cmd, timeout=wait + 10)
     err = (r.stderr or "").strip()
-    if r.returncode != 0 or err:  # e.g. "Actions are not supported by this notifications server" — the popup still shows
+    if r.returncode != 0 or err:
         print(time.strftime("%H:%M:%S"), "notify-send: rc=%s %s" % (r.returncode, err[:200]), flush=True)
     return (r.stdout or "").strip()
+
+
+def notify_probe(argv):
+    """tests/ota-local-vm.sh: show the real 'finish it' popup with its buttons for a few seconds, then close it, and print
+    what the server did (id, closed) so the run can assert the D-Bus path works in a live session."""
+    hold = int(argv[0]) if argv else 6
+    import dbus
+    from gi.repository import GLib
+    t0 = time.time()
+    r = notify_dbus("%s updated (probe)" % DISTRO, "%s 1.0-7 is installed. Restart to finish. (test popup, closes itself)" % DISTRO,
+                    (("open", "Open %s" % APP), ("later", "Later")), "critical", 0)
+    time.sleep(hold)
+    bus = dbus.SessionBus()
+    dbus.Interface(bus.get_object("org.freedesktop.Notifications", "/org/freedesktop/Notifications"), "org.freedesktop.Notifications").CloseNotification(dbus.UInt32(r["id"]))
+    print(json.dumps({"id": r["id"], "shown_for_s": round(time.time() - t0, 1), "buttons": ["Open %s" % APP, "Later"], "closed_by": "probe"}))
+    return 0
 
 
 def open_app(args=()):
@@ -417,6 +477,8 @@ def main(argv):
         return snapshot(argv[1:])
     if cmd == "session-check":
         return session_check(argv[1:])
+    if cmd == "notify-probe":
+        return notify_probe(argv[1:])
     if cmd == "state":
         st = pending()
         st["upgradable"] = upgradable() if "--no-apt" not in argv else None
@@ -425,7 +487,7 @@ def main(argv):
         st["title"], st["banner"] = summary_text(st)
         print(json.dumps(st, indent=1, default=lambda o: sorted(o) if isinstance(o, set) else str(o)))
         return 0
-    print("usage: state.py record|poke|snapshot|session-check|state", file=sys.stderr)
+    print("usage: state.py record|poke|snapshot|session-check|state|notify-probe [seconds]", file=sys.stderr)
     return 2
 
 
