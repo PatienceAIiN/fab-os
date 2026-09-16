@@ -116,7 +116,10 @@ function bounces(action) { return action === "launch" || action === "new" }
 // A pinned launcher is "applications:org.kde.dolphin.desktop"; a window's LauncherUrlWithoutIcon is the desktop file
 // libtaskmanager resolved for it (the same string when it matched; a file:// path for a non-menu entry) and its AppId
 // the desktop-file id (with or without ".desktop"). Two rows are the same app when either agrees, ignoring case, a
-// query string and the ".desktop" suffix; AppId of one against the URL base of the other counts too.
+// query string and the ".desktop" suffix; AppId of one against the URL base of the other counts too. Last resort — the
+// window libtaskmanager could NOT resolve (LauncherUrlWithoutIcon file:///usr/bin/konsole, AppId the raw Wayland app id
+// "konsole") or an id in another form (firefox.desktop pinned, the window says org.mozilla.firefox): a bare name equals
+// the last segment of a reverse-DNS id. Two dotted ids never match this way (org.kde.kate vs org.kde.konsole).
 function desktopBase(url) {
     var u = String(url === undefined || url === null ? "" : url)
     if (!u) return ""
@@ -126,12 +129,23 @@ function desktopBase(url) {
     if (u.slice(-8).toLowerCase() === ".desktop") u = u.slice(0, -8)
     return u.toLowerCase()
 }
+function idsMatch(a, b) {
+    if (!a || !b) return false
+    if (a === b) return true
+    var da = a.indexOf(".") >= 0, db = b.indexOf(".") >= 0
+    if (da === db) return false                                  // both bare (unequal) or both reverse-DNS: no
+    var dotted = da ? a : b, bare = da ? b : a
+    return dotted.slice(dotted.lastIndexOf(".") + 1) === bare      // org.mozilla.firefox ~ firefox, org.kde.konsole ~ konsole
+}
 function sameApp(urlA, appIdA, urlB, appIdB) {
     var ba = desktopBase(urlA), bb = desktopBase(urlB)
     if (ba && bb && ba === bb) return true
     var aa = desktopBase(appIdA), ab = desktopBase(appIdB)
     if (aa && ab && aa === ab) return true
-    return !!(aa && bb && aa === bb) || !!(ba && ab && ba === ab)
+    if ((aa && bb && aa === bb) || (ba && ab && ba === ab)) return true
+    var A = [ba, aa], B = [bb, ab]
+    for (var i = 0; i < 2; i++) for (var k = 0; k < 2; k++) if (idsMatch(A[i], B[k])) return true
+    return false
 }
 
 // ---------------------------------------------------------------- reading a TasksModel

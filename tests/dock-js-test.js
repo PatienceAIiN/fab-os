@@ -122,6 +122,16 @@ t("sameApp: pinned launcher vs the window libtaskmanager resolved (Firefox, Fab 
   assert.ok(!L.sameApp("applications:firefox.desktop", "firefox", "applications:org.kde.konsole.desktop", "org.kde.konsole"));
   assert.ok(!L.sameApp("", "", "", ""), "nothing to compare is not a match");
   assert.ok(!L.sameApp("applications:firefox.desktop", "", "", ""), "one side empty is not a match");
+  assert.ok(L.sameApp("applications:libreoffice-writer.desktop", "libreoffice-writer.desktop", "applications:libreoffice-writer.desktop", "libreoffice-writer"), "LibreOffice Writer: its own desktop file");
+});
+t("sameApp last resort: a bare id equals the last segment of a reverse-DNS id (firefox ~ org.mozilla.firefox; a window libtaskmanager could not resolve)", () => {
+  assert.ok(L.sameApp("applications:firefox.desktop", "firefox.desktop", "", "org.mozilla.firefox"), "firefox.desktop pinned, the window reports org.mozilla.firefox");
+  assert.ok(L.sameApp("applications:org.kde.konsole.desktop", "org.kde.konsole.desktop", "file:///usr/bin/konsole", "konsole"), "the round-7 VM row dump: LauncherUrl file:///usr/bin/konsole, AppId konsole, pin org.kde.konsole.desktop");
+  assert.ok(L.sameApp("applications:org.kde.dolphin.desktop", "", "file:///usr/bin/dolphin", "dolphin"));
+  assert.ok(!L.sameApp("applications:org.kde.kate.desktop", "org.kde.kate.desktop", "file:///usr/bin/konsole", "konsole"), "Fab Editor's pin does not claim an unresolved Konsole window");
+  assert.ok(!L.sameApp("applications:org.kde.konsole.desktop", "org.kde.konsole", "", "org.gnome.Console"), "two reverse-DNS ids must be equal, never segment-matched");
+  eq([L.idsMatch("firefox", "org.mozilla.firefox"), L.idsMatch("org.mozilla.firefox", "firefox"), L.idsMatch("firefox", "firefox"), L.idsMatch("org.kde.kate", "org.kde.konsole"), L.idsMatch("kate", "konsole"), L.idsMatch("", "x"), L.idsMatch("konsole", "org.kde.konsole.desktop".slice(0, -8))],
+     [true, true, true, false, false, false, true]);
 });
 
 // ---------------------------------------------------------------- a fake TasksModel (the QML-facing helpers)
@@ -194,6 +204,15 @@ t("tap end-to-end: a pin whose window libtaskmanager did not merge (separate win
   const dock = fakeModel([R.launcher("firefox"), R.window("firefox", { LauncherUrlWithoutIcon: "file:///usr/share/applications/firefox.desktop", HasLauncher: false })]);
   const all = fakeModel([R.window("firefox", { LauncherUrlWithoutIcon: "file:///usr/share/applications/firefox.desktop", HasLauncher: false })]);
   assert.strictEqual(L.tap(dock, A, 0, all), "elsewhere"); eq(all.calls, [["activate", 0, -1]]); eq(dock.calls, []);
+});
+t("tap end-to-end: a pin whose window did not resolve to a desktop file at all (LauncherUrl file:///usr/bin/konsole, AppId konsole — the VM's row dump) -> that window is activated, nothing launches, the marker is on", () => {
+  const unresolved = R.window("konsole", { LauncherUrlWithoutIcon: "file:///usr/bin/konsole", AppId: "konsole", HasLauncher: false });
+  const dock = fakeModel([R.launcher("org.kde.konsole"), unresolved]), all = fakeModel([Object.assign({}, unresolved)]);
+  const r = L.readRow(dock, A, 0); r.elsewhere = L.findElsewhere(all, A, r.LauncherUrlWithoutIcon, r.AppId);
+  eq(r.elsewhere, { row: 0, windows: 1, active: false, minimized: false, child: -1 }); assert.strictEqual(L.state(r), "running"); assert.strictEqual(L.dotCount(r), 1);
+  assert.strictEqual(L.tap(dock, A, 0, all), "elsewhere"); eq(dock.calls, []); eq(all.calls, [["activate", 0, -1]]);
+  assert.strictEqual(L.findElsewhere(all, A, "applications:org.kde.kate.desktop", "org.kde.kate.desktop"), null, "another app's pin does not claim it");
+  assert.strictEqual(L.tap(fakeModel([R.launcher("org.kde.kate")]), A, 0, all), "launch", "Fab Editor still launches");
 });
 t("tap end-to-end: launcher with no window anywhere -> launch (requestActivate on the launcher row); starting -> nothing", () => {
   const dock = fakeModel([R.launcher("org.kde.kate")]), all = fakeModel([R.window("firefox")]);

@@ -42,7 +42,9 @@ import "../code/dock-logic.js" as Logic
 // JS, unit-tested by tests/dock-js-test.js). A tap never starts a second copy of an app that has a window anywhere: it
 // activates / minimises / restores / cycles; only a launcher with no window at all launches, and an app still starting
 // ignores further taps. The indicator is on for a window, a group, a starting app AND a pinned launcher whose windows
-// the desktop / activity filters hide (a second, unfiltered TasksModel answers that; see `allTasks`).
+// the desktop / activity filters hide (a second, unfiltered TasksModel answers that; see `allTasks`). The reported
+// "marker gone, click opens a fresh copy" itself was the model dropping MINIMISED windows (v3's filterHidden: true —
+// see tasksModel below); with them kept, the pin stays its window and a click restores it.
 //
 // The launcher menu next door: layout.js puts the stock kickoff applet in the dock panel before this applet so the Meta
 // key and the start button (activateLauncherMenu) have a menu to open. Plasma 6.6's panel gives an applet that reports
@@ -164,7 +166,15 @@ PlasmoidItem {
         filterByActivity: Plasmoid.configuration.showOnlyCurrentActivity
         filterByScreen: false
         filterNotMinimized: false
-        filterHidden: true
+        filterMinimized: false
+        // ROOT CAUSE of the round-6 device report, reproduced in the VM (build/r7-dock-activate/run1-filterHidden-reproduced):
+        // libtaskmanager's "hidden" role is the MINIMISED state (X11 _NET_WM_STATE_HIDDEN, the same role on Wayland), not
+        // skip-taskbar. v3's `filterHidden: true` dropped every minimised window from this model, so its pin fell back to
+        // a bare launcher — marker gone — and the next click on it launched a second copy. "Peek at the desktop" minimises
+        // everything at once, so every marker vanished together. Minimised windows MUST stay in the model: the dock draws
+        // them as a dimmed dot. Windows that ask to stay off task bars are already dropped by libtaskmanager's filter
+        // proxy (its filterSkipTaskbar defaults to on and TasksModel does not expose it — assigning it here fails to load).
+        filterHidden: false
         sortMode: TaskManager.TasksModel.SortManual
         launchInPlace: true                 // a launcher becomes its running window in place (icons-only behaviour)
         separateLaunchers: false
@@ -188,7 +198,8 @@ PlasmoidItem {
         filterByActivity: false
         filterByScreen: false
         filterNotMinimized: false
-        filterHidden: true
+        filterMinimized: false
+        filterHidden: false                 // minimised windows stay (see tasksModel)
         sortMode: TaskManager.TasksModel.SortManual
         launchInPlace: false
         separateLaunchers: true
