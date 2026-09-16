@@ -3,6 +3,7 @@
   <title>Fab OS updates</title>
   <link>https://fabos.patienceai.in/</link>
   <description>Public release updates for Fab OS by Patience AI.</description>
+  <item><title>Fab OS 1.0 image, package revision 1.0-6 (16 September 2026)</title><link>https://fabos.patienceai.in/download/fabos-1.0-desktop-amd64.iso</link><description>Installer fixed (the package step no longer fails on a first install), automated installation now proven in a VM before publishing, quick-settings pane redesigned, dock indicators, one window shadow source, image generation from the ask bar, built-in offline model with multi-step tasks and web access, Ollama provider, enterprise security baseline. Existing installs receive 1.0-6 through Fab Updates.</description><pubDate>Wed, 16 Sep 2026 03:00:00 +0000</pubDate></item>
   <item><title>Agentic AI coming soon</title><link>https://fabos.patienceai.in/#status</link><description>Fab OS is preparing an agentic AI experience designed to help with everyday work while keeping user review and control visible. This feature is upcoming and not yet available in a public image.</description></item>
   <item><title>Fab OS public preview</title><link>https://fabos.patienceai.in/#status</link><description>The public image is under hardware validation and is not published yet.</description></item>
 </channel></rss>

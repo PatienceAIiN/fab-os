@@ -13,6 +13,7 @@
 #       MAIL_ADDRESS + MAIL_APP_PASSWORD + MAIL_TO [MAIL_PROVIDER=gmail|outlook|yahoo|zoho|icloud|other] — the user's OWN mail
 #       account (ADR-0014) for L2-f and L4-e; without them those two are recorded as optional SKIPs that do not fail the run
 #       OPENAI_API_KEY — optional: L2-g (generate_image, ADR-0021) sets images.provider=openai for that one task; without it, and
+#       FABOS_IMAGE_PROVIDER=fake — optional: L2-g with the daemon's test renderer instead (no cloud image key needed; no network)
 #       with an active provider that has no image API (Claude, DeepSeek, the built-in model), L2-g is an optional SKIP
 #       MODEL (default claude-opus-5)  VM_MEM (default 2048)  INJECT=1 (push working-tree agent files first)
 #       LOCAL_BASE_URL (default http://127.0.0.1:8080/v1 for --provider local)
@@ -493,6 +494,8 @@ if want l2-g; then   # IMAGE (ADR-0021): a generate_image step AND a real PNG un
                      # this task only; otherwise, when /status says images.ready=false, the task is an optional SKIP.
   if [ -n "${OPENAI_API_KEY:-}" ]; then
     vm "printf '%s\n' '$OPENAI_API_KEY' | fabos set-key openai >/dev/null 2>&1; fabos settings images.provider openai >/dev/null"
+  elif [ -n "${FABOS_IMAGE_PROVIDER:-}" ]; then   # e.g. fake — the daemon's built-in test renderer: proves the plan -> generate_image -> PNG path
+    vm "fabos settings images.provider '$FABOS_IMAGE_PROVIDER' >/dev/null"            # in a real VM without a cloud image key (no network call)
   fi
   IMG_CAP=$(api GET /status | python3 -c 'import json,sys; d=json.load(sys.stdin).get("images") or {}; print(("ready" if d.get("ready") else "no") + " " + str(d.get("provider") or "") + " " + str(d.get("detail") or ""))' 2>/dev/null)
   echo "    image capability: $IMG_CAP"
@@ -506,7 +509,7 @@ if want l2-g; then   # IMAGE (ADR-0021): a generate_image step AND a real PNG un
           verdict PASS l2-g "$ORDER_EV | $EV"
         else verdict FAIL l2-g "$ORDER_EV | $EV | task=$TASK_STATUS"; fi
       else verdict FAIL l2-g "$ORDER_EV | task=$TASK_STATUS"; fi
-      [ -n "${OPENAI_API_KEY:-}" ] && vm "fabos settings images.provider '' >/dev/null"
+      [ -n "${OPENAI_API_KEY:-}${FABOS_IMAGE_PROVIDER:-}" ] && vm "fabos settings images.provider '' >/dev/null"
       vm 'rm -f ~/.ladder-l2g-start';;
     *)
       NOTE="optional: the active provider cannot generate images (${IMG_CAP#no }) — export OPENAI_API_KEY, or add a Gemini key / images.local_endpoint"
