@@ -28,6 +28,15 @@ security review, and final public notices.
 
 Do not install an unreleased image on a primary computer.
 
+## Updates
+
+An installed Fab OS updates itself over the air; no reinstall is ever needed for a Fab OS update. The signed
+Patience AI repository (`https://fabos.patienceai.in/apt`) and Ubuntu's own archive are preconfigured. You are told
+when an update is ready (a notification with an **Open Fab OS Updates** button); **Fab OS Updates** installs it, and
+automatic updates (on by default) install Fab OS and Ubuntu security updates around six in the morning or at the next
+start. Afterwards Fab OS says exactly one thing — nothing to do, log out and back in, or restart — and never closes your
+session for you. Details, timers and the tests behind this: [docs/UPDATES.md](UPDATES.md).
+
 ## System requirements
 
 2 GB of RAM (Fab OS uses compressed swap in RAM and starts background services on demand; 4 GB is recommended),
