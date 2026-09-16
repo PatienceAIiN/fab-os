@@ -1365,3 +1365,62 @@ daemon's built-in test renderer, Claude as planner): result recorded in `build/l
 - A global-menu applet was added to the panel without being asked for; it can be removed.
 - Performance is unmeasured (the perf probes are weak); the browser test's direct-launch section is a known test bug.
 - The public website's updates page reads `/api/releases` from the main-site backend, which currently returns test entries.
+
+# Update 1.0-7 (round 7, over the air) — 2026-09-16
+
+No ISO was rebuilt for this round. Everything below ships as package revision **1.0-7** through the signed apt channel, to
+the owner's real laptop (installed from v1.0.5, package 1.0-6) and to anyone who installs the published v1.0.5 ISO. The
+owner's report came from that laptop with photographs: the dock lost its running markers and a click on an open app opened
+a second copy; the login screen showed the fallback theme with a red QML error; the disk-unlock screen had no visible input;
+the boot and login should look like a Lenovo/Fedora machine; shutting down should show and protect open work; and there
+should be a setting to stop asking for the disk password at start-up.
+
+## What was wrong, and what changed (each track implemented, then reviewed by a separate skeptical agent that re-ran the evidence)
+
+| track | root cause found | fix (all inside the packages) | review |
+|---|---|---|---|
+| dock (fabos-desktop) | the dock's task model had `filterHidden: true`; on Wayland libtaskmanager's *hidden* role **is** the minimised state, so every minimised window left the model, the pinned launcher lost its window (marker gone) and the next click launched a copy — "peek at desktop" minimises everything, hence all markers vanished together; the tap handler also always called `requestNewInstance` | `filterHidden`/`filterMinimized` off; a pure-JS decision module (`contents/code/dock-logic.js`): launcher → launch, running → activate, active → minimise, minimised → restore, group → most recent / cycle, middle-click → new instance; marker = window or group or starting or "running elsewhere" via an unfiltered second model; 25 unit-test groups | **approved**; cause confirmed against the libtaskmanager 6.6 source; VM proof with real pointer clicks: one Firefox window throughout |
+| login screen (fabos-desktop) | `Main.qml` imported both QtQuick.Controls and SddmComponents, so `Button` resolved to SddmComponents.Button, which has no `background` — the theme failed to load on real hardware (never seen in the VM because the test profile autologs in); `theme.conf` named a `background.png` that was never shipped | rewritten with qualified imports; GDM-like layout: clock and date, user tile, password field with an eye toggle, "Not listed?", power menu, session chooser, shake and message on a wrong password; `tests/sddm-theme-test.sh` runs the real greeter in test mode and **fails on the old file with the laptop's exact error** | **fixed then approved**: the reviewer found the greeter losing keyboard focus after the power menu (fixed), and that the harness's "no QML errors" journal checks were vacuous (fixed) |
+| boot splash and disk unlock (fabos-branding) | script-plugin theme drew only text at the unlock prompt | Plymouth **two-step** theme like Fedora's `bgrt`: the firmware vendor logo stays, Fab OS spinner and wordmark, proper password box with bullets, "Disk password" label, Enter hint; "Shutting down safely…" on power-off; `tests/plymouth-theme-test.sh` rebuilds an initramfs in a container and checks the theme and cryptsetup are inside | reviewer proved the **real boot** shows the two-step splash over the firmware logo (TianoCore in QEMU) and that a 1.0-7 `apt-get install` on a running 1.0-6 system rebuilds the initramfs and leaves SDDM untouched |
+| leave screen (fabos-desktop) | none before; the owner asked for it | look-and-feel `logout/Logout.qml`: lists every open window with icon and title from the real window list (a `.desktop` grant for the greeter makes KWin hand it over), "Unsaved" chips, warning, countdown that never runs while work looks unsaved, Cancel focused, "Shut down anyway"; `confirmLogout=true`; `docs/design/SHUTDOWN.md` states honestly what Plasma guarantees (an app's Cancel on Wayland delays a logout by two minutes, it does not veto it) | **approved** (minor notes) |
+| start-up disk-password switch (fabos-agent) | none before; the owner asked for it | root helper `disk_unlock.sh` (random keyfile as a new LUKS slot, embedded in the initramfs on `/boot`, crypttab and conf-hook edits, `UMASK=0077`, verified with `lsinitramfs` and a test-open, rollback); daemon endpoint through the pkexec root path only (CRITICAL; the passphrase never touches a command line or log); Fab AI Controls row with a plain-language warning and an eye-toggle passphrase field | **fixed then approved**: the reviewer fixed two ordering flaws that could have left a machine at the initramfs shell after a failed rebuild, added a `/boot` mounted guard and a lock, and re-proved the round trip |
+| over-the-air follow-up (fabos-updates) | update notifications never reached the session; nothing told the user what to do after an upgrade | dpkg trigger `fabos-postupgrade` records what changed; Fab Updates shows "log out and back in" / "restart to finish"; one desktop notification per version; the agent user service restarts itself; `docs/UPDATES.md`; `tests/ota-local-vm.sh` proves an upgrade from a local repository before anything is published | **fixed then approved**: duplicate notifications under unattended-upgrades fixed; the reviewer proved a live 1.0-6 session updating to 1.0-7 through Fab Updates **and** through `unattended-upgrade` (10 of 10 packages, one notification, no touch of plasmashell or SDDM) |
+
+**Honest limits of this round:** Plymouth never receives typed characters, so a reveal-eye is impossible on the disk-unlock
+screen (it is on the login screen instead); the firmware-logo behaviour on the owner's Lenovo is a hardware check; the
+new dock, leave screen and login theme take effect after the next log-in (Fab Updates says so); the disk-password switch
+weakens protection to "encrypted at rest only" and the UI says so before it acts; a Beta-channel user whose
+`fabos.sources` is overwritten mid-upgrade can see later packages skipped for that run (documented, not fixed);
+`tests/branding-check.sh` still carries a hard-coded "1.0-6 in the manifest" image check that will need the expected
+version from `brand/brand.conf` at the next image rebuild.
+
+## Verification of the merged tree and the publication
+
+Integration branch `r7/integration` (five track merges on top of v1.0.5's `4bbe387`, package revision 1.0-7), chain
+`build/final-chain-r7.sh`, log `build/final-chain-r7.out`, 2026-09-16 13:44–14:34 UTC:
+
+| check | result | log |
+|---|---|---|
+| secret scan (tree) | PASS | `build/r7-secret-scan.out` |
+| agent daemon unit tests | 131 tests OK | `build/r7-agent-test.out` |
+| voice unit tests | OK (5 skipped: no audio device on the host) | `build/r7-voice-test.out` |
+| ask bar / quick settings / dock JS suites | 26 / 24 / 25 groups OK | `build/r7-*-js.out` |
+| updates state machine | PASS (0 failed, 37 checks) | `build/r7-updates-state.out` |
+| disk-unlock helper (stubbed cryptsetup) | PASS (55 checks) | `build/r7-disk-unlock-test.out` |
+| SDDM theme in the real greeter (test mode, offscreen) | 19 PASS; the old theme fails with the laptop's exact error | `build/r7-sddm-theme.out` |
+| Plymouth two-step theme + initramfs rebuild in a container | 24 PASS (theme, plugin, cryptsetup present in the initrd) | `build/r7-plymouth-theme.out` |
+| leave screen in the real logout greeter (offscreen) | PASS | `build/r7-logout-screen.out` |
+| Fab Updates banner render / Fab AI Controls render (incl. Start-up row) | exit 0 / exit 0 | `build/r7-updates-banner.out`, `build/r7-controls-render*.out` |
+| branding (source tree + current image) | 220 / 220 | `build/r7-branding.out` |
+| security (source tree + current image) | 72 / 72 | `build/r7-security.out` |
+| packages built and signed, both suites | 20 debs at 1.0-7 | `build/publish-apt-*.out` |
+| disk-password switch on the LUKS-installed disk (`tests/disk-unlock-vm.sh`) | **39 PASS / 0 FAIL** — prompt off, boot with nothing typed, prompt back | `build/r7-disk-unlock-vm.out`, `build/r7-disk-unlock-final/` |
+| over-the-air proof, 1.0-6 disk → 1.0-7 from the local repository (`tests/ota-local-vm.sh`) | first run **failed outside our packages**: the guest's transaction also pulled Firefox 156 (91 MB) from Mozilla and that download died on this connection (117 kB/s, SSL EOF), so apt aborted before installing anything (`build/r7-ota-local-vm.out`); rerun with third-party updates held: **30 PASS / 0 FAIL** — all ten packages at 1.0-7, trigger ran, stamp and banner correct, one notification, agent restarted, plasmashell untouched | `build/r7-ota-local-vm-2.out`, `build/ota-local-vm-2/` |
+
+**Publication (2026-09-16, 23:46 IST):** `loom` and `loom-beta` rsynced to `https://fabos.patienceai.in/apt`; the public
+`Packages` index lists all ten `fabos-*` packages at 1.0-7; `InRelease` dated 14:02 UTC carries a good signature from the
+Fab OS Archive key. No ISO was rebuilt or uploaded and no GitHub release was made (owner's rule: releases only after the
+owner verifies on real hardware; this over-the-air push was explicitly requested).
+
+**Public update-channel test** (`tests/update-channel-test.sh`, the same 1.0-6 disk pulling from the public repository):
+**PASS** (2026-09-17, 00:00 IST) — newer fabos packages offered by the channel; fabos-desktop updated 1.0-4 -> 1.0-6 (`build/update-channel-test.out`, `build/r7-update-channel.out`).
