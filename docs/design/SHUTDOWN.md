@@ -52,11 +52,11 @@ exactly that line (the first draft of this screen did fail that way: `font.pixel
   `.desktop` entries, instance counts, `@autostart` units skipped because they usually have no window) and the card
   says plainly that titles are not visible from there, so unsaved work cannot be flagged.
 * **Unsaved work** — a window "looks unsaved" when its title carries the markers editors really produce: Qt's `[*]`
-  placeholder rendered as a leading or trailing asterisk (`Untitled* — Kate`, `*notes.txt — Editor`, `main.c*`), KDE's
-  `[modified]`, GTK's `(modified)`, the `●` / `•` bullets of VS Code and GNOME apps. Any flagged window shows the
-  orange warning *"One window looks unsaved. Save your work first, or the app will ask you when it is closed. Nothing
-  happens until you choose."* and **pauses the countdown**: the machine never turns itself off over work that looks
-  unsaved. The heuristic is exactly that — a heuristic (section 3).
+  placeholder rendered as a leading or trailing asterisk (`Untitled * — Kate` as the VM showed, `*notes.txt — Editor`,
+  `main.c*`), KDE's `[modified]`, GTK's `(modified)`, the `●` / `•` bullets of VS Code and GNOME apps. Any flagged
+  window shows the orange warning *"One window looks unsaved. Save it first: if you continue, each app asks you once,
+  and a window left open only delays the shutdown, it does not stop it."* and **pauses the countdown**: the machine
+  never turns itself off over work that looks unsaved. The heuristic is exactly that — a heuristic (section 3).
 * **Countdown** — *"Shutting down in 30 s. Press any key to wait."* Default 30 s from `ksmserverrc [General]
   confirmLogoutCountdown` (read with `kreadconfig6`, so a per-user `~/.config/ksmserverrc` overrides the system file);
   `0` waits for a click. It never runs for the all-options grid, never while a window looks unsaved, never when the
@@ -65,8 +65,11 @@ exactly that line (the first draft of this screen did fail that way: `font.pixel
   emits the same signal the primary button does.
 * **Buttons** — Cancel and one big accent-filled primary ("Shut down now" / "Restart now" / "Log out now"; with pending
   offline updates "Update and shut down" plus "Shut down without updating", as Breeze offers). The primary has keyboard
-  focus: Enter confirms, Escape cancels (also a click on the scrim outside the card). Ctrl+Alt+Del's all-options screen is
-  a tile grid: Sleep / Hibernate (when `spdMethods` allows) / Restart / Shut down / Log out / Cancel, no countdown.
+  focus: Enter confirms, Escape cancels (also a click on the scrim outside the card). **While any window looks unsaved
+  the safe choice is the default**: focus moves to Cancel, so Enter leaves nothing, and the primary reads "Shut down
+  anyway" / "Restart anyway" / "Log out anyway" — because on Wayland the app's own Cancel later does not stop the logout
+  (section 2, step 3). Ctrl+Alt+Del's all-options screen is a tile grid: Sleep / Hibernate (when `spdMethods` allows) /
+  Restart / Shut down / Log out / Cancel, no countdown.
 * **Other users signed in**, **restart into firmware / boot menu / entry** — the same hints Breeze shows, from the same
   context properties.
 * **Footnote** — *"Ask before closing is on: Fab OS shows this screen every time. Fab Settings › Session › Desktop
@@ -101,11 +104,16 @@ QML file (Breeze does not have it either); the scrim is a flat dark overlay.
    given up on after ksmserver's timeouts (`clientShutdownTimeoutSecs`, `legacySaveTimeoutSecs`, `SmsDie timeout`).
 3. **Wayland windows** are not XSMP clients. ksmserver asks KWin (`org.kde.KWin.Session`: `aboutToSaveSession`,
    `closeWaylandWindows`, `finishSaveSession`) to **close every Wayland window**: KWin sends each toplevel a close
-   request, which is what makes Kate, Firefox, LibreOffice show their own "Save changes?" dialogs. KWin carries a
-   `cancellogout` / *"Cancel Logout"* notification event for a window that refuses; a window that never responds gets
-   KWin's *"Final ping timeout on a close attempt, asking to kill"* dialog. **What an app does with the close request
-   is the app's business** — this is the only place where "save its work" actually happens, and it happens inside the
-   app.
+   request, which is what makes Kate, Firefox, LibreOffice show their own "Save changes?" dialogs. **Observed in the
+   VM (2026-09-16, `logout-in-progress.png`, `desktop-after-app-cancel.png`)**: after "Log out now", Firefox closed at
+   once (nothing to save) and Kate put up *"The document 'Untitled' has been modified. Save / Discard / Cancel"*;
+   pressing **Cancel there did not cancel the logout** — KWin posted the notification *"The following applications did
+   not close: Fab Editor. Logging out anyway in 2 minutes"* with **Cancel Logout** / **Log Out Anyway** buttons (its
+   `cancellogout` event). Only that Cancel Logout, within two minutes, stops it; otherwise the session ends and the
+   window is closed without saving. A window that never responds gets KWin's *"Final ping timeout on a close attempt,
+   asking to kill"* dialog. **What an app does with the close request is the app's business** — this is the only place
+   where "save its work" actually happens, and it happens inside the app; and on Wayland the app's Cancel is a two-minute
+   delay, not a veto. That is why the leave screen makes the user decide *before* confirming.
 4. **Session save** (only with `loginMode=restorePreviousLogout`): ksmserver stores XSMP clients' restart commands; for
    Wayland `plasma-shutdown` runs `plasma-fallback-session-save`, which records the window list through
    `WindowTasksModel` (the same grant mechanism as our screen, via `org.kde.plasma-fallback-session-save.desktop`) so
@@ -133,7 +141,10 @@ screen closes.
 * The countdown never runs while any window title carries a modified marker; the warning says what to do.
 * The open windows are listed with icons, names and titles whenever KWin grants the window list (verified in the image
   and in the VM); otherwise the running applications are listed by name and the screen says titles are not visible.
-* When the user confirms, every app is asked to close and may show its own save dialog (Plasma's existing behaviour).
+* While anything looks unsaved, Enter on the screen leaves nothing: focus sits on Cancel and the primary button says
+  "… anyway".
+* When the user confirms, every app is asked to close and may show its own save dialog (Plasma's existing behaviour,
+  seen with Kate in the VM).
 * Disks are synced by systemd before power-off (existing behaviour).
 
 **Not guaranteed — and why the text says "looks unsaved"**
@@ -143,9 +154,12 @@ screen closes.
   media players. The heuristic can also miss a translated marker.
 * The list shows windows. Background work without a window (a running `rsync` in a systemd unit, a transfer in a
   headless process, a build in a terminal that was minimised — the terminal *is* listed, the job is not) is invisible.
-* "Fab OS asks each app to save its work" means Plasma sends the close request and the app decides. An app that ignores
-  it is killed by KWin / ksmserver after their timeouts; an app that crashes on the request loses whatever it had not
-  autosaved. Nothing in Fab OS can write an application's document for it.
+* "Fab OS asks each app to save its work" means Plasma sends the close request and the app decides. On Wayland the
+  app's Cancel does not stop the logout: KWin waits two minutes ("Logging out anyway in 2 minutes", with a Cancel Logout
+  button) and then ends the session, closing the window unsaved. X11 / XWayland apps that speak XSMP can veto through
+  ksmserver; Wayland-native apps cannot. An app that ignores the request is killed after KWin's / ksmserver's timeouts;
+  an app that crashes on it loses whatever it had not autosaved. Nothing in Fab OS can write an application's document
+  for it.
 * The all-options grid (Ctrl+Alt+Del) has no countdown by design, as in Breeze.
 * Session restore is off by default on Fab OS (low RAM). Users who want their apps back at login choose *Restore previous
   session*; even then apps come back, documents only if the app restores them.
@@ -169,7 +183,16 @@ screen closes.
   `build/logout-unsaved.png`), `kwin` (the same harness as the session of a virtual `kwin_wayland` with two real
   windows and the package's `.desktop` grant: both listed, the modified one flagged; renders `build/logout-windows.png`).
   2026-09-16: PASS, 56 + 27 checks.
-* **VM proof** (`build/r7-shutdown-safety/`, disposable overlay of `build/fabos-vm.img`, real autologin Plasma Wayland
-  session): see the report for the run of 2026-09-16 — `logout-screen.png` (Firefox + Kate with an unsaved document
-  listed by the real greeter), `logout-screen-light.png`, and the logout-cancel experiment (`logout-in-progress.png`,
-  `desktop-after-app-cancel.png`, `journal-logout-cancel.log`).
+* **VM proof** (`build/r7-shutdown-safety/`, disposable qcow2 overlay of `build/fabos-vm.img`, real autologin Plasma
+  Wayland session, 2026-09-16 13:02–13:06 IST, `vm-proof.log`): the rendered package files installed as the deb places
+  them, `kbuildsycoca6` run once; Firefox and Kate (`kate -i` with text, so an unsaved *Untitled*) opened;
+  `qdbus6 org.kde.LogoutPrompt /LogoutPrompt promptShutDown` from the session → the real greeter logged
+  `fabos-leave: apps source=windows count=2 unsaved=1` and `logout-screen.png` shows *Fab Editor — Untitled * — Kate*
+  with the Unsaved chip, *Firefox — Restore Session — Mozilla Firefox*, "1 unsaved", the paused countdown; Escape
+  cancelled (the next prompt activated a fresh greeter). The light package selected in kdeglobals (`promptReboot`) gave
+  the same screen through the wrapper (`logout-screen-light.png`, "light wrapper forwarding 10 signals"). Then the
+  question that matters: `promptLogout`, Enter on "Log out now" → `org.kde.Shutdown` activated, Firefox closed, Kate's
+  own Save / Discard / Cancel dialog appeared (`logout-in-progress.png`), Escape there → the session survived (Kate,
+  plasmashell, kwin_wayland still up) but KWin announced *"The following applications did not close: Fab Editor.
+  Logging out anyway in 2 minutes"* with Cancel Logout / Log Out Anyway (`desktop-after-app-cancel.png`). That
+  observation is the basis of the "… anyway" default above.

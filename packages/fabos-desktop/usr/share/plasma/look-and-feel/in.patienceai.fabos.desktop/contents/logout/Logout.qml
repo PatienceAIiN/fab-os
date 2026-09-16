@@ -26,6 +26,10 @@
         mark their titles are not caught; the text says so and the buttons stay under the user's control.
       * a countdown (ksmserverrc [General] confirmLogoutCountdown, default 30 s, 0 = wait for a click) that also stops
         for good on any key press or a hover over the buttons, so an approaching hand never loses the race.
+      * the safe choice as the default while work looks unsaved: keyboard focus moves to Cancel and the primary button
+        reads "Shut down anyway". On Wayland an app's own Cancel in its save dialog does not stop the logout: KWin posts
+        "The following applications did not close … Logging out anyway in 2 minutes" and carries on unless the user
+        clicks Cancel Logout there (seen in the VM, docs/design/SHUTDOWN.md). The decision has to be made here.
     Design tokens: card radius 24, inner card 20, controls 12, Inter through the system font, colours from the
     Complementary colour set so the accent follows the user's scheme; the scrim is the brand ink at 86 %.
 */
@@ -71,10 +75,10 @@ Item {
     readonly property string toBootEntry: typeof rebootToBootLoaderEntry !== "undefined" && rebootToBootLoaderEntry ? String(rebootToBootLoaderEntry) : ""
 
     readonly property var verbs: ({
-        "-1": { title: "Leave",     now: "",              ing: "",              icon: "system-log-out",  tail: "before you leave" },
-        "0":  { title: "Log out",   now: "Log out now",   ing: "Logging out",   icon: "system-log-out",  tail: "before you sign out" },
-        "1":  { title: "Restart",   now: "Restart now",   ing: "Restarting",    icon: "system-reboot",   tail: "before restarting" },
-        "2":  { title: "Shut down", now: "Shut down now", ing: "Shutting down", icon: "system-shutdown", tail: "before turning off" }
+        "-1": { title: "Leave",     now: "",              anyway: "",                 ing: "",              noun: "leaving",      icon: "system-log-out",  tail: "before you leave" },
+        "0":  { title: "Log out",   now: "Log out now",   anyway: "Log out anyway",   ing: "Logging out",   noun: "logging out",  icon: "system-log-out",  tail: "before you sign out" },
+        "1":  { title: "Restart",   now: "Restart now",   anyway: "Restart anyway",   ing: "Restarting",    noun: "the restart",  icon: "system-reboot",   tail: "before restarting" },
+        "2":  { title: "Shut down", now: "Shut down now", anyway: "Shut down anyway", ing: "Shutting down", noun: "the shutdown", icon: "system-shutdown", tail: "before turning off" }
     })
     readonly property var verb: root.verbs[String(root.mode)] || root.verbs["2"]
     readonly property bool actionAvailable: root.mode === 0 ? root.canLogOut : ((root.mode === 1 || root.mode === 2) && root.canShutdown)
@@ -373,8 +377,8 @@ Item {
                 QQC2.Label {
                     id: unsavedLabel
                     Layout.fillWidth: true
-                    text: (root.unsavedCount === 1 ? "One window looks unsaved. " : root.unsavedCount + " windows look unsaved. ")
-                          + "Save your work first, or the app will ask you when it is closed. Nothing happens until you choose."
+                    text: (root.unsavedCount === 1 ? "One window looks unsaved. Save it first: " : root.unsavedCount + " windows look unsaved. Save them first: ")
+                          + "if you continue, each app asks you once, and a window left open only delays " + root.verb.noun + ", it does not stop it."
                     font.pixelSize: 13
                     color: Kirigami.Theme.neutralTextColor
                     wrapMode: Text.WordWrap
@@ -446,7 +450,7 @@ Item {
                     onClicked: root.cancelRequested()
                     onInteracted: root.hold()
                     KeyNavigation.right: skipUpdatesButton.visible ? skipUpdatesButton : primaryButton
-                    focus: !root.showAll && !root.actionAvailable
+                    focus: !root.showAll && (!root.actionAvailable || root.unsavedCount > 0)     // unsaved work: Enter must not leave
                 }
                 Item { Layout.fillWidth: true }
                 LeaveButton {
@@ -462,12 +466,12 @@ Item {
                     id: primaryButton
                     primary: true
                     visible: root.actionAvailable
-                    text: root.updatesPending && root.mode !== 0 ? (root.mode === 1 ? "Update and restart" : "Update and shut down") : root.verb.now
+                    text: root.updatesPending && root.mode !== 0 ? (root.mode === 1 ? "Update and restart" : "Update and shut down") : (root.unsavedCount > 0 ? root.verb.anyway : root.verb.now)
                     iconName: root.verb.icon
                     onClicked: root.act()
                     onInteracted: root.hold()
                     KeyNavigation.left: skipUpdatesButton.visible ? skipUpdatesButton : cancelButton
-                    focus: !root.showAll && root.actionAvailable
+                    focus: !root.showAll && root.actionAvailable && root.unsavedCount === 0
                 }
             }
 

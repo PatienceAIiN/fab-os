@@ -66,8 +66,9 @@ Item {
         check(!allOptions.visible && actions.visible, "single-action layout: Cancel + primary row, no tile grid")
         check(footnote.text.indexOf("Ask before closing") === 0 && footnote.text.indexOf("Fab Settings") > 0, "footnote names 'Ask before closing' and Fab Settings")
         check(root.settled && root.helperDone, "settled + helper answered within 6 s (settled=" + root.settled + " helper=" + root.helperDone + ")")
-        check(root.canShutdown && primaryButton.visible && primaryButton.text === "Shut down now" && primaryButton.focus && !unavailableLabel.visible,
-              "maysd=true: 'Shut down now' primary, focused, no 'not allowed' text (canShutdown=" + root.canShutdown + " activeFocus=" + primaryButton.activeFocus + ")")
+        check(root.canShutdown && primaryButton.visible && !unavailableLabel.visible, "maysd=true: primary button shown, no 'not allowed' text (canShutdown=" + root.canShutdown + ")")
+        if (root.unsavedCount > 0) check(primaryButton.text === "Shut down anyway" && cancelButton.focus && !primaryButton.focus, "unsaved work: primary reads 'Shut down anyway', keyboard focus on Cancel ('" + primaryButton.text + "' cancelFocus=" + cancelButton.focus + ")")
+        else check(primaryButton.text === "Shut down now" && primaryButton.focus && !cancelButton.focus, "nothing unsaved: 'Shut down now' primary has the focus (activeFocus=" + primaryButton.activeFocus + ")")
         check(cancelButton.visible && cancelButton.text === "Cancel", "Cancel button present")
 
         // the unsaved heuristic (titles editors really produce)
@@ -125,8 +126,10 @@ Item {
                 check(unsavedWarning.visible && unsavedWarning.height > 0, "unsaved: warning row appears")
                 check(!root.countdownActive, "unsaved: countdown never runs")
                 check(countdownLabel.text.indexOf("paused") > 0, "unsaved: countdown text says paused ('" + countdownLabel.text + "')")
+                check(primaryButton.text === "Shut down anyway" && cancelButton.focus && !primaryButton.focus, "unsaved: primary reads 'Shut down anyway', focus moved to Cancel (Enter cannot leave)")
                 grab(root, "/out/logout-unsaved.png", function () {
                     root.unsavedCount = 0
+                    check(primaryButton.text === "Shut down now" && primaryButton.focus && !cancelButton.focus, "saved again: primary back to 'Shut down now' and focused")
                     root.hold()
                     check(root.held && !root.countdownActive && countdownLabel.text.indexOf("Take your time") === 0, "held (key / hover): countdown stops for good ('" + countdownLabel.text + "')")
                     console.log("HARNESS DONE failures=" + h.failures)
