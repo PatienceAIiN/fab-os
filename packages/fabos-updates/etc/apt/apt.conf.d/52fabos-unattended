@@ -12,12 +12,15 @@ Unattended-Upgrade::Allowed-Origins {
     "Ubuntu:@BASE_CODENAME@-security";
     "UbuntuESMApps:@BASE_CODENAME@-apps-security";
     "UbuntuESM:@BASE_CODENAME@-infra-security";
-    // the browser: Firefox comes from Mozilla's repository (packages.mozilla.org, suite "mozilla"), origin-pinned 1000
-    "Mozilla:mozilla";
     // kept so a system whose lsb identity is still Ubuntu's (fabos-updates on stock Ubuntu) behaves like stock Ubuntu
     "${distro_id}:${distro_codename}-security";
     "${distro_id}ESMApps:${distro_codename}-apps-security";
     "${distro_id}ESM:${distro_codename}-infra-security";
+};
+// The browser: Firefox comes from Mozilla's repository (origin-pinned 1000 in fabos-branding). Its Release file's Origin
+// is an internal path ("namespaces/moz-fx-productdelivery-.../repositories/mozilla"), so match the site instead.
+Unattended-Upgrade::Origins-Pattern {
+    "site=packages.mozilla.org";
 };
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 // Never restart or log the user out by itself. What still needs a log out / restart is told to the user

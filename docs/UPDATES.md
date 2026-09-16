@@ -66,7 +66,8 @@ the channel (Standard/Beta) and toggles automatic updates.
   (a machine that was off runs it at the next start).
 * Allowed origins (`/etc/apt/apt.conf.d/52fabos-unattended`, shipped by `fabos-updates`): `Patience AI:loom`,
   `Patience AI:loom-beta`, **`Ubuntu:resolute-security`**, `UbuntuESMApps:resolute-apps-security`,
-  `UbuntuESM:resolute-infra-security`, `Mozilla:mozilla`. The Ubuntu names are literal on purpose: on Fab OS
+  `UbuntuESM:resolute-infra-security`, plus the pattern `site=packages.mozilla.org` for Firefox (Mozilla's Release
+  file carries an internal path as `Origin`, so the site is matched). The Ubuntu names are literal on purpose: on Fab OS
   `lsb_release -is` is `Fabos` and the codename is `loom`, so Ubuntu's own `${distro_id}:${distro_codename}-security`
   template resolves to `Fabos:loom-security` and matches nothing — before 1.0-7 unattended-upgrades installed Fab OS
   packages but **no Ubuntu security updates** on an installed Fab OS. Verified on the 1.0-6 disk

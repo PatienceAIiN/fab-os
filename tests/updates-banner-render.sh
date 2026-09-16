@@ -48,6 +48,15 @@ r=$(render logout "session" "fabos-desktop"); echo "$r" | head -2; st=${r##*$'\n
 if [ "$st" = "$DISTRO_NAME 1.0-7 is installed. Log out and back in to finish." ] && [ "$n" -gt 300 ]; then echo "PASS  log-out banner rendered: '$st'"; else echo "FAIL  log-out banner ('$st', $n px)"; fail=1; fi
 r=$(render none "" ""); echo "$r" | head -2; st=${r##*$'\n'}; n=${st##*|}; st=${st%|*}
 if [ -z "$st" ] && [ "$n" -lt 40 ]; then echo "PASS  no banner when nothing is pending ($n px)"; else echo "FAIL  banner shown with nothing pending ('$st', $n px)"; fail=1; fi
+# the apt configuration fragment must parse: a syntax error in /etc/apt/apt.conf.d breaks EVERY apt call on the installed system
+cp /work/packages/fabos-updates/etc/apt/apt.conf.d/52fabos-unattended /tmp/52fabos-unattended
+DISTRO_ID_TITLE="$(echo "${DISTRO_ID:0:1}" | tr a-z A-Z)${DISTRO_ID:1}"
+for v in DISTRO_NAME VENDOR_NAME DISTRO_CODENAME DISTRO_ID_TITLE BASE_CODENAME; do sed -i "s|@$v@|${!v}|g" /tmp/52fabos-unattended; done
+if grep -q '@[A-Z_]*@' /tmp/52fabos-unattended; then echo "FAIL  unrendered placeholder in 52fabos-unattended"; fail=1; fi
+dump=$(apt-config -c /tmp/52fabos-unattended dump Unattended-Upgrade 2>/tmp/apt-config.err)
+if echo "$dump" | grep -q "Allowed-Origins:: \"Ubuntu:$BASE_CODENAME-security\"" && echo "$dump" | grep -q 'Origins-Pattern:: "site=packages.mozilla.org"' && echo "$dump" | grep -q "Allowed-Origins:: \"$VENDOR_NAME:$DISTRO_CODENAME\"" && [ ! -s /tmp/apt-config.err ]; then
+  echo "PASS  52fabos-unattended parses (apt-config) and names $VENDOR_NAME:$DISTRO_CODENAME, Ubuntu:$BASE_CODENAME-security, site=packages.mozilla.org"
+else echo "FAIL  52fabos-unattended does not parse or lacks the origins: $(cat /tmp/apt-config.err)"; echo "$dump" | head -20; fail=1; fi
 # wording rules (owner): no forbidden product names, no "download" aimed at users in the update UI strings
 if grep -nE 'ChatGPT|OpenAI|GPT|SnowUI|Sora|DALL|[Dd]ownload' /tmp/u/*.py /work/packages/fabos-updates/usr/lib/fabos/updates/helper.sh /work/packages/fabos-updates/usr/lib/systemd/*/* | grep -v 'APT::Periodic::Download' ; then echo "FAIL  forbidden wording in fabos-updates"; fail=1; else echo "PASS  no forbidden wording in fabos-updates"; fi
 exit $fail
