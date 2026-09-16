@@ -137,6 +137,40 @@ Three records exist, all append-only from the user's point of view:
 - Session: the screen locks after 10 idle minutes and on wake from sleep (which the lid close triggers) —
   `/etc/xdg/kscreenlockerrc` `[Daemon]`, `/etc/xdg/powerdevilrc`.
 
+### 5.1 The start-up disk password (LUKS) and the "stop asking" option
+
+The installer encrypts the root filesystem with LUKS2 (ADR-0021: ESP + unencrypted `/boot` + LUKS2 root); the initramfs on
+`/boot` asks for the passphrase at every start, through the Fab OS Plymouth splash. Fab AI Controls › Settings › General has a
+**Start-up** row, *Ask for the disk password when the computer starts* — a switch that is on by default and disabled, with the
+reason, on a computer whose disk is not encrypted. Turning it off is a deliberate weakening and the confirmation says so in plain
+words before asking for the current passphrase: *your files stay encrypted on the drive, but anyone who starts this computer can
+use it without a password, because the unlock key is stored in the start-up files on the unencrypted /boot partition. Use this
+only where the computer itself is secure.* Turning it back on asks nothing.
+
+What runs (`/usr/lib/fabos/agent/disk_unlock.sh {status|off|on}`, root only, through the same `pkexec rootexec` path as every
+root step — the user types their own password in the system dialog, in every mode): `off` creates a 4096-byte random key
+`/etc/fabos/luks-unlock.key` (0400, inside the encrypted root), adds it to the volume with `cryptsetup luksAddKey` (authorised by
+the passphrase, on cryptsetup's stdin), points `/etc/crypttab` at it (`initramfs` option added, `luks,discard` kept), sets
+`KEYFILE_PATTERN` in `/etc/cryptsetup-initramfs/conf-hook` and `UMASK=0077` in `/etc/initramfs-tools/initramfs.conf`, runs
+`update-initramfs -u -k all` and then proves the result — `lsinitramfs` must list `cryptroot/keyfiles/<name>.key` and the key must
+open the volume (`cryptsetup open --test-passphrase --key-file`) — or rolls everything back (configuration restored, slot removed,
+key deleted, initramfs rebuilt). `on` reverses it in the safe order: configuration first, initramfs rebuilt and proven free of
+the key, only then the LUKS slot removed and the key deleted. The passphrase travels on the helper's standard input from a
+private tmpfs file (`$XDG_RUNTIME_DIR/fabos-agent/`, 0600, wiped when the helper returns) — never a command line, an authorization
+record or a log. A wrong passphrase changes nothing (exit 3).
+
+Audit: the activity chain gets `disk_unlock_requested` and `disk_unlock_done` / `disk_unlock_failed` rows (risk CRITICAL) around
+the usual `root_exec_*` rows; `/var/log/fabos/disk-unlock.log` (root:adm 0640) and the journal (`fabos-disk-unlock`, authpriv)
+carry every step; `/var/log/fabos/rootexec.log` the root request. `disk_unlock.sh status` prints `{encrypted, device,
+prompt_at_boot, keyfile_present, keyfile_in_initramfs, consistent, detail}` for compliance checks, and `GET /system/disk-unlock`
+returns the same. The two facts to monitor on a fleet that must never run without the prompt: `/etc/fabos/luks-unlock.key`
+exists, or the key column of the root entry in `/etc/crypttab` is not `none`. The polkit gate of §1 applies (a `rules.d` rule can
+demand an administrator's password for `in.patienceai.fabos.rootexec`, which this setting goes through). Tests:
+`tests/disk-unlock-test.sh` (the helper against stub cryptsetup / update-initramfs, including the rollbacks),
+`tests/agent-test.py` (the endpoint through a stand-in pkexec), `tests/disk-unlock-vm.sh` (a real LUKS-installed disk in QEMU:
+off → boots with no passphrase typed, on → the prompt is back). TPM-backed unlock, which would keep the key off `/boot`, remains
+unconfigured (§8).
+
 ## 6. Updates
 
 Unattended upgrades are on (`/etc/apt/apt.conf.d/20auto-upgrades`) for Ubuntu security updates and the Fab OS repository
