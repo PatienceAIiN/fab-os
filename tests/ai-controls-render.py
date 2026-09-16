@@ -201,7 +201,7 @@ def quick_passes():
                 sd.tabs.setCurrentIndex(1); spin()
                 assert sd.provider.isVisible() and sd.key.isVisible() and sd.check_btn.isVisible() and sd.help.isVisible()
                 assert not sd.model.isVisible() and not sd.base_url.isVisible() and not sd.require_check.isVisible()
-                assert [sd.provider.itemData(i) for i in range(sd.provider.count())] == ["claude", "gemini", "openai", "deepseek", "local"]
+                assert [sd.provider.itemData(i) for i in range(sd.provider.count())] == ["claude", "gemini", "openai", "deepseek", "local", "ollama"]
                 sp = sd.grab(); assert sp.save(os.path.join(OUT, "settings-provider-%s.png" % name))
                 sd.provider.setCurrentIndex(4); spin()
                 assert sd.provider_adv.is_open() and sd.base_url.isVisible() and sd.base_url.text() == "http://127.0.0.1:8080/v1", "Local must open Advanced with the endpoint"
@@ -814,8 +814,11 @@ def main():
             # --- AI provider tab: ONE dropdown (5 providers), one key field, model, endpoint only for Local, Check connection
             sd.tabs.setCurrentIndex(1)
             spin(app)
-            assert [sd.provider.itemData(i) for i in range(sd.provider.count())] == ["claude", "gemini", "openai", "deepseek", "local"]
+            assert [sd.provider.itemData(i) for i in range(sd.provider.count())] == ["claude", "gemini", "openai", "deepseek", "local", "ollama"]
             assert sd.provider.itemText(3) == "DeepSeek" and sd.provider.itemText(0) == "Anthropic (Claude)"
+            assert sd.provider.itemText(5) == "Ollama (on this computer)"
+            sd.provider.setCurrentIndex(5); assert sd.current_pid == "ollama" and not sd.key.placeholderText().startswith("Paste") and sd.base_url.isVisibleTo(sd) and sd.check_btn.text() == "Check Ollama"
+            sd.provider.setCurrentIndex(0)
             assert not sd.base_url.isVisible(), "endpoint field must be hidden for cloud providers"
             assert sd.model.text() == "claude-opus-5" and sd.key.echoMode() == cc.QLineEdit.EchoMode.Password
             assert sd.confirm_btn.isEnabled(), "Save must be allowed when no new key was typed"

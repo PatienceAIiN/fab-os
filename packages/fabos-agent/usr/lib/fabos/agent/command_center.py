@@ -43,13 +43,16 @@ API_TIMEOUT = 5                  # s — the daemon is local. Every call of the 
 TYPEWRITER_MS = 25               # ms per character when a typed text is revealed in the action timeline
 KEY_ROLE = int(Qt.ItemDataRole.UserRole) + 1     # sidebar list items: their reconcile key ("h:Today" / "c:<root id>")
 # provider ids -> short labels (the daemon's PROVIDERS table is the source of truth for the long labels)
-PROVIDER_LABELS = {"claude": "Claude", "gemini": "Gemini", "openai": "OpenAI", "deepseek": "DeepSeek", "local": "Local model", "fake": "Test provider"}
-PROVIDER_ORDER = ["claude", "gemini", "openai", "deepseek", "local"]
-PROVIDER_FULL = {"claude": "Anthropic (Claude)", "gemini": "Google Gemini", "openai": "OpenAI", "deepseek": "DeepSeek", "local": "Local model"}
+PROVIDER_LABELS = {"claude": "Claude", "gemini": "Gemini", "openai": "OpenAI", "deepseek": "DeepSeek", "local": "Local model", "ollama": "Ollama", "fake": "Test provider"}
+PROVIDER_ORDER = ["claude", "gemini", "openai", "deepseek", "local", "ollama"]
+NO_KEY = ("local", "ollama")                 # providers on this computer: endpoint instead of an API key (ADR-0022)
+PROVIDER_FULL = {"claude": "Anthropic (Claude)", "gemini": "Google Gemini", "openai": "OpenAI", "deepseek": "DeepSeek", "local": "Local model", "ollama": "Ollama (on this computer)"}
 PROVIDER_DEFAULTS = {"claude": ("claude-opus-5", None), "gemini": ("gemini-2.5-pro", "https://generativelanguage.googleapis.com/v1beta/openai"),
-                     "openai": ("gpt-4.1", "https://api.openai.com/v1"), "deepseek": ("deepseek-chat", "https://api.deepseek.com/v1"), "local": ("local", "http://127.0.0.1:8080/v1")}
+                     "openai": ("gpt-4.1", "https://api.openai.com/v1"), "deepseek": ("deepseek-chat", "https://api.deepseek.com/v1"), "local": ("local", "http://127.0.0.1:8080/v1"),
+                     "ollama": ("", "http://127.0.0.1:11434/v1")}   # empty model = the first model Ollama has installed (the agent picks it)
 PROVIDER_HELP = {"claude": "Paste an API key from your Anthropic account.", "gemini": "Paste an API key from Google AI Studio.", "openai": "Paste an API key from your OpenAI account.",
-                 "deepseek": "Paste an API key from the DeepSeek platform.", "local": "Runs on this computer (llama-server or any OpenAI-compatible endpoint). No account, no key needed."}
+                 "deepseek": "Paste an API key from the DeepSeek platform.", "local": "Runs on this computer (llama-server or any OpenAI-compatible endpoint). No account, no key needed.",
+                 "ollama": "Runs the models you pull with Ollama on this computer — larger or smaller, your choice. No account, no key. Leave Model empty for the first installed model, or type one such as llama3.2 or qwen2.5:7b."}
 # semantic status colours (used for tiny risk/status dots and the check-mark animation only; every surface and text comes from the palette)
 RISK_COLORS = {"LOW": "#3FCB7E", "MEDIUM": "#6E9BFF", "HIGH": "#E0A64B", "CRITICAL": "#F0655D"}
 GREEN, AMBER, RED = "#34C759", "#FF9500", "#F0655D"
@@ -3408,7 +3411,7 @@ class SettingsDialog(RoundedDialog):
         self.key.blockSignals(False)
         self.model.setText(st["model"])
         self.base_url.setText(st["base_url"])
-        local = pid == "local"
+        local = pid in NO_KEY
         self.base_url.setVisible(local)
         self.base_label.setVisible(local)
         if local and not self.provider_adv.is_open():
@@ -3421,7 +3424,7 @@ class SettingsDialog(RoundedDialog):
         self.remove_btn.setVisible(not local or st["stored"])
         table = (self.s.get("providers") or {}).get(pid) or {}
         self.help.setText(table.get("help") or PROVIDER_HELP[pid])
-        self.check_btn.setText("Check connection" if not local else "Check the local server")
+        self.check_btn.setText("Check connection" if not local else ("Check Ollama" if pid == "ollama" else "Check the local server"))
         self._show_check(st["check"], animate=False)
         self._update_save_state()
 
@@ -3448,8 +3451,8 @@ class SettingsDialog(RoundedDialog):
             self.mark.set_state("fail", animate=animate, color=RED if "rejected" in str(res.get("detail", "")) else AMBER)
             detail = str(res.get("detail") or "Check failed")
             text = "Key rejected" if "rejected" in detail else ("Cannot reach provider" if "cannot reach" in detail.lower() else detail[:1].upper() + detail[1:])
-            if "rejected" not in detail and "cannot reach" in detail.lower() and res.get("provider") == "local":
-                text = "Cannot reach the local model server"
+            if "rejected" not in detail and "cannot reach" in detail.lower() and res.get("provider") in NO_KEY:
+                text = "Cannot reach Ollama on this computer" if res.get("provider") == "ollama" else "Cannot reach the local model server"
             self.check_result.setText(text)
             self.check_result.setStyleSheet("color: %s;" % (RED if "rejected" in detail else AMBER))
 
@@ -3461,7 +3464,7 @@ class SettingsDialog(RoundedDialog):
         body = {"provider": pid, "model": self.model.text().strip() or None}
         if st["key"]:
             body["api_key"] = st["key"]              # the typed key is checked before it is saved
-        if pid == "local":
+        if pid in NO_KEY:
             body["base_url"] = self.base_url.text().strip() or None
         self.check_btn.setEnabled(False)
         self.check_btn.setText("Checking…")
@@ -3499,7 +3502,7 @@ class SettingsDialog(RoundedDialog):
     def _checked(self, pid, key, res):
         self.worker = None
         self.check_btn.setEnabled(True)
-        self.check_btn.setText("Check connection" if pid != "local" else "Check the local server")
+        self.check_btn.setText("Check connection" if pid not in NO_KEY else ("Check Ollama" if pid == "ollama" else "Check the local server"))
         if not isinstance(res, dict):
             res = {"ok": False, "detail": "unexpected reply"}
         if res.get("offline"):
@@ -3510,7 +3513,7 @@ class SettingsDialog(RoundedDialog):
         if pid == self.current_pid:
             self._show_check(res, animate=True)
             if not res.get("ok"):
-                shake(self.key if pid != "local" else self.base_url)
+                shake(self.key if pid not in NO_KEY else self.base_url)
         self._update_save_state()
 
     def _blocked_reason(self):
@@ -3518,7 +3521,7 @@ class SettingsDialog(RoundedDialog):
         if not self.require_check.isChecked():
             return ""
         st = self.state[self.current_pid]
-        if st["check"] is not None and not st["check"].get("ok") and (st["key"] or self.current_pid == "local" or not st["stored"] or st["checked_key"] == st["key"]):
+        if st["check"] is not None and not st["check"].get("ok") and (st["key"] or self.current_pid in NO_KEY or not st["stored"] or st["checked_key"] == st["key"]):
             return "The last connection check failed — fix the key or endpoint and check again."
         if st["key"] and not (st["check"] and st["check"].get("ok") and st["checked_key"] == st["key"]):
             return "Check the connection with this key first (or untick the requirement under Advanced)."
