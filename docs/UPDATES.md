@@ -26,8 +26,13 @@ Every fabos-* package carries the same version `DISTRO_VERSION-PKG_REVISION` fro
 (`1.0-7` for this round). Bumping `PKG_REVISION` and publishing is what makes an installed system see an upgrade.
 
 Note for Beta users: `fabos.sources` is not a dpkg conffile, so an upgrade of `fabos-branding` rewrites it to the
-Standard channel; Fab Updates shows the channel and one click switches back. (Tracked; the fix belongs to
-`fabos-branding`.)
+Standard channel; Fab Updates shows the channel and one click switches back. With automatic updates this bites harder
+than a reverted setting: unattended-upgrades installs one package per dpkg run, and once `fabos-branding` has put the
+file back the `loom-beta` candidates are gone for the rest of that run — the remaining Beta packages are skipped
+silently (observed 2026-09-16 with the same mechanism in the test harness, which used to rewrite the URI in this file:
+9 of 10, then 2 of 10 packages installed, no error anywhere). Standard-channel systems are not affected: the file's
+content is the same before and after. (Tracked; the fix belongs to `fabos-branding` — a conffile, or a postinst that
+keeps `Suites:`.)
 
 ## 2. How the user is told an update exists
 
@@ -46,7 +51,8 @@ Two timers, one notifier, always inside the user's own session:
      python3-dbus: libnotify 0.8's `notify-send -A` drops its buttons on Plasma 6 with "Actions are not supported by
      this notifications server" although the server lists `actions`; `notify-send` stays as the fallback). Remembered per offered
      version and per boot in `~/.local/state/fabos/updates-notify.json`, so it is said once, not every 4 hours.
-   * after an update was installed (section 4): the "finish it" notification, once per event.
+   * after an update was installed (section 4): the "finish it" notification, once per version and answer
+     (restart / log out) per boot.
 
 Why not `notify-send` from the system unit: root has no session bus, no icon theme, and the old `runuser … notify-send`
 bridge could not carry an action button or remember what it already said. The user unit has all of that and is
@@ -77,6 +83,15 @@ the channel (Standard/Beta) and toggles automatic updates.
 * `Unattended-Upgrade::Automatic-Reboot "false"`, `Remove-Unused-Dependencies "true"`. **Nothing ever restarts the
   desktop session, plasmashell, KWin or SDDM during an update** — neither unattended-upgrades nor any maintainer
   script. The user is advised; the user decides.
+* unattended-upgrades reads its configuration when it starts, so the run that installs 1.0-7 on a 1.0-6 system still
+  works with the 1.0-6 origins: it installs the Fab OS packages only; Ubuntu security and Firefox updates follow from
+  the next run on (observed on the 1.0-6 disk, 2026-09-16: first run `Packages that will be upgraded: fabos-*` only,
+  `firefox` / `libaom3` listed as "higher version available" but not allowed yet).
+* *Install all updates* is one apt transaction (`apt-get full-upgrade`): apt fetches every archive first, and a
+  download that fails (observed: Firefox's 90 MB from packages.mozilla.org timing out on a slow line) aborts the whole
+  run with "Unable to fetch some archives" — the Fab OS packages in the same transaction are not installed either, and
+  Fab OS Updates reports "Install finished with errors". Nothing is left half-configured; *Install all updates* again
+  once the line is back. unattended-upgrades is not affected in the same way: it installs package by package.
 
 ## 4. What happens after the packages are installed
 
@@ -86,9 +101,17 @@ the channel (Standard/Beta) and toggles automatic updates.
 `/usr/lib/fabos`, `/usr/share/fabos`, the Fab OS plasmoids, look-and-feel packages, the KWin script, the SDDM theme and
 the Plymouth theme. `fabos-desktop` and `fabos-branding` declare `activate-noawait fabos-postupgrade`; `fabos-agent`
 and `fabos-voice` activate it through the `/usr/lib/fabos` file interest without any change to their packages.
-`fabos-updates`' own postinst calls `dpkg-trigger --no-await fabos-postupgrade` on upgrade. `-noawait`: no package ever
-waits on this step, so it can never leave anything unconfigured. dpkg runs `postinst triggered` **once, at the end of
-the whole apt run**, after every package is configured → `helper.sh post-upgrade` → `state.py record`:
+`fabos-updates`' own postinst calls `dpkg-trigger --no-await fabos-postupgrade` on upgrade (a package's *own* file
+interests are ignored by dpkg, so this explicit activation is what covers "only fabos-updates changed"). `-noawait`:
+no package ever waits on this step, so it can never leave anything unconfigured. dpkg runs `postinst triggered`
+**once per dpkg run, at its end**, after every package of that run is configured → `helper.sh post-upgrade` →
+`state.py record`. Fab OS Updates (`apt-get full-upgrade`) is one run, so one record. **unattended-upgrades installs
+in minimal steps** (`Unattended-Upgrade::MinimalSteps`, default on: one dpkg run per package, in an order of its own —
+smallest expected dependency set first, so it differs from run to run), so there the record runs once per step from
+the `fabos-updates` step on — the 1.0-6 packages know no trigger, the first record (no snapshot yet) lists every
+installed package, and every later package with files under `/usr/lib/fabos` (observed: `fabos-ai`, `fabos-branding`)
+or with `activate-noawait` adds a record of its own. Several journal lines for one update are therefore normal;
+the banner merges them and the notification is keyed on the answer (section "In the session"), not on their number.
 
 1. compares the installed fabos-* versions with `/var/lib/fabos/updates/versions` (written at image build / first
    install by `state.py snapshot`; absent on a 1.0-6 system, in which case every installed package counts as changed —
@@ -113,8 +136,11 @@ the whole apt run**, after every package is configured → `helper.sh post-upgra
 * **Agent daemon:** if `fabos-agent` changed after `fabos-agent.service` started, and the daemon reports no running,
   queued or approval-waiting task (`GET /status`), `systemctl --user try-restart fabos-agent.service`. A busy agent
   is left alone and retried on the next check. Same for `fabos-voiced.service`.
-* **Notification, once per event and boot:** "**Fab OS updated** — Fab OS 1.0-7 is installed. Restart to finish." or
-  "… Log out and back in to finish.", with an **Open Fab OS Updates** button.
+* **Notification, once per version and answer per boot** (`~/.local/state/fabos/updates-notify.json`): "**Fab OS
+  updated** — Fab OS 1.0-7 is installed. Restart to finish." or "… Log out and back in to finish.", with an
+  **Open Fab OS Updates** button. Several records of one update (unattended-upgrades steps) do not repeat it; an
+  escalation (log out → restart, because `fabos-branding` arrived later) or a new version does. `urgency=critical`,
+  so Plasma keeps the popup until it is answered — someone who was away still sees it.
 * plasmashell, KWin, SDDM, the user's windows: **never touched**.
 
 ### In Fab OS Updates: the banner
@@ -147,7 +173,7 @@ and **this login** (monotonic timestamps of `graphical-session.target`, `fabos-a
 | `tests/updates-state-test.py` | the state machine: snapshot/record/journal, classes, needs_restart/needs_logout/agent_restart against fake systemd timestamps, one notification per event, "update available" once per offer, JSON output, malformed journal lines | host python3 only (all tools shimmed) |
 | `tests/updates-banner-render.sh` | the Fab OS Updates window renders the banner text for a pending restart and for a pending log out (PNGs under `build/`) | podman `localhost/fabos:vm`, offscreen |
 | `tests/ota-stage-repo.sh --out DIR --bump +ota1 --sign-test-key` | a throwaway local repository from the built .debs with the working tree's fabos-updates package and the fabos-desktop/fabos-branding maintainer files, versions bumped so an installed system sees an upgrade, signed with a throwaway key (never the real one) | `build/debs`, podman `localhost/fabos:pkgs`, host gpg |
-| **`tests/ota-local-vm.sh`** | the real path on a real installed system: a **disposable overlay** of `build/fabos-vm-old.img` (the owner's version), the repository served from this host over HTTP (`http://10.0.2.2:PORT` inside QEMU), the guest's `fabos.sources` rewritten to it, `helper.sh check` + `upgrade` exactly as Fab Updates runs them; asserts every fabos-* package at the repository's version, `trigproc fabos-updates` in `dpkg.log`, no maintainer-script error in `apt/term.log`, initramfs rebuilt, greeter cache dropped, `last-upgrade` stamp with packages/version/classes, `fabos-updates --state` says restart+logout with the version, the agent user service restarted (monotonic timestamp) while plasmashell was not, the notifier journal shows the restart and the notification, both timers enabled, unattended-upgrades' allowed origins include `Patience AI:loom` and `Ubuntu:resolute-security`; screenshots of the desktop and the Fab Updates window | the VM lock, `build/fabos-vm-old.img` |
+| **`tests/ota-local-vm.sh`** | the real path on a real installed system: a **disposable overlay** of `build/fabos-vm-old.img` (the owner's version), the repository served from this host over HTTP (`http://10.0.2.2:PORT` inside QEMU) and added to the guest as an extra apt source (the shipped `fabos.sources` is left alone: fabos-branding overwrites it mid-run, which would make apt lose the local candidates), `helper.sh check` + `upgrade` exactly as Fab Updates runs them; asserts every fabos-* package at the repository's version, `trigproc fabos-updates` in `dpkg.log`, no maintainer-script error in `apt/term.log`, initramfs rebuilt, greeter QML cache dropped (asserted only when the disk had one before the upgrade; otherwise reported as not exercised), `last-upgrade` stamp with packages/version/classes, `fabos-updates --state` says restart+logout with the version, the agent user service restarted (monotonic timestamp) while plasmashell was not, the notifier journal shows the restart and the notification, both timers enabled, unattended-upgrades' allowed origins include `Patience AI:loom` and `Ubuntu:resolute-security`; screenshots of the desktop and the Fab Updates window. `--fabos-only` holds the non-Fab OS upgradables in the disposable guest first (and says so), for days when a third-party mirror would abort the transaction | the VM lock, `build/fabos-vm-old.img` |
 | `tests/update-channel-test.sh [--repo-url URL] [--overlay]` | the classic channel test (public repository by default) — now also prints the stamp and the banner text | the VM lock |
 
 Typical round:

@@ -254,10 +254,14 @@ def pending():
                 st["changed"].append(p)
         if "reboot" in e["classes"]:
             st["needs_restart"] = True
-            st["restart_reasons"].append("boot screen: %s" % ", ".join(p for p in e["packages"] if "reboot" in CLASSES.get(p, ())))
+            reason = "boot screen: %s" % ", ".join(p for p in e["packages"] if "reboot" in CLASSES.get(p, ()))
+            if reason not in st["restart_reasons"]:   # several records of one update (unattended-upgrades steps) say it once
+                st["restart_reasons"].append(reason)
         if "session" in e["classes"] and (sess is None or e["mono"] > sess):
             st["needs_logout"] = True
-            st["logout_reasons"].append(", ".join(p for p in e["packages"] if "session" in CLASSES.get(p, ())))
+            reason = ", ".join(p for p in e["packages"] if "session" in CLASSES.get(p, ()))
+            if reason not in st["logout_reasons"]:
+                st["logout_reasons"].append(reason)
         if "agent" in e["classes"] and agent is not None and e["mono"] > agent:
             st["agent_restart"] = True
         if "voice" in e["classes"] and voice is not None and e["mono"] > voice:
@@ -441,9 +445,13 @@ def session_check(argv):
     if st["voice_restart"]:
         r = run(["systemctl", "--user", "try-restart", "fabos-voiced.service"], timeout=60)
         log("voice: try-restart ->", r.returncode, (r.stderr or "").strip()[:120])
-    # 2. "installed — finish it": once per journal event per boot, only in a graphical session
+    # 2. "installed — finish it": once per boot for a given version and answer (restart / log out), only in a graphical
+    #    session. Keyed on the answer, not on the number of journal lines: unattended-upgrades installs in minimal steps
+    #    (one dpkg run per package, in its own order), so one Fab OS update can produce several records — fabos-updates' own
+    #    step (the first one that knows the trigger) and one per later package with files under /usr/lib/fabos. The user
+    #    hears "restart to finish" once; only an escalation (log out -> restart) or a new version speaks again.
     if st["session_active"] and (st["needs_restart"] or st["needs_logout"]):
-        key = "installed:%s:%s:%d" % (st["version"], "restart" if st["needs_restart"] else "logout", st["entries"])
+        key = "installed:%s:%s" % (st["version"], "restart" if st["needs_restart"] else "logout")
         if key not in seen:
             title, body = summary_text(st)
             remember(key)

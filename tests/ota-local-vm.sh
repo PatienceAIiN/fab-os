@@ -17,6 +17,9 @@
 #   --build DIR     where build/ lives (default <repo>/build; a worktree passes the main checkout's)
 #   --out DIR       evidence: logs, JSON state, screenshots (default <build>/ota-local-vm)
 #   --keep          keep the overlay and OVMF vars after the run (default: delete)
+#   --fabos-only    put every non-Fab OS upgradable package on hold in the disposable guest before `helper.sh upgrade`, so a
+#                   slow or unreachable third-party mirror (Firefox's 90 MB from packages.mozilla.org, Ubuntu -updates) cannot
+#                   abort the apt transaction the Fab OS packages ride in. Reported as info; the default run holds nothing.
 # Exit 0 only when every assertion passed. When the repository carries the versions already installed the run is a
 # NO-OP (plumbing proof: source rewrite, signed fetch, helper, nothing to install) and the upgrade assertions are skipped.
 # The whole VM session runs under flock /tmp/fabos-vm.lock (one VM at a time on this host).
@@ -24,17 +27,17 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck disable=SC1091
 . "$HERE/brand/brand.conf"
-BUILD=${FABOS_BUILD:-$HERE/build}; REPO=""; KEYRING=""; STAGE=0; BUMP="+ota1"; DISK=""; OUT=""; KEEP=0; SUITE=$DISTRO_CODENAME; MEM=2048
+BUILD=${FABOS_BUILD:-$HERE/build}; REPO=""; KEYRING=""; STAGE=0; BUMP="+ota1"; DISK=""; OUT=""; KEEP=0; SUITE=$DISTRO_CODENAME; MEM=2048; FABOS_ONLY=0
 while [ $# -gt 0 ]; do case $1 in
   --repo) REPO=$2; shift;; --keyring) KEYRING=$2; shift;; --stage) STAGE=1;; --bump) BUMP=$2; shift;; --disk) DISK=$2; shift;;
-  --build) BUILD=$2; shift;; --out) OUT=$2; shift;; --keep) KEEP=1;; --suite) SUITE=$2; shift;; --mem) MEM=$2; shift;;
+  --build) BUILD=$2; shift;; --out) OUT=$2; shift;; --keep) KEEP=1;; --suite) SUITE=$2; shift;; --mem) MEM=$2; shift;; --fabos-only) FABOS_ONLY=1;;
   *) echo "unknown arg $1"; exit 2;; esac; shift; done
 BUILD=$(cd "$BUILD" && pwd) || { echo "no build dir $BUILD"; exit 1; }
 DISK=${DISK:-$BUILD/fabos-vm-old.img}; OUT=${OUT:-$BUILD/ota-local-vm}; mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 [ -f "$DISK" ] || { echo "no disk $DISK"; exit 1; }
 if [ -z "${OTA_INNER:-}" ]; then
   echo "== waiting for the VM lock (/tmp/fabos-vm.lock, up to 90 min)"
-  OTA_INNER=1 exec flock -w 5400 /tmp/fabos-vm.lock "$0" --repo "${REPO:-}" --keyring "${KEYRING:-}" $( [ $STAGE = 1 ] && echo --stage ) --bump "$BUMP" --disk "$DISK" --build "$BUILD" --out "$OUT" --suite "$SUITE" --mem "$MEM" $( [ $KEEP = 1 ] && echo --keep )
+  OTA_INNER=1 exec flock -w 5400 /tmp/fabos-vm.lock "$0" --repo "${REPO:-}" --keyring "${KEYRING:-}" $( [ $STAGE = 1 ] && echo --stage ) --bump "$BUMP" --disk "$DISK" --build "$BUILD" --out "$OUT" --suite "$SUITE" --mem "$MEM" $( [ $KEEP = 1 ] && echo --keep ) $( [ $FABOS_ONLY = 1 ] && echo --fabos-only )
 fi
 
 LOG=$OUT/ota-local-vm.out; : > "$LOG"
@@ -107,27 +110,39 @@ vm "dpkg-query -W -f='\${Package} \${Version}\n' 'fabos-*' | sort" > "$OUT/versi
 BEFORE_UPD=$(awk '$1=="fabos-updates"{print $2}' "$OUT/versions-before.txt")
 AGENT_BEFORE=$(vm "systemctl --user show -p ActiveEnterTimestampMonotonic --value fabos-agent.service" 2>/dev/null | tr -d '\r'); info "agent ActiveEnterTimestampMonotonic before: $AGENT_BEFORE ($(vm 'systemctl --user is-active fabos-agent.service' 2>/dev/null))"
 DPKG_LINES=$(vm "wc -l < /var/log/dpkg.log" 2>/dev/null | tr -d '\r'); TERM_LINES=$(vm "echo fabos | sudo -S sh -c 'wc -l < /var/log/apt/term.log' 2>/dev/null" | tr -d '\r'); DPKG_LINES=${DPKG_LINES:-0}; TERM_LINES=${TERM_LINES:-0}
+SDDM_CACHE_BEFORE=$(vm "echo fabos | sudo -S sh -c 'test -d /var/lib/sddm/.cache/sddm-greeter-qt6/qmlcache && echo yes || echo no' 2>/dev/null" | tr -d '\r' | grep -E '^(yes|no)$' | head -1); SDDM_CACHE_BEFORE=${SDDM_CACHE_BEFORE:-unknown}; info "greeter QML cache present before the upgrade: $SDDM_CACHE_BEFORE"
 vm "grep -h URIs /etc/apt/sources.list.d/fabos.sources" | tee -a "$LOG"
 
-# ---- 4. point the guest at the local repository (URIs only; Signed-By stays unless a test key is used) ----------------------
+# ---- 4. point the guest at the local repository: a SEPARATE source file next to the shipped one --------------------------------
+# Not a rewrite of /etc/apt/sources.list.d/fabos.sources: fabos-branding ships that file as plain package content (no conffile),
+# so upgrading fabos-branding in the middle of the run puts the shipped URI back — apt then loses the local candidates and
+# unattended-upgrades, which installs one package per dpkg run, silently skips everything after that step (seen 2026-09-16:
+# 9 of 10, then 2 of 10 packages installed). The shipped source stays as it is (the public server carries the older release,
+# so it never competes); the test source carries the local repository and the shipped key (or the test key).
 cat > "$OUT/guest-prepare.sh" <<EOF
 set -e
-SRC=/etc/apt/sources.list.d/fabos.sources
-cp \$SRC /tmp/fabos.sources.orig
-sed -i 's|^URIs:.*|URIs: $GUEST_URL|' \$SRC
-if [ -f /tmp/test-archive-keyring.gpg ]; then install -m 0644 /tmp/test-archive-keyring.gpg /usr/share/keyrings/fabos-ota-test-keyring.gpg; sed -i 's|^Signed-By:.*|Signed-By: /usr/share/keyrings/fabos-ota-test-keyring.gpg|' \$SRC; fi
-cat \$SRC
+KEY=/usr/share/keyrings/fabos-archive-keyring.gpg
+if [ -f /tmp/test-archive-keyring.gpg ]; then install -m 0644 /tmp/test-archive-keyring.gpg /usr/share/keyrings/fabos-ota-test-keyring.gpg; KEY=/usr/share/keyrings/fabos-ota-test-keyring.gpg; fi
+printf 'Types: deb\nURIs: %s\nSuites: %s\nComponents: main\nSigned-By: %s\n' "$GUEST_URL" "$SUITE" "\$KEY" > /etc/apt/sources.list.d/zz-fabos-ota-test.sources
+cat /etc/apt/sources.list.d/zz-fabos-ota-test.sources
 EOF
 $SCP "$OUT/guest-prepare.sh" fabos@127.0.0.1:/tmp/guest-prepare.sh > /dev/null
 [ -n "$KEYRING" ] && $SCP "$KEYRING" fabos@127.0.0.1:/tmp/test-archive-keyring.gpg > /dev/null
 vm "echo fabos | sudo -S sh /tmp/guest-prepare.sh 2>&1 | grep -v '^\[sudo\]'" | tee -a "$LOG"
-vm "grep -q '^URIs: $GUEST_URL' /etc/apt/sources.list.d/fabos.sources"; chk "guest Fab OS source rewritten to the local repository" $?
+vm "grep -q '^URIs: $GUEST_URL' /etc/apt/sources.list.d/zz-fabos-ota-test.sources && grep -q '^URIs: https://' /etc/apt/sources.list.d/fabos.sources"; chk "guest gets the local repository as an extra source (shipped fabos.sources untouched)" $?
 
 # ---- 5. the same code path as Fab Updates: helper.sh check, then upgrade -------------------------------------------------------
 say "== helper.sh check"
 VM_TIMEOUT=600 vm "echo fabos | sudo -S /usr/lib/fabos/updates/helper.sh check 2>&1 | grep -v '^\[sudo\]'" > "$OUT/helper-check.log"; grep -E "^fabos-|== check" "$OUT/helper-check.log" | tee -a "$LOG"
 OFFERED=$(grep -cE '^fabos-.*upgradable' "$OUT/helper-check.log" || true)
 if [ "$BEFORE_UPD" = "$REPO_UPD" ]; then MODE=noop; info "repository version $REPO_UPD == installed $BEFORE_UPD: NO-OP run (plumbing only)"; else MODE=upgrade; chk "newer Fab OS packages offered ($OFFERED): $BEFORE_UPD -> $REPO_UPD" $([ "$OFFERED" -gt 0 ] && echo 0 || echo 1); fi
+if [ $FABOS_ONLY = 1 ]; then
+  HELD=$(vm "apt list --upgradable 2>/dev/null | grep -v '^Listing' | grep -v '^fabos-' | cut -d/ -f1 | tr '\n' ' '" | tr -d '\r')
+  if [ -n "${HELD// /}" ]; then
+    vm "echo fabos | sudo -S apt-mark hold $HELD 2>&1 | grep -v '^\[sudo\]'" | sed 's/^/   /' | tee -a "$LOG"
+    info "--fabos-only: held in the disposable guest for this run (third-party mirrors kept out of the transaction): $HELD"
+  else info "--fabos-only: nothing else was upgradable; nothing held"; fi
+fi
 say "== helper.sh upgrade"
 VM_TIMEOUT=1800 vm "echo fabos | sudo -S /usr/lib/fabos/updates/helper.sh upgrade 2>&1 | grep -v '^\[sudo\]'" > "$OUT/helper-upgrade.log"; rc=$?
 tail -4 "$OUT/helper-upgrade.log" | sed 's/^/   /' | tee -a "$LOG"
@@ -139,7 +154,8 @@ vm "dpkg-query -W -f='\${Package} \${Version}\n' 'fabos-*' | sort" > "$OUT/versi
 bad=""
 while read -r p v; do iv=$(awk -v p="$p" '$1==p{print $2}' "$OUT/versions-after.txt"); [ "$iv" = "$v" ] || bad="$bad $p($iv!=$v)"; done < "$OUT/repo-versions.txt"
 chk "every fabos-* package is at the repository version" $([ -z "$bad" ] && echo 0 || echo 1) "$bad"
-vm "dpkg -l 'fabos-*' | awk '/^[a-z]/ && \$1!=\"ii\"{print}' | grep -q ." && chk "no fabos package left half-configured" 1 || chk "no fabos package left half-configured" 0
+notii=$(vm "dpkg -l 'fabos-*' | awk '/^[a-z]/ && \$1!=\"ii\"{print}'; echo __END__" 2>/dev/null | tr -d '\r')   # __END__ proves the ssh call itself worked
+chk "no fabos package left half-configured" $([ "$notii" = "__END__" ] && echo 0 || echo 1) "$(echo "$notii" | grep -v __END__ | head -3 | tr '\n' ';')"
 
 # ---- 7. dpkg / apt logs: trigger processed, hooks ran, no maintainer-script error -------------------------------------------------
 vm "tail -n +$((DPKG_LINES+1)) /var/log/dpkg.log" > "$OUT/dpkg-run.log" 2>/dev/null
@@ -148,7 +164,12 @@ if [ $MODE = upgrade ]; then
   grep -q "trigproc fabos-updates" "$OUT/dpkg-run.log"; chk "dpkg processed the fabos-postupgrade trigger (trigproc fabos-updates)" $?
   grep -q "status installed fabos-desktop" "$OUT/dpkg-run.log" && grep -q "status installed fabos-branding" "$OUT/dpkg-run.log"; chk "fabos-desktop and fabos-branding configured" $?
   grep -qiE "update-initramfs: Generating|update-initramfs" "$OUT/apt-term-run.log"; chk "fabos-branding hook rebuilt the initramfs (Plymouth theme)" $?
-  vm "test ! -d /var/lib/sddm/.cache/sddm-greeter-qt6/qmlcache"; chk "fabos-desktop hook dropped the greeter QML cache" $?
+  # only meaningful when the greeter had compiled QML before the upgrade (a disk that showed the login screen has it)
+  if [ "$SDDM_CACHE_BEFORE" = yes ]; then
+    vm "echo fabos | sudo -S test ! -d /var/lib/sddm/.cache/sddm-greeter-qt6/qmlcache 2>/dev/null"; chk "fabos-desktop hook dropped the greeter QML cache (it existed before the upgrade)" $?
+  else
+    info "greeter QML cache was absent before the upgrade ($SDDM_CACHE_BEFORE); the cache-drop hook had nothing to do — not asserted"
+  fi
 fi
 err=$(grep -iE "dpkg: error|returned error exit status|Traceback|update-initramfs: failed|E: " "$OUT/apt-term-run.log" | head -3)
 chk "no dpkg/maintainer-script error in the apt run" $([ -z "$err" ] && echo 0 || echo 1) "$err"
@@ -203,7 +224,9 @@ if [ $MODE = upgrade ]; then
   vm "python3 /usr/lib/fabos/updates/state.py notify-probe 6" > "$OUT/notify-dbus-probe.txt" 2>&1; wait
   info "D-Bus notify probe: $(tr -d '\r' < "$OUT/notify-dbus-probe.txt" | tail -1)"
   grep -q '"closed_by": "probe"' "$OUT/notify-dbus-probe.txt"; chk "notification via D-Bus with action buttons shown and closed in the session ($OUT/notify-dbus-probe.png)" $?
-  grep -q "notify-send: rc=\|Actions are not supported" "$OUT/notify-journal.log" && chk "notifier used the D-Bus path (no notify-send fallback message in its journal)" 1 || chk "notifier used the D-Bus path (no notify-send fallback message in its journal)" 0
+  if grep -q "notify: .*Restart to finish" "$OUT/notify-journal.log" && ! grep -q "notify-send: rc=\|Actions are not supported\|dbus path failed" "$OUT/notify-journal.log"; then
+    chk "notifier used the D-Bus path (notification logged, no notify-send fallback message in its journal)" 0
+  else chk "notifier used the D-Bus path (notification logged, no notify-send fallback message in its journal)" 1 "$(grep -m1 'notify-send: rc=\|dbus path failed' "$OUT/notify-journal.log")"; fi
 fi
 vm "gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.GetServerInformation 2>/dev/null" | tr -d '\r' | sed 's/^/   /' | tee -a "$LOG"
 

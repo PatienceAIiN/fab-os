@@ -196,6 +196,31 @@ state.session_check([])
 check("second session-check in the same boot: no repeated notification", "notify-send" not in calls(), calls())
 memo = json.load(open(os.path.join(XSTATE, "fabos", "updates-notify.json")))
 check("memo remembers the event under this boot id", memo.get("boot") == state.boot_id() and any(k.startswith("installed:") for k in memo.get("seen", {})), memo)
+# 9b. unattended-upgrades installs one package per dpkg run (MinimalSteps, alphabetical): a later step of the SAME update
+#     (here fabos-voice, files under /usr/lib/fabos -> file trigger -> a second record) must not make the user hear
+#     "restart to finish" a second time; the answer for this version has not changed.
+v = {p: "1.0-9" for p in PKGS}; v["fabos-voice"] = "1.0-9+step2"
+set_dpkg(v)
+state.record(["--force"])
+check("second record of the same update (later unattended-upgrades step) appends a journal entry", len(state.journal_entries()) == 2, state.journal_entries())
+clear_calls()
+state.session_check([])
+check("no second 'installed' notification for the same version and answer (several records, one update)", "notify-send" not in calls(), calls())
+st = state.pending()
+check("pending(): reasons are not repeated across the records of one update", len(st["restart_reasons"]) == len(set(st["restart_reasons"])) and len(st["logout_reasons"]) == len(set(st["logout_reasons"])), st)
+# 9c. an escalation does speak again: a log-out-only update (desktop) answered, then fabos-branding arrives -> restart
+#     (fresh journal and a fresh per-boot memo: step 9 already answered "restart" for this version)
+os.remove(state.JOURNAL); os.remove(os.path.join(XSTATE, "fabos", "updates-notify.json"))
+v = {p: "1.0-9" for p in PKGS}; v["fabos-desktop"] = "1.0-9+desk"
+set_dpkg(v); state.record(["--force"])
+clear_calls(); state.session_check([])
+check("desktop-only step: one 'Log out and back in' notification", len(notifies(calls())) == 1 and "Log out and back in" in calls(), calls())
+v["fabos-branding"] = "1.0-9+splash"
+set_dpkg(v); state.record(["--force"])
+clear_calls(); state.session_check([])
+check("escalation to restart (branding step after the log-out answer): one more notification, now 'Restart to finish'", len(notifies(calls())) == 1 and "Restart to finish" in calls(), calls())
+clear_calls(); state.session_check([])
+check("and nothing more after that", "notify-send" not in calls(), calls())
 
 # ---- 10. 'update available' notification once per offered version; button opens the app ------------------------------
 open(os.path.join(FAKE, "apt"), "w").write("Listing...\nfabos-desktop/loom 1.0-10 all [upgradable from: 1.0-9]\nfabos-agent/loom 1.0-10 all [upgradable from: 1.0-9]\n")
@@ -221,9 +246,10 @@ check("`state.py state` prints JSON with banner/title/needs_* keys", r.returncod
 check("JSON banner matches summary_text", j.get("banner", "") == state.summary_text(state.pending())[1], j.get("banner"))
 
 # ---- 12. robustness: a broken journal line is skipped; main() never raises ---------------------------------------------
+n_entries = len(state.journal_entries())
 with open(state.JOURNAL, "a") as f:
     f.write("garbage line without keys\nmono=notanumber packages=x\n")
-check("journal parser skips malformed lines", len(state.journal_entries()) == 1)
+check("journal parser skips malformed lines", len(state.journal_entries()) == n_entries and n_entries > 0)
 r = subprocess.run([sys.executable, STATE_PY, "no-such-command"], capture_output=True, text=True, env=env)
 check("unknown subcommand: usage on stderr, exit 2", r.returncode == 2 and "usage" in r.stderr)
 
