@@ -67,7 +67,8 @@ for V in $VARIANTS; do
   if [ -s "$OUT/session.log" ] && grep -q '^SESSION_LOG_DECODE=ok' "$OUT/guest-evidence.txt" 2>/dev/null; then verdict PASS "install-$V: Calamares session log received intact ($OUT/session.log, $(wc -l < "$OUT/session.log") lines; $(grep -m1 '^SESSION_LOG_DECODE' "$OUT/guest-evidence.txt"))"
   else verdict FAIL "install-$V: Calamares session log not received intact from the guest ($(grep -m1 '^SESSION_LOG_DECODE' "$OUT/guest-evidence.txt" 2>/dev/null || echo 'no decode record'))"; fi
   if [ "$V" = luks ]; then grep -q '^LUKS .*Version:.*2' build/install-vm-$V-serial-1.log && v3=PASS || v3=FAIL; verdict $v3 "install-$V: target disk shows a LUKS2 container (luksDump on the root partition)"; fi
-  grep -q '^ESP:/EFI/ubuntu/grubx64.efi' build/install-vm-$V-serial-1.log && grep -q '^ESP:/EFI/boot/bootx64.efi' build/install-vm-$V-serial-1.log && v4=PASS || v4=FAIL
+  # FAT keeps the case the writer used: Ubuntu's grub-install creates EFI/BOOT/BOOTX64.EFI (shim) - compare case-insensitively
+  grep -qi '^ESP:/EFI/ubuntu/grubx64.efi' build/install-vm-$V-serial-1.log && grep -qi '^ESP:/EFI/boot/bootx64.efi' build/install-vm-$V-serial-1.log && v4=PASS || v4=FAIL
   verdict $v4 "install-$V: EFI system partition holds EFI/ubuntu/grubx64.efi + EFI/boot/bootx64.efi (shim fallback)"
   # ---- stage 2: boot the installed disk alone
   if [ $v2 = PASS ]; then
