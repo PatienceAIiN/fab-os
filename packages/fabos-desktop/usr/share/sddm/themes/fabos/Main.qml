@@ -54,6 +54,14 @@ Item {
     function back() {
         if (userModel.count > 0) { stage = "users"; errorText.text = ""; password.text = ""; tilesFocus.forceActiveFocus() }
     }
+    // keyboard focus back to what the stage needs (the tile, the empty username field or the password field), called
+    // when a sheet closes or the backdrop is clicked, so Enter keeps opening the password field / signing in after
+    // the mouse used the power or the session menu
+    function refocus() {
+        if (stage === "users") tilesFocus.forceActiveFocus()
+        else if (stage === "username" && userField.text.length === 0) userField.forceActiveFocus()
+        else password.forceActiveFocus()
+    }
     function doLogin() {
         if (busy) return
         var user = stage === "username" ? userField.text.trim() : selectedUser
@@ -95,13 +103,13 @@ Item {
     }
     Rectangle { anchors.fill: parent; color: "#000000"; opacity: 0.28 }
     // click on empty space closes popups / returns to the tiles
-    MouseArea { anchors.fill: parent; onClicked: { sessionPopup.close(); powerPopup.close() } }
+    MouseArea { anchors.fill: parent; onClicked: { sessionPopup.close(); powerPopup.close(); refocus() } }
 
     // ================================================================ reusable pieces
     component Glyph: Image {
         property string name
         property real size: 20
-        source: "icons/" + name + ".svg"; width: size; height: size
+        source: name.length > 0 ? "icons/" + name + ".svg" : ""; width: size; height: size
         sourceSize: Qt.size(Math.round(size * 2), Math.round(size * 2)); smooth: true; mipmap: true
         fillMode: Image.PreserveAspectFit
     }
@@ -113,6 +121,7 @@ Item {
         property bool filled: true
         implicitWidth: 40; implicitHeight: 40
         hoverEnabled: true
+        focusPolicy: Qt.NoFocus   // pointer target: never steals keyboard focus from the tile / field
         background: Rectangle {
             radius: ib.width / 2
             color: ib.down ? root.surfaceHover : (ib.hovered || ib.visualFocus ? root.surfaceHover : (ib.filled ? ib.tint : "transparent"))
@@ -398,6 +407,7 @@ Item {
         property Item anchorItem
         padding: 8; modal: false; focus: true
         closePolicy: QQC2.Popup.CloseOnEscape | QQC2.Popup.CloseOnPressOutside
+        onClosed: root.refocus()
         // above its button, right-aligned to it (bound to the row's and the button's geometry, so it follows resizes;
         // mapToItem() in a binding would be evaluated once, before the row is laid out)
         x: Math.max(16, Math.min(root.width - width - 16, cornerButtons.x + anchorItem.x + anchorItem.width - width))

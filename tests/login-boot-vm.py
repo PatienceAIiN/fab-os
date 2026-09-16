@@ -14,9 +14,10 @@ What it does (every step leaves a file in --outdir):
      stopped, starts plymouthd on the VM's display: show-splash + ask-for-password renders the two-step disk-password dialog
      (plymouth-password.png, plymouth-password-typed.png after three keystrokes), then --mode=shutdown for the title
      (plymouth-shutdown.png);
-  6. adds plymouth.debug to the kernel command line (overlay only), reboots, screendumps the console every 0.7 s until the
-     greeter is back: the boot splash frame(s) -> plymouth-boot.png (+ frames/), then pulls /var/log/plymouth-debug.log,
-     /sys/firmware/acpi/bgrt presence and lsinitramfs from the guest;
+  6. adds plymouth.debug to the kernel command line (overlay only; GRUB drop-in on an installed system, loader entry on the
+     systemd-boot VM disk, whose ESP initrd copy is synced from /boot first), reboots, screendumps the console every 0.7 s
+     for 180 s (OVMF's PXE/HTTP attempt takes ~60 s): the boot splash frame(s) -> plymouth-boot.png (+ frames/), then pulls
+     /var/log/plymouth-debug.log, /sys/firmware/acpi/bgrt presence and lsinitramfs from the guest;
   7. powers the VM off and deletes the overlay.
 Exit code 0 only when every check passed; the summary is printed and written to summary.txt.
 """
@@ -52,7 +53,9 @@ def ssh(cmd, timeout=120):
     p = subprocess.run(SSH + [cmd], capture_output=True, text=True, timeout=timeout)
     return p.returncode, (p.stdout + p.stderr).strip()
 def sudo(cmd, timeout=300):
-    return ssh("echo fabos | sudo -S bash -c %s 2>&1 | grep -v '^\\[sudo\\]'" % shlex.quote(cmd), timeout)
+    # -p '' : no password prompt on stderr. sudo -S prints the prompt WITHOUT a newline, so the first output line used to be
+    # glued to "[sudo] password for fabos:" and dropped by a grep -v — the `date` line for --since, "shown", the answer file.
+    return ssh("echo fabos | sudo -S -p '' bash -c %s 2>&1" % shlex.quote(cmd), timeout)
 def wait_ssh(deadline):
     while time.time() < deadline:
         try:
@@ -127,6 +130,7 @@ def main():
         rc, jr = sudo("journalctl -b --no-pager -o short-iso --since %s | grep -iE 'sddm|greeter|qml|kwin_wayland' | tail -80" % shlex.quote(since))
         open(os.path.join(out, "sddm-journal.txt"), "w").write(jr + "\n")
         badrx = re.compile(r"Cannot assign|is not a type|Fallback to embedded theme|TypeError|ReferenceError|Main\.qml:\d+|Unexpected token|is not defined")
+        chk("sddm journal since the restart is non-empty (the filter is not vacuous)", len(jr.strip()) > 0, "%d lines" % len(jr.splitlines()))
         chk("no QML errors in the sddm journal", not badrx.search(jr), "; ".join(l for l in jr.splitlines() if badrx.search(l))[:300])
         # seat0 only: the VM profile also has a serial-console autologin and this driver's own ssh session for `fabos`, both
         # logind sessions without a seat; the greeter runs as `sddm` on seat0, a desktop login is a `fabos` session on seat0
@@ -154,6 +158,7 @@ def main():
         q.screendump(os.path.join(out, "desktop-after-login.ppm")); to_png(os.path.join(out, "desktop-after-login.ppm"), os.path.join(out, "desktop-after-login.png"))
         rc, jr = sudo("journalctl -b --no-pager -o short-iso --since %s | grep -iE 'sddm-greeter|qml' | tail -40" % shlex.quote(since))
         open(os.path.join(out, "sddm-journal-after-login.txt"), "w").write(jr + "\n")
+        chk("greeter journal through the login is non-empty", len(jr.strip()) > 0, "%d lines" % len(jr.splitlines()))
         chk("still no QML errors after the login round-trip", not badrx.search(jr))
 
         # ---- 5. plymouth: postinst steps, then render the dialog on the VM display
@@ -196,14 +201,30 @@ def main():
         open(os.path.join(out, "plymouth-live-debug.txt"), "w").write(o + "\n")
         chk("live plymouthd loaded the two-step theme from /usr/share/plymouth/themes/fabos", "themes/fabos" in o and ("throbber" in o or "two-step" in o), o.replace("\n", " ")[:200])
 
-        # ---- 6. reboot with plymouth.debug on the kernel command line, film the console
-        rc, o = sudo("printf 'GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash plymouth.debug\"\\n' > /etc/default/grub.d/99-r7-plymouth-debug.cfg && update-grub 2>&1 | tail -1; cat /sys/firmware/acpi/bgrt/status 2>/dev/null || echo no-bgrt")
+        # ---- 6. reboot with plymouth.debug on the kernel command line, film the console.
+        # The VM disk boots through systemd-boot (scripts/make-disk.sh): the ESP carries its OWN copy of the initrd
+        # (\\fabos\\initrd.img) that update-initramfs never touches, and there is no grub.cfg — so sync that copy from
+        # /boot/initrd.img-<ver> and add plymouth.debug to the loader entry. An installed system (GRUB; /boot/initrd.img-*
+        # read in place) takes the /etc/default/grub.d route, which is what the fabos-branding postinst relies on.
+        rc, o = sudo("""set -e
+            if [ -d /boot/grub ] && command -v update-grub >/dev/null 2>&1; then
+              printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash plymouth.debug"\\n' > /etc/default/grub.d/99-r7-plymouth-debug.cfg; update-grub 2>&1 | tail -1; echo loader=grub
+            else
+              esp=$(findmnt -no TARGET /boot/efi 2>/dev/null || true)
+              if [ -z "$esp" ]; then mkdir -p /mnt/esp; dev=$(lsblk -rno PATH,PARTTYPE | awk 'tolower($2)=="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"{print $1; exit}'); mount "$dev" /mnt/esp; esp=/mnt/esp; fi
+              cp /boot/initrd.img-$(uname -r) "$esp/fabos/initrd.img"; cp /boot/vmlinuz-$(uname -r) "$esp/fabos/vmlinuz"
+              grep -q plymouth.debug "$esp/loader/entries/fabos.conf" || sed -i 's/^options \\(.*\\)$/options \\1 plymouth.debug/' "$esp/loader/entries/fabos.conf"
+              grep '^options' "$esp/loader/entries/fabos.conf"; sync; echo loader=systemd-boot
+            fi
+            cat /sys/firmware/acpi/bgrt/status 2>/dev/null || echo no-bgrt""")
+        open(os.path.join(out, "boot-instrumentation.txt"), "w").write(o + "\n")
+        chk("kernel command line instrumented with plymouth.debug for the reboot (initrd synced to the loader)", ("loader=systemd-boot" in o and "plymouth.debug" in o) or "loader=grub" in o, o.replace("\n", " ")[-300:])
         bgrt_before = o.strip().splitlines()[-1]
         log("firmware BGRT in this VM: " + bgrt_before)
         open(os.path.join(out, "serial-offset.txt"), "w").write(str(os.path.getsize(serial)))
         sudo("systemctl reboot", timeout=20)
         frames = []; t_reboot = time.time(); n = 0
-        while time.time() - t_reboot < 75:
+        while time.time() - t_reboot < 180:          # OVMF spends ~60 s on PXE/HTTP boot attempts before the kernel loads
             n += 1; ppm = os.path.join(out, "frames", "f%03d.ppm" % n)
             try:
                 q.screendump(ppm); im = to_png(ppm, ppm[:-4] + ".png"); frames.append((time.time() - t_reboot, ppm[:-4] + ".png", im))
@@ -237,8 +258,8 @@ def main():
                      "cp /var/log/plymouth-debug.log /tmp/plymouth-debug.copy 2>/dev/null && chmod 644 /tmp/plymouth-debug.copy; journalctl -b --no-pager -u sddm | tail -5")
         open(os.path.join(out, "plymouth-boot-debug.txt"), "w").write(o + "\n")
         chk("boot plymouthd used the fabos two-step theme (plymouth-debug.log)", "themes/fabos" in o and "throbber" in o, o.replace("\n", " ")[:200])
-        chk("no BGRT in QEMU/OVMF -> bgrt-fallback.png (the mark) drawn", "no-bgrt" in o or "bgrt" in o.lower())
-        rc, jr = sudo("journalctl -b --no-pager | grep -iE 'sddm-greeter|Main.qml|Fallback to embedded' | tail -20")
+        chk("BGRT status read after the boot (firmware-logo path when present, bgrt-fallback.png otherwise)", "no-bgrt" in o or "bgrt" in o.lower())
+        rc, jr = sudo("journalctl -b --no-pager | grep -iE 'sddm-greeter|Main.qml|Fallback to embedded' | grep -v ' sudo\\[' | tail -20")
         chk("greeter after reboot: no QML errors", not badrx.search(jr), jr[-200:])
         for src, dst in (("/tmp/plymouth-debug.copy", "plymouth-debug.log"), ("/tmp/plymouth-live.copy", "plymouth-live-debug.log")):
             subprocess.run(SCP + ["fabos@127.0.0.1:" + src, os.path.join(out, dst)], capture_output=True, timeout=60)

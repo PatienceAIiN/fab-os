@@ -147,45 +147,63 @@ person glyph.
   Root in the VM profile is `echo fabos | sudo -S` (the fabos user is in `sudo`); `rootexec` needs an agent authorization
   record and is not a general root path.
 
-## What the 1.0-7 VM proof (`build/r7-login-boot/`) showed
+## What the VM proofs showed
 
-Under the shared lock, on a disposable overlay of `build/fabos-vm.img` (`tests/login-boot-vm.py`):
+### Implementer's run (`build/r7-login-boot/`, `tests/login-boot-vm.py` as first written)
 
-* **Greeter — proven.** The theme + `zz-fabos.conf` installed, the VM autologin was removed, `sddm` restarted, and the
-  greeter rendered with **no QML errors** in the sddm journal (`sddm-greeter.png`, `sddm-greeter-password.png`) — the exact
-  GDM-like layout in the render stages. A wrong password was rejected with the red "Wrong password. Try again."
-  (`sddm-greeter-wrong.png`) and created no session; the correct password authenticated and opened a `fabos` session on
-  `seat0`. The greeter also comes back clean after a reboot (`sddm-greeter-after-reboot.png`).
-* **Boot / shutdown splash — proven live.** `plymouthd --mode=boot`/`--mode=shutdown` on the VM display loaded the
-  `two-step` plugin from `/usr/share/plymouth/themes/fabos` (`plymouth-live-debug.log`) and rendered the firmware logo +
-  Fab OS spinner + wordmark (`plymouth-splash-live.png`, copied to `plymouth-boot.png`) and the "Shutting down safely…"
-  title (`plymouth-shutdown.png`).
-* **Disk-password screen — proven.** `plymouth ask-for-password` drew the two-step dialog: lock glyph, the "Disk password"
-  label and "Press Enter to unlock" hint (both baked into `entry.png`), the caller's "Please unlock disk luks-…" prompt,
-  and **one bullet per typed character** — three keystrokes → three bullets (`plymouth-password-typed.png`).
-* `update-initramfs -u` on the overlay put `fabos.plymouth`, `throbber-0001.png`, `entry.png`, `two-step.so` and Inter into
-  the initramfs, with no `fabos.script` left (`plymouth-install.txt`).
+* The greeter rendered from the tree (`sddm-greeter.png`, `sddm-greeter-password.png`), a wrong password gave the red line
+  and no session (`sddm-greeter-wrong.png`), the greeter came back after a reboot (`sddm-greeter-after-reboot.png`).
+* `plymouthd` started by hand on the VM display rendered the two-step boot screen over the firmware's TianoCore BGRT
+  (`plymouth-boot.png`), the disk-password dialog with one bullet per keystroke (`plymouth-password-typed.png`) and the
+  shutdown / restart titles (`plymouth-shutdown.png`; `plymouth-shutdown-real.png` is from the real reboot).
+* Its `summary.txt` FAIL lines and two vacuous PASS lines were **harness bugs**, found in review: `sudo -S` prints its
+  prompt without a newline, so the first output line of every `sudo()` call was glued to `[sudo] password for fabos:` and
+  dropped by the `grep -v` — the `date` line for `--since` (both "no QML errors in the sddm journal" checks read an empty
+  journal), "shown", the `abc` answer file. The reboot instrumentation assumed GRUB; the VM disk boots through
+  **systemd-boot** with its own ESP copy of the initrd (`scripts/make-disk.sh`), so `update-grub` did nothing, there was no
+  `plymouth-debug.log`, and the first real reboot still ran the old initramfs. Fixed in `tests/login-boot-vm.py`
+  (`sudo -S -p ''`, non-empty-journal guards, GRUB / systemd-boot aware instrumentation with the ESP initrd synced, 180 s film).
+
+### Review runs (`build/r7-login-boot/review/vm/`, `review/vm2/`; real 1.0-7 `.deb`s built from the tree)
+
+* **OTA upgrade on a running system — proven.** `apt-get install` of `fabos-branding_1.0-7` + `fabos-desktop_1.0-7` on the
+  running 1.0-6 VM (sddm up, a session logged in): exit 0, no postinst error; `sddm`'s MainPID unchanged and the session
+  kept; `default.plymouth` → fabos, `fabos.script` gone, the font hook 0755; the initramfs rebuilt with `two-step.so`,
+  `label-pango.so`, the theme, Inter and the same 12 cryptsetup/cryptroot entries as before (`vm2/02-after-upgrade.txt`).
+* **Greeter — proven with a non-empty journal** (80 lines since the restart, no QML diagnostics): tiles → power menu and
+  session menu opened by a real pointer click (`vm2/12-power-menu.png`, `13-session-menu.png`) → Esc → **Enter opens the
+  password field** (`15-password-stage.png`) → wrong password rejected (`16-wrong-password.png`) → right password opens
+  the `fabos` seat0 session and Plasma paints within 15 s (`17-after-login.png`).
+* **Real boot through the initramfs — proven.** With the ESP initrd synced and `plymouth.debug` on the command line, the
+  reboot film shows the two-step splash over the firmware BGRT with the spinner and the wordmark at ~128 s (after OVMF's
+  PXE/HTTP attempt; `vm2/21-splash-candidate-02-128s.png`) and `/var/log/plymouth-debug.log` names the theme
+  (`Using '/usr/share/plymouth/themes/fabos' as working directory`, the bgrt image, the throbber; `vm2/25-plymouth-debug.log`).
+  The reboot itself showed the two-step "Restarting…" title (`vm2/21-splash-candidate-00-1s.png`).
+* The greeter after the reboot: journal non-empty, no QML errors, no `Cannot open` warning (`vm2/24-sddm-after-reboot-journal.txt`).
+
+Two greeter defects the review found in the live greeter (not reachable in `--test-mode`, which has no sessions and no
+power capabilities), fixed on `r7/login-boot-fix`:
+
+* the gear / power `IconButton`s took keyboard focus on click (`AbstractButton` default), so after the mouse used a menu
+  Enter no longer opened the password field and the typed password went nowhere (`review/vm/14-…16-*.png`: no accent
+  border on the tile). Every `IconButton` is now `focusPolicy: Qt.NoFocus`, and `refocus()` puts focus back on the tile /
+  field when a sheet closes or the backdrop is clicked;
+* `MenuRow`s without a glyph made `Glyph` load `icons/.svg` → `QML Glyph: Cannot open` in the journal; the source is
+  empty for an empty name.
 
 ## Honest limits
 
 * The greeter fix takes effect the next time the greeter starts (logout or reboot after the 1.0-7 upgrade); the running
-  fallback greeter is not restarted by the package (restarting sddm would kill the owner's session).
+  greeter is not restarted by the package (restarting sddm would kill the owner's session) — verified: the upgrade left
+  `sddm` and the logged-in session untouched.
 * The typed passphrase can never be revealed on the Plymouth screen (see above).
-* **The Plasma desktop paint after the greeter login was not captured.** The login authenticated (a `fabos` session opened
-  on `seat0`), but Plasma 6.6 on Wayland under software rendering in the 2 GB VM did not finish painting inside the wait
-  window, so `desktop-after-login.png` still shows the greeter handing off. This is a VM-render/RAM limit, not a greeter
-  defect — the authentication round-trip is what the session-on-seat0 check proves.
-* **No frame from the *real* reboot was classified as the splash.** On this host OVMF spends ~60 s in a PXE/HTTP
-  network-boot attempt (`>>Start PXE over IPv4.`, seen in `frames/`) before the kernel loads, which consumed the reboot
-  film window; the OS splash rendered after it closed. The **live** boot-mode render (`plymouth-boot.png`) is the
-  equivalent proof that the two-step boot splash draws the spinner + wordmark over the firmware logo.
-* The `summary.txt` FAIL lines are harness artifacts, not theme/config defects: the "no BGRT" check assumed QEMU has none
-  (this OVMF publishes a TianoCore BGRT — the *stronger* result); the plymouthd "shown"/answer-file and desktop-paint
-  checks are timing/round-trip strictness the screenshots satisfy visually; the "greeter after reboot: no QML errors"
-  match is `sudo`'s own audit line echoing the grep pattern (`Main.qml`/`Fallback to embedded`), not a greeter log line.
-* The real firmware-logo path on the Lenovo (`/sys/firmware/acpi/bgrt`) is the owner's real-hardware check; in the VM the
-  TianoCore BGRT stands in for it (see above).
-* `tests/branding-check.sh` still asserts `fabos.script` in the initramfs and the script plugin's presence; it stays green
-  against the current image and must switch to `fabos.plymouth` / `two-step.so` when the image is next rebuilt (that file
-  belongs to the QA track). `packages/build-debs.sh` still copies the legacy `spinner-*.png`, `wordmark.png`, `bar-*.png`
-  into the theme directory (unused by two-step, ~450 KB in the initramfs) — safe, and worth dropping there.
+* The VM disk boots through systemd-boot with a one-time ESP copy of the initrd, so on the VM an OTA change to the boot
+  splash is only visible after that copy is synced (the harness does it); an installed system (GRUB, `/boot/initrd.img-*`
+  read in place, `update-grub` in the postinst) needs nothing else. That path, and the Lenovo's own BGRT logo
+  (`/sys/firmware/acpi/bgrt`; the VM's TianoCore BGRT stands in for it), are the owner's real-hardware check.
+* `--test-mode` (`tests/sddm-theme-test.sh`) has no sessions and no power capabilities, so the session / power sheets
+  render empty there and the keyboard-focus round trip is only observable in the VM proof.
+* `tests/branding-check.sh` still asserts `fabos.script` / `ModuleName=script` / `spinner-00.png` in the image: it stays
+  green against the current image and must switch to `fabos.plymouth` / `two-step.so` when the image is next rebuilt (QA
+  track). `packages/build-debs.sh` still copies the legacy `spinner-*.png`, `wordmark.png`, `bar-*.png` into the theme
+  directory (unused by two-step, ~450 KB in the initramfs) — safe, worth dropping there.
