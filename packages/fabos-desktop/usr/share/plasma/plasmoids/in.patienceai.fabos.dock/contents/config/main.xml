@@ -25,8 +25,8 @@
       <default>false</default>
     </entry>
     <entry name="showOnlyCurrentActivity" type="Bool">
-      <label>Only show windows from the current activity.</label>
-      <default>true</default>
+      <label>Only show windows from the current activity. Off by default (v4): a window on another activity would otherwise leave its pinned icon looking closed; with either filter on, the dock still marks such an app as running and a click brings that window back instead of starting a second copy.</label>
+      <default>false</default>
     </entry>
     <entry name="maxIconSize" type="Int">
       <label>Upper bound for the resting icon size in pixels.</label>

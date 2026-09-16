@@ -5,6 +5,7 @@ import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.plasma5support as P5Support
 import org.kde.kirigami as Kirigami
 import org.kde.taskmanager as TaskManager
+import "../code/dock-logic.js" as Logic
 
 // Fab OS dock: the libtaskmanager TasksModel (the backend of the stock task manager — launchers from this applet's
 // config, one icon per application, activity / virtual-desktop filters) rendered as a Row of icons with macOS-like
@@ -36,6 +37,12 @@ import org.kde.taskmanager as TaskManager
 // running app a 6 px accent dot (two dots for a grouped app, a dimmer dot for a minimised window); under the ACTIVE
 // window a 24 × 3 px accent bar plus a rounded text-colour @ 6 % background behind its icon; launchers without a window
 // get nothing (TaskItem.qml). The bottom `dotSpace` band (8 px) holds the indicator.
+//
+// Clicks + running state (v4, from the round-6 device report): the decisions live in contents/code/dock-logic.js (pure
+// JS, unit-tested by tests/dock-js-test.js). A tap never starts a second copy of an app that has a window anywhere: it
+// activates / minimises / restores / cycles; only a launcher with no window at all launches, and an app still starting
+// ignores further taps. The indicator is on for a window, a group, a starting app AND a pinned launcher whose windows
+// the desktop / activity filters hide (a second, unfiltered TasksModel answers that; see `allTasks`).
 //
 // The launcher menu next door: layout.js puts the stock kickoff applet in the dock panel before this applet so the Meta
 // key and the start button (activateLauncherMenu) have a menu to open. Plasma 6.6's panel gives an applet that reports
@@ -167,6 +174,40 @@ PlasmoidItem {
         onLauncherListChanged: Plasmoid.configuration.launchers = launcherList
         Component.onCompleted: launcherList = Plasmoid.configuration.launchers
     }
+    // The same session's windows WITHOUT the desktop / activity filters (windows only: no launchers, so every row is a
+    // window or a group of one app). libtaskmanager hides a pinned launcher only while a window of its app passes the
+    // filters above; a window on another virtual desktop or activity — or one it did not merge with the pin — leaves
+    // the pin a bare launcher, whose requestActivate would start a SECOND copy (the round-6 device report: "clicking the
+    // dock icon of an open app opens a fresh instance"). TaskItem asks this model whether such a launcher's app runs
+    // elsewhere (contents/code/dock-logic.js findElsewhere): the indicator stays on and a tap activates that window
+    // (KWin switches desktop / activity) instead of launching. The WindowTasksModel behind both is one shared instance
+    // in libtaskmanager, so this costs two proxy models, not a second window list.
+    TaskManager.TasksModel {
+        id: allTasks
+        filterByVirtualDesktop: false
+        filterByActivity: false
+        filterByScreen: false
+        filterNotMinimized: false
+        filterHidden: true
+        sortMode: TaskManager.TasksModel.SortManual
+        launchInPlace: false
+        separateLaunchers: true
+        groupMode: Plasmoid.configuration.groupApps ? TaskManager.TasksModel.GroupApplications : TaskManager.TasksModel.GroupDisabled
+        groupInline: false
+        groupingWindowTasksThreshold: -1
+    }
+    // Items re-read allTasks when it changes; one debounced tick per burst (dataChanged fires per title change).
+    property int allRevision: 0
+    Timer { id: allDirty; interval: 80; onTriggered: dock.allRevision++ }
+    Connections {
+        target: allTasks
+        function onRowsInserted() { allDirty.restart() }
+        function onRowsRemoved() { allDirty.restart() }
+        function onModelReset() { allDirty.restart() }
+        function onLayoutChanged() { allDirty.restart() }
+        function onDataChanged() { allDirty.restart() }
+    }
+    readonly property var roles: TaskManager.AbstractTasksModel
     readonly property int taskCount: repeater.count          // task rows actually rendered (= tasksModel.count; the harness may swap the model)
     function itemAt(i) {                                    // unified row index -> the item (start, task or peek)
         if (dock.startCount && i === 0) return startItem
@@ -175,22 +216,13 @@ PlasmoidItem {
         return dock.peekCount && t === repeater.count ? peekItem : null
     }
 
-    // Activate like the icons-only task manager: launchers launch, the active window minimises, a minimised or
-    // inactive window comes forward, a group cycles through its windows.
-    function activate(i) {
-        var idx = tasksModel.makeModelIndex(i)
-        var A = TaskManager.AbstractTasksModel
-        if (tasksModel.data(idx, A.IsLauncher) === true) { tasksModel.requestActivate(idx); return "launch" }
-        if (tasksModel.data(idx, A.IsGroupParent) === true) {
-            var n = tasksModel.rowCount(idx), active = -1
-            for (var c = 0; c < n; c++) if (tasksModel.data(tasksModel.makeModelIndex(i, c), A.IsActive) === true) { active = c; break }
-            tasksModel.requestActivate(tasksModel.makeModelIndex(i, n > 0 ? (active + 1) % n : 0))
-            return "cycle"
-        }
-        if (tasksModel.data(idx, A.IsActive) === true && tasksModel.data(idx, A.IsMinimized) !== true) { tasksModel.requestToggleMinimized(idx); return "minimize" }
-        tasksModel.requestActivate(idx)
-        return "activate"
-    }
+    // Left tap on task row i (Windows 11 / macOS; the decision table is contents/code/dock-logic.js tapAction): a
+    // launcher with no window anywhere launches; a running, inactive window comes forward; the active window minimises;
+    // a minimised one comes back; a group cycles / brings its most recent window; an app still starting ignores the tap;
+    // a launcher whose windows the filters hide activates that window through allTasks. Returns the action name.
+    function activate(i) { return Logic.tap(tasksModel, dock.roles, i, allTasks) }
+    // Middle click: a new instance, always.
+    function newInstance(i) { return Logic.middle(tasksModel, i) }
 
     Row {
         id: row
