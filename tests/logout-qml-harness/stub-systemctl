@@ -1,0 +1,14 @@
+#!/bin/sh
+# Stub `systemctl` for the leave screen's fallback path (session-apps.sh): five "running" application units the way
+# Plasma's systemd launcher names them (app-<desktop id>@<random>.service, app-<id>-<pid>.scope, @autostart for autostarted
+# entries, \x2d for an escaped dash). Only list-units answers; every other call is a harmless no-op.
+case "$*" in
+  *list-units*)
+    printf '%s\n' \
+      'app-org.kde.kate@1a2b3c4d.service loaded active running Test Editor' \
+      'app-org.kde.kate@5e6f7a8b.service loaded active running Test Editor' \
+      'app-firefox-1234.scope loaded active running firefox' \
+      'app-com.example.no\x2ddesktop@9f8e7d6c.service loaded active running example' \
+      'app-org.kde.discover.notifier@autostart.service loaded active running updates notifier' ;;
+esac
+exit 0
