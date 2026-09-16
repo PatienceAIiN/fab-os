@@ -19,7 +19,7 @@ KCM.SimpleKCM {
     property string cfg_magnificationDefault: "normal"
     property bool cfg_groupAppsDefault: true
     property bool cfg_showOnlyCurrentDesktopDefault: false
-    property bool cfg_showOnlyCurrentActivityDefault: true
+    property bool cfg_showOnlyCurrentActivityDefault: false
     property int cfg_maxIconSizeDefault: 48
     property var cfg_launchersDefault: []
 

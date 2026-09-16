@@ -5,27 +5,46 @@ import org.kde.plasma.extras as PlasmaExtras
 import org.kde.plasma.plasmoid
 import org.kde.kirigami as Kirigami
 import org.kde.taskmanager as TaskManager
+import "../code/dock-logic.js" as Logic
 
 // One dock icon. `s` is the magnification for this item's slot in the row (from the dock's hoveredIndex); width and
 // the icon size follow it through one animated property, so the Row re-flows as neighbours grow. Bounce on launch,
-// tooltip with the window title(s), left = activate / minimise / cycle, middle = new instance, right = context menu.
+// tooltip with the window title(s), left = activate / minimise / restore / cycle (never a second copy of a running app:
+// contents/code/dock-logic.js tapAction, through dock.activate), middle = new instance, right = context menu.
 // A Fab OS tile icon (full-bleed rounded square) is drawn at dock.tileScale of the box so its visible extent equals a
 // Breeze app icon's glyph.
-// Running / active indicators (Windows 11 + macOS): a 6 px accent dot centred under every running app (two dots for a
-// grouped app, a dimmer dot for a minimised window), a 24 × 3 px accent bar under the ACTIVE window's icon plus a
-// rounded text-colour @ 6 % background behind that icon; a launcher without a window shows nothing; the attention
-// colour replaces the accent while a window demands attention.
+// Running / active indicators (Windows 11 + macOS): a 6 px accent dot centred under every running app (two dots for an
+// app with several windows, a dimmer dot for a minimised window, a half-dimmed one while an app starts), a 24 × 3 px
+// accent bar under the ACTIVE window's icon plus a rounded text-colour @ 6 % background behind that icon; a launcher
+// without a window anywhere shows nothing; the attention colour replaces the accent while a window demands attention.
+// `running` holds while ANY window of the app exists: a window / group / startup row, or — for a pinned launcher whose
+// windows the desktop / activity filters hide — a match in the dock's unfiltered model (`elsewhere`).
 PlasmaCore.ToolTipArea {
     id: item
     required property int index
     required property var model
     readonly property int slot: index + dock.startCount    // position in the unified row (after the start button)
-    readonly property bool running: model.IsWindow === true || model.IsGroupParent === true
     readonly property bool pinned: model.IsLauncher === true || model.HasLauncher === true
     readonly property int childCount: model.ChildCount || 0
     readonly property string tileName: dock.tileNameFor(model.LauncherUrlWithoutIcon, model.decoration)   // "" when not a Fab OS tile
     readonly property bool isTile: tileName.length > 0
     readonly property real iconScale: isTile ? dock.tileScale : 1.0
+
+    // ---- running state (dock-logic.js). A bare launcher looks its app up in dock's unfiltered model; the lookup is
+    // re-run whenever that model changes (dock.allRevision, debounced) — the read itself is not a QML property.
+    readonly property bool bareLauncher: model.IsLauncher === true && model.IsWindow !== true && model.IsGroupParent !== true && model.IsStartup !== true
+    readonly property var elsewhere: item.bareLauncher ? item.lookupElsewhere(dock.allRevision) : null
+    function lookupElsewhere(revision) { return Logic.findElsewhere(allTasks, dock.roles, model.LauncherUrlWithoutIcon, model.AppId) }
+    readonly property var row: ({ display: model.display, IsLauncher: model.IsLauncher, IsWindow: model.IsWindow, IsStartup: model.IsStartup,
+                                  IsGroupParent: model.IsGroupParent, IsActive: model.IsActive, IsMinimized: model.IsMinimized,
+                                  ChildCount: item.childCount, elsewhere: item.elsewhere })
+    readonly property string kind: Logic.state(item.row)           // none | starting | active | minimized | running
+    readonly property bool running: item.kind !== "none"
+    readonly property bool isActive: item.kind === "active"
+    readonly property bool isMinimized: item.kind === "minimized"
+    readonly property bool isStarting: item.kind === "starting"
+    readonly property int windowCount: Logic.windowCount(item.row)
+    readonly property bool isGroup: item.windowCount > 1
 
     property real s: dock.scaleFor(slot)
     Behavior on s { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
@@ -37,14 +56,11 @@ PlasmaCore.ToolTipArea {
     readonly property Item activeBar: bar
     readonly property Item dots: dotRow
     readonly property int dotCount: dotRepeater.count
-    readonly property bool isActive: model.IsActive === true
-    readonly property bool isMinimized: model.IsMinimized === true
-    readonly property bool isGroup: model.IsGroupParent === true && item.childCount > 1
 
     width: Math.round(dock.baseSize * s)
     height: dock.height
     mainText: model.display || ""
-    subText: model.IsGroupParent ? item.childCount + " windows" : (model.IsLauncher ? (model.GenericName || "Click to open") : (model.AppName && model.AppName !== model.display ? model.AppName : ""))
+    subText: Logic.subText(item.row, model.GenericName, model.AppName)
     icon: model.decoration
     active: dock.hoveredIndex === slot
 
@@ -135,30 +151,30 @@ PlasmaCore.ToolTipArea {
             width: dock.barWidth; height: dock.barHeight; radius: dock.barHeight / 2
             color: indicatorBand.accent
         }
-        Row {   // running, not active: one 6 px dot (two for a grouped app); a minimised window's dot is dimmer
+        Row {   // running, not active: one 6 px dot (two for an app with several windows); dimmer when minimised (45 %) or starting (70 %)
             id: dotRow
             visible: !item.isActive
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 1
             spacing: 4
-            opacity: item.isMinimized && item.model.IsDemandingAttention !== true ? 0.45 : 1
+            opacity: item.model.IsDemandingAttention === true ? 1 : (item.isMinimized ? 0.45 : (item.isStarting ? 0.7 : 1))
             Repeater {
                 id: dotRepeater
-                model: item.isGroup ? 2 : 1
+                model: Logic.dotCount(item.row)
                 Rectangle { width: dock.dotSize; height: dock.dotSize; radius: dock.dotSize / 2; color: indicatorBand.accent }
             }
         }
     }
 
     HoverHandler { onHoveredChanged: if (hovered) dock.hoveredIndex = item.slot; else if (dock.hoveredIndex === item.slot) dock.hoveredIndex = -1 }
-    TapHandler {
+    TapHandler {   // left: launch / activate / minimise / restore / cycle / bring back from elsewhere — dock-logic.js decides
         acceptedButtons: Qt.LeftButton
-        onTapped: { item.lastAction = dock.activate(item.index); if (item.lastAction === "launch") item.launchBounce() }
+        onTapped: { item.lastAction = dock.activate(item.index); if (Logic.bounces(item.lastAction)) item.launchBounce() }
     }
-    TapHandler {
+    TapHandler {   // middle: a new instance, always
         acceptedButtons: Qt.MiddleButton
-        onTapped: { tasksModel.requestNewInstance(tasksModel.makeModelIndex(item.index)); item.launchBounce(); item.lastAction = "new" }
+        onTapped: { item.lastAction = dock.newInstance(item.index); item.launchBounce() }
     }
     TapHandler {
         acceptedButtons: Qt.RightButton
@@ -177,7 +193,7 @@ PlasmaCore.ToolTipArea {
         PlasmaExtras.MenuItem {
             text: "New Window"; icon: "window-new"
             visible: item.model.IsLauncher === true || item.model.CanLaunchNewInstance === true
-            onClicked: { tasksModel.requestNewInstance(tasksModel.makeModelIndex(item.index)); item.launchBounce() }
+            onClicked: { item.lastAction = dock.newInstance(item.index); item.launchBounce() }
         }
         PlasmaExtras.MenuItem {
             text: item.model.IsMinimized === true ? "Restore" : "Minimise"; icon: "window-minimize"
