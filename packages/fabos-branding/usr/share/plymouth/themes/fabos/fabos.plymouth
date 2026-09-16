@@ -1,9 +1,77 @@
 [Plymouth Theme]
 Name=@DISTRO_NAME@
-Description=@DISTRO_NAME@ boot animation by @VENDOR_NAME@
+Description=@DISTRO_NAME@ boot screen by @VENDOR_NAME@: keeps the firmware logo on screen, adds a spinner and the @DISTRO_NAME@ mark
 Comment=Author: @VENDOR_NAME@ <support@patienceai.in>, @HOME_URL@ (Apache-2.0 / CC0-1.0)
-ModuleName=script
+ModuleName=two-step
 
-[script]
+# Fedora-style "bgrt" sequence on the two-step plugin (plymouth-theme-spinner ships two-step.so):
+#  * UseFirmwareBackground=true keeps the vendor's ACPI BGRT logo where the firmware drew it (38.2 % down, like Windows) on a
+#    black field; where there is no BGRT (QEMU/OVMF, legacy BIOS) bgrt-fallback.png (the mark) is drawn at that spot instead.
+#  * the spinner (throbber-NNNN.png, 30 fps) turns at 70 % of the screen height, the wordmark (watermark.png) sits at 96 %.
+#  * the disk-password dialog replaces the spinner at 70 %: lock.png + entry.png with one bullet.png per typed character, the
+#    caller's prompt underneath, capslock.png while Caps Lock is on. DialogClearsFirmwareBackground=false keeps the logo.
+#  * shutdown / reboot show a title (TitleVerticalAlignment .6: between the logo and the spinner) instead of a progress guess.
+#  Labels use Inter (fonts-inter, copied into the initramfs by hooks/fabos-plymouth-fonts); pango falls back to the Ubuntu font
+#  if it is missing.
+[two-step]
+Font=Inter 12
+TitleFont=Inter Light 30
 ImageDir=/usr/share/plymouth/themes/fabos
-ScriptFile=/usr/share/plymouth/themes/fabos/fabos.script
+DialogHorizontalAlignment=.5
+DialogVerticalAlignment=.7
+TitleHorizontalAlignment=.5
+TitleVerticalAlignment=.6
+HorizontalAlignment=.5
+VerticalAlignment=.7
+WatermarkHorizontalAlignment=.5
+WatermarkVerticalAlignment=.96
+Transition=none
+TransitionDuration=0.0
+BackgroundStartColor=0x000000
+BackgroundEndColor=0x000000
+ProgressBarBackgroundColor=0x2A313B
+ProgressBarForegroundColor=0x6E9BFF
+DialogClearsFirmwareBackground=false
+MessageBelowAnimation=true
+
+[boot-up]
+UseEndAnimation=false
+UseFirmwareBackground=true
+
+[shutdown]
+UseEndAnimation=false
+UseFirmwareBackground=true
+Title=Shutting down safely…
+
+[reboot]
+UseEndAnimation=false
+UseFirmwareBackground=true
+Title=Restarting…
+
+[updates]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+Title=Installing updates…
+SubTitle=Keep the computer switched on
+
+[system-upgrade]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+Title=Upgrading @DISTRO_NAME@…
+SubTitle=Keep the computer switched on
+
+[firmware-upgrade]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+Title=Updating firmware…
+SubTitle=Keep the computer switched on
+
+[system-reset]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+Title=Resetting…
+SubTitle=Keep the computer switched on
