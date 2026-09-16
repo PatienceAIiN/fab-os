@@ -21,6 +21,10 @@ echo "### Calamares job audit — image $TAG — $(date -u +%FT%TZ)"
 for f in "$CAL"/settings.conf "$CAL"/modules/*.conf "$CAL"/branding/fabos/branding.desc; do
   chk "yaml: $(basename "$f") parses" "python3 -c \"import yaml,sys; yaml.safe_load(open('$f'))\""
 done
+chk "shellprocess*: no '\$' in any command line (Calamares expands \$name/\${name} itself and aborts with 'Missing variables' - the round-6 install failure)" \
+  "python3 -c \"import yaml,glob,sys; bad=[(f,l) for f in glob.glob('$CAL/modules/shellprocess*.conf') for l in (yaml.safe_load(open(f)) or {}).get('script',[]) if '\\$' in str(l)]; print(bad); sys.exit(1 if bad else 0)\""
+chk "shellprocess*: every command line is a shipped, executable script under image/overlay/iso/usr/lib/fabos" \
+  "python3 -c \"import yaml,glob,os,sys; ls=[str(l) for f in glob.glob('$CAL/modules/shellprocess*.conf') for l in (yaml.safe_load(open(f)) or {}).get('script',[])]; bad=[l for l in ls if not (l.startswith('/usr/lib/fabos/') and os.access('$LIVE/'+os.path.basename(l), os.X_OK))]; print(ls, bad); sys.exit(1 if bad or not ls else 0)\""
 chk "settings: exec sequence has the fix-ups in order (bootloader -> shellprocess@efifallback -> umount)" \
   "python3 - <<'PY'
 import yaml; s=yaml.safe_load(open('$CAL/settings.conf'))
@@ -246,7 +250,10 @@ chk "packages: the autoremove takes nothing the installed system needs (no crypt
   "! printf '%s\n' $auto_purged | grep -E -q '^(cryptsetup|grub|shim|efibootmgr|plymouth|sddm|network-manager|fabos-|linux-|initramfs-tools|systemd|plasma|kwin|dbus|udev)'"
 chk "packages: every package the autoremove would purge is apt-mark auto (pulled in by casper/calamares only), never a manually installed one" \
   "apt-mark showauto > /run/auto.lst; for p in $auto_purged; do case \" $pk \" in *\" \$p \"*) continue;; esac; grep -qx \"\$p\" /run/auto.lst || { echo \"\$p is not auto\"; exit 1; }; done"
-# shellprocess: replay every line as Calamares does (sh -c, in the target)
+# shellprocess: the conf lines are paths of shipped scripts (Calamares expands $name in the lines itself); stage the working-tree
+# copies where the lines expect them, then replay every line as Calamares does (sh -c, in the target)
+install -m755 /live/install-finish.sh /live/install-efi-fallback.sh /usr/lib/fabos/
+chk "shellprocess: both scripts parse (sh -n) and are executable in the target" "sh -n /usr/lib/fabos/install-finish.sh && sh -n /usr/lib/fabos/install-efi-fallback.sh && test -x /usr/lib/fabos/install-finish.sh && test -x /usr/lib/fabos/install-efi-fallback.sh"
 n=0; while IFS= read -r line; do n=$((n+1)); chk "shellprocess: line $n exits 0 offline" "sh -c \"\$(printf %s \"\$line\")\""; done < <(Y shellprocess "[print(l) for l in d['script']]")
 chk "shellprocess: after the replay the live user, casper.conf, live sudo rule and live autologin are gone" "! id fabos && ! test -e /etc/casper.conf && ! test -e /etc/sudoers.d/fabos-live && ! test -e /etc/sddm.conf.d/20-autologin-live.conf"
 chk "shellprocess: after the replay the post-install units are enabled and the live-only ones disabled" "systemctl is-enabled fabos-firstboot.service fabos-update-check.timer fabos-feedback.socket unattended-upgrades.service | grep -vq disabled && ! systemctl is-enabled serial-getty@ttyS0.service 2>/dev/null | grep -q '^enabled' && ! systemctl is-enabled fabos-live-selftest.service 2>/dev/null | grep -q '^enabled'"

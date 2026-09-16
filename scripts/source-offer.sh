@@ -20,7 +20,7 @@ podman run --rm -i "$TAG" bash -c '
 # coverage: requested source packages that got no URI (own fabos-* packages = this repo; Mozilla-repo firefox; versions superseded in the archive)
 awk '{print $2}' "$OUT/source-uris.txt" | sed -E 's/_[^_]+$//' | sort -u > build/resolved-src.txt
 awk -F= 'NR==FNR{r[$1]=1; next} !($1 in r)' build/resolved-src.txt build/srcpkgs.txt > "$OUT/unresolved-sources.txt"
-[ -s "$OUT/source-uris.txt" ] || echo "WARNING: no source URIs resolved — check deb-src availability / network" >&2
+[ -s "$OUT/source-uris.txt" ] || { echo "ERROR: no source URIs resolved (deb-src availability / network / disk) — refusing to write a defective offer record" >&2; rm -rf "$OUT"; exit 1; }
 printf 'Image: %s\nProfile: %s\nGenerated: %s\nBinary packages: %s\nSource files: %s\nUnresolved source packages: %s (see unresolved-sources.txt)\nOffer: see legal/SOURCE-OFFER.md\n' "$ID" "$PROFILE" "$(date -u +%FT%TZ)" "$(wc -l < "$OUT/manifest.txt")" "$(wc -l < "$OUT/source-uris.txt")" "$(wc -l < "$OUT/unresolved-sources.txt")" > "$OUT/README.txt"
 # Components that are not Ubuntu archive packages (SOURCE-OFFER.md item 4): the image build compiles fabos-rounded-corners from a
 # sha256-pinned upstream tarball (image/rounded-corners-build.sh, ADR-0019); that tarball is its corresponding source — record it,

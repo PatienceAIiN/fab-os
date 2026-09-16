@@ -60,3 +60,17 @@ never been run end to end by a test. An offline audit of every Calamares 3.3.14 
 - The `packages` job's second step, `apt-get --purge autoremove`, removes the auto-marked leftovers of casper/calamares
   (calamares-data, libcalamares*, libyaml-cpp, libboost-python, squashfs-tools, finalrd, user-setup, localechooser-data,
   lzma); everything the installed system needs is `apt-mark manual` in the image, and the audit checks that list.
+
+## Amendment 2026-09-16 — shellprocess commands are shipped scripts, never inline shell
+
+The first automated installation of the round-6 ISO (build 20260916T001755Z) failed at job 30 of 36, `shellprocess`, with
+`ERROR: Missing variables: QList("f", "f", "f")` → "Could not run command." Calamares' `CommandList` runs every
+`shellprocess` line through KMacroExpander (that is how `${ROOT}`/`$ROOT` and `$USER` work), so any shell variable in
+the line — here the `$f` of a `for f in …` loop — is a *Calamares* variable, and an undefined one aborts the whole job
+sequence (initramfs, grubcfg, bootloader and umount were skipped; the disk was left unbootable). The offline audit had
+replayed the lines with `sh -c`, which is not what Calamares does, so it did not see this. Decision: both shellprocess
+lines are now the paths of shipped scripts, `/usr/lib/fabos/install-finish.sh` and `/usr/lib/fabos/install-efi-fallback.sh`
+(image/overlay/iso/usr/lib/fabos/, guarded, always exit 0), and `tests/calamares-jobs-test.sh` rejects any `$` in a
+shellprocess line, requires every line to be one of those executable scripts, stages the working-tree copies into the
+replay container and replays them there. The `packages` job — the real-device failure this ADR was opened for — completed
+in that same run (48 s, apt removal of casper and calamares only).

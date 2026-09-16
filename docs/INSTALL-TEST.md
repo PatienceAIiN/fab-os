@@ -72,6 +72,8 @@ review round — helper classifier, autoremove, effective GRUB values, marker st
   (`Installation failed:` / `- message:`) before it as failure; the audit checks every one of those strings against the
   image's binaries and runs the classifier on synthetic logs.
 
+**Rule learned on 2026-09-16 (ADR-0021 amendment):** a `shellprocess` line is expanded by Calamares itself (`$name`, `${name}` are Calamares variables), so the two lines are only the paths of shipped scripts under `/usr/lib/fabos/`; the audit fails on any `$` in such a line and replays the scripts, not a `sh -c` approximation of them.
+
 ## 2. The automated installation (`tests/install-vm.sh`)
 
 ```

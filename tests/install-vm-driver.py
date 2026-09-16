@@ -246,7 +246,12 @@ def stage_install(a):
                 if a.variant == "luks":
                     p = find_word(words, "passphrase", exclude_prev="confirm")
                     if not p:
-                        log("passphrase field not found by OCR (words: %s)" % [t for t, *_ in words][:60]); return fail_install(ser, a, q)
+                        # the placeholder "Passphrase" is light grey and OCR often misses it; the field sits on the same row
+                        # as the "Encrypt system" checkbox label, ~190 px to the right of the word "Encrypt" (1280x800 layout)
+                        e = find_word(words, "encrypt")
+                        if e: p = (e[0] + 190, e[1]); log("passphrase placeholder not read by OCR; using the row of 'Encrypt system' at %s" % (p,))
+                    if not p:
+                        log("passphrase field not found by OCR (words: %s)" % [t for t, *_ in words][:60]); return fail_install(ser, a, q, wait_guest=False)
                     log("partition page: click the Passphrase field at %s, type passphrase, Tab, repeat" % (p,))
                     q.pointer(p[0], p[1], w, h); time.sleep(0.4)
                     type_text(q, PASSPHRASE); time.sleep(0.4); q.send_keys(["tab"]); time.sleep(0.4); type_text(q, PASSPHRASE); time.sleep(1.0)
@@ -254,7 +259,7 @@ def stage_install(a):
                 else:
                     p = find_word(words, "encrypt")
                     if not p:
-                        log("'Encrypt system' checkbox not found by OCR (words: %s)" % [t for t, *_ in words][:60]); return fail_install(ser, a, q)
+                        log("'Encrypt system' checkbox not found by OCR (words: %s)" % [t for t, *_ in words][:60]); return fail_install(ser, a, q, wait_guest=False)
                     log("partition page: untick 'Encrypt system' at %s" % (p,)); q.pointer(p[0], p[1], w, h); time.sleep(1.2)
                     t2, w2, *_ = scr.grab("partition-unticked")
                     if find_word(w2, "passphrase"):
@@ -310,13 +315,14 @@ def classify(text):
     if "installing" in text and "fab os" in text and "next" not in text: return "install"
     return None
 
-def fail_install(ser, a, q=None):
+def fail_install(ser, a, q=None, wait_guest=True):
     time.sleep(2); ser.poll()
     tail = [l for l in ser.lines if l.startswith(("INSTALL_RESULT", "INSTALL_FAIL", "CALAMARES_JOB", "AUTOINSTALL"))][-30:]
     for l in tail: log("serial: " + l)
     # the guest still dumps its log and powers off on its own deadline (45 min after AUTOINSTALL_BEGIN); wait for that
-    # unless QEMU is already gone
-    end = time.time() + 2700
+    # unless QEMU is already gone. wait_guest=False: the driver itself could not operate the UI (nothing was installed, so
+    # there is no session log worth 45 minutes) - collect the serial for a minute and return.
+    end = time.time() + (2700 if wait_guest else 60)
     while time.time() < end and not ser.find(r"AUTOINSTALL_END"):
         ser.poll()
         if q is not None and not q.alive(): break
