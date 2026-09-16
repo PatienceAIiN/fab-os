@@ -1,0 +1,15 @@
+[Unit]
+Description=@DISTRO_NAME@ update notifications in your session
+Documentation=@DOCS_URL@
+# Runs inside the user's session (session bus, icon theme): tells you when a @DISTRO_NAME@ update is ready, and after one was
+# installed whether to log out and back in or restart; restarts the agent/voice user services when their code changed and
+# they are idle. It never restarts plasmashell, KWin or anything with your windows. Started by fabos-update-notify.timer
+# and by the system (fabos-update-check.timer, the fabos-postupgrade dpkg trigger) through `systemctl --user start`.
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/lib/fabos/updates/state.py session-check
+# a notification with a button waits for the answer (bounded inside state.py); give the unit room for that
+TimeoutStartSec=20min
+Nice=10

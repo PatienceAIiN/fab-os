@@ -1,4 +1,7 @@
 #!/bin/sh
 set -e
-case "$1" in remove|deconfigure) systemctl disable --now fabos-update-check.timer 2>/dev/null || true ;; esac
+case "$1" in remove|deconfigure)
+  systemctl disable --now fabos-update-check.timer 2>/dev/null || true
+  systemctl --global disable fabos-update-notify.timer 2>/dev/null || true
+;; esac
 exit 0

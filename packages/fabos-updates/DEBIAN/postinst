@@ -1,9 +1,28 @@
 #!/bin/sh
 set -e
-case "$1" in configure)
-  systemctl daemon-reload 2>/dev/null || true
-  systemctl enable fabos-update-check.timer 2>/dev/null || true
-  # automatic updates ON by default (Fab OS + Ubuntu security); users can switch it off in Fab OS Updates
-  [ -f /etc/apt/apt.conf.d/20auto-upgrades ] || printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\nAPT::Periodic::Download-Upgradeable-Packages "1";\nAPT::Periodic::AutocleanInterval "7";\n' > /etc/apt/apt.conf.d/20auto-upgrades
-;; esac
+STATE=/usr/lib/fabos/updates/state.py
+case "$1" in
+  configure)
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable fabos-update-check.timer 2>/dev/null || true
+    # the in-session notifier for every user (a user timer; the system timer and the dpkg trigger also start it directly)
+    systemctl --global enable fabos-update-notify.timer 2>/dev/null || true
+    # automatic updates ON by default (Fab OS + Ubuntu security); users can switch it off in Fab OS Updates
+    [ -f /etc/apt/apt.conf.d/20auto-upgrades ] || printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\nAPT::Periodic::Download-Upgradeable-Packages "1";\nAPT::Periodic::AutocleanInterval "7";\n' > /etc/apt/apt.conf.d/20auto-upgrades
+    install -d -m 0755 /var/lib/fabos/updates
+    if [ -z "$2" ]; then
+      # fresh install (image build, or fabos-updates added to an Ubuntu system): remember today's versions so the first
+      # over-the-air update is compared against exactly what was installed
+      [ -f /var/lib/fabos/updates/versions ] || python3 "$STATE" snapshot >/dev/null 2>&1 || true
+    else
+      # upgrade: ask dpkg to run our `triggered` step once this whole apt run is configured (fabos-agent, fabos-desktop, ...
+      # included), so the record and the session pokes see the finished system. Falls back to recording right now.
+      dpkg-trigger --no-await fabos-postupgrade 2>/dev/null || python3 "$STATE" record >/dev/null 2>&1 || true
+    fi
+    ;;
+  triggered)
+    # $2 = the activated trigger names/paths. One record + poke for the whole run; must never fail the upgrade.
+    /usr/lib/fabos/updates/helper.sh post-upgrade || true
+    ;;
+esac
 exit 0

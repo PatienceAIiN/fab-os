@@ -1,0 +1,16 @@
+# The over-the-air follow-up (docs/UPDATES.md): dpkg runs `postinst triggered ...` once at the end of any apt/dpkg run
+# that (a) named this trigger — fabos-updates' own postinst does on upgrade, fabos-desktop and fabos-branding declare
+# `activate-noawait fabos-postupgrade` — or (b) unpacked files under a Fab OS path below. -noawait: the triggering package
+# never waits for us, so a failure here can never leave another package unconfigured.
+interest-noawait fabos-postupgrade
+interest-noawait /usr/lib/fabos
+interest-noawait /usr/share/fabos
+interest-noawait /usr/share/plasma/plasmoids/in.patienceai.fabos.askbar
+interest-noawait /usr/share/plasma/plasmoids/in.patienceai.fabos.clock
+interest-noawait /usr/share/plasma/plasmoids/in.patienceai.fabos.dock
+interest-noawait /usr/share/plasma/plasmoids/in.patienceai.fabos.quicksettings
+interest-noawait /usr/share/plasma/look-and-feel/in.patienceai.fabos.desktop
+interest-noawait /usr/share/plasma/look-and-feel/in.patienceai.fabos.light.desktop
+interest-noawait /usr/share/kwin/scripts/fabos-snap-assist
+interest-noawait /usr/share/sddm/themes/fabos
+interest-noawait /usr/share/plymouth/themes/fabos
