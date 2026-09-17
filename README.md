@@ -128,9 +128,13 @@ the dock animates only under the pointer; Fab AI Controls talks to the agent on 
 never freeze the window. Measured in the image, that takes the desktop's idle process creation from about 21 to about 1
 per second ([`docs/LOW-RAM.md`](docs/LOW-RAM.md), "Idle budget"). Every Plasma and KWin animation runs at half its stock
 length (`AnimationDurationFactor=0.5`), tearing is off, blur is off on machines under 3.5 GB, and the voice listener runs
-at nice 15 with idle I/O. `tests/perf-vm.sh` re-measures all of it in the booted 2 GB virtual machine: CPU of the
-components over 20 s (< 8 % of one core), task creations per second (< 1), the Alt+Tab latency through KWin's own
-handler (median < 150 ms) and a repaint check of Fab AI Controls while a task streams.
+at nice 15 with idle I/O, and since 1.0-8 its decoder only runs around speech (a voice-activity gate) and rests while
+the screen is locked or, in Power saver mode, while the laptop sits idle on battery. A Performance mode — Power saver,
+Balanced, Performance, Gaming, Server — in the quick-settings battery card (`fabos-perf-mode`) maps to settings that can
+be read back ([`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)). `tests/perf-vm.sh` re-measures all of it in a disposable
+copy of the 2 GB virtual machine: per-process CPU and wake-ups over 60 s idle, task creations per second, launch latency
+of the four everyday applications through KWin's `windowAdded`, and the mode round trip, failing on regressions
+against a stored baseline.
 
 ---
 

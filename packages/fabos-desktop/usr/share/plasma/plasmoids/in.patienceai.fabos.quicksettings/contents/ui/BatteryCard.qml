@@ -80,7 +80,9 @@ Rectangle {
     function stateLine(s) {
         if (!s.hasBattery) return card.hasProfiles || card.hasModes ? "Plugged in" : ""
         var t = s.batStatus === "Charging" ? "Charging" : s.batStatus === "Full" ? "Fully charged" : "On battery"
-        if (s.batTime) t += " · " + s.batTime + (s.batStatus === "Charging" ? " to full" : " left")
+        // next to the mode pill the line is short: "3.2 hours left" -> "3.2 h left", "45 minutes" -> "45 min"
+        var when = card.hasModes ? String(s.batTime).replace(" hours", " h").replace(" minutes", " min") : s.batTime
+        if (s.batTime) t += " · " + when + (s.batStatus === "Charging" ? " to full" : " left")
         return t
     }
 

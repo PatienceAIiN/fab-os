@@ -54,10 +54,10 @@ image with `/proc/stat processes` (counts forks **and** threads: "tasks") and `b
 | Plasma / KWin | stock `AnimationDurationFactor=1`, tearing allowed, blur on everywhere, File Search runner activated per query | factor 0.5, `AllowTearing=false`, blur off under 3.5 GB, File Search runner off |
 
 Total task creation from Fab OS components on an idle desktop: **≈ 21 tasks/s before, ≈ 1 task/s after** (the quick
-settings' light probe 0.4/s + full probe 0.4–0.8/s; the ask bar contributes 0.07/s once asleep, 0.5/s while awake). The numbers are re-measured in the
-booted 2 GB VM by `tests/perf-vm.sh` (CPU of the components over 20 s, system-wide task creations per second, the
-Alt+Tab latency through KWin's own handler, and a repaint check of Fab AI Controls while a task streams); its thresholds
-are 8 % of one core, 1 task/s and a 150 ms median switch.
+settings' light probe 0.4/s + full probe 0.4–0.8/s; the ask bar contributes 0.07/s once asleep, 0.5/s while awake). The numbers are re-measured in a
+disposable copy of the 2 GB VM disk by `tests/perf-vm.sh` (since 1.0-8: per-process CPU and wake-ups over 60 s idle,
+system-wide task creations per second, application launch latency through KWin's `windowAdded`, the local-model and
+Baloo state, the Performance-mode round trip — see docs/PERFORMANCE.md for the budgets and the before/after numbers).
 
 ## Expected effect
 
