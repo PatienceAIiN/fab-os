@@ -369,6 +369,8 @@ t("microphone: the default source parses like the sink (JSON and key=value), gly
   const busy = S.parseStatus(JSON.stringify({ net: { iface: "", rx: 0, tx: 0 }, wifi: "", devs: [], mic: "Volume: 1.00", privacy: { mic_used: 1, cam_used: 2, cam_present: 1 } }));
   assert.strictEqual(S.privacyLine(busy), "1 app is using the microphone · 2 apps are using the camera"); assert.strictEqual(S.micLine(busy), "100% · in use");
   assert.strictEqual(S.privacyLine(S.parseStatus(JSON.stringify({ net: {}, wifi: "", devs: [], privacy: { mic_used: 3, cam_used: 0 } }))), "3 apps are using the microphone");
+  const named = S.parseStatus(JSON.stringify({ net: {}, wifi: "", devs: [], privacy: { mic_used: 2, cam_used: 1, mic_apps: "Firefox, pw-record", cam_apps: "Fab Camera" } }));
+  assert.strictEqual(named.micApps, "Firefox, pw-record"); assert.strictEqual(S.privacyLine(named), "2 apps are using the microphone (Firefox, pw-record) · 1 app is using the camera (Fab Camera)", "the PipeWire application names follow the counts");
   // the probe's shell side names the same fields and both wpctl targets; the tile's actions hit the default SOURCE only
   const sh = fs.readFileSync(path.join(__dirname, "..", "packages/fabos-desktop/usr/share/plasma/plasmoids/in.patienceai.fabos.quicksettings/contents/code/status.sh"), "utf8");
   assert.ok(sh.includes("wpctl get-volume @DEFAULT_AUDIO_SOURCE@") && sh.includes('\\"mic\\":') && sh.includes('\\"mic_used\\":') && sh.includes('\\"cam_used\\":') && sh.includes("Stream/Input/Audio") && sh.includes("Stream/Input/Video"), "status.sh probes the default source and the PipeWire capture streams");

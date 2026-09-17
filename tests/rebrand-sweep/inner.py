@@ -310,10 +310,17 @@ def kread(path, group, key):
     return None
 
 
-for f, g, k in PINS:
-    v = kread(os.path.join(CFG, f), g, k)
-    if v is not None and re.search(r"breeze|kde|plasma|oxygen", v, re.I):
-        out.add(("user-config", os.path.join(CFG, f), "[%s] %s" % (g, k), v))
+for base in (CFG, os.path.join(CFG, "kdedefaults")):   # kdedefaults = Plasma's copy of the pinned global theme's defaults, ahead of /etc/xdg
+    for f, g, k in PINS:
+        v = kread(os.path.join(base, f), g, k)
+        if v is not None and re.search(r"breeze|kde|plasma|oxygen", v, re.I):
+            out.add(("user-config", os.path.join(base, f), "[%s] %s" % (g, k), v))
+try:
+    pkg = open(os.path.join(CFG, "kdedefaults", "package")).read().strip()
+    if re.search(r"breeze|kde", pkg, re.I):
+        out.add(("user-config", os.path.join(CFG, "kdedefaults", "package"), "theme copied", pkg))
+except OSError:
+    pass
 
 for surface, path, key, text in sorted(out):
     print("%s\t%s\t%s\t%s" % (surface, path, key, text))

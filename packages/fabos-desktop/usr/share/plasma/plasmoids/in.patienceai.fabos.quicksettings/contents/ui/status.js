@@ -9,7 +9,7 @@ function empty() {
     return { wifiRadio: null, wifiSsid: "", wifiSignal: -1, wifiLocked: false, wifiActive: null, connType: "", connName: "", connDev: "",
              iface: "", ip4: "", btPresent: false, btPowered: null, btConnected: 0,
              volume: -1, muted: false, hasAudio: false,
-             micVolume: -1, micMuted: false, hasMic: false, micUsed: 0, camUsed: 0, camPresent: false,
+             micVolume: -1, micMuted: false, hasMic: false, micUsed: 0, camUsed: 0, camPresent: false, micApps: "", camApps: "",
              batPct: -1, batStatus: "", batTime: "", hasBattery: false, profile: "",
              blCur: -1, blMax: 0, hasBacklight: false,
              nightEnabled: null, nightRunning: false,
@@ -126,6 +126,8 @@ function fromJson(j) {
     s.micUsed = typeof pr.mic_used === "number" ? pr.mic_used : 0
     s.camUsed = typeof pr.cam_used === "number" ? pr.cam_used : 0
     s.camPresent = pr.cam_present === 1 || pr.cam_present === true
+    s.micApps = String(pr.mic_apps || "")
+    s.camApps = String(pr.cam_apps || "")
     s.profile = String(j.profile || "")
     var n = j.night
     if (n && typeof n.enabled === "boolean") { s.nightEnabled = n.enabled; s.nightRunning = n.running === true }
@@ -292,10 +294,12 @@ function micIcon(vol, muted) {
 }
 
 // Privacy line of the microphone row / bar tooltip: what is recording or filming right now.
+// "1 app is using the microphone (Firefox)" — the names come from PipeWire (application.name; Fab Voice's wake-word
+// listener records through pw-record and shows as "pw-record"), so the user can tell the always-on listener from a call.
 function privacyLine(s) {
     var parts = []
-    if (s.micUsed > 0) parts.push(s.micUsed === 1 ? "1 app is using the microphone" : s.micUsed + " apps are using the microphone")
-    if (s.camUsed > 0) parts.push(s.camUsed === 1 ? "1 app is using the camera" : s.camUsed + " apps are using the camera")
+    if (s.micUsed > 0) parts.push((s.micUsed === 1 ? "1 app is using the microphone" : s.micUsed + " apps are using the microphone") + (s.micApps ? " (" + s.micApps + ")" : ""))
+    if (s.camUsed > 0) parts.push((s.camUsed === 1 ? "1 app is using the camera" : s.camUsed + " apps are using the camera") + (s.camApps ? " (" + s.camApps + ")" : ""))
     return parts.join(" · ")
 }
 function micLine(s) {

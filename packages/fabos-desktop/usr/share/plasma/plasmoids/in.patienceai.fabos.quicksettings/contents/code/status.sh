@@ -100,15 +100,24 @@ else
   # running "Stream/Input/Video" node. pw-dump prints one key per line, so one awk pass counts running nodes per class
   # (2 tasks). Apps that open /dev/video* directly (V4L2) do not appear in PipeWire: those are found by the open file
   # handles of THIS user's processes (fuser, 1 task; other users' handles are not readable without root).
-  MIC_USED=0; CAM_USED=0
+  MIC_USED=0; CAM_USED=0; MIC_APPS=""; CAM_APPS=""
   if command -v pw-dump >/dev/null 2>&1; then
+    # three lines: "<audio count> <video count>", the recording apps, the filming apps (application.name, else node.name;
+    # Fab Voice's wake-word listener records through pw-record and is listed as such)
     counts=$(pw-dump 2>/dev/null | LC_ALL=C awk '
-      /^  \{/ { cls = ""; st = "" }
+      function val(s) { sub(/^[^:]*: *"/, "", s); sub(/",? *$/, "", s); return s }
+      /^  \{/ { cls = ""; st = ""; app = ""; node = "" }
       /"media.class":/ { cls = $0 }
       /"state":/ { st = $0 }
-      /^  \}/ { if (st ~ /"running"/) { if (cls ~ /Stream\/Input\/Audio/) a++; else if (cls ~ /Stream\/Input\/Video/) v++ } }
-      END { printf "%d %d", a + 0, v + 0 }')
-    MIC_USED=${counts% *}; CAM_USED=${counts#* }
+      /"application.name":/ { app = val($0) }
+      /"node.name":/ { node = val($0) }
+      /^  \}/ { if (st ~ /"running"/) { n = (app != "" ? app : node)
+                  if (cls ~ /Stream\/Input\/Audio/) { a++; if (n != "" && index(al, n) == 0) al = al (al == "" ? "" : ", ") n }
+                  else if (cls ~ /Stream\/Input\/Video/) { v++; if (n != "" && index(vl, n) == 0) vl = vl (vl == "" ? "" : ", ") n } } }
+      END { printf "%d %d\n%s\n%s\n", a + 0, v + 0, al, vl }')
+    first=${counts%%"$NL"*}; MIC_USED=${first% *}; CAM_USED=${first#* }
+    case "$counts" in *"$NL"*) rest=${counts#*"$NL"};; *) rest="";; esac                      # $(...) drops trailing newlines
+    case "$rest" in *"$NL"*) MIC_APPS=${rest%%"$NL"*}; CAM_APPS=${rest#*"$NL"};; *) MIC_APPS=$rest; CAM_APPS="";; esac
   fi
   CAM_PRESENT=0
   set +f   # the one place a glob is wanted
@@ -126,7 +135,7 @@ else
   NIGHT_ENABLED=null; NIGHT_RUNNING=false
   case "$NIGHT" in *'"enabled" b true'*) NIGHT_ENABLED=true;; *'"enabled" b false'*) NIGHT_ENABLED=false;; esac
   case "$NIGHT" in *'"running" b true'*) NIGHT_RUNNING=true;; esac
-  export DEVS WIFI IP4 BT_PRESENT BT_POWERED BT_OBJECTS VOLUME MIC MIC_USED CAM_USED CAM_PRESENT PROFILE NIGHT_ENABLED NIGHT_RUNNING
+  export DEVS WIFI IP4 BT_PRESENT BT_POWERED BT_OBJECTS VOLUME MIC MIC_USED CAM_USED CAM_PRESENT MIC_APPS CAM_APPS PROFILE NIGHT_ENABLED NIGHT_RUNNING
 fi
 
 # ---- one awk: default-route interface + its rx/tx bytes, the kernel's Wi-Fi link quality (0-70 -> %) as a fallback
@@ -154,7 +163,8 @@ LC_ALL=C exec awk '
     print "{\"light\":false," head ",\"devs\":" jlines(ENVIRON["DEVS"]) ",\"ip4\":" jstr(ENVIRON["IP4"]) \
           ",\"bt\":{\"present\":" ENVIRON["BT_PRESENT"] ",\"powered\":" ENVIRON["BT_POWERED"] ",\"connected\":" btcount(ENVIRON["BT_OBJECTS"]) "}" \
           ",\"volume\":" jstr(ENVIRON["VOLUME"]) ",\"mic\":" jstr(ENVIRON["MIC"]) \
-          ",\"privacy\":{\"mic_used\":" jnum(ENVIRON["MIC_USED"]) ",\"cam_used\":" jnum(ENVIRON["CAM_USED"]) ",\"cam_present\":" jnum(ENVIRON["CAM_PRESENT"]) "}" \
+          ",\"privacy\":{\"mic_used\":" jnum(ENVIRON["MIC_USED"]) ",\"cam_used\":" jnum(ENVIRON["CAM_USED"]) ",\"cam_present\":" jnum(ENVIRON["CAM_PRESENT"]) \
+          ",\"mic_apps\":" jstr(ENVIRON["MIC_APPS"]) ",\"cam_apps\":" jstr(ENVIRON["CAM_APPS"]) "}" \
           ",\"profile\":" jstr(ENVIRON["PROFILE"]) \
           ",\"night\":{\"enabled\":" ENVIRON["NIGHT_ENABLED"] ",\"running\":" ENVIRON["NIGHT_RUNNING"] "}}"
   }

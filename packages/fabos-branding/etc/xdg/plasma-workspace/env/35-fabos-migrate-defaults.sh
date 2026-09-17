@@ -49,6 +49,19 @@ if [ ! -f "$_fabos_stamp" ] && command -v kwriteconfig6 >/dev/null 2>&1 && comma
   if [ -d /usr/share/aurorae/themes/FabOS ] && [ "$(_fabos_read kwinrc org.kde.kdecoration2 library)" = org.kde.breeze ]; then
     _fabos_write kwinrc org.kde.kdecoration2 library org.kde.kwin.aurorae.v2; _fabos_write kwinrc org.kde.kdecoration2 theme "$_fabos_frame"; _fabos_log="$_fabos_log window-frame"
   fi
+  # 5. ~/.config/kdedefaults: Plasma copies the defaults of the global theme named in kdeglobals here at session start
+  #    and puts the directory ahead of /etc/xdg (XDG_CONFIG_DIRS) — a Breeze pin there is what actually selects the
+  #    Breeze splash. The `package` file records which theme the copy came from: when it names Breeze, drop it so this
+  #    start re-copies from the Fab OS theme, and point the splash entry at Fab OS right away in case the copy step
+  #    already ran before this script.
+  if [ -f "$_fabos_cfg/kdedefaults/package" ]; then
+    case "$(cat "$_fabos_cfg/kdedefaults/package" 2>/dev/null)" in
+      org.kde.breeze*) rm -f "$_fabos_cfg/kdedefaults/package"; _fabos_log="$_fabos_log kdedefaults" ;;
+    esac
+  fi
+  case "$(_fabos_read "$_fabos_cfg/kdedefaults/ksplashrc" KSplash Theme)" in
+    org.kde.breeze*.desktop) _fabos_write "$_fabos_cfg/kdedefaults/ksplashrc" KSplash Theme in.patienceai.fabos.desktop; _fabos_log="$_fabos_log kdedefaults-ksplash" ;;
+  esac
   mkdir -p "$_fabos_cfg/fabos" 2>/dev/null && printf '%s migrated:%s\n' "$(date -u +%FT%TZ 2>/dev/null)" "${_fabos_log:- nothing}" > "$_fabos_stamp" 2>/dev/null
   unset -f _fabos_read _fabos_write
   unset _fabos_log _fabos_scheme _fabos_dark _fabos_lnf _fabos_colors _fabos_frame
