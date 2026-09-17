@@ -21,7 +21,8 @@ users, welcome, initramfs, machineid, umount, shellprocess, finished, locale, ke
 read from their `Config.cpp`/`*Job.cpp` in Calamares 3.3.14.
 
 What the audit found and fixed (2026-09-16, image `localhost/fabos:iso`, first run 145/147, third run 147/147; after the
-review round — helper classifier, autoremove, effective GRUB values, marker strings — 165/165):
+review round — helper classifier, autoremove, effective GRUB values, marker strings — 165/165; 2026-09-17, encryption
+opt-in + style keys + checkbox-detector fixtures: 174/174):
 
 - **No default module configs on Ubuntu.** `calamares` from the Ubuntu archive installs no `*.conf` under
   `/usr/share/calamares/modules` or the module directories, so a module without a file in `/etc/calamares/modules` runs
@@ -228,6 +229,13 @@ nothing in the guest starts Calamares by itself:
 Evidence in `<out>/`: `NNN-baseline-*.png` and `NNN-fixed-*.png` (+ `.txt` OCR), `region-*-sidebar-*.png` (the sidebar crops
 as OCR saw them, normal and inverted), `region-*-row-*.png` (the checkbox row), `guest.txt` (the guest script's output with
 the warning lines), `serial.log`, `driver.log`. One `PASS`/`FAIL` line per check; exit 0 only when all passed.
+
+Results of 2026-09-17 against the frozen 1.0 ISO (`build/r8-installer/`): proof 24/24 (baseline 1 of 8 step names on both
+pages, box pre-ticked, four style warnings; fixed 8 of 8 on three pages, box unticked, opt-in click works, no warnings);
+`tests/install-vm.sh plain` 8/8 with the state-aware driver (ticked -> one click -> unticked; 36 jobs; no LUKS container;
+installed disk boots). A luks run against the frozen ISO needs no click (already ticked) and against the next ISO needs
+one; the driver handles both, but the luks path with an initially unticked box has so far only been exercised in the proof
+(tick -> passphrase fields appear), not as a full installation — run `tests/install-vm.sh luks` on the next ISO.
 
 ## 4. What the tests deliberately do not cover
 

@@ -110,3 +110,13 @@ see it with the **next ISO build**, not through the over-the-air packages of thi
    box), injects the working tree's `branding.desc` + `partition.conf` through fw_cfg, restarts Calamares and proves by OCR
    that every step name is readable on the welcome, partition and users pages, that the box starts unticked and that one
    click opts in (the passphrase fields appear).
+
+**Evidence (2026-09-17, against the frozen 1.0 ISO; files under `build/r8-installer/`):** `tests/calamares-jobs-test.sh`
+174/174. `tests/installer-ui-vm.sh` 24/24 — baseline with the ISO's own configuration: 1 of 8 step names readable on the
+welcome and on the partition page (the current one), *Encrypt system* pre-ticked, session log with four `Unknown branding
+*style* entry` lines; with the working tree's files injected: 8 of 8 on the welcome, partition and users pages
+(`ui-vm/015-fixed-partition.png`), box unticked, one click ticks it and shows the passphrase fields, a second unticks it,
+zero warnings. `tests/install-vm.sh plain` 8/8 — the driver read "ticked", clicked once, read "unticked", Calamares finished
+all 36 jobs (330 s), the target disk has no LUKS container and the installed disk booted alone to `FABOS_INSTALLED_OK`. The
+first proof run (19/24, kept as `ui-vm-run1-ocr-gap/`) failed only in the proof's own OCR of the highlighted step and of the
+grey placeholders; the OCR was hardened, nothing in the installer changed between the two runs.
