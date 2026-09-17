@@ -7,7 +7,9 @@
 # the target chroot, inside the image: apt-get -s remove of the try_remove list, every shellprocess line, systemctl
 # enable/disable of every unit, locale-gen, update-initramfs -k all -c -t, and presence of every tool/file the other jobs
 # rely on (grub-install + signed shim/GRUB + efibootmgr, cryptsetup-initramfs, sddm + theme + session, locales, console
-# setup, the users.conf groups, NetworkManager). PASS/FAIL per check like tests/branding-check.sh; exit 1 on any FAIL.
+# setup, the users.conf groups, NetworkManager), plus the branding.desc style keys against libcalamaresui's StyleEntry names
+# (the black-sidebar cause) and the install driver's "Encrypt system" detector on fixture screenshots. PASS/FAIL per check like
+# tests/branding-check.sh; exit 1 on any FAIL.
 # Output copy: build/calamares-jobs-test.out
 set -uo pipefail; HERE=$(cd "$(dirname "$0")/.." && pwd); cd "$HERE"
 TAG=${1:-localhost/fabos:iso}; CAL=$HERE/image/overlay/iso/etc/calamares; FB=$HERE/packages/fabos-firstboot; LIVE=$HERE/image/overlay/iso/usr/lib/fabos
@@ -93,13 +95,21 @@ for f in sorted(glob.glob('$CAL/modules/*.conf')):
 for b in bad: print('  BAD',b)
 sys.exit(1 if bad else 0)
 PY"
-chk "partition.conf: layout = /boot (ext4, noEncrypt) + / ; erase preselected; encryption offered + pre-checked; LUKS2" \
+chk "partition.conf: layout = /boot (ext4, noEncrypt) + / ; erase preselected; encryption offered but OPT-IN (box starts unticked, owner's decision 2026-09-17); LUKS2" \
   "python3 - <<'PY'
 import yaml; c=yaml.safe_load(open('$CAL/modules/partition.conf'))
 lay={p['mountPoint']:p for p in c['partitionLayout']}
 assert lay['/boot']['noEncrypt'] is True and lay['/boot']['filesystem']=='ext4' and lay['/']['size']=='100%'
-assert c['initialPartitioningChoice']=='erase' and c['enableLuksAutomatedPartitioning'] is True and c['preCheckEncryption'] is True
+assert c['initialPartitioningChoice']=='erase' and c['enableLuksAutomatedPartitioning'] is True and c['preCheckEncryption'] is False
 assert c['luksGeneration']=='luks2' and c['efi']['mountPoint']=='/boot/efi' and c['initialSwapChoice'] in c['userSwapChoices']
+PY"
+chk "branding.desc: sidebar style keys are the Calamares 3.3 Branding::StyleEntry names (SidebarBackground, SidebarText, SidebarTextCurrent, SidebarBackgroundCurrent), all four #rrggbb, text contrasts with its background" \
+  "python3 - <<'PY'
+import yaml,re; st=yaml.safe_load(open('$CAL/branding/fabos/branding.desc'))['style']
+assert set(st)=={'SidebarBackground','SidebarText','SidebarTextCurrent','SidebarBackgroundCurrent'}, set(st)   # the 3.2 spellings are rejected by 3.3 -> black sidebar
+assert all(re.fullmatch(r'#[0-9A-Fa-f]{6}', str(v)) for v in st.values()), st
+def lum(c): r,g,b=(int(c[i:i+2],16) for i in (1,3,5)); return (299*r+587*g+114*b)/1000
+assert abs(lum(st['SidebarText'])-lum(st['SidebarBackground']))>100 and abs(lum(st['SidebarTextCurrent'])-lum(st['SidebarBackgroundCurrent']))>60, st
 PY"
 chk "grubcfg.conf: snake_case keys, defaults applied to the existing file (always_use_defaults), GRUB_TIMEOUT + GRUB_DEFAULT present" \
   "python3 -c \"import yaml; c=yaml.safe_load(open('$CAL/modules/grubcfg.conf')); assert c['always_use_defaults'] is True and c['overwrite'] is False and 'GRUB_TIMEOUT' in c['defaults'] and 'GRUB_DEFAULT' in c['defaults'] and all(k.startswith('GRUB_') for k in c['defaults'])\""
@@ -171,6 +181,15 @@ chk "live-autoinstall: the helper never waits for 'completion: succeeded' alone 
   "! grep -q \"grep -q 'completion: succeeded'\" $LIVE/live-autoinstall.sh && grep -q 'finished_page=\$FINISHED_PAGE' $LIVE/live-autoinstall.sh && grep -q 'AUTOINSTALL_JOBS started=' $LIVE/live-autoinstall.sh && grep -q 'dmesg -n 1' $LIVE/live-autoinstall.sh"
 chk "install-vm.sh: verdicts cover finished page, all jobs started and an intact (sha256-verified) session log; bash -n" \
   "bash -n tests/install-vm.sh && grep -q 'finished_page=yes' tests/install-vm.sh && grep -q 'AUTOINSTALL_JOBS' tests/install-vm.sh && grep -q 'SESSION_LOG_DECODE=ok' tests/install-vm.sh && python3 -m py_compile tests/install-vm-driver.py"
+# the partition page: the driver reads whether "Encrypt system" is ticked from the screendump and clicks only when the variant
+# needs the other state, so it works with the 1.0 ISO (pre-ticked) and the tree (opt-in). The detector is replayed on crops of
+# real 1280x800 partition-page screendumps (tests/fixtures/installer/, from the 2026-09-16 runs); OCR runs inside the image.
+chk "install-vm-driver.py: the partition page is state-aware for both variants (encrypt_state from the screendump; luks ticks, plain unticks); installer-ui-vm.sh bash -n + executable" \
+  "grep -q 'want = \"ticked\" if a.variant == \"luks\" else \"unticked\"' tests/install-vm-driver.py && grep -q '^def encrypt_state' tests/install-vm-driver.py && bash -n tests/installer-ui-vm.sh && test -x tests/installer-ui-vm.sh"
+for fx in ticked:ticked ticked-typed:ticked unticked:unticked; do
+  chk "install-vm-driver.py encrypt-state: fixture partition-${fx%%:*}.png (crop of a real partition-page screendump) -> ${fx##*:}" \
+    "python3 -c 'import PIL' && python3 tests/install-vm-driver.py encrypt-state --shot tests/fixtures/installer/partition-${fx%%:*}.png --expect ${fx##*:} --outdir build/encrypt-state --image $TAG 2>/dev/null"
+done
 chk "firstboot: unit prints FABOS_INSTALLED_OK on ttyS0 after the script (ExecStartPost, guarded); firstboot.sh bash -n; no network needed to finish" \
   "grep -q 'ExecStartPost=/bin/sh -c \"echo FABOS_INSTALLED_OK >/dev/ttyS0 2>/dev/null || true\"' $FB/usr/lib/systemd/system/fabos-firstboot.service && bash -n $FB/usr/lib/fabos/firstboot.sh && grep -q 'nm-online -q -t 180' $FB/usr/lib/fabos/firstboot.sh"
 
@@ -312,6 +331,15 @@ chk "umount: emergency job (runs even after a failure)" "Y umount \"assert d['em
 chk "finished: restart command binary exists" "c=\$(Y finished \"print(d['restartNowCommand'].split()[0])\"); command -v \$c"
 # branding
 chk "branding: images referenced by branding.desc exist in the image" "for i in logo.png wordmark.png slide.png; do test -f /etc/calamares/branding/fabos/\$i || exit 1; done; test -f /etc/calamares/branding/fabos/show.qml"
+# Branding::styleString() resolves a branding.desc style key by the NAME of the StyleEntry enum (QMetaEnum::valueToKey), so a key
+# is only valid if it is one of those names - which are strings of libcalamaresui. The 1.0 ISO shipped the 3.2 spellings and got
+# 'Unknown branding *style* entry' for all four (session logs of the 2026-09-16 installs) -> invalid QColor -> black sidebar.
+for k in $(python3 -c "import yaml; print(' '.join(yaml.safe_load(open('/cal/branding/fabos/branding.desc'))['style']))"); do
+  chk "branding: style key '$k' is a Branding::StyleEntry name of this libcalamaresui" "grep -q -a -F -e '$k' '$UI'"; done
+chk "branding: the 3.2 keys sidebarTextSelect / sidebarTextHighlight are unknown to this Calamares, which logs 'Unknown branding *style* entry' for them (the black-sidebar cause on the 1.0 ISO)" \
+  "! grep -q -a -F -e 'sidebarTextSelect' '$UI' && ! grep -q -a -F -e 'sidebarTextHighlight' '$UI' && grep -q -a -F -e 'Unknown branding *style* entry' '$UI'"
+chk "branding: the image's default branding.desc (/usr/share/calamares/branding/default) uses the same four style keys as ours" \
+  "python3 -c \"import yaml; d=yaml.safe_load(open('/usr/share/calamares/branding/default/branding.desc'))['style']; c=yaml.safe_load(open('/cal/branding/fabos/branding.desc'))['style']; assert set(d)==set(c), (set(d), set(c))\""
 # post-install hardening evidence
 chk "hardening: Fab OS apt source + archive keyring shipped by fabos-branding" "test -f /etc/apt/sources.list.d/fabos.sources && test -f /usr/share/keyrings/fabos-archive-keyring.gpg && grep -q 'Signed-By: /usr/share/keyrings/fabos-archive-keyring.gpg' /etc/apt/sources.list.d/fabos.sources"
 chk "hardening: unattended-upgrades enabled with the Fab OS origins (52fabos-unattended, 20auto-upgrades)" "systemctl is-enabled unattended-upgrades && grep -q 'Patience AI:loom' /etc/apt/apt.conf.d/52fabos-unattended && grep -q 'Unattended-Upgrade \"1\"' /etc/apt/apt.conf.d/20auto-upgrades"
