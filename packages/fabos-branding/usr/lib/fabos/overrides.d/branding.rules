@@ -23,6 +23,7 @@ applications|org.kde.kwalletd6.desktop|Fab Wallet Service||
 applications|org.kde.ksecretd.desktop|Fab Wallet Service||
 applications|kcm_kwin_scripts.desktop|Window Scripts||
 applications|kcm_kwinsupportinfo.desktop|Window Manager Support Information||
+applications|kcm_kamera.desktop|Digital Camera||Set up a digital camera connected over USB (gPhoto)
 # Global-shortcut components (Fab Settings > Shortcuts): generic descriptors stay generic
 kglobalaccel|systemsettings.desktop|Fab Settings|Settings|
 kglobalaccel|org.kde.plasma-systemmonitor.desktop|Fab Monitor|Resource Monitor|
