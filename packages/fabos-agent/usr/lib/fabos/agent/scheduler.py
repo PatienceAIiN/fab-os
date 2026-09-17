@@ -1439,15 +1439,40 @@ def graphical_session_id():
     return os.environ.get("XDG_SESSION_ID") or ""
 
 
+def desktop_ready():
+    """Popups need more than the bus name: plasmashell registers org.freedesktop.Notifications while its panel is still
+    loading, and a notification sent then lands in the history without a popup (seen in the VM proof, 14 s after login).
+    Ready = the server is there and not inhibited (its `Inhibited` property; do-not-disturb counts too)."""
+    try:
+        import dbus
+        bus = dbus.SessionBus()
+        if not bus.name_has_owner("org.freedesktop.Notifications"):
+            return False
+        try:
+            obj = bus.get_object("org.freedesktop.Notifications", "/org/freedesktop/Notifications")
+            if bool(dbus.Interface(obj, "org.freedesktop.DBus.Properties").Get("org.freedesktop.Notifications", "Inhibited")):
+                return False
+        except Exception:
+            pass                                    # a server without the property: nothing more to learn
+        return True
+    except Exception:
+        return bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS"))
+
+
 def login_summary_cli(args):
-    """fabos-schedule-summary.service: wait for the agent (≤ 90 s) and for the notification server (≤ 60 s, then a few
-    seconds more for its popups to be ready), then ask the daemon to send today's summary for THIS login; prints what it
-    sent. Exit 0 even when there was nothing to do."""
+    """fabos-schedule-summary.service: wait for the agent (≤ 90 s), for the notification server to be up and not inhibited
+    (≤ 90 s) and then FABOS_SUMMARY_DELAY seconds (default 15) for the desktop to settle, then ask the daemon to send today's
+    summary for THIS login; prints what it waited for and what it sent. Exit 0 even when there was nothing to do."""
+    t0 = time.time()
     if not _wait_for(lambda: _daemon()[0] is not None and _call("GET", "/health", timeout=3).get("ok"), 90):
         print("fabos-schedule-summary: the agent service did not come up; no summary", file=sys.stderr)
         return 0
-    _wait_for(notifications_server_up, 60, 2.0)
-    time.sleep(float(os.environ.get("FABOS_SUMMARY_DELAY", "5")))
+    t_agent = time.time() - t0
+    ready = _wait_for(desktop_ready, 90, 1.0)
+    t_ready = time.time() - t0
+    delay = float(os.environ.get("FABOS_SUMMARY_DELAY", "15"))
+    time.sleep(delay)
+    print("fabos-schedule-summary: agent after %.0fs, desktop %s after %.0fs, settled %.0fs, session %s" % (t_agent, "ready" if ready else "NOT ready (sending anyway)", t_ready, delay, graphical_session_id()), flush=True)
     r = _call("POST", "/schedule/login-summary", {"force": "--force" in args, "session": graphical_session_id()})
     print(json.dumps(r, ensure_ascii=False))
     return 0
