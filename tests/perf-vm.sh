@@ -135,7 +135,7 @@ if [ ${#DEBS[@]} -gt 0 ] && [ $NO_REBOOT = 0 ]; then reboot_guest; fi
 
 # ---------------------------------------------------------------- 1. leave it alone, then facts + idle sample
 echo; echo "=== 1. idle: leaving the session alone for ${IDLE_WAIT}s"
-vm "rm -rf /tmp/perf; mkdir -p /tmp/perf"; $SCP "$HERE"/tests/perf/sample.py "$HERE"/tests/perf/launch.py "$HERE"/tests/perf/facts.sh "$HERE"/tests/perf/kwin-events.js fabos@127.0.0.1:/tmp/perf/ >/dev/null
+vm "rm -rf /tmp/perf; mkdir -p /tmp/perf"; $SCP "$HERE"/tests/perf/sample.py "$HERE"/tests/perf/launch.py "$HERE"/tests/perf/facts.sh "$HERE"/tests/perf/kwin-events.js "$HERE"/tests/perf/monitor.sh fabos@127.0.0.1:/tmp/perf/ >/dev/null
 [ "$IDLE_WAIT" -gt 0 ] && sleep "$IDLE_WAIT"
 echo "=== 1a. facts in effect -> $OUT/facts.txt"
 vms "sh /tmp/perf/facts.sh" > "$OUT/facts.txt" 2>&1
@@ -172,9 +172,10 @@ grep -q 'exit-idle-time=' "$OUT/facts.txt" && verdict PASS "fabos-llama-proxy ca
 
 # ---------------------------------------------------------------- 2. application launch latency
 echo; echo "=== 2. launch latency: $RUNS x konsole, dolphin, kate, firefox (KWin windowAdded on the guest clock)"
-vms "pkill -f 'busctl --user [m]onitor' 2>/dev/null; rm -f /tmp/fabos-perf-monitor.jsonl; setsid -f sh -c 'busctl --user monitor --json=short --match \"interface=in.patienceai.fabos.perf\" > /tmp/fabos-perf-monitor.jsonl 2>/tmp/fabos-perf-monitor.err'; sleep 1"
+# the bus monitor is started detached and stopped by pid (tests/perf/monitor.sh explains why not by pattern)
+vms "[ -f /tmp/perf/monitor.pid ] && kill \$(cat /tmp/perf/monitor.pid) 2>/dev/null; rm -f /tmp/fabos-perf-monitor.jsonl; nohup sh /tmp/perf/monitor.sh >/dev/null 2>&1 & echo \$! > /tmp/perf/monitor.pid; sleep 1"
 vms "qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript fabos-perf >/dev/null 2>&1; qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript /tmp/perf/kwin-events.js fabos-perf && qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.start" >/dev/null
-sleep 2; vm "grep -c 'loaded windows' /tmp/fabos-perf-monitor.jsonl" | sed 's/^/    KWin probe loaded (events seen): /'
+sleep 2; vm "grep -c 'loaded windows' /tmp/fabos-perf-monitor.jsonl 2>&1; head -c 300 /tmp/fabos-perf-monitor.err 2>/dev/null" | sed 's/^/    KWin probe loaded (events seen): /'
 : > "$OUT/launch.jsonl"
 for spec in "konsole|konsole|konsole" "dolphin|dolphin|dolphin" "kate -n|kate|kate" "firefox|firefox|firefox"; do
   IFS='|' read -r cmd match kill <<< "$spec"
@@ -184,7 +185,7 @@ for spec in "konsole|konsole|konsole" "dolphin|dolphin|dolphin" "kate -n|kate|ka
     sleep 2
   done
 done
-vms "qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript fabos-perf >/dev/null 2>&1; pkill -f 'busctl --user [m]onitor'" 2>/dev/null
+vms "qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript fabos-perf >/dev/null 2>&1; kill \$(cat /tmp/perf/monitor.pid) 2>/dev/null" 2>/dev/null
 python3 - "$OUT/launch.jsonl" "$OUT/launch-summary.json" <<'PY'
 import json, sys, statistics
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
