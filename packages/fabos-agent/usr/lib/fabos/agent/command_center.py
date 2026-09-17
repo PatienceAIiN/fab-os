@@ -3279,7 +3279,8 @@ class SettingsDialog(RoundedDialog):
         self.boot_items_area.setWidgetResizable(True)
         self.boot_items_area.setFrameShape(QFrame.Shape.NoFrame)
         self.boot_items_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.boot_items_area.setMaximumHeight(110)
+        self.boot_items_area.setMaximumHeight(88)
+        self.boot_items_area.setSizeAdjustPolicy(QScrollArea.SizeAdjustPolicy.AdjustToContents)
         self.boot_items_area.viewport().setAutoFillBackground(False)
         self.boot_items_area.setWidget(self.boot_items)
         self.boot_details.addRow(self.boot_items_area)
@@ -3604,7 +3605,9 @@ class SettingsDialog(RoundedDialog):
         if d.get("boot_risk"):
             lines.append(self.BOOT_RISK + (": " + reason if reason else "")); colour = RED; fix = True
         elif d.get("agrees") is False:
-            lines.append((self.BOOT_MISMATCH_OFF if not on else self.BOOT_MISMATCH_ON) + (" — " + reason if reason else "")); colour = AMBER
+            head = self.BOOT_MISMATCH_OFF if not on else self.BOOT_MISMATCH_ON
+            # the helper's reason usually opens with the same sentence: say it once
+            lines.append((reason[0].upper() + reason[1:]) if reason.lower().startswith(head.lower()[:40]) else head + (" — " + reason if reason else "")); colour = AMBER
             fix = d.get("switch") in ("on", "off")
         elif d.get("agrees") is None and d.get("needs_root"):
             lines.append("The start-up files are protected: the check needs administrator rights to be complete."); check = True

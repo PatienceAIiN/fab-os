@@ -47,8 +47,9 @@ because the change is made as administrator.
 
 If you do not see the Start-up row in Settings → General, your Fab OS is older than 1.0-7.
 
-**Check your version:** open **Fab Updates** — it shows the installed Fab OS version and whether an update is
-waiting. In a terminal: `dpkg-query -W -f='${Version}\n' fabos-agent` (for example `1.0-7`).
+**Check your version:** open **Fab Updates** — it shows whether an update is waiting and what it contains. The exact
+installed version is printed by this terminal command: `dpkg-query -W -f='${Version}\n' fabos-agent` (for example
+`1.0-7`; anything from `1.0-7` up has the switch).
 
 **Get the update now:** Fab Updates → **Install**, or in a terminal:
 
