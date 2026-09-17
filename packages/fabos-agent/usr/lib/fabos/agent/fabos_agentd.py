@@ -671,6 +671,18 @@ def notify(title, message, urgency="normal"):
     return False
 
 
+def nudge_voice_service():
+    """Tell fabos-voiced (the "Hey Fab" spotter, a user unit of the same session) to re-read its settings NOW: SIGHUP through
+    systemd, best effort, never waited for. Sent when voice.mic_allowed or voice.enabled changes value: the permission switch
+    says "nothing records" and must mean it at once — without the nudge the spotter noticed only on its 30 s refresh."""
+    try:
+        subprocess.Popen(["systemctl", "--user", "kill", "-s", "HUP", "fabos-voiced.service"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False
+
+
 def _strip_html(s):
     s = re.sub(r"(?is)<(script|style).*?</\1>", " ", s)
     s = re.sub(r"(?s)<[^>]+>", " ", s)
@@ -2744,6 +2756,23 @@ def parallel_cap(mem_bytes=None):
     return max(1, int(round(mem / float(1024 ** 3)))) if mem else MAX_PARALLEL_DEFAULT
 
 
+RESTARTED_MSG = "service restarted while task was running"
+
+
+def recover_queued_tasks(store):
+    """At start: which 'queued' tasks to run. A queued task that already HAS steps was not waiting to start — it was
+    mid-execution and set back to 'queued' by Agent._reacquire while it waited for a slot after an approval or an answer —
+    and the service stopped meanwhile; like the 'running' tasks it is failed, never run a second time (its earlier steps
+    had effects). Returns the ids of the genuinely fresh queued tasks, oldest first."""
+    fresh = []
+    for r in store.all("SELECT id FROM tasks WHERE status='queued' ORDER BY id"):
+        if store.one("SELECT COUNT(*) n FROM steps WHERE task_id=?", r["id"])["n"]:
+            store.q("UPDATE tasks SET status='failed', error=?, updated=? WHERE id=?", RESTARTED_MSG, time.time(), r["id"])
+        else:
+            fresh.append(r["id"])
+    return fresh
+
+
 class Slots:
     """The execution slots and the queue in front of them. `holders` = tasks executing a step right now; `waiting` says
     for each waiting task why ({"why": "chat"|"slots", "text", ...}) — the UIs show the text next to 'Queued'."""
@@ -2788,9 +2817,9 @@ class Agent:
         self.slots = Slots()
         migrate_mic_permission(store)
         for r in store.all("SELECT id FROM tasks WHERE status IN ('running','waiting_approval','waiting_user')"):
-            store.q("UPDATE tasks SET status='failed', error='service restarted while task was running', updated=? WHERE id=?", time.time(), r["id"])
-        for r in store.all("SELECT id FROM tasks WHERE status='queued'"):
-            self.start(r["id"])
+            store.q("UPDATE tasks SET status='failed', error=?, updated=? WHERE id=?", RESTARTED_MSG, time.time(), r["id"])
+        for tid in recover_queued_tasks(store):
+            self.start(tid)
 
     def session_env(self):
         """The environment for applications launched for the user (open_app, type_text, the OAuth browser): the desktop
@@ -3120,6 +3149,11 @@ class Agent:
         """Gate, run and record one tool call; returns (out, err, inp)."""
         inp = c["input"] if isinstance(c["input"], dict) else {}
         sid, ok, risk, reason = self._gate(tid, task, c["name"], inp)
+        if tid in self.cancel:
+            # cancelled while the approval — or, once approved, a free slot — was waited for (1.0-8: that second wait can be long,
+            # and the task holds no slot then): an approved step must not run after the user's Stop
+            self.store.finish_step(sid, json.dumps({"error": "cancelled by user"}), "Stopped before this step ran.")
+            raise RuntimeError("cancelled by user")
         if not ok:
             out, err = {"error": "Denied by user/policy (%s: %s). Do not retry the same action; explain or find an allowed way." % (risk, reason)}, True
             done_line = "Sorry, that did not work: %s." % ("your organisation does not allow it" if reason.startswith(MANAGED_MSG) else "you did not allow it")
@@ -4950,6 +4984,7 @@ def make_handler(store, agent, token):
                     b = self._body()
                 except ValueError as e:
                     return self._send(413 if "too large" in str(e) else 400, {"error": str(e)})
+                nudge = False
                 for k, v in b.items():
                     if k == "mode" and v not in MODES:
                         return self._send(400, {"error": "mode must be ask|auto|bypass"})
@@ -4977,8 +5012,12 @@ def make_handler(store, agent, token):
                         notify(APP, "System-Wide AI is now %s" % ("ON" if v == "true" else "OFF"))
                     if k in ("voice.enabled", "voice.speak_replies", "voice.offline_only", "voice.mic_allowed", "ui.show_raw"):
                         v = "true" if str(v).lower() in ("true", "1", "on", "yes") else "false"
+                    if k in ("voice.mic_allowed", "voice.enabled") and store.setting(k, VOICE_DEFAULTS.get(k)) != v:
+                        nudge = True                     # the spotter must follow the switch at once (nudge_voice_service, after the write)
                     store.set_setting(k, v)
                     store.activity("user", "setting", None, "%s=%s" % (k, v if "pass" not in k else "***"))
+                if nudge:
+                    nudge_voice_service()
                 return self._send(200, {"ok": True})
             self._send(404, {"error": "not found"})
 

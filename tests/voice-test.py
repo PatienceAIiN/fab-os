@@ -784,6 +784,48 @@ class MicPermissionAndProgress(unittest.TestCase):
             if saved is not None:
                 os.environ["FABOS_VOICE_MIC_ALLOWED"] = saved
 
+    def test_sighup_makes_the_wake_daemon_re_read_its_settings_at_once(self):
+        """fabos-agentd SIGHUPs fabos-voiced (systemctl --user kill -s HUP) when voice.mic_allowed or voice.enabled changes: the
+        handler forgets the settings' age, so spot_loop's next tick (1 s) re-reads them and stops the spotter — not the 30 s refresh."""
+        import inspect
+        import fabos_voiced as D
+        d = D.Voiced.__new__(D.Voiced)
+        d.settings_ts = time.time()
+        d._on_hup(1, None)
+        self.assertEqual(d.settings_ts, 0.0)
+        self.assertGreater(time.time() - d.settings_ts, D.SETTINGS_REFRESH_S, "spot_loop's staleness check fires at once")
+        self.assertIn("signal.SIGHUP, self._on_hup", inspect.getsource(D.Voiced.run), "the main loop installs the handler")
+
+    def test_the_wake_while_busy_spotter_stops_when_the_permission_goes_off_mid_follow(self):
+        """While a task is followed the spotter keeps running in the background; a permission (or voice) switched off during that
+        stretch must release the microphone on the next poll, not when the task ends (FOLLOW_MAX_S is 30 min)."""
+        import fabos_voiced as D
+        saved = os.environ.pop("FABOS_VOICE_MIC_ALLOWED", None)
+        try:
+            d = D.Voiced.__new__(D.Voiced)
+            d.stop, d.interrupt, d._warned, d.bg = False, None, set(), object()
+            d.settings = dict(V.DEFAULT_SETTINGS, **{"_agent_up": True, "voice.enabled": "true", "voice.mic_allowed": "true"})
+            d.settings_ts = 0.0                                                     # as after _on_hup: stale, re-read on the next poll
+            fresh = dict(d.settings, **{"voice.mic_allowed": "false"})            # the agent now says: off
+            d.agent = types.SimpleNamespace(get=lambda path, timeout=None: {"status": "done", "steps": [], "result": "ok"},
+                                            settings=lambda max_age=0.0: fresh)
+            stopped = []
+            d.bg_spotter_stop = lambda: (stopped.append(1), setattr(d, "bg", None))
+            d.finish = lambda task, state: None
+            d.speak = lambda *a, **k: None
+            state = {"seen": {}, "approvals": set(), "questions": set(), "spoken": set(), "started": time.time()}
+            self.assertEqual(d._follow(7, state), "done")
+            self.assertEqual(stopped, [1], "the background spotter was stopped on the poll that saw the permission off")
+            self.assertIsNone(d.bg)
+            # with the permission still on nothing is stopped
+            d.bg, stopped[:] = object(), []
+            d.settings_ts, fresh["voice.mic_allowed"] = 0.0, "true"
+            self.assertEqual(d._follow(7, state), "done")
+            self.assertEqual(stopped, [])
+        finally:
+            if saved is not None:
+                os.environ["FABOS_VOICE_MIC_ALLOWED"] = saved
+
     def test_progress_levels_and_states_from_a_scripted_microphone(self):
         path = os.path.join(TMP, "progress-%d.json" % os.getpid())
         prog = V.Progress(path)

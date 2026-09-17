@@ -504,6 +504,13 @@ class Voiced:
         while not self.stop:
             if self.interrupt is not None:
                 return "interrupted"
+            # the wake-while-busy spotter follows the switches too: on the 30 s refresh, or at once after fabos-agentd's SIGHUP
+            # (_on_hup) — a permission turned off during a long follow must not keep the microphone open until the task ends
+            if self.bg is not None and time.time() - self.settings_ts > SETTINGS_REFRESH_S:
+                self.refresh_settings(force=True)
+                if not self.enabled():
+                    log("voice or the microphone permission turned off; the wake-while-busy spotter stops")
+                    self.bg_spotter_stop()
             try:
                 task = self.agent.get("/tasks/%d" % tid)
             except V.NoBackend:
@@ -610,6 +617,7 @@ class Voiced:
         V.write_state(wake=False, listening=False, speaking=False, mic=V.mic_present())
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, self._on_signal)
+        signal.signal(signal.SIGHUP, self._on_hup)      # fabos-agentd: the microphone permission or voice.enabled just changed
         self.first_run()
         self.spotting_allowed = True
         log("started (state dir %s, run dir %s)" % (V.STATE_DIR, V.RUN_DIR))
@@ -657,6 +665,13 @@ class Voiced:
 
     def _on_signal(self, signum, frame):
         self.stop = True
+
+    def _on_hup(self, signum, frame):
+        """SIGHUP — fabos-agentd sends it (systemctl --user kill -s HUP) the moment voice.mic_allowed or voice.enabled changes:
+        forget the settings' age, so the next check re-reads them — spot_loop looks every second, and stops the spotter
+        (releasing the microphone) when the permission is now off; the main loop starts it again within AGENT_RECHECK_S when
+        it is back on. Without this the switch took effect only on the 30 s refresh."""
+        self.settings_ts = 0.0
 
 
 def main(argv=None):

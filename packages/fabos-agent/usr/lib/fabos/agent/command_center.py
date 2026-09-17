@@ -2983,6 +2983,7 @@ class Voice(QObject):
             return
         self.listen_proc = None
         self._progress_timer.stop()
+        self._poll_progress()                  # the run's last state (done / error): a short run ends before the 100 ms timer ever fired
         self.listening_changed.emit(False)
         try:
             out = bytes(p.readAllStandardOutput()).decode(errors="replace").strip()

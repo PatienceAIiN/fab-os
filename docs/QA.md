@@ -1359,7 +1359,7 @@ daemon's built-in test renderer, Claude as planner): result recorded in `build/l
 
 - The built-in 1.5B model varies run to run on multi-step tasks (7–9 of 11 in this round's runs); use a cloud provider or a
   larger Ollama model for reliability — the UI says so.
-- Offline speech-to-text needs about 600 MB free; on a 2 GB machine under load it declines and says why.
+- Offline speech-to-text needs about 208 MB free (whisper-cli tiny.en peaks at a measured 174 MB; the threshold adds 20 %); when less is free it declines and says why, with the figure.
 - On the live ISO, root actions from the passwordless live user show a polkit prompt.
 - The Google OAuth consent screen is still in Testing mode (Gmail sign-in works for listed test users only).
 - A global-menu applet was added to the panel without being asked for; it can be removed.

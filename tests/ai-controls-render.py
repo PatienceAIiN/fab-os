@@ -63,7 +63,7 @@ def make_palette(QPalette, QColor, s):
 
 FAKE_VOICE = r'''#!/usr/bin/env python3
 # fake fabos-voice for the offscreen render: %(variant)s
-import json, sys
+import json, os, sys
 args = sys.argv[1:]
 open(%(log)r, "a").write(" ".join(args) + "\n")
 verbose = args[:1] == ["-v"]
@@ -90,6 +90,7 @@ if cmd == "say":
 if cmd == "listen-once":
     if "--progress" in args:      # 1.0-8: the live state file the composer polls
         p = args[args.index("--progress") + 1]
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)     # like the real CLI (voicelib.Progress.set): the runtime dir may not exist yet
         open(p, "w").write(json.dumps({"state": "error", "reason": %(listen_err)r, "code": %(listen_code)d, "level": 0, "peak": 0, "speech": False}))
     sys.stderr.write(%(listen_err)r + "\n"); sys.exit(%(listen_code)d)
 sys.exit(0)

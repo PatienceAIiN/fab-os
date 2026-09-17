@@ -71,7 +71,7 @@ Say **"Hey Fab"**, wait for the short chime, then say what you want — *"open m
 | Piece | Offline — no key, nothing to download | With an OpenAI or Gemini key in Fab AI Controls |
 |---|---|---|
 | Wake word "Hey Fab" | PocketSphinx keyphrase spotting on the live microphone, always on-device | same — the wake word never uses the cloud |
-| Speech-to-text | whisper.cpp with the `tiny.en` model shipped in the ISO (`/usr/share/fabos/voice`; about a second for a short sentence on a 4-thread laptop CPU, skipped when less than 600 MB of RAM is free) | the provider's speech model through the agent (better with Indian accents and names) |
+| Speech-to-text | whisper.cpp with the `tiny.en` model shipped in the ISO (`/usr/share/fabos/voice`; about a second for a short sentence on a 4-thread laptop CPU, skipped when less than 208 MB of RAM is free — whisper-cli's measured peak is 174 MB, the threshold adds 20 %) | the provider's speech model through the agent (better with Indian accents and names) |
 | Spoken replies | eSpeak NG — a plain, synthetic British-English voice | a natural Indian-English voice through the agent |
 | Narration of every step, approvals and questions by voice, the final reply | yes | yes |
 

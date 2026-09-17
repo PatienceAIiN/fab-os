@@ -867,6 +867,11 @@ class Daemon(unittest.TestCase):
         with open(os.path.join(cls.tmp, "bin", "wtype"), "w") as f:
             f.write('#!/bin/sh\n[ "$1" = "-k" ] && { printf "\\n" >> %s; exit 0; }\nprintf "%%s" "$*" >> %s\n' % (cls.typed_log, cls.typed_log))
         os.chmod(os.path.join(cls.tmp, "bin", "wtype"), 0o755)
+        # systemctl shim: no user manager in a unit test; what the daemon asks systemd for lands in systemctl.log (the fabos-voiced nudge, test_38e)
+        cls.systemctl_log = os.path.join(cls.tmp, "systemctl.log")
+        with open(os.path.join(cls.tmp, "bin", "systemctl"), "w") as f:
+            f.write('#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' % cls.systemctl_log)
+        os.chmod(os.path.join(cls.tmp, "bin", "systemctl"), 0o755)
         cls.proc = subprocess.Popen([sys.executable, DAEMON], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for _ in range(50):
             try:
@@ -1719,17 +1724,56 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         finally:
             self.cli("settings", "agent.max_parallel", "3")
 
+    def test_38f_cancel_while_an_approved_step_waits_for_a_slot_never_runs_it(self):
+        """Approved, then waiting for a slot (status honestly back to 'queued', why=slots), then Stop: the approved step must not
+        run. Before 1.0-8 the approve-then-cancel window was an instant; with slots yielded around approvals it lasts as long as
+        the wait for a slot, and the task holds no slot then."""
+        self.cli("settings", "agent.max_parallel", "1")
+        try:
+            a = self.cli("do", "--mode", "ask", "sleep 2 seconds"); self.wait(a["id"], ("waiting_approval",))
+            b = self.cli("do", "--mode", "auto", "sleep 8 seconds"); self.wait(b["id"], ("running",))        # B takes the only slot
+            pend = [p for p in self.cli("approvals") if p["task_id"] == a["id"]]; self.cli("approve", str(pend[0]["id"]))
+            self.wait(a["id"], ("queued",), timeout=5)
+            time.sleep(1.2); ta = self.http("GET", "/tasks/%d" % a["id"])
+            self.assertEqual((ta["status"], ta["queue"]["why"]), ("queued", "slots"), ta)
+            self.cli("cancel", str(a["id"]))
+            ta = self.wait(a["id"], ("cancelled", "done", "failed"), timeout=10); self.assertEqual(ta["status"], "cancelled", ta)
+            self.assertNotIn("slept-2", " ".join(str(st.get("output") or "") for st in ta["steps"]), "the approved step must not run after Stop")
+            step = [st for st in ta["steps"] if st["kind"] == "tool_call"][0]; self.assertIn("cancelled by user", step["output"] or "")
+            self.assertEqual(self.wait(b["id"], ("done", "failed"), timeout=20)["status"], "done")
+            time.sleep(0.5); st = self.http("GET", "/status")["parallel"]; self.assertEqual((st["busy"], st["waiting"]), (0, {}), st)
+        finally:
+            self.cli("settings", "agent.max_parallel", "3")
+
     def test_38e_microphone_permission_refuses_transcription_while_off(self):
         # this daemon started on an empty database: a fresh install, so the permission is OFF until the user allows it
         self.assertEqual(self.cli("settings")["voice.mic_allowed"], "false")
         wav = base64.b64encode(b"RIFF\x00\x00\x00\x00WAVEfmt ").decode()
         r = self.http("POST", "/speech/transcribe", {"audio_b64": wav, "format": "wav"})
         self.assertEqual(r.get("http"), 403, r); self.assertFalse(r["ok"]); self.assertIn("Microphone is off in Settings", r["error"]); self.assertIn("Allow Fab OS to use the microphone", r["error"])
+        def nudges():
+            try:
+                with open(self.systemctl_log) as f:
+                    return [ln for ln in f.read().splitlines() if ln == "--user kill -s HUP fabos-voiced.service"]
+            except FileNotFoundError:
+                return []
+        before = len(nudges())
         self.assertTrue(self.http("PUT", "/settings", {"voice.mic_allowed": "on"})["ok"]); self.assertEqual(self.cli("settings")["voice.mic_allowed"], "true")
+        # the spotter must follow the switch at once: the daemon SIGHUPs fabos-voiced through systemd (best effort) when the value changes
+        for _ in range(40):
+            if len(nudges()) > before: break
+            time.sleep(0.05)
+        self.assertEqual(len(nudges()), before + 1, "one nudge for the change of value")
+        self.assertTrue(self.http("PUT", "/settings", {"voice.mic_allowed": "true", "voice.speak_replies": "true"})["ok"]); time.sleep(0.3)
+        self.assertEqual(len(nudges()), before + 1, "an unchanged value is no nudge")
         r = self.http("POST", "/speech/transcribe", {"audio_b64": wav, "format": "wav"})
         self.assertNotEqual(r.get("http"), 403, "with the permission on, the provider decides")
         self.assertIn("mic_allowed", self.http("GET", "/status")["voice"])
         self.cli("settings", "voice.mic_allowed", "false")
+        for _ in range(40):
+            if len(nudges()) > before + 1: break
+            time.sleep(0.05)
+        self.assertEqual(len(nudges()), before + 2, "off again: the second nudge")
 
 
 class MicPermissionAndSlots(unittest.TestCase):
@@ -1757,6 +1801,21 @@ class MicPermissionAndSlots(unittest.TestCase):
     def test_an_explicit_choice_is_never_overridden(self):
         st = self.store(); st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('a','a','done',1,1)"); st.set_setting("voice.mic_allowed", "false")
         self.assertEqual(fa.migrate_mic_permission(st), "false"); self.assertEqual(st.setting("voice.mic_migrated"), "1")
+
+    def test_a_restart_never_runs_a_half_done_task_twice(self):
+        """_reacquire sets a task back to 'queued' while it waits for a slot after an approval or an answer. Should the service
+        stop right then, that task must not be started from scratch at the next start (its earlier steps had effects): like
+        the 'running' ones it is failed with the restart message. A queued task without steps is genuinely fresh and runs."""
+        st = self.store()
+        fresh = st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('fresh','fresh','queued',1,1)").lastrowid
+        half = st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('half','half','queued',1,1)").lastrowid
+        done = st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('done','done','done',1,1)").lastrowid
+        st.step(half, "tool_call", "run_shell", '{"command": "touch x"}'); st.step(done, "final", "", "", "ok")
+        self.assertEqual(fa.recover_queued_tasks(st), [fresh])
+        self.assertEqual(st.one("SELECT status, error FROM tasks WHERE id=?", half), {"status": "failed", "error": fa.RESTARTED_MSG})
+        self.assertEqual(st.one("SELECT status FROM tasks WHERE id=?", fresh)["status"], "queued")
+        self.assertEqual(st.one("SELECT status FROM tasks WHERE id=?", done)["status"], "done")
+        self.assertEqual(fa.recover_queued_tasks(st), [fresh], "idempotent")
 
     def test_parallel_cap_follows_the_ram(self):
         G = 1024 ** 3
