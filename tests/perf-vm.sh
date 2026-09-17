@@ -93,7 +93,9 @@ budget() { # budget "what" "value < limit" -> PASS/FAIL (FAIL becomes NOTE with 
   if python3 -c "import sys; sys.exit(0 if ($2) else 1)" 2>/dev/null; then verdict PASS "$1"; elif [ $BASELINE = 1 ]; then echo ">>> NOTE (baseline, not enforced): $1"; else verdict FAIL "$1"; fi; }
 jq_() { python3 -c "import sys,json; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))" "$1" "$2" 2>/dev/null; }
 
+BOOTED=0   # set once THIS run has started QEMU; until then cleanup must touch nothing (port 2222 may belong to another track's VM)
 cleanup() {
+  [ $BOOTED = 1 ] || { rm -f "$OVL"; return; }
   if [ $KEEP = 1 ]; then echo "== --keep: QEMU left running on $OVL (kill qemu-system-x86_64 and delete it when done)"; return; fi
   echo "== quitting QEMU and deleting the overlay"
   vm "echo fabos | sudo -S -p '' poweroff" >/dev/null 2>&1
@@ -114,10 +116,13 @@ reboot_guest() {
 }
 
 echo "### Fab OS perf VM test — $(date -u +%FT%TZ) — mem=${MEM}M cpus=$CPUS idle-wait=${IDLE_WAIT}s sample=${SAMPLE}s runs=$RUNS baseline=$BASELINE debs=${DEBS[*]:-none} out=$OUT"
-pgrep -f qemu-system-x86_64 >/dev/null && { echo "another QEMU is running on this host; refusing (one VM at a time)"; exit 3; }
+# the previous holder of the lock may still be quitting its QEMU: give it a minute before refusing (one VM at a time)
+for i in $(seq 1 30); do pgrep -f 'qemu-system-x86_64 -name' >/dev/null || break; sleep 2; done
+pgrep -f 'qemu-system-x86_64 -name' >/dev/null && { echo "another QEMU is running on this host (not under the lock?); refusing (one VM at a time)"; exit 3; }
 rm -f "$OVL"; qemu-img create -q -f qcow2 -b "$DISK" -F raw "$OVL" || { echo "qemu-img failed"; exit 3; }
 cp "$BUILD/OVMF_VARS.fd" "$OUT/OVMF_VARS.fd" 2>/dev/null || cp /usr/share/OVMF/OVMF_VARS.fd "$OUT/OVMF_VARS.fd"
 ( cd "$(dirname "$BUILD")" && scripts/boot-vm.sh --headless --mem "$MEM" --cpus "$CPUS" --disk "$OVL" --qmp "$QMP" --vars "$OUT/OVMF_VARS.fd" --serial "$OUT/serial.log" --monitor /tmp/r8-perf.mon > "$OUT/boot.out" 2>&1 & )
+BOOTED=1
 echo "== booting a disposable overlay of $DISK"
 wait_ssh 150 || { echo "no ssh to the VM ($(tail -3 "$OUT/boot.out" | tr '\n' '|'))"; exit 3; }
 wait_session 120 || { echo "no graphical session (plasmashell + kwin_wayland) in the VM"; exit 3; }
