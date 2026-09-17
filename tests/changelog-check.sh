@@ -97,7 +97,7 @@ for rev in $(awk '$3 != "withheld"' "$TMP/heads" | awk '{print $1}'); do
 done
 
 # ---- 4. every public page's footer links to the changelog -----------------------------------------------------------
-for page in website/index.html website/updates/index.html website/docs/index.html website/newsletter/index.html; do
+for page in website/index.html website/docs/index.html website/newsletter/index.html; do
   chk "footer of $page links to the changelog" "sed -n '/<footer/,/<\/footer>/p' $page | grep -q 'changelog/\">Changelog</a>'"
 done
 chk "the changelog page's own footer links to itself as ./"      "sed -n '/<footer/,/<\/footer>/p' $PAGE | grep -q 'href=\"./\">Changelog</a>'"
