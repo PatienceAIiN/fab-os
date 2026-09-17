@@ -9,11 +9,102 @@ const fs = require("fs"), path = require("path"), vm = require("vm"), assert = r
 const src = fs.readFileSync(path.join(__dirname, "..", "packages/fabos-agent/usr/share/plasma/plasmoids/in.patienceai.fabos.askbar/contents/ui/agent.js"), "utf8");
 const A = {};
 vm.runInNewContext(src.replace(/^\.pragma library\s*$/m, ""), A);   // .pragma is a QML directive, not JS
+// the Research · Computer use strip's logic and shared numbers (contents/code/modes.js) — the same file Fab AI Controls reads
+const modesPath = path.join(__dirname, "..", "packages/fabos-agent/usr/share/plasma/plasmoids/in.patienceai.fabos.askbar/contents/code/modes.js");
+const modesSrc = fs.readFileSync(modesPath, "utf8");
+const M = {};
+vm.runInNewContext(modesSrc.replace(/^\.pragma library\s*$/m, ""), M);
 
 let n = 0;
 function t(name, fn) { fn(); n++; }
 // objects come from another vm realm (different Object prototype), so compare by value, not by prototype
 function eq(a, b) { assert.strictEqual(JSON.stringify(a), JSON.stringify(b)); }
+
+// ---- Research · Computer use (docs/design/MODES.md)
+t("modes.js: the TOKENS block is strict JSON between its markers, equals the live object, and the Python fallback copy is identical", () => {
+  const m = /\/\* MODES-TOKENS \*\/\s*(\{[\s\S]*?\})\s*\/\* \/MODES-TOKENS \*\//.exec(modesSrc);
+  assert.ok(m, "MODES-TOKENS markers missing");
+  const parsed = JSON.parse(m[1]);
+  eq(parsed, M.TOKENS);
+  eq(parsed.switch, { width: 40, height: 22, knob: 16, pad: 3, track_radius: 11, off_alpha: 0.28, focus_ring: 1.5, hover_lift: 0.08 });
+  assert.strictEqual(parsed.motion.knob_ms, 200); assert.strictEqual(parsed.motion.colour_ms, 200); assert.strictEqual(parsed.motion.reveal_ms, 180);
+  assert.ok(parsed.motion.knob_ms >= 180 && parsed.motion.knob_ms <= 240 && parsed.motion.reveal_ms >= 180 && parsed.motion.reveal_ms <= 240, "motion tokens inside the 180-240 ms band");
+  assert.strictEqual(parsed.strip.radius, 12, "the strip's radius is the control step of the radius scale");
+  eq(parsed.modes.map((x) => x.key), ["research", "computer_use"]);
+  eq(parsed.modes.map((x) => x.setting), ["agent.research", "agent.computer_use"]);
+  eq(parsed.modes.map((x) => x.label), ["Research", "Computer use"]);
+  // command_center.py keeps a fallback copy for a broken install: it must be the same numbers and words (True/False are the only non-JSON tokens)
+  const py = fs.readFileSync(path.join(__dirname, "..", "packages/fabos-agent/usr/lib/fabos/agent/command_center.py"), "utf8");
+  const fb = /MODE_TOKENS_FALLBACK = (\{[\s\S]*?\})\n\n\ndef load_mode_tokens/.exec(py);
+  assert.ok(fb, "MODE_TOKENS_FALLBACK not found in command_center.py");
+  eq(JSON.parse(fb[1].replace(/\bTrue\b/g, "true").replace(/\bFalse\b/g, "false")), parsed);
+  assert.ok(py.includes("/\\* MODES-TOKENS \\*/") && py.includes("/\\* /MODES-TOKENS \\*/") && py.includes('"code", "modes.js"'),
+            "command_center.py reads the block between the same markers from the plasmoid's contents/code/modes.js");
+});
+t("modes.js: defaults, booleans in every spelling, and the three readers (settings / status / task)", () => {
+  eq(M.defaults(), { research: true, computer_use: true });
+  assert.strictEqual(M.parseBool("true", false), true); assert.strictEqual(M.parseBool("FALSE", true), false); assert.strictEqual(M.parseBool(1, false), true);
+  assert.strictEqual(M.parseBool("off", true), false); assert.strictEqual(M.parseBool("weird", true), true); assert.strictEqual(M.parseBool(undefined, false), false);
+  eq(M.fromSettings({ "agent.research": "false", "agent.computer_use": "true", mode: "auto" }), { research: false, computer_use: true });
+  eq(M.fromSettings(null), { research: true, computer_use: true });
+  eq(M.fromStatus({ mode: "auto", capabilities: { research: true, computer_use: false } }), { research: true, computer_use: false });
+  eq(M.fromStatus({ mode: "auto" }), { research: true, computer_use: true }, "an older daemon without the field = all on");
+  eq(M.fromTask({ id: 7, status: "done", research: false, computer_use: true, capabilities_source: "chat" }, M.defaults()), { research: false, computer_use: true });
+  eq(M.fromTask({ id: 7, status: "done" }, { research: false, computer_use: true }), { research: false, computer_use: true }, "a task without the fields keeps the fallback");
+  eq(M.fromTask({ research: null, computer_use: 0 }, M.defaults()), { research: true, computer_use: false }, "null = not stated, 0 = off");
+});
+t("modes.js: a toggle in a chat PATCHes the chat's root with a boolean; with no chat it PUTs the default setting as 'true'/'false'", () => {
+  const start = M.defaults();
+  const inChat = M.toggle(start, "research", false, 42);
+  eq(inChat.request, { method: "PATCH", path: "/tasks/42", body: { research: false } });
+  eq(inChat.state, { research: false, computer_use: true }); assert.strictEqual(inChat.scope, "chat");
+  assert.strictEqual(inChat.message, "Research off for this chat");
+  eq(start, { research: true, computer_use: true }, "the previous state is not mutated");
+  const noChat = M.toggle(inChat.state, "computer_use", false, 0);
+  eq(noChat.request, { method: "PUT", path: "/settings", body: { "agent.computer_use": "false" } });
+  eq(noChat.state, { research: false, computer_use: false }); assert.strictEqual(noChat.scope, "defaults");
+  assert.strictEqual(noChat.message, "Computer use off for new chats");
+  assert.strictEqual(M.toggle(start, "research", true, 3).message, "Research on for this chat");
+  eq(M.toggle(start, "computer_use", true, 0).request.body, { "agent.computer_use": "true" });
+  assert.strictEqual(M.toggle(start, "nonsense", true, 0), null);
+  eq(M.taskFields({ research: false, computer_use: true }), { research: false, computer_use: true });
+  eq(M.taskFields({}), { research: true, computer_use: true }, "a new chat without a stated value starts with the defaults");
+  eq(M.taskFields(null), { research: true, computer_use: true });
+});
+t("modes.js: persistence per thread — a chat keeps its choice, the bar falls back to the defaults when the chat closes, a new chat carries the strip's state", () => {
+  let state = M.fromStatus({ capabilities: { research: true, computer_use: true } });       // bar idle: the defaults
+  const r = M.toggle(state, "research", false, 7); state = r.state;                       // toggled inside chat 7
+  eq(r.request, { method: "PATCH", path: "/tasks/7", body: { research: false } });
+  state = M.fromTask({ id: 7, research: false, computer_use: true, capabilities_source: "chat" }, state);   // the daemon's reply / the next snapshot agrees
+  eq(state, { research: false, computer_use: true });
+  state = M.fromTask({ id: 9, parent_id: 7, research: false, computer_use: true, capabilities_source: "chat" }, state);   // a follow-up inherits
+  eq(state, { research: false, computer_use: true });
+  state = M.fromStatus({ capabilities: { research: true, computer_use: true } });         // the panel closed: back to the defaults
+  eq(state, { research: true, computer_use: true });
+  const d = M.toggle(state, "computer_use", false, 0); state = d.state;                    // no chat open: the default changes
+  eq(d.request, { method: "PUT", path: "/settings", body: { "agent.computer_use": "false" } });
+  eq(M.taskFields(state), { research: true, computer_use: false }, "the next POST /tasks carries it");
+  eq(M.fromStatus({ capabilities: { research: true, computer_use: false } }), state, "and /status reports the same default afterwards");
+});
+t("modes.js: tooltips, confirmations, failure lines and the strip's visibility rule", () => {
+  assert.strictEqual(M.tooltip("research", true, 0), "Research is on: the agent may read web pages to answer and lists its sources. The default for new chats (Space toggles)");
+  assert.strictEqual(M.tooltip("computer_use", false, 5), "Computer use is off: nothing is opened or typed in this chat — files and commands only. Remembered for this chat (Space toggles)");
+  assert.strictEqual(M.tooltip("nope", true, 0), "");
+  assert.strictEqual(M.confirmation("computer_use", true, 0), "Computer use on for new chats");
+  assert.strictEqual(M.failureMessage("research", false, { error: "no such task" }, 0), "Could not turn Research off: no such task");
+  assert.strictEqual(M.failureMessage("research", true, null, 7), "Could not turn Research on — the agent service did not answer");
+  assert.strictEqual(M.failureMessage("computer_use", false, {}, 0), "Could not turn Computer use off");
+  // shown while the bar is awake, the field has focus or a chat is open; never in the compact card (the popup carries it); yields to a problem notice
+  assert.ok(M.stripVisible(true, false, false, false, false) && M.stripVisible(false, true, false, false, false) && M.stripVisible(false, false, true, false, false));
+  assert.ok(!M.stripVisible(false, false, false, false, false), "an idle, unfocused, closed bar hides the strip");
+  assert.ok(!M.stripVisible(true, true, true, true, false), "compact form: never in the card");
+  assert.ok(!M.stripVisible(true, true, true, false, true), "service down / AI off / no provider: the notice takes the row, the strip waits");
+});
+t("modes.js: the knob travels pad -> width - knob - pad (the same formula the Python switch paints with)", () => {
+  const s = M.TOKENS.switch;
+  assert.strictEqual(M.knobX(0), s.pad); assert.strictEqual(M.knobX(1), s.width - s.knob - s.pad); assert.strictEqual(M.knobX(0.5), (s.pad + s.width - s.knob - s.pad) / 2);
+  assert.strictEqual(M.knobX(0), 3); assert.strictEqual(M.knobX(1), 21);
+});
 
 t("shellQuote escapes single quotes", () => {
   assert.strictEqual(A.shellQuote("it's"), "'it'\\''s'");
@@ -224,6 +315,8 @@ t("banned words never appear in UI strings produced by the helpers", () => {
   for (const s of ["queued", "running", "waiting_approval", "waiting_user", "done", "failed", "cancelled"]) assert.ok(!banned.test(A.statusLabel(s)));
   for (const k of Object.keys(A.APPS)) assert.ok(!banned.test(A.APPS[k][0]), k);
   assert.ok(!banned.test(src.replace(/\/\/.*$/gm, "")), "agent.js code has no banned product names");
+  assert.ok(!banned.test(modesSrc.replace(/\/\/.*$/gm, "")), "modes.js has no banned product names");
+  for (const m of M.TOKENS.modes) for (const k of ["label", "tip_on", "tip_off"]) assert.ok(!banned.test(m[k]) && !/download/i.test(m[k]), m.key + "." + k);
 });
 
 // End-to-end transport check: the built command runs through /bin/sh (as the executable DataSource runs it) against a
