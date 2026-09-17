@@ -49,7 +49,7 @@ EOF
 fail=0
 run() {   # $1 label, $2 applet id, $3 timeout seconds, $4 extra XDG_DATA_DIRS prefix
   echo "== $1"
-  podman run --rm -e QT_QPA_PLATFORM=offscreen -e HOME=/tmp -e XDG_RUNTIME_DIR=/tmp/xdg -e XDG_DATA_DIRS="$4/usr/local/share:/usr/share" \
+  podman run --rm -e QT_QPA_PLATFORM=offscreen -e HOME=/tmp -e XDG_RUNTIME_DIR=/tmp/xdg -e FABOS_VOICE_MIC_ALLOWED=1 -e XDG_DATA_DIRS="$4/usr/local/share:/usr/share" \
     -v "$T:/harness:ro,Z" -v "$OUT:/out:Z" -v "$PKG/contents:/usr/share/plasma/plasmoids/in.patienceai.fabos.askbar/contents:ro,Z" "$IMG" \
     bash -c "mkdir -p /tmp/xdg && chmod 700 /tmp/xdg; mkdir -p '/tmp/Pictures/Fab OS' && python3 /harness/mkpng.py '/tmp/Pictures/Fab OS/askbar-test.png' >/dev/null; timeout $3 dbus-run-session plasmawindowed $2 2>&1; echo exit=\$?" > "$T/$2.log" 2>&1
   grep -vE "dbus-daemon|kglobalaccel|kf.windowsystem|propagateSizeHints|KWindowShadow|QProcess: Destroyed|Loading default layout|^qml: (396|700)$|^$" "$T/$2.log"

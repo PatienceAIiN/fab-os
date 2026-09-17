@@ -153,9 +153,10 @@ def quick_passes():
                 time.sleep(0.02)
             raise AssertionError("timed out waiting for " + what)
         vlog = os.path.join(tmp, "voice.log")
-        fake_new, fake_old = os.path.join(tmp, "fabos-voice"), os.path.join(tmp, "fabos-voice-old")
+        os.makedirs(os.path.join(tmp, "bin"), exist_ok=True)   # the fakes live in bin/: <tmp>/fabos-voice is the CLI's runtime DIRECTORY (progress file) since 1.0-8
+        fake_new, fake_old = os.path.join(tmp, "bin", "fabos-voice"), os.path.join(tmp, "bin", "fabos-voice-old")
         write_fake_voice(fake_new, vlog); write_fake_voice(fake_old, vlog, variant="old CLI without doctor / --test", old=True)
-        fake_nostt = os.path.join(tmp, "fabos-voice-nostt"); write_fake_voice(fake_nostt, vlog, listen_err="Speech recognition is not available: no offline model and no cloud provider key.", listen_code=4)
+        fake_nostt = os.path.join(tmp, "bin", "fabos-voice-nostt"); write_fake_voice(fake_nostt, vlog, listen_err="Speech recognition is not available: no offline model and no cloud provider key.", listen_code=4)
         real_api = cc.api
         # pure mapping first: the toast text for every failure class
         vf = cc.voice_failure_text

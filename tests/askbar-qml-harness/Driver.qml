@@ -176,6 +176,7 @@ Item {
         // the microphone, for real: fabos-voice listen-once runs inside the image (no PipeWire / no capture device there) or the VM
         // (PipeWire + a silent emulated mic: the take runs to its timeout, stage2 waits for it). 1.0-8 state machine: the tap shows
         // "Starting the microphone…" at once; the progress file (fed here by hand) moves it to "speak now" + level, then "Understanding…"
+        bar.voiceMicAllowed = true; bar.voiceReason = ""   // the permission is pinned for this stage (the real CLI sees FABOS_VOICE_MIC_ALLOWED=1 too)
         bar.startListening()
         check(bar.listening === true && bar.markState === "listening", "mic tap starts listening: red dot state on the mark")
         check(bar.voicePhase === "starting" && statusText.visible && statusText.text === "Starting the microphone…", "status line says Starting the microphone… right after the tap (" + statusText.text + ")")
