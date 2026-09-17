@@ -153,14 +153,22 @@ def sidebar_names(shot, w, h, label):
     """The step names OCR can read in the sidebar of a screenshot (window 900x600 centred: sidebar = left ~15% of the frame,
     below the title bar). Returns (found, missing, raw words)."""
     box = (int(w * 0.09), int(h * 0.165), int(w * 0.26), int(h * 0.93))
-    words = scr.ocr_region(shot, box, label + "-sidebar")
+    words = scr.ocr_region(shot, box, label + "-sidebar", thresholds=(96,))
+    # the CURRENT step is the one row of opposite polarity (dark text on the highlight) inside a light-on-dark block; tesseract
+    # drops it whatever the threshold, but reads it alone: find the highlight band (rows of mid luminance) and OCR that strip
+    from PIL import Image, ImageOps
+    g = ImageOps.grayscale(Image.open(shot).convert("RGB").crop(box)); rows = [sum(g.crop((0, y, g.width, y + 1)).getdata()) / float(g.width) for y in range(g.height)]
+    band = [y for y, m in enumerate(rows) if 100 < m < 200]
+    if band and max(band) - min(band) < 80:
+        strip = (box[0], box[1] + max(0, min(band) - 4), box[2], box[1] + max(band) + 5)
+        words += scr.ocr_region(shot, strip, label + "-sidebar-current", psm=7)
     seen = [re.sub(r"[^a-z]", "", t.lower()) for t, *_ in words]
     found = [s for s in STEPS if any(c == s.lower() or (len(c) >= 4 and difflib.SequenceMatcher(None, c, s.lower()).ratio() >= 0.8) for c in seen)]
     return found, [s for s in STEPS if s not in found], [t for t, *_ in words]
 def row_has_passphrase(shot, anchor, w, h, label):
     """OCR of the checkbox row right of the label, upscaled: the 'Passphrase' / 'Confirm passphrase' placeholders."""
-    x0 = anchor[0] + 60; box = (x0, max(0, anchor[1] - 16), min(w, x0 + 520), min(h, anchor[1] + 16))
-    words = scr.ocr_region(shot, box, label + "-row")
+    x0 = anchor[0] + 60; box = (x0, max(0, anchor[1] - 24), min(w, x0 + 520), min(h, anchor[1] + 24))
+    words = scr.ocr_region(shot, box, label + "-row", thresholds=(200,))   # 200: light-grey placeholder text inside the white line edit
     return any(re.sub(r"[^a-z]", "", t.lower()) == "passphrase" for t, *_ in words), [t for t, *_ in words]
 def go_to(page, label, max_steps=8):
     """Alt+N through welcome/location/keyboard until `page` is on screen; returns a grab of it labelled <label>-<page>, or None."""

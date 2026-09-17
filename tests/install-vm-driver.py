@@ -175,17 +175,21 @@ class Screen:
         text = re.sub(r"\s+", " ", " ".join(t for t, *_ in words)).lower()
         with open(os.path.join(self.out, base + ".txt"), "w") as f: f.write(text + "\n")
         return text, words, w, h, shot
-    def ocr_region(self, shot, box, label, scale=3, psm=6):
-        """OCR of one region (box = x0, y0, x1, y1 in frame pixels) of a PNG screenshot, upscaled and read in BOTH polarities -
-        the Calamares sidebar has light step names on a dark background and a dark name on the highlighted current step.
-        Returns the union of the words, in frame coordinates. Needs Pillow (returns [] without it)."""
+    def ocr_region(self, shot, box, label, scale=3, psm=6, thresholds=()):
+        """OCR of one region (box = x0, y0, x1, y1 in frame pixels) of a PNG screenshot, upscaled and read in BOTH polarities,
+        plus a black/white version (and its inverse) per threshold in `thresholds`: tesseract misses dark text on a mid-grey
+        highlight (the sidebar's current step: threshold 96 separates it) and light-grey placeholder text in a white line edit
+        (threshold 200). Returns the union of the words, in frame coordinates. Needs Pillow (returns [] without it)."""
         if not self.pil: return []
         from PIL import Image, ImageOps
-        im = Image.open(shot).convert("RGB").crop(box)
-        g = ImageOps.grayscale(im).resize(((box[2] - box[0]) * scale, (box[3] - box[1]) * scale), Image.LANCZOS)
-        words = []
-        for i, img in enumerate((g, ImageOps.invert(g))):
-            name = "region-%s-%d.png" % (re.sub(r"[^a-z0-9]+", "-", label.lower()), i); img.save(os.path.join(self.out, name))
+        g = ImageOps.grayscale(Image.open(shot).convert("RGB").crop(box))
+        variants = [g, ImageOps.invert(g)]
+        for t in thresholds:
+            b = g.point(lambda v, t=t: 255 if v > t else 0); variants += [b, ImageOps.invert(b)]
+        size = ((box[2] - box[0]) * scale, (box[3] - box[1]) * scale); words = []
+        for i, img in enumerate(variants):
+            # threshold at 1x, THEN upscale: the LANCZOS resize gives tesseract anti-aliased glyphs (hard-edged 3x binaries read worse)
+            name = "region-%s-%d.png" % (re.sub(r"[^a-z0-9]+", "-", label.lower()), i); img.resize(size, Image.LANCZOS).save(os.path.join(self.out, name))
             words += self._words(self._tesseract(name, psm), scale, box[0], box[1])
         return words
     def _words(self, tsv, scale, dx=0, dy=0):
