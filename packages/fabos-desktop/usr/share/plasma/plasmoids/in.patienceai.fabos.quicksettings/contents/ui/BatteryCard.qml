@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
@@ -14,8 +15,10 @@ import "status.js" as Status
 // harness) it falls back to the three power-profiles-daemon profiles through the applet's setProfile. On a machine
 // without a battery but with power profiles the card reads "Power"; without either the tile is not available
 // (main.qml tileAvailable). Radius 16, 4 % tint, hover lift; colours from Kirigami.Theme.
-// Idle cost: the mode is probed once at load, after each switch, when the power profile the status probe reports
-// changes, and at most every 10 s while the pointer is over the card — never on a timer.
+// Idle cost: `fabos-perf-mode status --json` is ~25 short processes (kreadconfig6 per key, busctl, awk), so it runs only
+// on a user's action — once at load, each time the pane's window becomes visible, on hover and after a switch, all
+// rate-limited to one probe per 10 s — never on a timer and never from the bar's own 5 s status probe (measured in the
+// VM: a probe tied to status changes cost 4 calls a minute, 6 task creations/s, on an idle desktop).
 Rectangle {
     id: card
     property var st: ({})
@@ -57,7 +60,7 @@ Rectangle {
     readonly property string activeMode: hasModes ? (pendingMode || String(mode.mode)) : ""
     readonly property string statusCmd: "fabos-perf-mode status --json 2>/dev/null"
     property real lastProbe: 0
-    property string lastProfile: ""
+    readonly property bool shown: Window.visibility !== Window.Hidden && Window.visibility !== 0   // the pane's window is on screen
     function modeLabel(id) { for (var i = 0; i < modes.length; i++) if (modes[i].id === id) return modes[i].label; return "" }
     function modeTip(id) { for (var i = 0; i < modes.length; i++) if (modes[i].id === id) return modes[i].tip; return "" }
     P5Support.DataSource {
@@ -72,10 +75,11 @@ Rectangle {
         }
     }
     function probeMode() { card.lastProbe = Date.now(); modeSrc.connectSource(card.statusCmd) }
-    function setMode(id) { card.pendingMode = id; modeSrc.connectSource("fabos-perf-mode set " + id + " >/dev/null 2>&1; " + card.statusCmd) }
+    function probeIfStale() { if (Date.now() - card.lastProbe > 10000) probeMode() }
+    function setMode(id) { card.pendingMode = id; card.lastProbe = Date.now(); modeSrc.connectSource("fabos-perf-mode set " + id + " >/dev/null 2>&1; " + card.statusCmd) }
     Component.onCompleted: probeMode()
-    onStChanged: { var p = String(st.profile || ""); if (p !== card.lastProfile) { card.lastProfile = p; if (Date.now() - card.lastProbe > 2000) probeMode() } }
-    onHoveredChanged: if (hovered && Date.now() - card.lastProbe > 10000) probeMode()
+    onShownChanged: if (shown) probeIfStale()
+    onHoveredChanged: if (hovered) probeIfStale()
 
     function stateLine(s) {
         if (!s.hasBattery) return card.hasProfiles || card.hasModes ? "Plugged in" : ""
