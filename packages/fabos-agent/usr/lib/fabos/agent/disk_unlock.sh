@@ -450,8 +450,9 @@ initrd_crypttab() {   # initrd_crypttab <initrd>: the crypttab INSIDE it (unmkin
   local f="$1" d; command -v unmkinitramfs >/dev/null 2>&1 || return 1; [ -r "$f" ] || return 1
   diag_tmp; d=$DIAG_TMP/x.$(printf '%s' "$f" | tr '/' '_')
   if [ ! -d "$d" ]; then mkdir -p "$d"; unmkinitramfs -- "$f" "$d" >/dev/null 2>&1 || { rm -rf "$d"; return 1; }; fi
-  [ -f "$d/cryptroot/crypttab" ] || [ -f "$d/main/cryptroot/crypttab" ] || return 1
-  cat "$d/cryptroot/crypttab" "$d/main/cryptroot/crypttab" 2>/dev/null
+  local c found=0
+  for c in "$d/cryptroot/crypttab" "$d/main/cryptroot/crypttab"; do [ -f "$c" ] && { cat "$c"; found=1; }; done
+  [ "$found" = 1 ]
 }
 # the verified record a root run leaves behind: per initrd size|mtime|has_key, plus the crypttab key column and the verdict then
 write_record() {   # write_record <prompt_at_boot_expected true|false|null>
@@ -599,13 +600,14 @@ emit_diag() {   # emit_diag <encrypted> <switch> <configured prompt> <expected> 
   local items="" it nr=false ar=false
   for it in "${ITEMS[@]+"${ITEMS[@]}"}"; do items="$items${items:+, }$it"; done
   [ "$NEEDS_ROOT" = 1 ] && nr=true; [ "$IS_ROOT" = 1 ] && ar=true
-  printf '{"encrypted": %s, "device": %s, "switch": %s, "prompt_at_boot": %s, "prompt_at_boot_expected": %s, "agrees": %s, "boot_risk": %s, "needs_root": %s, "as_root": %s, "reason": %s, "repair": %s, "checked_at": %s, "booted_initrd": %s, "items": [%s]}\n' \
-    "$1" "$( [ -n "$CT_NAME" ] && json_str "$CT_NAME" || echo null )" "$(json_str "$2")" "$3" "$4" "$5" "$6" "$nr" "$ar" \
+  printf '{"encrypted": %s, "device": %s, "switch": %s, "prompt_at_boot": %s, "prompt_at_boot_expected": %s, "agrees": %s, "boot_risk": %s, "needs_root": %s, "as_root": %s, "fails": %s, "reason": %s, "repair": %s, "checked_at": %s, "booted_initrd": %s, "items": [%s]}\n' \
+    "$1" "$( [ -n "$CT_NAME" ] && json_str "$CT_NAME" || echo null )" "$(json_str "$2")" "$3" "$4" "$5" "$6" "$nr" "$ar" "${DIAG_FAILS:-0}" \
     "$( [ -n "$7" ] && json_str "$7" || echo null )" "$( [ -n "$8" ] && json_str "$8" || echo null )" "$(json_str "$9")" "$( [ -n "${10}" ] && json_str "${10}" || echo null )" "$items"
 }
-DIAG_EXPECTED=null; DIAG_AGREES=null; DIAG_BOOT_RISK=false; DIAG_GRUB_FAIL=0; DIAG_JSON=""; DIAG_BOOT_RISK_KEY=0
-run_diagnose() {   # fills ITEMS and DIAG_*; prints nothing (cmd_diagnose prints, repair embeds)
-  ITEMS=(); NEEDS_ROOT=0; DIAG_GRUB_FAIL=0; DIAG_BOOT_RISK=false; DIAG_BOOT_RISK_KEY=0
+DIAG_EXPECTED=null; DIAG_AGREES=null; DIAG_BOOT_RISK=false; DIAG_GRUB_FAIL=0; DIAG_JSON=""; DIAG_BOOT_RISK_KEY=0; DIAG_FAILS=0
+run_diagnose() {   # fills ITEMS and DIAG_*; prints nothing (cmd_diagnose prints, repair embeds). Fresh listings every run (repair rebuilds)
+  ITEMS=(); NEEDS_ROOT=0; DIAG_GRUB_FAIL=0; DIAG_BOOT_RISK=false; DIAG_BOOT_RISK_KEY=0; DIAG_FAILS=0
+  [ -n "$DIAG_TMP" ] && rm -rf "$DIAG_TMP"/listing.* "$DIAG_TMP"/x.* 2>/dev/null
   local checked_at; checked_at=$(date -u +%FT%TZ)
   if ! find_root_entry; then
     if [ -n "$MAPPER" ]; then
@@ -702,6 +704,7 @@ EOF
       item grub_default_initrd pass "GRUB's default entry boots a registered start-up file" "'$gtitle' -> ${booted##*/} ($ghow)"
     elif [ -f "$booted" ]; then
       item grub_default_initrd fail "GRUB's default entry boots a registered start-up file" "'$gtitle' boots ${booted##*/}, which is not one of the files update-initramfs maintains — changes to the setting never reach it; 'repair' runs update-grub"; DIAG_GRUB_FAIL=1
+      list="$list"$'\n'"$booted"          # what it carries still decides the prompt: look at it too
     else
       item grub_default_initrd fail "GRUB's default entry boots a registered start-up file" "'$gtitle' names ${booted##*/}, which does not exist on $BOOT: the menu is stale (update-grub); 'repair' runs it"; DIAG_GRUB_FAIL=1; booted=""
     fi
@@ -778,7 +781,9 @@ EOF
   done < "$CRYPTTAB"
   [ "$others" = 0 ] && item other_devices info "Other encrypted devices in $CRYPTTAB" "none — only the root device"
   # ---- verdict
-  local expected=$root_expected agrees=null reason="" repair=""
+  local expected=$root_expected agrees=null reason="" repair="" fails=0
+  for it in "${ITEMS[@]+"${ITEMS[@]}"}"; do case "$it" in *'"result": "fail"'*) fails=$((fails+1));; esac; done
+  DIAG_FAILS=$fails
   [ "$DIAG_BOOT_RISK_KEY" = 1 ] && [ "$booted_hk" = true ] && DIAG_BOOT_RISK=true
   if [ -n "$others_prompt" ] && [ "$DIAG_BOOT_RISK" = false ] && [ "$expected" != null ]; then expected=true; fi
   if [ "$DIAG_BOOT_RISK" = true ]; then
@@ -791,7 +796,11 @@ EOF
       off) [ "$expected" = false ] && agrees=true; [ "$expected" = true ] && agrees=false;;
       *) agrees=null;;
     esac
-    if [ "$agrees" = false ]; then
+    if [ "$DIAG_GRUB_FAIL" = 1 ] && { [ "$switch" = on ] || [ "$switch" = off ]; }; then
+      agrees=false
+      reason="GRUB's default entry boots ${booted:+${booted##*/}}${booted:-a start-up file that does not exist}, which update-initramfs does not maintain: changes to the setting never reach it${root_why:+ — $root_why}"
+      repair="run 'repair' (Fix now / fabos disk-unlock repair): it rebuilds the start-up files and refreshes the GRUB menu (update-grub)"
+    elif [ "$agrees" = false ]; then
       if [ "$switch" = off ]; then
         if [ -n "$others_prompt" ] && [ "$root_expected" != true ]; then
           reason="the root disk itself starts without asking, but another encrypted device ($others_prompt ) has no key and asks for its own password at start-up"
@@ -810,10 +819,12 @@ EOF
       else reason="$root_why"; fi
     else
       reason="the start-up files match the setting: $root_why"
-      if [ "$DIAG_GRUB_FAIL" = 1 ]; then agrees=false; reason="$reason — but GRUB's menu is stale and may boot another start-up file"; repair="run 'repair' (Fix now / fabos disk-unlock repair): it runs update-grub"
-      elif [ -n "$bad_initrds" ]; then agrees=false
+      if [ -n "$bad_initrds" ]; then agrees=false
         reason="$reason — but the start-up file for kernel$bad_initrds does not match the setting (chosen from the GRUB menu it would $( [ "$switch" = off ] && echo "ask for the password" || echo "start without asking" ))"
-        repair="run 'repair' (Fix now / fabos disk-unlock repair): it rebuilds the start-up files of every kernel (update-initramfs -k all)"; fi
+        repair="run 'repair' (Fix now / fabos disk-unlock repair): it rebuilds the start-up files of every kernel (update-initramfs -k all)"
+      elif [ "$fails" -gt 0 ]; then
+        reason="$reason — but $fails check$( [ "$fails" = 1 ] || echo s ) failed (see the items)"
+        repair="run 'repair' (Fix now / fabos disk-unlock repair): it re-applies the setting from the start and puts the configuration right"; fi
     fi
   fi
   DIAG_EXPECTED=$expected; DIAG_AGREES=$agrees
@@ -845,7 +856,7 @@ cmd_repair() {
   if [ "$CT_KEY" != none ] && [ "$CT_KEY" != "$KEYFILE" ]; then
     EXTRA_JSON="\"diagnosis\": $DIAG_JSON"; die 5 false "the root device is unlocked by $CT_KEY, which this setting did not set up; not touching it"
   fi
-  if [ "$DIAG_AGREES" = true ] && [ "$DIAG_BOOT_RISK" = false ] && [ "$DIAG_GRUB_FAIL" = 0 ]; then
+  if [ "$DIAG_AGREES" = true ] && [ "$DIAG_BOOT_RISK" = false ] && [ "$DIAG_GRUB_FAIL" = 0 ] && [ "$DIAG_FAILS" = 0 ]; then
     write_record "$DIAG_EXPECTED"
     EXTRA_JSON="\"diagnosis\": $DIAG_JSON"; log "nothing to repair: the start-up files match the setting"
     emit true "$DIAG_EXPECTED" "" "nothing to repair: the start-up files already match the setting"; return 0
