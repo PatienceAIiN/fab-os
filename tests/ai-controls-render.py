@@ -507,6 +507,19 @@ def main():
         from PyQt6.QtWidgets import QApplication, QDialog
         from PyQt6.QtGui import QPalette, QColor, QFont, QGuiApplication
         from PyQt6.QtCore import QPoint, QTimer, QEvent
+        # every daemon call the window makes goes through here: a call that takes over a second is printed (with the job it
+        # belongs to nothing else can be told apart when sync() times out on a loaded host)
+        _plain_api = cc.api
+
+        def timed_api(method, path, body=None, *a, **k):
+            t0 = time.time()
+            try:
+                return _plain_api(method, path, body, *a, **k)
+            finally:
+                dt = time.time() - t0
+                if dt > 1.0:
+                    print("    (slow daemon call %.1f s: %s %s)" % (dt, method, path), flush=True)
+        cc.api = timed_api
 
         def wait_until(app, pred, what, timeout=8):
             deadline = time.time() + timeout
@@ -1211,9 +1224,17 @@ def main():
             w.select_conversation(root)                   # the earlier checks left the window on New chat; the strips are about THIS chat
             sync(w)
             spin(app, 3)
+            # the header strip is a wide-layout feature (main column >= 1110 px); the composer's copy is always there
+            assert w.composer_modes.isVisible() and not w.header_modes.isVisible(), ("1280 px with the sidebar: composer strip only", w.header_modes.isVisible())
+            w.resize(1480, 800)
+            spin(app, 5)
+            assert w.header_modes.isVisible(), "1480 px: the header strip appears"
             for strip in (w.header_modes, w.composer_modes):
                 assert list(strip.switches) == ["research", "computer_use"], list(strip.switches)
                 assert strip.isVisible() and strip.height() == cc.MODE_TOKENS["strip"]["height"], (strip.isVisible(), strip.height())
+                assert strip.width() == strip.sizeHint().width(), ("the strip is never squeezed (labels stay whole)", strip.width(), strip.sizeHint().width())
+                for lab in strip.labels.values():
+                    assert lab.width() >= lab.fontMetrics().horizontalAdvance(lab.text()), ("label clipped", lab.text(), lab.width())
                 for sw in strip.switches.values():
                     assert sw.size() == QSize(T["width"] + 6, T["height"] + 6), sw.size()          # 40x22 track + 3 px ring margin
                     assert sw.anim.duration() == cc.MODE_TOKENS["motion"]["knob_ms"] == 200, sw.anim.duration()
@@ -1317,6 +1338,8 @@ def main():
             sync(w)
             assert w.modes == {"research": True, "computer_use": True}, w.modes
             w.toast.timer.stop(); w.toast.hide()
+            w.resize(1280, 800)
+            spin(app, 3)
             print("[%s] modes strips: header + composer mirror one state; PATCH/PUT reached the daemon; knob 200 ms; tokens from modes.js" % name)
             w.list_timer.start()
             close_window(app, w)

@@ -9,7 +9,7 @@ refused deterministically. Ask / auto / bypass permission modes are untouched by
 
 | Switch | Setting (default for new chats) | On | Off |
 |---|---|---|---|
-| **Research** | `agent.research` = `true` | the planner may use `web_fetch` and browse several pages; research style: *gather, then answer with the facts and end with a `Sources:` list of the URLs read* | `web_fetch` is not offered; the prompt forbids reaching the internet with `run_shell` (no curl / wget / pip / apt downloads); a request that needs the web gets the agreed sentence naming the switch |
+| **Research** | `agent.research` = `true` | the planner may use `web_fetch` and browse several pages; research style: *gather, then answer with the facts and end with a `Sources:` list of the URLs read* | `web_fetch` is not offered; the prompt forbids reaching the internet with `run_shell` (no curl / wget / pip / apt fetching anything from the network); a request that needs the web gets the agreed sentence naming the switch |
 | **Computer use** | `agent.computer_use` = `true` | the GUI tools `open_app` and `type_text` are offered ("show your work" stays as it is) | those tools are not offered; the planner is told to work with commands and files or to answer directly; a request to open or type into an application gets the agreed sentence naming the switch |
 
 The agreed sentences live in one place, `fabos_agentd.CAPABILITY_OFF_REPLY`; the prompt quotes them and the scripted test provider

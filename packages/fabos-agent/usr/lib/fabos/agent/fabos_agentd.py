@@ -158,7 +158,7 @@ def capability_prompt(caps):
                      "short 'Sources:' list of the URLs you read. Never invent a URL or a fact you did not read.")
     else:
         lines.append("Research is OFF for this chat: web_fetch is not available and you must not reach the internet with run_shell either (no curl, "
-                     "wget, pip or apt downloads). Answer from what you know or from this computer. If the request needs the web, say: \"%s\"" % CAPABILITY_OFF_REPLY["research"])
+                     "wget, pip or apt fetching anything from the network). Answer from what you know or from this computer. If the request needs the web, say: \"%s\"" % CAPABILITY_OFF_REPLY["research"])
     if caps.get("computer_use", True):
         lines.append("Computer use is ON for this chat: you may open applications (open_app) and type into them (type_text) — show your work as described above.")
     else:

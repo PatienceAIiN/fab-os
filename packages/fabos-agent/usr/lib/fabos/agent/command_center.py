@@ -980,6 +980,7 @@ class ModeStrip(QWidget):
             lay.addLayout(row)
             self.icons[key], self.labels[key], self.switches[key] = ic, lab, sw
         self.setFixedHeight(S["height"])
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)      # never squeezed by a crowded row: the labels stay whole
         self.setAccessibleName("Research and Computer use for this chat")
         self.refresh_icons()
 
@@ -4755,8 +4756,12 @@ class AIControls(QMainWindow):
         super().resizeEvent(e)
         if self.toast.isVisible():
             self.toast.move((self.main.width() - self.toast.width()) // 2, self.main.height() - self.toast.height() - 96)
-        # a narrow window keeps ONE strip (the composer's) and drops the keyboard hint before anything overlaps
-        wide = self.width() >= 1060
+        # the header carries the strip only when its column is wide enough for title, strip, provider chip and the buttons without
+        # squeezing anything (about 1110 px of main column: a 1400 px window with the sidebar, or the enlarged layout); the composer's
+        # copy is always there. The keyboard hint goes first in a narrow window.
+        if not hasattr(self, "hint_label"):                 # a resize delivered before the widgets exist (construction order)
+            return
+        wide = self.width() - (SIDEBAR_W if self.sidebar.isVisibleTo(self) else 0) >= 1110
         if self.header_modes.isVisibleTo(self) != wide:
             self.header_modes.setVisible(wide)
         if self.hint_label.isVisibleTo(self) != (self.width() >= 900):
