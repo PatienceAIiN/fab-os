@@ -27,6 +27,8 @@ Fields: rev (package revision, integer), tag (must equal v<version>.<rev-1>), ki
 date (YYYY-MM-DD, or "unreleased" for a draft), time (HH:MM UTC, default 12:00 — the feed needs a full timestamp),
 file (the disc image file under /download/ for the current image release; older images link to the home page),
 status=draft (kept out of the page, the feed and GitHub). Drafts and withheld entries never enter the feed.
+kind=withheld means the image was not published; its paragraph must say what installed systems received if the update
+channel carried the revision (1.0-5 did reach installed systems for a day). No GitHub link is rendered for it.
 """
 import argparse
 import datetime
@@ -39,7 +41,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SITE_URL = "https://fabos.patienceai.in"
 GITHUB_REPO = "PatienceAIiN/fab-os"
-KINDS = {"image": "Image", "ota": "Over-the-air update", "withheld": "Not published"}
+KINDS = {"image": "Image", "ota": "Over-the-air update", "withheld": "Image withheld"}
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
           "November", "December"]
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]

@@ -12,7 +12,7 @@ describes the over-the-air mechanism itself.
 | **Image release** | A new ISO (`scripts/build-rootfs.sh iso && scripts/build-iso.sh`) at revision `1.0-N`, served from `https://fabos.patienceai.in/download/`. Installed systems get the same packages over the air. |
 | **Over-the-air (OTA) release** | Revision `1.0-N` published only to the signed update channel (`scripts/publish-apt.sh`). No ISO is rebuilt. |
 | **Tag** | `v<DISTRO_VERSION>.<PKG_REVISION-1>`: `1.0-6` → `v1.0.5`, `1.0-7` → `v1.0.6`, `1.0-8` → `v1.0.7`. `scripts/release-github.sh` derives the revision from the tag and refuses a tag the changelog does not agree with. |
-| **Changelog entry** | One section in `docs/CHANGELOG.md`, the single source of truth for everything users read about a release (website page, feed, GitHub notes). |
+| **Changelog entry** | One section in `docs/CHANGELOG.md`, the single source of truth for everything users read about a release (website page, feed, GitHub notes). Every bullet must be backed by `docs/QA.md` or the commit that shipped it — a feature that was only verified in a virtual machine is described as such, not as working on real hardware. |
 
 **Rule 1 — nothing is published without the owner's explicit go-ahead.** Not the ISO, not the update channel, not a
 GitHub release, not the website. Agents and scripts prepare; the owner (or the person the owner names) publishes.
@@ -108,7 +108,13 @@ main-site backend and is not part of this pipeline — do not touch it.
    `scripts/secret-scan.sh` and push `main`.
 
 Already shipped without a GitHub release: `1.0-7` (2026-09-16). Its entry is finished; the release is made with
-`scripts/release-github.sh v1.0.6 --ota --target ef0c13c` when the owner says so.
+`scripts/release-github.sh v1.0.6 --ota --target ef0c13c` when the owner says so. **Do not deploy the changelog page
+before that release exists**: every published entry links its release notes on GitHub, so the `1.0-7` card would point
+at a page that is not there yet. Make the release (step 6), then deploy (step 7).
+
+`1.0-5` (2026-09-15) also reached installed systems through the channel for a day, with no image and no GitHub release;
+its entry is `kind=withheld` and says so. Whether a `v1.0.4` release is created after the fact is the owner's call — it
+would need the entry rewritten as `kind=ota` with bullets, which also puts it in the feed.
 
 ## 5. Checklist — image release (`1.0-N`, tag `v1.0.(N-1)`)
 
@@ -163,8 +169,8 @@ and, for an image release, the get-it link on the home page.
 
 * **The gate says an entry is missing or a draft is stale.** Every revision from 1 to `PKG_REVISION` (and every value
   `PKG_REVISION` ever had in the history of `brand/brand.conf`) needs an entry; only the current revision may be a
-  draft. A revision that was built and never published gets `kind=withheld` with a short paragraph and no bullets
-  (see `1.0-5`).
+  draft. A revision whose image was never published gets `kind=withheld` with a short paragraph and no bullets; if the
+  update channel carried it, the paragraph must say what installed systems received and when (see `1.0-5`).
 * **The gate says the page or feed is stale.** Run `scripts/changelog-render.py` and commit the result together with
   the change that caused it.
 * **The gate flags a word.** It is right more often than not. Reword for the user; if the flag is a false positive on
