@@ -173,10 +173,21 @@ Item {
         var ok = true
         for (var i = 0; i < rows.length; i++) { if (!rows[i]) ok = false; else rows[i].y = 2000 }
         check(ok, "every ConvoDelegate kind instantiates (" + rows.length + " kinds)")
-        // the microphone, for real: fabos-voice listen-once runs inside the image (no PipeWire / no capture device there)
+        // the microphone, for real: fabos-voice listen-once runs inside the image (no PipeWire / no capture device there) or the VM
+        // (PipeWire + a silent emulated mic: the take runs to its timeout, stage2 waits for it). 1.0-8 state machine: the tap shows
+        // "Starting the microphone…" at once; the progress file (fed here by hand) moves it to "speak now" + level, then "Understanding…"
         bar.startListening()
         check(bar.listening === true && bar.markState === "listening", "mic tap starts listening: red dot state on the mark")
-        check(statusText.visible && statusText.text === "Listening…", "status line says Listening… while recording")
+        check(bar.voicePhase === "starting" && statusText.visible && statusText.text === "Starting the microphone…", "status line says Starting the microphone… right after the tap (" + statusText.text + ")")
+        check(micButton.tip === "Starting the microphone…", "mic tooltip carries the phase")
+        bar.onProgress(JSON.stringify({ state: "recording", level: 0.6, peak: 0.6, speech: false, seconds: 0.9 }))
+        check(bar.voicePhase === "recording" && bar.voiceLevel === 0.6 && statusText.text === "Listening… speak now", "progress 'recording' => speak now + level 0.6 (" + statusText.text + ")")
+        bar.onProgress(JSON.stringify({ state: "recording", level: 0.3, peak: 0.6, speech: true, seconds: 1.4 }))
+        check(bar.voiceSpeech === true && statusText.text === "Listening…", "words heard => 'speak now' drops, the meter turns accent")
+        bar.onProgress(JSON.stringify({ state: "transcribing", level: 0, peak: 0.6, speech: true, seconds: 3.0 }))
+        check(bar.voicePhase === "transcribing" && statusText.text === "Understanding what you said…" && field.placeholderText === "Understanding what you said…", "progress 'transcribing' => Understanding… in the status line and the placeholder")
+        bar.onProgress(JSON.stringify({ state: "done", text: "not yet" }))
+        check(bar.voicePhase === "transcribing" && bar.listening === true, "the progress file's done/error never ends the run: the listen command's exit does")
         // a submit with no daemon: curl fails, the request stays in the bar (checked in stage 2)
         field.text = "Open the editor and type hello"
         bar.daemonUp = true; bar.configured = true; bar.aiEnabled = true
@@ -184,20 +195,34 @@ Item {
         check(bar.sending === true && field.text === "", "submit posts and clears the field while sending")
         stage2.start()
     }
+    property int listenWaits: 0
     Timer { id: stage2; interval: 2500; onTriggered: {
         check(bar.sending === false && field.text === "Open the editor and type hello", "no daemon: request restored to the bar, status says so (" + bar.status.slice(0, 40) + ")")
         check(bar.panelMode === "closed", "no panel without a task")
+        stage2b.start()
+    } }
+    // the real listen-once may run to its 10 s timeout where a (silent) microphone exists (the VM); wait for it, up to ~30 s
+    Timer { id: stage2b; interval: 1000; repeat: true; onTriggered: {
+        if (bar.listening && ++h.listenWaits < 30) return
+        stage2b.stop(); stage2c()
+    } }
+    function stage2c() {
         check(bar.listening === false && bar.voiceHint.length > 0, "real fabos-voice listen-once failed here and the reason is in the status line: \"" + bar.voiceHint + "\"")
+        check(bar.voicePhase === "" && bar.voiceLevel === 0, "the run's phase and level are reset when it ends")
         check(statusText.visible && statusText.text === bar.voiceHint, "status line shows the voice reason")
         // synthetic CLI outcomes: the CLI's own last stderr line is what the user reads
         bar.handle("listen", 0, 4, "", "No microphone found on this computer.")
-        check(bar.voiceHint === "No microphone found on this computer.", "exit 4: stderr line becomes the status (" + bar.voiceHint + ")")
+        check(bar.voiceHint === "No microphone found — plug one in or check Fab Settings › Sound", "exit 4: the CLI's reason becomes the inline sentence (" + bar.voiceHint + ")")
         bar.handle("listen", 0, 4, "", "chime\nSpeech recognition is not available: no offline model and no cloud provider key.")
-        check(bar.voiceHint === "Speech recognition is not available: no offline model and no cloud provider key.", "exit 4: the LAST stderr line is used")
+        check(bar.voiceHint === "Speech recognition is not available — no offline model and no cloud provider key", "exit 4: the LAST stderr line is used")
+        bar.handle("listen", 0, 4, "", "Not enough free memory for offline speech recognition right now (it needs about 210 MB).")
+        check(bar.voiceHint === "Speech recognition needs 210 MB free — close some apps", "low memory names the CLI's figure (" + bar.voiceHint + ")")
+        bar.handle("listen", 0, 4, "", "Some reason the bar does not know.")
+        check(bar.voiceHint === "Some reason the bar does not know.", "an unknown CLI sentence is shown as it is")
         bar.handle("listen", 0, 127, "", "sh: 1: fabos-voice: not found")
         check(bar.voiceHint === "Voice is not installed on this machine (fabos-voice is missing)", "exit 127 => voice not installed")
         bar.handle("listen", 0, 3, "", "Sorry, I did not catch that. Say it once more?")
-        check(bar.voiceHint === "I did not catch that. Tap the mic and try again.", "exit 3 => try-again hint")
+        check(bar.voiceHint === "I did not catch that — tap the mic and speak after the chime", "exit 3 => try-again hint")
         bar.handle("listen", 0, 1, "", "Traceback…\nRuntimeError: boom")
         check(bar.voiceHint === "Voice did not work just now — RuntimeError: boom", "other failures quote the last stderr line")
         bar.voiceHint = ""
@@ -208,6 +233,17 @@ Item {
         check(bar.voiceAvailable && bar.voiceReason.indexOf("No microphone found") === 0, "STT but no mic => reason names the microphone (" + bar.voiceReason + ")")
         bar.handle("voicestatus", 0, 0, JSON.stringify({ wake: false, listening: false, stt: "whisper.cpp", tts: "espeak-ng", mic: true }))
         check(bar.voiceAvailable && bar.voiceReason === "", "fabos-voice status with STT + mic => mic ready")
+        // the microphone permission (1.0-8): off => dimmed mic with the tooltip, a tap opens Settings › Voice and never records
+        bar.handle("voicestatus", 0, 0, JSON.stringify({ wake: false, listening: false, stt: "whisper.cpp", tts: "espeak-ng", mic: true, mic_allowed: false, service: true }))
+        check(bar.voiceMicAllowed === false && bar.voiceReason === "Microphone is off in Settings", "permission off => reason 'Microphone is off in Settings' (" + bar.voiceReason + ")")
+        check(micButton.dim === true && micButton.tip === "Microphone is off in Settings" && micButton.active === true, "mic dimmed with the tooltip, still tappable")
+        var opens0 = bar.lastOpenArgs
+        bar.startListening()
+        check(bar.listening === false && bar.voiceHint.indexOf("Microphone is off in Settings") === 0 && bar.lastOpenArgs === "--settings voice", "a tap opens Fab AI Controls › Settings › Voice instead of recording (" + bar.lastOpenArgs + ")")
+        bar.voiceHint = ""
+        bar.onStatus({ mode: "auto", provider_ready: true, ai_enabled: true, provider: "claude", tasks: {}, voice: { enabled: "true", mic_allowed: "true" } })
+        check(bar.voiceMicAllowed === true && micButton.dim === false && micButton.tip === "Speak your request", "the daemon's /status voice.mic_allowed=true re-enables the mic at once")
+        bar.handle("voicestatus", 0, 0, JSON.stringify({ wake: false, listening: false, stt: "whisper.cpp", tts: "espeak-ng", mic: true, mic_allowed: true, service: true }))
         var s0 = bar.serial
         bar.refreshVoice(false)
         check(bar.serial === s0, "a fresh status (< 30 s) is not asked again")
@@ -285,7 +321,7 @@ Item {
         bar.panelMode = "min"
         check(bar.panelMode === "min" && panel.contentTarget === 40, "minimized: the panel's target is the 40 px pill (" + panel.contentTarget + ")")
         minTimer.start()
-    } }
+    }
     Timer { id: minTimer; interval: 600; onTriggered: {
         check(panel.visible && Math.abs(panel.height - 40) <= 1, "panel stays inside the applet and folds to the pill on Minimize (" + panel.height + " px)")
         check(panel.y === card.y + card.height + 8 && panel.width === card.width, "pill keeps the panel's place under the card")
@@ -459,6 +495,7 @@ Item {
         // the desktop-form mic hint lives in the status line, not the placeholder
         bar.handle("listen", 0, 4, "", "No microphone found on this computer.")
         check(statusText.visible && statusText.text === bar.voiceHint && field.placeholderText === "Ask me to do anything…", "desktop form: the voice hint is in the status line, the placeholder stays")
+        check(bar.voiceHint === "No microphone found — plug one in or check Fab Settings › Sound", "desktop form: the inline sentence (" + bar.voiceHint + ")")
         bar.voiceHint = ""
         // compact (panel) form, for real: shrink the window to a panel thickness so `compact` flips
         bar.Layout.minimumHeight = 36; bar.Layout.preferredHeight = 36
@@ -476,8 +513,8 @@ Item {
         // a failed mic tap must not be silent here either: the status line is hidden, so the placeholder + tooltip carry the reason
         bar.handle("listen", 0, 4, "", "No microphone found on this computer.")
         check(!statusText.visible, "compact: the status line under the field is hidden")
-        check(field.placeholderText === "No microphone found on this computer.", "compact: the placeholder carries the voice reason (" + field.placeholderText + ")")
-        check(bar.hoverTip === "No microphone found on this computer.", "compact: the card's tooltip carries the voice reason")
+        check(field.placeholderText === "No microphone found — plug one in or check Fab Settings › Sound", "compact: the placeholder carries the voice reason (" + field.placeholderText + ")")
+        check(bar.hoverTip === "No microphone found — plug one in or check Fab Settings › Sound", "compact: the card's tooltip carries the voice reason")
         bar.voiceHint = ""
         check(field.placeholderText === "Ask me to do anything…", "compact: placeholder back to the prompt once the hint expires")
         // the cloud hint in the compact form: the 36 px card has no room for a chip, so it is the popup's first header row
