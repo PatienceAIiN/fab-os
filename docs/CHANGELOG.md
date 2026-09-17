@@ -21,18 +21,38 @@ notes are all generated from it and never edited by hand.
 <!-- release: rev=8 tag=v1.0.7 kind=ota date=unreleased status=draft -->
 ## 1.0-8 — not yet released (over-the-air, draft)
 
-TODO — draft, not published. The maintainer finalises these bullets once the round's work has landed and been
-verified, then sets the date, removes the draft mark and re-renders. Until then nothing below reaches the website,
-the feed or GitHub.
+The second update delivered through Fab Updates. It answers the owner's second round of reports from a real laptop: battery
+use, slow app opening, a microphone that did nothing, new chats stuck as queued, a login screen that still showed another
+desktop's name, and a start-up disk-password switch that seemed not to take.
 
-- Performance and battery modes: choose Balanced, Performance or Battery saver from quick settings; the desktop and the assistant follow the choice.
-- Microphone: voice input works on machines where the microphone was never picked up, and Fab OS asks for microphone permission before the first use.
-- Several conversations at once: start a new chat with the agent while another task is still running; each keeps its own history.
-- Research and Computer-use switches in Fab AI Controls: decide whether the agent may look things up on the web and whether it may drive apps on your behalf.
-- Scheduler: ask the agent to do something later or on a schedule, then see, pause or cancel what is planned.
-- Branding sweep: the last stray names and words replaced across the desktop; fingerprint readers and cameras are recognised on more laptops.
+- Performance mode in quick settings: Power saver, Balanced, Performance, Gaming (tearing and variable refresh allowed,
+  heavy effects off) and Server (no effects, screen never blanks, no sleep). Leaving Gaming or Server puts your own
+  settings back. The always-on "Hey Fab" listener now only wakes for real speech, can switch itself off after five idle
+  minutes on battery, and pauses while the screen is locked — a setting lets you keep it always on or off.
+- Microphone: pressing the mic starts recording within a second with a live level meter, and every failure now says why
+  (no microphone, not enough memory, permission off, muted). Speech recognition needs about 210 MB free instead of 600 MB.
+  A new switch in Fab AI Controls › Settings › Voice, "Allow Fab OS to use the microphone", must be on before anything
+  records; existing installs that already used voice keep it on, fresh installs start with it off.
+- Chats run side by side: a new chat no longer waits behind another chat that is waiting for your approval, and a queued
+  reply tells you what it is waiting for.
+- Research and Computer use switches beside the ask bar and inside Fab AI Controls, per chat: with Research off the
+  assistant reads nothing from the web; with Computer use off it opens and types nothing — including through the shell.
+- Reminders: "remind me tomorrow at 9am to call the bank", "every weekday 6:30 pm gym", "in 45 minutes…" — understood
+  offline, confirmed with you when a time is unclear, shown as a desktop reminder with Done, Snooze and Open, listed in a
+  new Schedule page, and summarised in one notification when you log in. You can also mail a reminder to yourself.
+- Start-up disk password: the switch now shows what the computer will actually do at start-up, explains any mismatch and
+  offers "Fix now"; a terminal command and a how-to page cover the same ground.
+- Names: the remaining product names of the underlying desktop are replaced where you see them, including the start-up
+  splash for people who had installed earlier images; Fab Camera; fingerprint readers work for login and unlocking
+  (password always still accepted); microphone volume and mic/camera in-use indicators in quick settings.
+- Login screen: hints such as "Place your finger on the reader" are shown as hints, not as errors.
+- Installer (takes effect with the next image, not this update): full-disk encryption is offered but no longer pre-selected,
+  and every step name in the installer's side list is readable.
 
-Known limits: to be written from the round's verification.
+Known limits: the new dock, login and leave screens still need one log-out; there is no fingerprint reader or camera in the
+test machines, so those paths are verified structurally and on the software side only; the shell gating for the switches is a
+word-based rule, not a sandbox; reminders repeat daily, on weekdays, weekly or monthly only; the mail-reminder feature trusts
+the sender address in the mail header.
 
 <!-- release: rev=7 tag=v1.0.6 kind=ota date=2026-09-16 time=18:16 -->
 ## 1.0-7 — 16 September 2026 (over-the-air)
