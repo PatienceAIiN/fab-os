@@ -18,16 +18,37 @@ Measured after installing the shipped 1.0-7 packages into a 1.0-6 disk, rebootin
 the session alone for 3 minutes, then sampling 60 s (`tests/perf/sample.py`: `/proc/<pid>/stat` deltas, context
 switches summed over every thread, `smaps_rollup`, `/proc/stat`, `/proc/interrupts`).
 
-«BEFORE_IDLE_TABLE»
+System while idle (1.0-7): CPU busy **2.3 % of one core** (2 vCPU), **1.53 task creations/s**, 496 context switches/s,
+554 interrupts/s (378 timer), load 0.08, MemAvailable 817 MB of 1957, swap 5 MB used.
+
+| pid | process | CPU % (one core) | wake-ups/s | RSS MB | PSS MB |
+|---|---|---|---|---|---|
+| 772 | pipewire | 0.37 | 47.4 | 12.5 | 5.4 |
+| 841 | pw-record (the spotter's recorder) | 0.37 | 46.9 | 9.7 | 3.5 |
+| 1033 | plasmashell | 0.32 | 12.4 | 449.2 | 321.8 |
+| 774 | fabos_voiced.py | 0.28 | 48.0 | 42.7 | 30.7 |
+| 872 | kwin_wayland | 0.28 | 8.2 | n/a¹ | n/a¹ |
+| 1096 | org_kde_powerdevil | 0.07 | 12.0 | n/a¹ | n/a¹ |
+| 842 | pocketsphinx (silent microphone) | 0.05 | 10.0 | 30.4 | 27.9 |
+| 771 | fabos_agentd.py | 0.03 | 2.2 | 42.1 | 30.1 |
+| 994 | kded6 | 0.02 | 0.3 | 159.0 | 56.5 |
+| 1301 | xdg-desktop-portal-gtk | 0.02 | 0.3 | 23.3 | 12.3 |
+| 788 | wireplumber | 0.02 | 0.2 | 21.9 | 10.3 |
+
+¹ `smaps_rollup` is not readable for processes that made themselves non-dumpable (KWin, PowerDevil).
+Largest by PSS: plasmashell 322 MB, DiscoverNotifier ("Fab Software Updater") 148 MB, kded6 57 MB, xdg-desktop-portal
+41 MB, ksmserver 32 MB, kaccess 31 MB, fabos_voiced 31 MB, fabos_agentd 30 MB, pocketsphinx 28 MB, Xwayland 27 MB.
 
 Findings, each one verified in the guest rather than assumed:
 
-- **The always-on "Hey Fab" listener was the largest steady consumer.** `pw-record | pocketsphinx` decoded the
-  microphone stream continuously: pocketsphinx alone «BEFORE_PS_CPU» of a core with «BEFORE_PS_WAKE» wake-ups/s, pw-record
-  «BEFORE_PW_WAKE» wake-ups/s, the python daemon polling its pipe with a 1 s `select`. On a laptop this also keeps the
-  audio codec and its DMA engine powered the whole time the lid is open — a steady drain that no CPU number shows.
-- **plasmashell and kwin_wayland were quiet** («BEFORE_SHELL_CPU» / «BEFORE_KWIN_CPU» of a core): the 1.0-3 idle-budget work
-  (docs/LOW-RAM.md) holds. Tasks created system-wide: «BEFORE_TASKS»/s.
+- **The always-on "Hey Fab" capture chain was the largest steady consumer**: pipewire + pw-record + the daemon +
+  pocketsphinx = **1.07 % of a core and ~152 wake-ups/s** while nothing happened (pw-record 47/s and pipewire 47/s from
+  the 42 ms capture quantum, the daemon 48/s reading the pipe, pocketsphinx 10/s). The emulated microphone is silent, so
+  the decoder itself idled at 0.05 %; fed real room noise it decodes continuously — measured in the image at ~1.5 % of a
+  core (60 s of audio = 0.9 s CPU). On a laptop the open capture stream also keeps the audio codec and its DMA engine
+  powered the whole time the lid is open — a steady drain that no CPU number shows.
+- **plasmashell and kwin_wayland were quiet** (0.32 % / 0.28 % of a core, 12 and 8 wake-ups/s): the 1.0-3 idle-budget work
+  (docs/LOW-RAM.md) holds. Everything else was below 0.1 %.
 - **The local model was not resident**: `fabos-llama.socket` carries `ConditionMemory=>3G`, so at 2 GB it is not even
   listening (ConditionResult=no); on a bigger machine nothing runs until the first request, the proxy exits after
   10 idle minutes (`--exit-idle-time=10min`) and `StopWhenUnneeded=yes` unloads the model. No preload at login.
@@ -35,9 +56,18 @@ Findings, each one verified in the guest rather than assumed:
   exactly that key).
 - **power-profiles-daemon was installed and running**, but the quick-settings battery card only offered its three
   profiles and nothing tied them to the compositor, the listener or the display policy.
-- Memory: «BEFORE_MEM». The biggest resident processes were plasmashell («BEFORE_SHELL_PSS» PSS) and the Discover update
-  notifier (rebranded "Fab Software Updater", «BEFORE_DISCOVER_PSS» PSS while it checks for updates after a package
-  install) — neither is the lag the owner describes; with memory free, lag is CPU and I/O scheduling.
+- **KWin's effect keys**: `/etc/xdg/kwinrc` enabled `kwin4_effect_translucencyEnabled`, a key KWin 6.6 never reads
+  (scripted effects are keyed by their plain id — `translucency`, `fade`, `scale`, `dimscreen`), so that effect was never
+  on; 1.0-8 names the key correctly and keeps it off. In the software-rendered VM KWin loads no animation effect at all
+  (`animationsSupported()` is false on llvmpipe); only the rounded-corners plugin is active. Blur was already off at 2 GB
+  (`lowram-tune.sh`), `AllowTearing=false`, `AnimationDurationFactor=0.5`, VRR "Never" (the virtual output is incapable).
+- Memory: 817 MB available of 1957, 5 MB of the 978 MB zram in use. The biggest resident processes were plasmashell
+  (322 MB PSS) and the Discover update notifier (148 MB PSS, still, 3 minutes after login) — neither is the lag the owner
+  describes; with memory free, lag is CPU and I/O scheduling. (The notifier is the "Fab Software Updater"; its footprint
+  is a follow-up for the owner to decide, not changed here.)
+- Session start: `systemd-analyze --user blame` puts plasma-kcminit at 1.5 s, the polkit agent 1.1 s, PowerDevil 1.0 s;
+  boot to graphical.target 5.2 s; `systemd --user` `DefaultTimeoutStopSec` was 1 min 30 s. 33 journal warnings, none
+  about performance (locale, missing evolution registry, no backlight in the VM).
 - The kernel was at `vm.swappiness=100`, zram `min(ram/2, 4096)` zstd, systemd-oomd at 70 % / 20 s — exactly what
   `fabos-desktop` ships. (A machine that shows `vm.swappiness=180` and a 7.1 GiB zram device is not running these
   files; `sysctl vm.swappiness` and `systemctl cat dev-zram0.swap` tell which file won.)
