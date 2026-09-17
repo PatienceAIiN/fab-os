@@ -11,6 +11,11 @@ HTTP API on 127.0.0.1:8790 (bearer token in $XDG_RUNTIME_DIR/fabos-agent/token, 
   to the request, separated by FOLLOWUP_MARK, so the model has continuity and UIs can show only the user's own words.
   POST /approvals/{id} {decision}      PUT  /settings {key: value,...}         POST /secrets {name,value}
   GET  /approvals/pending?task_id=N    (optional filter; every item carries its task_id)
+  Research / Computer use (docs/design/MODES.md): settings agent.research, agent.computer_use = the defaults for new chats ("true"|"false",
+       also under /status.capabilities); POST /tasks {research?, computer_use?} starts a chat with its own choice, PATCH /tasks/{id}
+       {research | computer_use: bool} changes it for the whole chat (stored on the root task); GET /tasks/{id} carries the effective
+       values + capabilities_source ("chat" | "global"). Off = the tools are absent from the model's list, the prompt says so, and a
+       call that still names one is refused (step decision "off-for-this-chat").
   POST /providers/test {provider, api_key?, base_url?, model?} -> {ok, latency_ms, detail, models_sample?}
        a real, lightweight authenticated call to the provider (its model list); 401/403 = "key rejected",
        network failure = "cannot reach provider". Keys are never logged.
@@ -77,6 +82,90 @@ MODE_ORDER = ("ask", "auto", "bypass")          # least to most permissive; poli
 POLICY_FILE = os.environ.get("FABOS_POLICY_FILE", "/etc/fabos/policy.json")
 POLICY_KEYS = ("mode_max", "providers_allowed", "cloud_allowed", "tools_denied", "hosts_allowed", "audit_export_dir", "require_password_for_root", "sandbox_network")
 MANAGED_MSG = "Managed by your organisation"
+
+# ---- per-chat capabilities (docs/design/MODES.md): the two switches of the ask bar and Fab AI Controls.
+#   research     -> the network tools (web_fetch) and the research style (gather, then cite sources)
+#   computer_use -> the GUI tools (open_app, type_text: opening applications and typing into them on the user's screen)
+# Off = the tools are ABSENT from the model's tool list, the prompt says so, and a call that still names one is refused
+# deterministically in Agent._gate (decision "off-for-this-chat"). The user's defaults are the settings agent.research /
+# agent.computer_use ("true" | "false"); a chat remembers its own choice on its root task (tasks.research /
+# tasks.computer_use, NULL = inherit). Ask / auto / bypass permission modes are untouched by either switch.
+CAPABILITIES = {"research": {"setting": "agent.research", "tools": ("web_fetch",), "label": "Research"},
+                "computer_use": {"setting": "agent.computer_use", "tools": ("open_app", "type_text"), "label": "Computer use"}}
+CAPABILITY_DEFAULTS = {v["setting"]: "true" for v in CAPABILITIES.values()}
+# What the agent tells the user when a request needs a switched-off capability (the prompt quotes it; FakeProvider says it verbatim).
+CAPABILITY_OFF_REPLY = {"research": "Research is off for this chat, so I cannot look that up on the web. Turn on the Research switch in the bar or in Fab AI Controls and ask me again.",
+                        "computer_use": "Computer use is off for this chat, so I cannot open or type into applications. Turn on the Computer use switch in the bar or in Fab AI Controls and ask me again, or ask me to do it with a command instead."}
+
+
+def as_bool(v, default=None):
+    """'true'/'false'/1/0/on/off/yes/no (any case) or a bool -> bool; None when it is none of these (the caller decides)."""
+    if isinstance(v, bool):
+        return v
+    t = str(v if v is not None else "").strip().lower()
+    if t in ("true", "1", "on", "yes"):
+        return True
+    if t in ("false", "0", "off", "no"):
+        return False
+    return default
+
+
+def capabilities(store, task=None):
+    """The effective Research / Computer use for a task: the task's own column, else its chat's root task's column, else the
+    user's default setting. Returns {"research": bool, "computer_use": bool, "source": "chat" | "global"}."""
+    root = None
+    if task and task.get("id"):
+        rid = root_task_id(store, task["id"])
+        if rid and rid != task["id"]:
+            root = store.one("SELECT research, computer_use FROM tasks WHERE id=?", rid)
+    out, source = {}, "global"
+    for key, spec in CAPABILITIES.items():
+        v = task.get(key) if task else None
+        if v is None and root:
+            v = root.get(key)
+        if v is None:
+            out[key] = store.setting(spec["setting"], "true") == "true"
+        else:
+            out[key] = bool(int(v)) if not isinstance(v, bool) else v
+            source = "chat"
+    out["source"] = source
+    return out
+
+
+def capability_blocked(caps):
+    """The tool names a switched-off capability takes away (empty set when everything is on or caps is None)."""
+    out = set()
+    for key, spec in CAPABILITIES.items():
+        if caps is not None and caps.get(key) is False:
+            out.update(spec["tools"])
+    return out
+
+
+def capability_for_tool(name):
+    for key, spec in CAPABILITIES.items():
+        if name in spec["tools"]:
+            return key
+    return None
+
+
+def capability_prompt(caps):
+    """The prompt lines for the two switches (free-form loop and the stepwise planner alike): the research style when it is on,
+    what is missing and what to tell the user when either is off."""
+    lines = []
+    if caps.get("research", True):
+        lines.append("Research is ON for this chat: when a request needs current or external information, gather it with web_fetch (start from a "
+                     "reputable page, follow links, several pages when one is not enough), then answer with the facts and end with the sources as a "
+                     "short 'Sources:' list of the URLs you read. Never invent a URL or a fact you did not read.")
+    else:
+        lines.append("Research is OFF for this chat: web_fetch is not available and you must not reach the internet with run_shell either (no curl, "
+                     "wget, pip or apt downloads). Answer from what you know or from this computer. If the request needs the web, say: \"%s\"" % CAPABILITY_OFF_REPLY["research"])
+    if caps.get("computer_use", True):
+        lines.append("Computer use is ON for this chat: you may open applications (open_app) and type into them (type_text) — show your work as described above.")
+    else:
+        lines.append("Computer use is OFF for this chat: open_app and type_text are not available; nothing is opened or typed on the user's screen. Do "
+                     "the work with run_shell and the file tools, or answer directly, and skip the 'show your work' typing. If the request is to open or "
+                     "type into an application, say: \"%s\"" % CAPABILITY_OFF_REPLY["computer_use"])
+    return lines
 
 
 class Policy:
@@ -256,6 +345,10 @@ class Store:
                 self.db.execute("ALTER TABLE steps ADD COLUMN %s TEXT" % col)
         if "hmac" not in {r["name"] for r in self.db.execute("PRAGMA table_info(activity)").fetchall()}:
             self.db.execute("ALTER TABLE activity ADD COLUMN hmac TEXT")      # rows written before this column stay unsigned (legacy)
+        tcols = {r["name"] for r in self.db.execute("PRAGMA table_info(tasks)").fetchall()}
+        for col in CAPABILITIES:                                               # 1.0-8: a chat's Research / Computer use choice lives on its root task (NULL = the user's default)
+            if col not in tcols:
+                self.db.execute("ALTER TABLE tasks ADD COLUMN %s INTEGER" % col)
         self.db.commit()
 
     def columns(self, table):
@@ -1260,13 +1353,14 @@ def persona_prompt(store):
     return PERSONA_PROMPTS.get(p, "")
 
 
-def build_system_prompt(store, mode, apps):
+def build_system_prompt(store, mode, apps, caps=None):
     names = ", ".join(sorted(a["name"] for a in apps)[:120])
     system = SYSTEM_PROMPT.format(app=APP, user=os.environ.get("USER", "user"), home=HOME, app_count=len(apps), app_names=names,
                                   now=datetime.now().strftime("%Y-%m-%d %H:%M %Z"), mode=mode)
     persona = persona_prompt(store)
     managed = POLICY.prompt_line()
-    return system + ("\n- " + persona if persona else "") + ("\n- " + managed if managed else "")
+    lines = capability_prompt(caps if caps is not None else capabilities(store))     # the chat's Research / Computer use switches
+    return system + "".join("\n- " + l for l in lines) + ("\n- " + persona if persona else "") + ("\n- " + managed if managed else "")
 
 
 # ---- narration: one human sentence per tool step (Indian English), filled deterministically at insert time and on
@@ -1596,13 +1690,26 @@ def network_status(store=None):
 NET_SKIPPED = {"online": None, "target": "", "checked": 0.0, "age_s": None, "skipped": True}     # the task names no web page or URL: no probe
 
 
-def local_system_prompt(mode, net):
+def local_system_prompt(mode, net, caps=None):
     online = net.get("online")
     line = ("ONLINE — web_fetch works, but only for tasks that name a web page or URL; the clock, files, folders and apps are local and never need it"
             if online else "OFFLINE right now (no web_fetch; the clock, files, folders and apps still work)" if online is False
             else "not checked — this task names no web page or URL, so nothing in it needs the internet; the clock, files, folders and apps are local" if net.get("skipped")
             else "unknown")
-    return LOCAL_SYSTEM_PROMPT.format(app=APP, user=os.environ.get("USER", "user"), home=HOME, date=datetime.now().strftime("%Y-%m-%d"), net=line, mode=mode, browser=BROWSER)
+    prompt = LOCAL_SYSTEM_PROMPT.format(app=APP, user=os.environ.get("USER", "user"), home=HOME, date=datetime.now().strftime("%Y-%m-%d"), net=line, mode=mode, browser=BROWSER)
+    return prompt + capability_lines_short(caps)
+
+
+def capability_lines_short(caps):
+    """The stepwise prompts' (small-model) version of the switches: one short line per switch that is OFF, nothing when both are on."""
+    if caps is None:
+        return ""
+    out = ""
+    if caps.get("research", True) is False:
+        out += "\nResearch is OFF for this chat: there is no web_fetch and no curl/wget; if the task needs the web, reply: %s" % CAPABILITY_OFF_REPLY["research"]
+    if caps.get("computer_use", True) is False:
+        out += "\nComputer use is OFF for this chat: there is no open_app and no type_text; do the work with commands and files, or reply: %s" % CAPABILITY_OFF_REPLY["computer_use"]
+    return out
 
 
 def parse_plan(text, allowed):
@@ -2507,6 +2614,22 @@ class FakeProvider:
 
         def tu(name, inp):
             return {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": name, "input": inp}
+
+        def last_result():
+            """The most recent tool result's JSON (what a real model reads before it answers)."""
+            out = None
+            for mm in messages:
+                if mm["role"] == "user" and not isinstance(mm["content"], str):
+                    for b in mm["content"]:
+                        if b.get("type") == "tool_result":
+                            try:
+                                out = json.loads(b["content"])
+                            except (ValueError, TypeError):
+                                out = None
+            return out if isinstance(out, dict) else {}
+        # the tool list the daemon offered: a switched-off capability (Research / Computer use) leaves its tools out, and like a real
+        # model this script then says so instead of calling them (policy-denied tools are still called: the daemon records the denial)
+        offered = {t["name"] for t in tools} if tools else None
         mk = re.search(r"create\s+(\S+\.txt)\s+(?:next to it\s+)?with the word\s+(\w+)", req, re.I)
         if mk:
             # "create X.txt with the word W"; a follow-up like "create b.txt next to it" only works if the context of the
@@ -2559,6 +2682,16 @@ class FakeProvider:
                 addr = em.group(0) if em else "someone@example.com"
                 plan.append(tu("send_email", {"to": addr, "subject": "Note from Fab OS", "body": text}))
                 plan.append(tu("schedule_watch", {"kind": "email_reply", "from_contains": addr, "notify_message": "Reply received to your Fab OS note", "interval_minutes": 2}))
+        elif re.search(r"\bopen (?:the )?(?:files app|file manager|fab files|dolphin)\b", low):
+            # the Computer use switch (docs/design/MODES.md): with it on, ONE open_app step; with it off the tool is not offered (see below)
+            plan = [tu("open_app", {"app": "dolphin"})]
+            final = "Done, I have opened Fab Files for you. Anything else?"
+        elif re.search(r"\b(?:look up|lookup|look into|research|find out|check)\b.*\bhttps?://", low):
+            # the Research switch: gather with web_fetch, then answer with the fact AND the source (the research style the prompt asks for)
+            url = re.search(r"(https?://\S+)", req, re.I).group(1).rstrip(".,;)")
+            plan = [tu("web_fetch", {"url": url})]
+            got = " ".join(str(last_result().get("text") or "").split())
+            final = "I looked it up: %s\n\nSources:\n- %s" % (got[:160] or "the page had no readable text", url)
         elif "fail" in low:
             plan = [tu("run_shell", {"command": "exit 3"})]
         elif "long sleep" in low:
@@ -2594,6 +2727,11 @@ class FakeProvider:
             plan = [tu("web_fetch", {"url": re.search(r"\bfetch\s+(https?://\S+)", req, re.I).group(1)})]
         else:
             plan = [tu("run_shell", {"command": "uname -a; date"})]
+        if offered is not None:
+            for c in plan:
+                cap = capability_for_tool(c["name"])
+                if cap and c["name"] not in offered:            # Research / Computer use is off for this chat: no such step, the agreed sentence instead
+                    return {"content": [{"type": "text", "text": CAPABILITY_OFF_REPLY[cap]}], "stop_reason": "end_turn"}
         if n_results < len(plan):
             return {"content": [{"type": "text", "text": "Step %d/%d" % (n_results + 1, len(plan))}, plan[n_results]], "stop_reason": "tool_use"}
         return {"content": [{"type": "text", "text": final or "Done: executed %d steps for '%s'." % (len(plan), req[:60])}], "stop_reason": "end_turn"}
@@ -2801,8 +2939,13 @@ class Agent:
                 LOG("run_shell sandbox:", self._sandbox)
             return self._sandbox
 
-    def tools_for_model(self):
-        return [t for t in TOOLS if not POLICY.tool_denied(t["name"])]
+    def tools_for_model(self, caps=None):
+        """The tool list the model sees: the administrator's tools_denied and the chat's switched-off capabilities are simply absent."""
+        blocked = capability_blocked(caps)
+        return [t for t in TOOLS if not POLICY.tool_denied(t["name"]) and t["name"] not in blocked]
+
+    def capabilities(self, task=None):
+        return capabilities(self.store, task)
 
     def mode(self, task=None):
         """The effective permission mode: the task's or the user's choice, clamped to the administrator's mode_max."""
@@ -2813,13 +2956,28 @@ class Agent:
         return thr is not None and RISK.index(risk) >= RISK.index(thr)
 
     # -- lifecycle
-    def create(self, request, title=None, mode=None, parent_id=None, actor="user"):
-        cur = self.store.q("INSERT INTO tasks(title,request,status,mode,created,updated,parent_id) VALUES(?,?,?,?,?,?,?)",
-                           (title or request.strip().split("\n")[0])[:80], request, "queued", mode, time.time(), time.time(), parent_id)
+    def create(self, request, title=None, mode=None, parent_id=None, actor="user", caps=None):
+        """caps: {"research": bool, "computer_use": bool} (either key optional) — a new chat starts with these; for a follow-up
+        they are written to the chat's root task, so the whole thread remembers them (NULL = the user's default)."""
+        caps = {k: v for k, v in (caps or {}).items() if k in CAPABILITIES and isinstance(v, bool)}
+        cur = self.store.q("INSERT INTO tasks(title,request,status,mode,created,updated,parent_id,research,computer_use) VALUES(?,?,?,?,?,?,?,?,?)",
+                           (title or request.strip().split("\n")[0])[:80], request, "queued", mode, time.time(), time.time(), parent_id,
+                           None if parent_id else caps.get("research"), None if parent_id else caps.get("computer_use"))
         tid = cur.lastrowid
+        if parent_id and caps:
+            self.set_capabilities(parent_id, caps, actor=actor)
         self.store.activity(actor, "task_created", tid, request[:500])
         self.start(tid)
         return tid
+
+    def set_capabilities(self, tid, caps, actor="user"):
+        """Remember Research / Computer use for the chat that task `tid` belongs to (written on its root task). Returns the root id."""
+        root = root_task_id(self.store, tid) or tid
+        for key, on in caps.items():
+            if key in CAPABILITIES and isinstance(on, bool):
+                self.store.q("UPDATE tasks SET %s=? WHERE id=?" % key, 1 if on else 0, root)
+                self.store.activity(actor, "chat_capability", root, "%s=%s" % (key, "on" if on else "off"))
+        return root
 
     def start(self, tid):
         threading.Thread(target=self._run, args=(tid,), daemon=True, name="task-%d" % tid).start()
@@ -2883,6 +3041,14 @@ class Agent:
             sid = self.store.step(tid, "tool_call", name, json.dumps(inp)[:20000], "", risk, "denied-by-policy", narration=narration)
             self.store.activity("policy", "tool_denied", tid, name)
             return sid, False, risk, reason
+        if name in capability_blocked((task or {}).get("_caps")):
+            # the chat's own switch (Research / Computer use off): the tool was not offered; a model that still names it is refused here,
+            # deterministically, and told which switch turns it on — never asked, never run
+            cap = capability_for_tool(name)
+            reason = "%s is off for this chat: the %s tool is not available" % (CAPABILITIES[cap]["label"], name)
+            sid = self.store.step(tid, "tool_call", name, json.dumps(inp)[:20000], "", risk, "off-for-this-chat", narration=narration)
+            self.store.activity("agent", "tool_off_for_chat", tid, name)
+            return sid, False, risk, reason
         if not self.needs_approval(risk, mode):
             sid = self.store.step(tid, "tool_call", name, json.dumps(inp)[:20000], "", risk, "auto-approved", narration=narration)
             return sid, True, risk, reason
@@ -2919,7 +3085,11 @@ class Agent:
                 self.store.step(tid, "error", "provider", "", str(e))
                 notify(APP + ": task failed", str(e)[:200])
                 return
-            tools = self.tools_for_model()
+            task["_caps"] = self.capabilities(task)     # the chat's Research / Computer use: tools absent, prompt told, calls refused (_gate)
+            tools = self.tools_for_model(task["_caps"])
+            if capability_blocked(task["_caps"]):
+                self.store.step(tid, "verify", "capabilities", "", "off for this chat: " + ", ".join(CAPABILITIES[k]["label"] for k in CAPABILITIES if task["_caps"].get(k) is False)
+                                + " (tools not offered: " + ", ".join(sorted(capability_blocked(task["_caps"]))) + ")")
             state = {"final": ""}          # the last assistant text so far: saved as the result even when the task fails
 
             def usage(i, o):
@@ -2948,7 +3118,11 @@ class Agent:
         """Gate, run and record one tool call; returns (out, err, inp)."""
         inp = c["input"] if isinstance(c["input"], dict) else {}
         sid, ok, risk, reason = self._gate(tid, task, c["name"], inp)
-        if not ok:
+        if not ok and " is off for this chat: " in reason:
+            cap = capability_for_tool(c["name"])
+            out, err = {"error": "%s. Do not retry it; %s" % (reason, "tell the user: " + CAPABILITY_OFF_REPLY.get(cap, "the switch turns it on."))}, True
+            done_line = "Sorry, %s is off for this chat." % CAPABILITIES[cap]["label"].lower() if cap else "Sorry, that is off for this chat."
+        elif not ok:
             out, err = {"error": "Denied by user/policy (%s: %s). Do not retry the same action; explain or find an allowed way." % (risk, reason)}, True
             done_line = "Sorry, that did not work: %s." % ("your organisation does not allow it" if reason.startswith(MANAGED_MSG) else "you did not allow it")
         else:
@@ -2959,7 +3133,7 @@ class Agent:
 
     def _run_freeform(self, tid, task, prov, usage, tools, state):
         """The free-form tool loop the cloud providers run: the model sees the whole conversation and decides when it is done."""
-        system = build_system_prompt(self.store, self.mode(task), installed_apps())
+        system = build_system_prompt(self.store, self.mode(task), installed_apps(), task.get("_caps"))
         messages = [{"role": "user", "content": task["request"]}]
         limit = self.result_limit(prov)
         final = ""
@@ -2993,9 +3167,10 @@ class Agent:
         return final
 
     # ---- the small-model driver (ADR-0020): PLAN -> EXECUTE one tool per turn -> VERIFY -> FINISH
-    def _plan(self, tid, prov, request, net, usage, tools):
+    def _plan(self, tid, prov, request, net, usage, tools, caps=None):
         allowed = [t for t in STEP_TOOLS if t == "reply" or any(x["name"] == t for x in tools) or (t == "save_result" and any(x["name"] == "write_file" for x in tools))]
-        system = PLAN_SYSTEM.format(app=APP, home=HOME, browser=BROWSER)
+        blocked = capability_blocked(caps)
+        system = PLAN_SYSTEM.format(app=APP, home=HOME, browser=BROWSER) + capability_lines_short(caps)
         pl = task_paths_line(request)
         user = "Task from the user:\n" + request.strip() + ("\n" + pl if pl else "") + "\n\nReturn the JSON plan."
         why = None
@@ -3008,6 +3183,16 @@ class Agent:
             if plan:
                 for note in plan_sanity(request, plan, image_capability(self.store)["ready"]):
                     self.store.step(tid, "verify", "plan", "", note)
+                gone = sorted({s["tool"] for s in plan if s["tool"] in blocked})
+                if gone:
+                    # plan_sanity may put open_app / type_text back in ("show your work"); a switched-off capability wins — those steps go,
+                    # and a plan with nothing else left ends honestly with the switch that would allow it
+                    keep = [s for s in plan if s["tool"] not in blocked]
+                    self.store.step(tid, "verify", "plan", "", "dropped %d step(s) [%s]: %s off for this chat" % (
+                        len(plan) - len(keep), "/".join(gone), " and ".join(sorted({CAPABILITIES[capability_for_tool(g)]["label"] for g in gone}))))
+                    plan[:] = keep
+                    if not plan:
+                        raise RuntimeError(CAPABILITY_OFF_REPLY[capability_for_tool(gone[0])])
                 self.store.step(tid, "assistant", prov.name, "", "Plan:\n" + "\n".join("%d. [%s] %s" % (i + 1, s["tool"], s["goal"]) for i, s in enumerate(plan)))
                 return plan
             self.store.step(tid, "verify", "plan", (text or "")[:2000], "invalid plan (%s)%s" % (why, "; asking again with the error shown" if attempt < 2 else ""))
@@ -3032,9 +3217,9 @@ class Agent:
         # A copy, a count or a note never makes the agent touch the network (README "Nothing leaves your machine", legal/PRIVACY.md).
         net = network_status(self.store) if WEB_WORDS_RE.search(" ".join(request.lower().split())) else dict(NET_SKIPPED)
         mode = self.mode(task)
-        system = local_system_prompt(mode, net)
+        system = local_system_prompt(mode, net, task.get("_caps"))
         self_check = self.store.setting("agent.stepwise_selfcheck", "true") == "true"
-        plan = self._plan(tid, prov, request, net, usage, tools)
+        plan = self._plan(tid, prov, request, net, usage, tools, task.get("_caps"))
         exec_tools = [t for t in tools if t["name"] in STEP_TOOLS]
         if any(t["name"] == "write_file" for t in exec_tools):
             exec_tools.append(SAVE_RESULT_TOOL)             # driver-only: the previous output reaches the file verbatim, the model never retypes it
@@ -4527,6 +4712,8 @@ def make_handler(store, agent, token):
                                         "mail_ready": mail_ready(store, mcfg), "mail_provider": mcfg["provider"], "mail_address": mcfg["address"], "mail_auth": mcfg["auth"], "tasks": counts,
                                         "pending_approvals": store.one("SELECT COUNT(*) n FROM approvals WHERE status='pending'")["n"],
                                         "active_watches": store.one("SELECT COUNT(*) n FROM watches WHERE status='active'")["n"],
+                                        # the Research / Computer use defaults for a new chat (docs/design/MODES.md); a chat's own choice is on GET /tasks/{id}
+                                        "capabilities": {k: v for k, v in capabilities(store).items() if k != "source"},
                                         "latest": store.all("SELECT id,title,status,updated FROM tasks ORDER BY updated DESC LIMIT 3")})
             if p == "/settings":
                 s = {r["key"]: r["value"] for r in store.all("SELECT * FROM settings")}
@@ -4536,6 +4723,8 @@ def make_handler(store, agent, token):
                 s.setdefault("ui.show_raw", "false")     # Fab AI Controls: show commands / raw tool output in chats
                 s.setdefault("ui.persona", PERSONA_DEFAULT)
                 s.setdefault("agent.driver", "")         # "" = the provider decides (local -> stepwise), or stepwise | freeform (ADR-0020)
+                for k, d in CAPABILITY_DEFAULTS.items():  # agent.research / agent.computer_use: the defaults for new chats (docs/design/MODES.md)
+                    s.setdefault(k, d)
                 for k, d in VOICE_DEFAULTS.items():
                     s.setdefault(k, d)
                 for k, v in PROVIDERS.items():
@@ -4569,6 +4758,9 @@ def make_handler(store, agent, token):
                 t["approvals"] = store.all("SELECT * FROM approvals WHERE task_id=? ORDER BY id", t["id"])
                 t["watches"] = store.all("SELECT * FROM watches WHERE task_id=? ORDER BY id", t["id"])
                 t["questions"] = store.all("SELECT * FROM questions WHERE task_id=? ORDER BY id", t["id"])
+                caps = capabilities(store, t)             # the chat's EFFECTIVE Research / Computer use (own -> root -> default); the UIs' strips read these
+                t.update({k: v for k, v in caps.items() if k != "source"})
+                t["capabilities_source"] = caps["source"]
                 return self._send(200, t)
             if p == "/approvals/pending":
                 if qs.get("task_id"):
@@ -4717,7 +4909,14 @@ def make_handler(store, agent, token):
                     if not parent:
                         return self._send(404, {"error": "no such parent task"})
                     request = followup_request(store, parent, b["request"])
-                tid = agent.create(request, b.get("title") or b["request"].strip().split("\n")[0][:80], b.get("mode"), parent_id=parent)
+                caps = {}
+                for k in CAPABILITIES:                    # research / computer_use: the chat starts with these (a follow-up writes them to its chat)
+                    if k in b:
+                        v = as_bool(b[k])
+                        if v is None:
+                            return self._send(400, {"error": "%s must be true or false" % k})
+                        caps[k] = v
+                tid = agent.create(request, b.get("title") or b["request"].strip().split("\n")[0][:80], b.get("mode"), parent_id=parent, caps=caps)
                 return self._send(201, {"id": tid, "status": "queued", "parent_id": parent})
             m = re.match(r"^/tasks/(\d+)/(cancel|retry|answer|feedback)$", p)
             if m:
@@ -4794,6 +4993,10 @@ def make_handler(store, agent, token):
                         notify(APP, "System-Wide AI is now %s" % ("ON" if v == "true" else "OFF"))
                     if k in ("voice.enabled", "voice.speak_replies", "voice.offline_only", "ui.show_raw"):
                         v = "true" if str(v).lower() in ("true", "1", "on", "yes") else "false"
+                    if k in CAPABILITY_DEFAULTS:           # agent.research / agent.computer_use: the defaults for new chats; existing chats keep their own choice
+                        if as_bool(v) is None:
+                            return self._send(400, {"error": "%s must be true or false" % k})
+                        v = "true" if as_bool(v) else "false"
                     store.set_setting(k, v)
                     store.activity("user", "setting", None, "%s=%s" % (k, v if "pass" not in k else "***"))
                 return self._send(200, {"ok": True})
@@ -4811,9 +5014,21 @@ def make_handler(store, agent, token):
                 t = store.one("SELECT * FROM tasks WHERE id=?", m.group(1))
                 if not t:
                     return self._send(404, {"error": "no such task"})
+                caps = {}
+                for k in CAPABILITIES:                    # {research | computer_use: bool}: the chat's switch, remembered on its root task (any task of the chat may be named)
+                    if k in b:
+                        v = as_bool(b[k])
+                        if v is None:
+                            return self._send(400, {"error": "%s must be true or false" % k})
+                        caps[k] = v
+                if caps:
+                    root = agent.set_capabilities(t["id"], caps)
+                    eff = capabilities(store, store.one("SELECT * FROM tasks WHERE id=?", root))
+                    if not any(k in b for k in ("title", "request", "mode")):
+                        return self._send(200, dict({"ok": True, "root_id": root}, **{k: v for k, v in eff.items() if k != "source"}))
                 store.q("UPDATE tasks SET title=COALESCE(?,title), request=COALESCE(?,request), mode=COALESCE(?,mode), updated=? WHERE id=?",
                         b.get("title"), b.get("request"), b.get("mode"), time.time(), t["id"])
-                store.activity("user", "task_edited", t["id"], json.dumps(b)[:300])
+                store.activity("user", "task_edited", t["id"], json.dumps({k: v for k, v in b.items() if k not in CAPABILITIES})[:300])
                 return self._send(200, {"ok": True})
             self._send(404, {"error": "not found"})
 
