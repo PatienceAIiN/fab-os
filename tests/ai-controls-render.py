@@ -66,9 +66,16 @@ FAKE_VOICE = r'''#!/usr/bin/env python3
 import json, sys
 args = sys.argv[1:]
 open(%(log)r, "a").write(" ".join(args) + "\n")
+verbose = args[:1] == ["-v"]
+if verbose:
+    args = args[1:]
 cmd = args[0] if args else ""
 if cmd == "status":
-    print(json.dumps({"wake": False, "listening": False, "stt": "whisper.cpp", "tts": "espeak-ng", "mic": True})); sys.exit(0)
+    st = {"wake": False, "listening": False, "stt": "whisper.cpp", "tts": "espeak-ng", "mic": True, "mic_allowed": %(mic_allowed)r, "service": True,
+          "mic_reason": "", "stt_reason": "", "tts_reason": ""}
+    if verbose:
+        st.update({"source": "alsa_input.pci-0000_00_1f.3.analog-stereo", "source_description": "Built-in Audio Analog Stereo"})
+    print(json.dumps(st)); sys.exit(0)
 if cmd == "doctor":
     if %(old)r:
         sys.stderr.write("usage: fabos-voice {listen-once,say,status,wake,chime}\nfabos-voice: error: argument cmd: invalid choice: 'doctor'\n"); sys.exit(2)
@@ -81,14 +88,17 @@ if cmd == "say":
         sys.stderr.write("fabos-voice say: error: unrecognized arguments: --test\n"); sys.exit(2)
     sys.exit(0)
 if cmd == "listen-once":
+    if "--progress" in args:      # 1.0-8: the live state file the composer polls
+        p = args[args.index("--progress") + 1]
+        open(p, "w").write(json.dumps({"state": "error", "reason": %(listen_err)r, "code": %(listen_code)d, "level": 0, "peak": 0, "speech": False}))
     sys.stderr.write(%(listen_err)r + "\n"); sys.exit(%(listen_code)d)
 sys.exit(0)
 '''
 
 
-def write_fake_voice(path, log, variant="new", old=False, listen_err="No microphone found on this computer.", listen_code=3):
+def write_fake_voice(path, log, variant="new", old=False, listen_err="No microphone found on this computer.", listen_code=3, mic_allowed=True):
     with open(path, "w") as f:
-        f.write(FAKE_VOICE % {"variant": variant, "log": log, "old": old, "listen_err": listen_err, "listen_code": listen_code})
+        f.write(FAKE_VOICE % {"variant": variant, "log": log, "old": old, "listen_err": listen_err, "listen_code": listen_code, "mic_allowed": mic_allowed})
     os.chmod(path, 0o755)
 
 
@@ -151,7 +161,10 @@ def quick_passes():
         vf = cc.voice_failure_text
         assert vf(3, "Sorry, I did not catch that. Say it once more?\n") == "Sorry, I did not catch that. Say it once more?"
         assert vf(3, "").startswith("Microphone is muted or silent"), vf(3, "")
-        assert vf(4, "") == "Speech engine missing — run fabos-voice doctor" and vf(4, "No microphone found on this computer.") == "No microphone found on this computer."
+        assert vf(4, "") == "Speech engine missing — run fabos-voice doctor" and vf(4, "No microphone found on this computer.") == "No microphone found — plug one in or check Fab Settings › Sound"
+        assert vf(4, "Not enough free memory for offline speech recognition right now (it needs about 210 MB).") == "Speech recognition needs 210 MB free — close some apps"
+        assert vf(4, "Microphone is off in Settings. Allow it in Fab AI Controls › Settings › Voice (“Allow Fab OS to use the microphone”).").startswith(cc.MIC_OFF_TIP)
+        assert cc.voice_phase_text("starting") == "Starting the microphone…" and cc.voice_phase_text("recording") == "Listening… speak now" and cc.voice_phase_text("recording", True) == "Listening…"
         assert vf(127, "").startswith("Speech engine missing") and "not installed" in vf(None, "")
         assert vf(4, "pw-record failed: Connection refused").startswith("No audio session — ")
         if "--settings" in sys.argv or "--welcome" not in sys.argv:
@@ -294,6 +307,14 @@ def quick_passes():
                 # --- Voice: Hey Fab on/off, speak replies, Voice check + Test voice; wake word text etc. under Advanced
                 sd.tabs.setCurrentIndex(2); spin()
                 assert sd.voice_enabled.isVisible() and sd.speak_replies.isVisible() and sd.doctor_btn.isVisible() and sd.test_voice_btn.isVisible()
+                # --- the microphone permission row (1.0-8): switch + indicator with the PipeWire device name, rendered ON and OFF
+                assert sd.mic_allowed.isVisible() and sd.mic_indicator.isVisible()
+                assert not sd.mic_allowed.isChecked(), "a fresh daemon database has the permission OFF"
+                assert sd.mic_indicator.text().startswith("○") and "off — nothing records" in sd.mic_indicator.text(), sd.mic_indicator.text()
+                assert "Built-in Audio Analog Stereo" in sd.mic_indicator.text(), sd.mic_indicator.text()
+                sp = sd.grab(); assert sp.save(os.path.join(OUT, "settings-voice-micoff-%s.png" % name))
+                sd.mic_allowed.setChecked(True); spin()
+                assert sd.mic_indicator.text().startswith("●") and sd.mic_indicator.text().endswith("— allowed"), sd.mic_indicator.text()
                 assert not sd.wake_word.isVisible() and not sd.offline_only.isVisible() and not sd.cloud_voice.isVisible() and not sd.doctor_box.isVisible()
                 assert sd.doctor_btn.isEnabled() and sd.test_voice_btn.isEnabled(), (sd.doctor_btn.isEnabled(), sd.test_voice_btn.isEnabled())
                 sd.doctor_btn.click()
@@ -423,11 +444,25 @@ def quick_passes():
                     assert ("/secrets", {"name": "mail_password", "value": "abcd efgh ijkl mnop"}) in posts and not any(p[1].get("name") == "mail_api_key" for p in posts), posts
                 finally:
                     cc.api = real_api
+                # --- the microphone permission OFF: the composer mic is live but dimmed (struck glyph, MIC_OFF_TIP) and a click opens
+                # Settings › Voice instead of recording (permissions only enable)
+                w.voice.bin = fake_new; w.voice.status = {"stt": "whisper.cpp", "tts": "espeak-ng", "mic": True, "mic_allowed": False, "service": True}
+                w.update_voice_buttons()
+                assert w.mic_btn.isEnabled() and w.mic_btn.blocked and w.mic_btn.toolTip() == cc.MIC_OFF_TIP and w.mic_btn.glyph == "mic-off", (w.mic_btn.isEnabled(), w.mic_btn.toolTip(), w.mic_btn.glyph)
+                opened = []
+                real_open = w.open_settings; w.open_settings = lambda tab=None: opened.append(tab)
+                try:
+                    w.toggle_listen(); spin(3)
+                finally:
+                    w.open_settings = real_open
+                assert opened == ["voice"] and w.voice.listen_proc is None and w.toast.text().startswith(cc.MIC_OFF_TIP), (opened, w.toast.text())
+                sp = w.grab(); assert sp.save(os.path.join(OUT, "ai-controls-mic-off-%s.png" % name))
                 # --- the composer mic never fails silently: fabos-voice's stderr reason lands in the toast
                 w.voice.bin = fake_new; w.voice.status = {"stt": "whisper.cpp", "tts": "espeak-ng", "mic": True}
-                w.update_voice_buttons(); assert w.mic_btn.isEnabled()
+                w.update_voice_buttons(); assert w.mic_btn.isEnabled() and not w.mic_btn.blocked and w.mic_btn.glyph == "mic"
                 w.toggle_listen(); wait_for(lambda: w.voice.listen_proc is None, "listen-once exit 3")
-                assert w.toast.isVisible() and w.toast.text() == "No microphone found on this computer.", w.toast.text()
+                assert w.toast.isVisible() and w.toast.text() == "No microphone found — plug one in or check Fab Settings › Sound", w.toast.text()
+                assert w.voice._progress_last and w.voice._progress_last.get("state") == "error", "the composer polls the progress file of the listen run"
                 w.voice.bin = fake_nostt; w.voice.status = {"stt": "whisper.cpp", "tts": "espeak-ng", "mic": True}
                 w.toggle_listen(); wait_for(lambda: w.voice.listen_proc is None, "listen-once exit 4")
                 assert w.toast.text().startswith("Speech recognition is not available") and "Voice check" in w.toast.text(), w.toast.text()

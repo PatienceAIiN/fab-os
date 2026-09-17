@@ -31,7 +31,11 @@ if [ "${INJECT:-0}" = 1 ]; then   # test the working-tree agent code without reb
   vm "echo fabos | sudo -S install -m 755 /tmp/fabos_agentd.py /tmp/command_center.py /usr/lib/fabos/agent/ 2>/dev/null; echo fabos | sudo -S install -m 755 /tmp/fabos /usr/bin/fabos 2>/dev/null; systemctl --user restart fabos-agent; sleep 4; systemctl --user is-active fabos-agent; test -s /usr/lib/fabos/agent/fabos_agentd.py && echo injected-ok"
 fi
 echo "### configure provider + mail"
-vm "fabos settings provider claude >/dev/null; fabos settings claude.model $MODEL >/dev/null; fabos settings ai.enabled true >/dev/null; fabos mode auto >/dev/null; printf '%s\n' '$ANTHROPIC_API_KEY' | fabos set-key claude >/dev/null 2>&1"
+if [ "${AGENT_PROVIDER:-claude}" = fake ]; then   # the scripted provider (no network): the concurrency proof can run offline
+  vm "fabos settings provider fake >/dev/null; fabos settings ai.enabled true >/dev/null; fabos mode auto >/dev/null"
+else
+  vm "fabos settings provider claude >/dev/null; fabos settings claude.model $MODEL >/dev/null; fabos settings ai.enabled true >/dev/null; fabos mode auto >/dev/null; printf '%s\n' '$ANTHROPIC_API_KEY' | fabos set-key claude >/dev/null 2>&1"
+fi
 if [ -n "${MAIL_APP_PASSWORD:-}" ] && [ -n "${MAIL_ADDRESS:-}" ] && [ -n "$MAIL_TO" ]; then
   vm "fabos settings mail.provider ${MAIL_PROVIDER:-gmail} >/dev/null; fabos settings mail.address $MAIL_ADDRESS >/dev/null; fabos settings mail.from_name 'Fab OS agent' >/dev/null; printf '%s\n' '$MAIL_APP_PASSWORD' | fabos set-key mail >/dev/null 2>&1; fabos mail-check"; fi
 vm "fabos status"
@@ -64,6 +68,37 @@ c=collections.Counter((s.get("tool") or s.get("kind") or s.get("type") or "?") f
 check() { # check DESC COMMAND(in VM, must print something / exit 0)
   local desc=$1; shift; local out; out=$(vm "$@" 2>&1); local rc=$?
   echo "    check: $desc -> rc=$rc $(echo "$out" | head -c 300 | tr '\n' '|')"; [ $rc -eq 0 ] && [ -n "$out" ]; }
+
+# ---------- 1.0-8 concurrency proof (CONCURRENCY_ONLY=1 runs just this and exits): chat A waits for an approval while chat B
+# starts, runs and finishes; a follow-up in chat A queues behind A and says why; after the approval A and its follow-up finish;
+# no slot or queue entry is left. Every verdict is a daemon answer over curl (GET /tasks/{id}, GET /status parallel).
+if [ "${CONCURRENCY_ONLY:-0}" = 1 ]; then
+  APPROVED=0
+  if [ "${AGENT_PROVIDER:-claude}" = fake ]; then REQ_A="show me the system"; REQ_B="say hi"; CHECK_B="true"
+  else REQ_A="Delete the file ~/r8-approval-test.txt"; REQ_B="Run the shell command: echo r8-ok > ~/r8-b.txt   and then confirm the file exists."; CHECK_B="grep -qx r8-ok ~/r8-b.txt"; fi
+  echo; echo "=== concurrency: an approval-waiting chat does not block a new chat (provider ${AGENT_PROVIDER:-claude})"
+  vm "rm -f ~/r8-b.txt ~/r8-approval-test.txt; touch ~/r8-approval-test.txt"
+  A=$(api POST /tasks "$(python3 -c 'import json,sys; print(json.dumps({"request": sys.argv[1], "mode": "ask"}))' "$REQ_A")" | jget '["id"]'); echo "    chat A = task #$A (ask mode: $REQ_A)"
+  st=""; for i in $(seq 1 40); do st=$(api GET "/tasks/$A" | jget '["status"]'); [ "$st" = waiting_approval ] && break; case "$st" in done|failed|cancelled) break;; esac; sleep 3; done
+  echo "    A status: $st"; [ "$st" = waiting_approval ] && verdict PASS "chat A waits for approval" || verdict FAIL "chat A did not reach waiting_approval ($st: $(api GET "/tasks/$A" | jget '.get("error")'))"
+  par=$(api GET /status | python3 -c 'import sys,json; p=json.load(sys.stdin)["parallel"]; print(p["busy"], p["max"])'); echo "    slots busy/max while A waits: $par"
+  [ "${par%% *}" = 0 ] && verdict PASS "the waiting chat holds no slot (busy 0 of ${par##* })" || verdict FAIL "slots busy while A waits: $par"
+  B=$(api POST /tasks "$(python3 -c 'import json,sys; print(json.dumps({"request": sys.argv[1], "mode": "auto"}))' "$REQ_B")" | jget '["id"]'); echo "    chat B = task #$B (auto mode: $REQ_B)"
+  t0=$(date +%s); sb=""; for i in $(seq 1 60); do sb=$(api GET "/tasks/$B" | jget '["status"]'); case "$sb" in done|failed|cancelled) break;; esac; sleep 3; done
+  echo "    B status: $sb after $(( $(date +%s) - t0 ))s; A still: $(api GET "/tasks/$A" | jget '["status"]')"
+  [ "$sb" = done ] && vm "$CHECK_B" && verdict PASS "chat B ran and finished while A waited" || verdict FAIL "chat B: $sb ($(api GET "/tasks/$B" | jget '.get("error")'))"
+  [ "$(api GET "/tasks/$A" | jget '["status"]')" = waiting_approval ] && verdict PASS "chat A is still waiting for approval" || verdict FAIL "A changed state"
+  FA=$(api POST /tasks "{\"request\":\"say hi\",\"parent_id\":$A,\"mode\":\"auto\"}" | jget '["id"]'); sleep 3
+  q=$(api GET "/tasks/$FA" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["status"], (d.get("queue") or {}).get("text",""))'); echo "    follow-up #$FA in chat A: $q"
+  [ "$q" = "queued waiting for the previous step in this chat" ] && verdict PASS "a follow-up in the waiting chat is queued with the reason" || verdict FAIL "follow-up in A: $q"
+  lst=$(api GET /tasks | python3 -c 'import sys,json; d=json.load(sys.stdin); t=[x for x in d if x["id"]=='"$FA"']; print((t[0].get("queue") or {}).get("why") if t else "missing")'); [ "$lst" = chat ] && verdict PASS "GET /tasks carries queue.why=chat for it" || verdict FAIL "GET /tasks queue: $lst"
+  approve_pending
+  sa=""; for i in $(seq 1 40); do sa=$(api GET "/tasks/$A" | jget '["status"]'); case "$sa" in done|failed|cancelled) break;; esac; approve_pending; sleep 3; done
+  sf=""; for i in $(seq 1 40); do sf=$(api GET "/tasks/$FA" | jget '["status"]'); case "$sf" in done|failed|cancelled) break;; esac; approve_pending; sleep 3; done
+  echo "    A: $sa · follow-up: $sf"; [ "$sa" = done ] && [ "$sf" = done ] && verdict PASS "after the approval A finished and its follow-up ran" || verdict FAIL "A=$sa follow-up=$sf"
+  par=$(api GET /status | python3 -c 'import sys,json; p=json.load(sys.stdin)["parallel"]; print(p["busy"], len(p["waiting"]))'); [ "$par" = "0 0" ] && verdict PASS "no slot and no queue entry left" || verdict FAIL "slots after: $par"
+  echo; echo "### SUMMARY: $pass PASS / $fail FAIL"; vm "fabos tasks --limit 6"; exit $fail
+fi
 
 # ---------- EASY
 run_task easy-1 300 auto "$MODEL" "Create the file ~/notes/hello.txt containing exactly the text: hello from fab os"

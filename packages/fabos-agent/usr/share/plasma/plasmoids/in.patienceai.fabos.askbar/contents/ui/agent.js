@@ -204,9 +204,10 @@ function stepError(s, showRaw) {
     return e.length ? (showRaw ? e.slice(0, 300) : e.split("\n")[0].slice(0, 160)) : "This step did not work"
 }
 
-function statusLabel(st) {
+function statusLabel(st, queueText) {
     var L = { queued: "Getting ready…", running: "Working on it…", waiting_approval: "Needs your permission", waiting_user: "Waiting for your answer",
               done: "Done", failed: "Something went wrong", cancelled: "Stopped" }
+    if (st === "queued" && queueText) return "Queued \u2014 " + queueText    // the daemon says WHY (task.queue.text, 1.0-8)
     return L[st] || ""
 }
 
@@ -336,11 +337,14 @@ function plainSummary(text, max) {
     return t.length > max ? t.slice(0, max - 1) + "…" : t
 }
 
-// fabos-voice status -> {available, stt, tts, mic}; exit 127 = binary missing
+// fabos-voice status -> {available, stt, tts, mic, micAllowed, service}; exit 127 = binary missing. micAllowed is the
+// microphone permission (Fab AI Controls › Settings › Voice, 1.0-8) and service whether fabos-voiced is alive; an older
+// fabos-voice without the keys counts as allowed / alive so a half-upgraded machine never gets a dead microphone.
 function voiceInfo(exitCode, stdout) {
     var j = parseJson(stdout) || {}
     var stt = String(j.stt || "none")
-    return { available: exitCode === 0 && stt !== "none", stt: stt, tts: String(j.tts || "none"), mic: !!j.mic }
+    return { available: exitCode === 0 && stt !== "none", stt: stt, tts: String(j.tts || "none"), mic: !!j.mic,
+             micAllowed: j.mic_allowed === undefined ? true : !!j.mic_allowed, service: j.service === undefined ? true : !!j.service }
 }
 
 function lastLine(s) {
@@ -355,18 +359,72 @@ function clip(s, max) { s = String(s); return s.length > max ? s.slice(0, max - 
 function voiceReason(exitCode, info) {
     if (exitCode === 127) return "Voice is not installed on this machine"
     if (exitCode !== 0) return "Voice is not available right now"
+    if (info.micAllowed === false) return MIC_OFF_TIP
     if (!info.mic) return "No microphone found \u2014 plug one in and tap the mic again"
     if (info.stt === "none") return "Speech recognition is not available on this machine"
     return ""
 }
 
-// `fabos-voice listen-once` did not return text: the status-line message, taken from the CLI's own last stderr line
-// (exit 4 = no microphone / no speech-to-text, and the CLI says which; 3 = nothing heard; 127 = binary missing).
-// Never silent: every failure produces a sentence.
+// `fabos-voice listen-once` did not return text: the status-line message, from the CLI's own last stderr line mapped to a
+// short inline sentence (voiceReasonText) — exit 4 = no microphone / no speech-to-text / microphone off in Settings, and
+// the CLI says which; 3 = nothing heard; 127 = binary missing. Never silent: every failure produces a sentence.
 function voiceFailure(exitCode, stdout, stderr) {
     var last = lastLine(stderr)
     if (exitCode === 127 || /fabos-voice: (command )?not found/.test(last)) return "Voice is not installed on this machine (fabos-voice is missing)"
-    if (exitCode === 3 || (exitCode === 0 && !String(stdout || "").trim().length)) return "I did not catch that. Tap the mic and try again."
+    var known = voiceReasonText(last)
+    if (known.length) return known
+    if (exitCode === 3 || (exitCode === 0 && !String(stdout || "").trim().length)) return "I did not catch that \u2014 tap the mic and speak after the chime"
     if (exitCode === 4) return last.length ? clip(last, 160) : "Voice is not available on this machine"
     return last.length ? clip("Voice did not work just now \u2014 " + last, 160) : "Voice did not work just now. Tap the mic to try again."
+}
+
+// The CLI's reasons (packages/fabos-voice/.../phrases.py) as the short sentences the bar shows inline; "" = not one we know
+// (the CLI's own sentence is shown then). The memory line carries the CLI's measured figure, never a hard-coded one.
+var MIC_OFF_TIP = "Microphone is off in Settings"
+function voiceReasonText(reason) {
+    var r = String(reason || "")
+    if (/Microphone is off in Settings/i.test(r)) return MIC_OFF_TIP + " \u2014 tap the mic to open them"
+    if (/No microphone/i.test(r)) return "No microphone found \u2014 plug one in or check Fab Settings \u203a Sound"
+    if (/muted or silent/i.test(r)) return "Microphone is silent \u2014 check the input device and its level in the volume applet"
+    if (/is muted/i.test(r)) return "Microphone is muted \u2014 unmute it in the volume applet"
+    if (/volume is at zero/i.test(r)) return "Microphone volume is at zero \u2014 raise it in the volume applet"
+    if (/Not enough free memory/i.test(r)) { var m = /(\d+)\s*MB/.exec(r); return "Speech recognition needs " + (m ? m[1] : "more") + " MB free \u2014 close some apps" }
+    if (/No audio session/i.test(r)) return "No audio session \u2014 PipeWire is not running for this login"
+    if (/Speech recognition is not available/i.test(r)) return "Speech recognition is not available \u2014 no offline model and no cloud provider key"
+    if (/agent is not running/i.test(r)) return "The Fab OS agent service is not running"
+    if (/timed out|did not finish in time/i.test(r)) return "Speech recognition took too long \u2014 tap the mic to try again"
+    return ""
+}
+
+// ---- the listen run (1.0-8). The Plasma executable engine hands a command's output over only when it ends, so the bar
+// runs `fabos-voice listen-once --progress FILE` and polls FILE (`cat`, every 150 ms) for the live state: the state machine
+// is idle -> starting -> recording (level meter, "speak now") -> transcribing -> done | error, the last word coming from
+// the listen command's exit code and output (onListened), never from the file alone.
+var LISTEN_PROGRESS = '"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fabos-voice/askbar-listen.json"'
+function listenCommand(timeoutS) {
+    return 'F=' + LISTEN_PROGRESS + '; rm -f "$F"; fabos-voice listen-once --timeout ' + (parseInt(timeoutS) || 10) + ' --progress "$F"'
+}
+function listenProgressCommand() { return 'F=' + LISTEN_PROGRESS + '; cat "$F" 2>/dev/null' }
+function voiceProgress(stdout) {
+    var j = parseJson(stdout) || {}
+    var phase = String(j.state || "")
+    if (["starting", "recording", "transcribing", "done", "error"].indexOf(phase) < 0) phase = ""
+    var lv = Number(j.level); if (isNaN(lv)) lv = 0
+    return { phase: phase, level: Math.max(0, Math.min(1, lv)), peak: Number(j.peak) || 0, speech: !!j.speech,
+             reason: String(j.reason || ""), code: j.code === undefined ? -1 : parseInt(j.code), text: String(j.text || "") }
+}
+function voicePhaseText(phase, speech) {
+    if (phase === "starting") return "Starting the microphone\u2026"
+    if (phase === "recording") return speech ? "Listening\u2026" : "Listening\u2026 speak now"
+    if (phase === "transcribing") return "Understanding what you said\u2026"
+    return "Listening\u2026"
+}
+// What a tap on the mic does: "settings" while the permission is off in Settings (the tap opens Fab AI Controls › Settings ›
+// Voice and never records — permissions only enable), else "listen".
+function micTapAction(micAllowed) { return micAllowed === false ? "settings" : "listen" }
+// After a FAILED listen the bar re-checks `fabos-voice status`; when the wake-word service is down although voice is on and
+// the microphone allowed, it restarts the user unit — once a minute at most, and only on that repair path (never on the
+// routine 30 s status refresh, which would otherwise restart a unit that is still starting after login).
+function voiceServiceRestart(info, voiceOn, lastRestartMs, nowMs) {
+    return !!info && info.service === false && !!voiceOn && info.micAllowed !== false && (nowMs - (lastRestartMs || 0)) > 60000
 }

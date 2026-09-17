@@ -59,6 +59,9 @@ GREEN, AMBER, RED = "#34C759", "#FF9500", "#F0655D"
 STATUS_TEXT = {"queued": "Queued", "running": "Working", "waiting_approval": "Needs your approval", "waiting_user": "Needs your answer",
                "done": "Done", "failed": "Failed", "cancelled": "Stopped"}
 VOICE_UNAVAILABLE = "Voice is not available on this machine"
+MIC_OFF_TIP = "Microphone is off in Settings"                  # the microphone permission (Settings › Voice, 1.0-8) is off
+MIC_ALLOW_LABEL = "Allow Fab OS to use the microphone"
+VOICE_PROGRESS_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "fabos-voice", "controls-listen.json")   # fabos-voice listen-once --progress
 VOICE_TEST_LINE = "Namaste, I am Fab. Tell me what to do."
 
 
@@ -299,6 +302,7 @@ GLYPHS = {
     "bell": '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
     "warning": '<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
     "mic": '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/><path d="M9 21h6"/>',
+    "mic-off": '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/><path d="M9 21h6"/><path d="M4 4l16 16"/>',
     "waveform": '<path d="M4 10v4"/><path d="M8 7v10"/><path d="M12 4v16"/><path d="M16 7v10"/><path d="M20 10v4"/>',
     "speaker": '<path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>',
     "thumb-up": '<path d="M7 10v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3z"/><path d="M7 10l4.5-7a2.5 2.5 0 0 1 2.4 3.1L13 10h6a2 2 0 0 1 2 2.3l-1.4 7A2 2 0 0 1 17.6 21H7"/>',
@@ -629,12 +633,18 @@ class IconButton(QToolButton):
 
 
 class MicButton(IconButton):
-    """The composer microphone: an outlined circle; while listening an accent ring pulses outwards."""
+    """The composer microphone: an outlined circle; while listening accent rings pulse outwards and breathe with the
+    microphone level (1.0-8, from the listen run's progress file); dimmed with a struck glyph while the microphone is off in
+    Settings (a click then opens Settings › Voice — permissions only enable)."""
 
     def __init__(self, parent=None):
         super().__init__("mic", "Speak your request", size=36, icon_size=18, parent=parent, object_name="micBtn")
         self._pulse = 0.0
         self.listening = False
+        self.level = 0.0
+        self.speech = False
+        self.phase = ""
+        self.blocked = False
         self.anim = QVariantAnimation(self)
         self.anim.setDuration(1100)
         self.anim.setStartValue(0.0)
@@ -646,15 +656,40 @@ class MicButton(IconButton):
         self._pulse = float(v)
         self.update()
 
+    def idle_glyph(self):
+        return ("mic-off", MIC_OFF_TIP) if self.blocked else ("mic", "Speak your request")
+
     def set_listening(self, on):
         self.listening = on
         if on:
             self.anim.start()
         else:
             self.anim.stop()
-            self._pulse = 0.0
-        self.set_glyph("waveform" if on else "mic", "Listening… click to stop" if on else "Speak your request")
+            self._pulse, self.level, self.speech, self.phase = 0.0, 0.0, False, ""
+        glyph, tip = self.idle_glyph()
+        self.set_glyph("waveform" if on else glyph, "Listening… click to stop" if on else tip)
         self.update()
+
+    def set_level(self, level, speech=False):
+        self.level = max(0.0, min(1.0, float(level or 0.0)))
+        self.speech = bool(speech)
+        self.update()
+
+    def set_phase(self, phase, speech=False):
+        self.phase, self.speech = str(phase or ""), bool(speech)
+        if self.listening:
+            self.setToolTip(voice_phase_text(self.phase, self.speech) + " — click to stop")
+
+    def set_blocked(self, on):
+        """The microphone permission is off: struck glyph at 30 %, MIC_OFF_TIP; the button stays clickable (it opens Settings)."""
+        on = bool(on)
+        if on == self.blocked:
+            return
+        self.blocked = on
+        self.dim = 0.3 if on else 0.85
+        if not self.listening:
+            self.set_glyph(*self.idle_glyph())
+        self.refresh_icon()
 
     def paintEvent(self, e):
         if self.listening:
@@ -670,10 +705,10 @@ class MicButton(IconButton):
                 pen.setWidthF(2.0)
                 p.setPen(pen)
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                rad = 14 + 6 * k
+                rad = 14 + 6 * k + 5 * self.level            # the rings grow with the microphone level
                 p.drawEllipse(QPointF(r.x() + 0.5, r.y() + 0.5), rad, rad)
             fill = QColor(hi)
-            fill.setAlphaF(0.16)
+            fill.setAlphaF(0.16 + 0.24 * self.level)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(fill)
             p.drawEllipse(QPointF(r.x() + 0.5, r.y() + 0.5), 17.5, 17.5)
@@ -2353,6 +2388,8 @@ class Turn(QWidget):
         self.typing.setVisible(st in ("queued", "running"))
         self.stop_btn.setVisible(st in ("queued", "running", "waiting_approval"))
         label = {"queued": "Queued…", "waiting_approval": "Waiting for your approval", "waiting_user": "Waiting for your answer"}.get(st, "")
+        if st == "queued" and (task.get("queue") or {}).get("text"):
+            label = "Queued — " + str(task["queue"]["text"])      # the daemon says WHY (1.0-8): the chat's earlier turn, or every slot busy
         if st == "cancelled":
             label = "Stopped"
         elif st in ("done", "failed") and not shown:
@@ -2801,6 +2838,8 @@ class Voice(QObject):
     unavailable = pyqtSignal(str)
     listening_changed = pyqtSignal(bool)
     speaking_changed = pyqtSignal(bool)
+    progress = pyqtSignal(dict)            # the listen run's live state (fabos-voice listen-once --progress): starting / recording + level / transcribing
+    service_restarted = pyqtSignal(bool, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2809,6 +2848,11 @@ class Voice(QObject):
         self.listen_proc = None
         self.say_proc = None
         self._status_proc = None
+        self._restart_proc = None
+        self._progress_last = None
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(100)
+        self._progress_timer.timeout.connect(self._poll_progress)
         self.probe()
 
     def probe(self):
@@ -2819,7 +2863,7 @@ class Voice(QObject):
         self.stop_probe()
         p = QProcess(self)
         p.setProgram(self.bin)
-        p.setArguments(["status"])
+        p.setArguments(["-v", "status"])       # -v: the full status (device description, permission, service) — the contract keys are a subset
         p.finished.connect(lambda code, _st, p=p: self._probed(p, code))
         self._status_proc = p
         p.start()
@@ -2833,6 +2877,8 @@ class Voice(QObject):
         self.stop_listening()
         self.stop_speaking()
         self.stop_probe()
+        p, self._restart_proc = self._restart_proc, None
+        _stop_process(p)
 
     def _probed(self, p, code):
         if p is not self._status_proc:
@@ -2867,24 +2913,76 @@ class Voice(QObject):
             return False
         p = QProcess(self)
         p.setProgram(self.bin)
-        p.setArguments(["listen-once", "--timeout", str(int(timeout))])
+        try:
+            os.remove(VOICE_PROGRESS_PATH)          # a stale file from the last run must not show its state
+        except OSError:
+            pass
+        self._progress_last = None
+        p.setArguments(["listen-once", "--timeout", str(int(timeout)), "--progress", VOICE_PROGRESS_PATH])
         p.finished.connect(lambda code, _st, p=p: self._listened(p, code))
         p.errorOccurred.connect(lambda _e, p=p: self._listened(p, 127) if p is self.listen_proc else None)    # FailedToStart: no binary
         self.listen_proc = p
         p.start()
+        self._progress_timer.start()
         self.listening_changed.emit(True)
         return True
 
     def stop_listening(self):
         p, self.listen_proc = self.listen_proc, None
+        self._progress_timer.stop()
         if p is not None:
             _stop_process(p)
             self.listening_changed.emit(False)
+
+    def _poll_progress(self):
+        try:
+            with open(VOICE_PROGRESS_PATH) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            return
+        if not isinstance(d, dict) or d == self._progress_last:
+            return
+        self._progress_last = d
+        self.progress.emit(d)
+
+    def mic_allowed(self):
+        """The microphone permission as fabos-voice status reports it (an older CLI without the key counts as allowed)."""
+        return self.status is None or bool((self.status or {}).get("mic_allowed", True))
+
+    def service_down(self):
+        """fabos-voiced (the "Hey Fab" service) is not running — status says so explicitly (an older CLI says nothing)."""
+        return bool(self.bin) and isinstance(self.status, dict) and self.status.get("service") is False
+
+    def restart_service(self):
+        """systemctl --user restart fabos-voiced.service off the GUI thread (QProcess); service_restarted(ok, detail) follows
+        and the status is probed again."""
+        if self._restart_proc is not None:
+            return False
+        p = QProcess(self)
+        p.setProgram("systemctl")
+        p.setArguments(["--user", "restart", "fabos-voiced.service"])
+        p.finished.connect(lambda code, _st, p=p: self._restarted(p, code))
+        p.errorOccurred.connect(lambda _e, p=p: self._restarted(p, 127) if p is self._restart_proc else None)
+        self._restart_proc = p
+        p.start()
+        return True
+
+    def _restarted(self, p, code):
+        if p is not self._restart_proc:
+            return
+        self._restart_proc = None
+        try:
+            err = bytes(p.readAllStandardError()).decode(errors="replace").strip()
+        except RuntimeError:
+            err = ""
+        self.service_restarted.emit(code == 0, err)
+        QTimer.singleShot(1500, self.probe)
 
     def _listened(self, p, code):
         if p is not self.listen_proc:
             return
         self.listen_proc = None
+        self._progress_timer.stop()
         self.listening_changed.emit(False)
         try:
             out = bytes(p.readAllStandardOutput()).decode(errors="replace").strip()
@@ -2952,12 +3050,56 @@ class Voice(QObject):
 
 
 # ----------------------------------------------------------------------------- settings
+def voice_phase_text(phase, speech=False):
+    """The composer's placeholder while a listen run goes on (the same words as the ask bar)."""
+    if phase == "starting":
+        return "Starting the microphone…"
+    if phase == "recording":
+        return "Listening…" if speech else "Listening… speak now"
+    if phase == "transcribing":
+        return "Understanding what you said…"
+    return "Listening…"
+
+
+def voice_reason_text(reason):
+    """fabos-voice's own reason (packages/fabos-voice/.../phrases.py) as the short sentence the composer shows — the same table
+    as the ask bar's agent.js voiceReasonText, so both microphones speak alike; "" when the reason is not one we know (the
+    CLI's own sentence is shown then). The memory line carries the CLI's measured figure, never a hard-coded one."""
+    r = reason or ""
+    low = r.lower()
+    if "microphone is off in settings" in low:
+        return MIC_OFF_TIP + " — click the mic to open them"
+    if "no microphone" in low:
+        return "No microphone found — plug one in or check Fab Settings › Sound"
+    if "muted or silent" in low:
+        return "Microphone is silent — check the input device and its level in the volume applet"
+    if "is muted" in low:
+        return "Microphone is muted — unmute it in the volume applet"
+    if "volume is at zero" in low:
+        return "Microphone volume is at zero — raise it in the volume applet"
+    if "not enough free memory" in low:
+        m = re.search(r"(\d+)\s*MB", r)
+        return "Speech recognition needs %s MB free — close some apps" % (m.group(1) if m else "more")
+    if "no audio session" in low:
+        return "No audio session — PipeWire is not running for this login"
+    if "speech recognition is not available" in low:
+        return "Speech recognition is not available — no offline model and no cloud provider key"
+    if "agent is not running" in low:
+        return "The Fab OS agent service is not running"
+    if "timed out" in low or "did not finish in time" in low:
+        return "Speech recognition took too long — click the mic to try again"
+    return ""
+
+
 def voice_failure_text(code, stderr=""):
-    """The toast for a failed fabos-voice run. The CLI's own stderr reason wins when it gave one ("No microphone found on
-    this computer."); otherwise a plain sentence per exit code: 3 = nothing heard, 4 = no speech backend, 127 / None =
-    the binary is missing. Never silent."""
+    """The toast for a failed fabos-voice run. The CLI's own stderr reason wins when it gave one, as the short sentence of
+    voice_reason_text when it is a known one; otherwise a plain sentence per exit code: 3 = nothing heard, 4 = no speech
+    backend, 127 / None = the binary is missing. Never silent."""
     lines = [ln.strip() for ln in (stderr or "").strip().splitlines() if ln.strip()]
     reason = lines[-1] if lines else ""
+    known = voice_reason_text(reason)
+    if known:
+        return known
     low = reason.lower()
     if any(k in low for k in ("pw-record", "pipewire", "pulse", "parec", "arecord", "connection refused", "no audio")):
         return "No audio session — " + reason
@@ -3292,6 +3434,13 @@ class SettingsDialog(RoundedDialog):
         # --- Voice: "Hey Fab" on/off, speak replies, Voice check + Test voice; Advanced: wake-word text, offline only, cloud voice
         w = TabPage()
         f = form(w)
+        # the microphone permission (1.0-8): OFF on a fresh install. Permissions only enable — while off the ask bar's and this
+        # chat's microphones are dimmed and open this row, the "Hey Fab" spotter does not capture, /speech/transcribe refuses.
+        self.mic_allowed = Switch("Off: nothing in Fab OS records from the microphone — not the ask bar, not this chat, not “Hey Fab”")
+        self.mic_allowed.setChecked(str(s.get("voice.mic_allowed", "false")) == "true")
+        self.mic_indicator = wrap(QLabel("", objectName="muted"))
+        self.mic_allowed.toggled.connect(self._refresh_mic_indicator)
+        f.addRow(MIC_ALLOW_LABEL, row(self.mic_allowed, self.mic_indicator, stretch_last=True))
         self.voice_enabled = QCheckBox("Listen for “Hey Fab” — microphone in the chat, spoken narration")
         self.voice_enabled.setChecked(str(s.get("voice.enabled", "true")) == "true")
         f.addRow("Voice", self.voice_enabled)
@@ -3703,10 +3852,23 @@ class SettingsDialog(RoundedDialog):
         st = v.status or {}
         parts = ["speech-to-text: %s" % st.get("stt", "…"), "text-to-speech: %s" % st.get("tts", "…"), "microphone: %s" % ("yes" if st.get("mic") else "no")]
         self.voice_note.setText(" · ".join(parts))
+        self._refresh_mic_indicator()
         ok = v.tts_available()
         self.test_voice_btn.setEnabled(ok)
         self.test_voice_btn.setToolTip("Says: “%s” (fabos-voice say --test)" % VOICE_TEST_LINE if ok else VOICE_UNAVAILABLE)
         self.doctor_btn.setEnabled(True)
+
+    def _refresh_mic_indicator(self, *_):
+        """The small state next to the permission switch: ● / ○, the device PipeWire names (fabos-voice -v status:
+        source_description, else the source name) and whether Fab OS may use it right now."""
+        st = (self.voice.status if self.voice is not None else None) or {}
+        dev = st.get("source_description") or st.get("source") or ("no microphone found" if st and not st.get("mic") else "microphone")
+        allowed = self.mic_allowed.isChecked()
+        state = "allowed" if allowed else "off — nothing records"
+        if allowed and st.get("mic_reason"):
+            state += " · " + str(st["mic_reason"])
+        self.mic_indicator.setText("%s %s — %s" % ("●" if allowed and st.get("mic") else "○", dev, state))
+        self.mic_indicator.setToolTip("Device from PipeWire: %s" % (st.get("source") or "unknown"))
 
     def test_voice(self):
         if self.voice is not None:
@@ -4018,6 +4180,7 @@ class SettingsDialog(RoundedDialog):
                 "ai.enabled": "true" if self.ai_switch.isChecked() else "false",
                 "ui.show_raw": "true" if self.show_raw.isChecked() else "false", "ui.persona": "indian-english" if self.persona.isChecked() else "off",
                 "voice.enabled": "true" if self.voice_enabled.isChecked() else "false", "voice.wake_word": self.wake_word.text().strip() or "hey fab",
+                "voice.mic_allowed": "true" if self.mic_allowed.isChecked() else "false",
                 "voice.speak_replies": "true" if self.speak_replies.isChecked() else "false", "voice.offline_only": "true" if self.offline_only.isChecked() else "false",
                 "voice.cloud_voice": self.cloud_voice.text().strip()}
         for p, st in self.state.items():
@@ -4116,6 +4279,8 @@ class AIControls(QMainWindow):
         self.voice.unavailable.connect(self.on_voice_unavailable)
         self.voice.listening_changed.connect(self.on_listening)
         self.voice.speaking_changed.connect(self.on_speaking)
+        self.voice.progress.connect(self.on_voice_progress)
+        self.voice.service_restarted.connect(self.on_voice_service_restarted)
         root = QWidget()
         root.setObjectName("root")
         self.setCentralWidget(root)
@@ -4642,7 +4807,7 @@ class AIControls(QMainWindow):
         waiting_user = bool(latest and latest["status"] == "waiting_user")
         on = bool(self.status.get("ai_enabled", True)) and not self.offline
         if self.voice.is_listening():
-            self.ask.setPlaceholderText("Listening…")
+            self.ask.setPlaceholderText(voice_phase_text(self.mic_btn.phase, self.mic_btn.speech))
         elif busy and not waiting_user:
             self.send_btn.set_glyph("stop", "Stop this task")
             self._send_tip = "Stop this task"
@@ -4659,7 +4824,9 @@ class AIControls(QMainWindow):
             self.ask.setPlaceholderText("Agent service offline" if self.offline else "System-Wide AI is off — turn it on to give the agent tasks")
         self.ask.setEnabled(on)
         self.update_send_state()
-        self.mic_btn.setEnabled(on and self.voice.stt_available() and getattr(self, "_voice_on", True))
+        allowed = self.voice.mic_allowed()        # off: the button stays live (dimmed, struck) so a click can open Settings › Voice
+        self.mic_btn.setEnabled(on and (not allowed or (self.voice.stt_available() and getattr(self, "_voice_on", True))))
+        self.mic_btn.set_blocked(not allowed)
 
     def update_send_state(self):
         """Send is live only with text in the box (whitespace is not text); Stop, while a task runs, is always live. The mic
@@ -4676,8 +4843,12 @@ class AIControls(QMainWindow):
 
     def update_voice_buttons(self):
         ok = self.voice.stt_available() and getattr(self, "_voice_on", True)
-        self.mic_btn.setEnabled(ok and not self.offline and bool(self.status.get("ai_enabled", True)))
-        self.mic_btn.setToolTip("Speak your request" if ok else (VOICE_UNAVAILABLE if not self.voice.stt_available() else "Voice is turned off in Settings › Voice"))
+        allowed = self.voice.mic_allowed()
+        on = not self.offline and bool(self.status.get("ai_enabled", True))
+        self.mic_btn.setEnabled(on and (not allowed or ok))       # permission off: live but dimmed, the click opens Settings › Voice
+        self.mic_btn.set_blocked(not allowed)
+        if allowed and not self.mic_btn.listening:
+            self.mic_btn.setToolTip("Speak your request" if ok else (VOICE_UNAVAILABLE if not self.voice.stt_available() else "Voice is turned off in Settings › Voice"))
         tts = self.voice.tts_available()
         for turn in self.view.turns.values():
             for msg in turn.assistant_messages():
@@ -4874,6 +5045,7 @@ class AIControls(QMainWindow):
         if dlg.exec():
             self.refresh_list()
             self.refresh_thread(force=True)
+            self.voice.probe()                  # the permission may have changed: the mic follows the new fabos-voice status
             self.update_voice_buttons()
 
     def open_appearance(self):
@@ -4914,12 +5086,30 @@ class AIControls(QMainWindow):
         if self.voice.is_listening():
             self.voice.stop_listening()
             return
+        if not self.voice.mic_allowed():          # permissions only enable: the click opens the setting, never records
+            self.toast.show_message(MIC_OFF_TIP + " — opening Settings › Voice", 3600)
+            self.open_settings("voice")
+            return
         if not self.voice.listen(timeout=10):
             self.update_voice_buttons()
 
     def on_listening(self, on):
         self.mic_btn.set_listening(on)
+        if on:
+            self.mic_btn.set_phase("starting", False)
         self.update_composer()
+
+    def on_voice_progress(self, d):
+        """The listen run's live state: the mic rings breathe with the level, the placeholder says starting / speak now / understanding."""
+        phase, speech = str(d.get("state") or ""), bool(d.get("speech"))
+        if phase in ("starting", "recording", "transcribing") and self.voice.is_listening():
+            self.mic_btn.set_level(float(d.get("level") or 0.0), speech)
+            self.mic_btn.set_phase(phase, speech)
+            self.ask.setPlaceholderText(voice_phase_text(phase, speech))
+
+    def on_voice_service_restarted(self, ok, detail):
+        tail = (detail.splitlines()[-1] if detail else "see journalctl --user -u fabos-voiced")
+        self.toast.show_message("Voice service restarted" if ok else "Voice service could not be restarted — " + tail[:120], 4200)
 
     def on_transcript(self, text):
         self.ask.setText(text)
@@ -4927,8 +5117,12 @@ class AIControls(QMainWindow):
 
     def on_voice_unavailable(self, reason=""):
         """The mic never fails silently: the toast carries fabos-voice's own reason (muted mic, no audio session, missing
-        engine) and points at Settings › Voice › Voice check."""
+        engine) and points at Settings › Voice › Voice check. A dead "Hey Fab" service (status: service false while voice is
+        on and the microphone allowed) is restarted once from here — the repair path after a failure, never on a routine probe."""
         self.update_voice_buttons()
+        if self.voice.service_down() and getattr(self, "_voice_on", True) and self.voice.mic_allowed() and self.voice.restart_service():
+            self.toast.show_message((reason or VOICE_UNAVAILABLE) + "  ·  Voice service not running — restarting…", 5200)
+            return
         self.toast.show_message((reason or VOICE_UNAVAILABLE) + "  ·  Settings › Voice › Voice check", 5200)
 
     def speak(self, text):

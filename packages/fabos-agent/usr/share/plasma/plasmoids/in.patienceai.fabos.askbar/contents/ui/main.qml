@@ -103,7 +103,16 @@ PlasmoidItem {
     property string voiceReason: ""           // why the mic is dimmed ("" = ready)
     property real voiceStatusAt: 0            // Date.now() of the last `fabos-voice status`
     property bool listening: false
-    property string voiceHint: ""             // status-line message after a failed listen (6 s)
+    property string voiceHint: ""             // status-line message after a failed listen (12 s, or until the field is focused)
+    // the listen run's live state (1.0-8): from `fabos-voice listen-once --progress FILE`, polled every 150 ms while listening
+    property string voicePhase: ""            // "" | starting | recording | transcribing
+    property real voiceLevel: 0               // 0..1 microphone level while recording (the meter and the mic ring)
+    property bool voiceSpeech: false          // words heard so far in this run
+    property bool voiceMicAllowed: true       // the microphone permission (Fab AI Controls › Settings › Voice): off = the mic is dimmed and opens Settings
+    property bool voiceOn: true               // voice.enabled
+    property bool voiceRepair: false          // the next `fabos-voice status` runs after a failed listen: it may restart a dead voice service
+    property real voiceRestartAt: 0
+    property string taskQueue: ""             // why a queued task waits (task.queue.text)
     readonly property string hoverTip: voiceHint.length ? voiceHint : (showStatus && status.length ? status : "")   // compact form: the card's tooltip
     property string typeBuffer: ""
     property real typeReveal: 0
@@ -137,7 +146,8 @@ PlasmoidItem {
     onTaskIdChanged: saveTask()
 
     Timer { id: sleepTimer; interval: 30000; onTriggered: if (!root.taskActive && !root.sending && !root.listening) root.markAwake = false; else restart() }
-    Timer { id: hintTimer; interval: 6000; onTriggered: root.voiceHint = "" }
+    Timer { id: hintTimer; interval: 12000; onTriggered: root.voiceHint = "" }
+    Timer { id: progressTimer; interval: 150; repeat: true; onTriggered: root.run("vprog", 0, Agent.listenProgressCommand()) }
     Timer { id: toastTimer; interval: 1600; onTriggered: root.toast = "" }
     // panel fully shrunk: forget the task in the bar so the mark returns to idle (the task itself carries on in the daemon)
     Timer { id: closeTimer; interval: 220; onTriggered: { root.closing = false; root.panelMode = "closed"; root.taskStatus = "" } }   // = the shrink duration
@@ -207,9 +217,20 @@ PlasmoidItem {
         case "voicestatus": {
             var v = Agent.voiceInfo(code, out)
             root.voiceChecked = true; root.voiceAvailable = v.available; root.voiceReason = Agent.voiceReason(code, v); root.voiceStatusAt = Date.now()
+            if (code === 0 && j) root.voiceMicAllowed = v.micAllowed
+            if (root.voiceRepair) {   // after a failed listen only: a dead "Hey Fab" service is restarted (the mic itself never needs it)
+                root.voiceRepair = false
+                if (Agent.voiceServiceRestart(v, root.voiceOn, root.voiceRestartAt, Date.now())) {
+                    root.voiceRestartAt = Date.now(); root.voiceHint = "Voice service not running \u2014 restarting\u2026"; hintTimer.restart()
+                    root.run("vrestart", 0, "systemctl --user restart fabos-voiced.service 2>&1 && echo restarted")
+                }
+            }
             break
         }
         case "listen": root.onListened(code, out, err || ""); break
+        case "vprog": root.onProgress(out); break
+        case "vrestart": root.voiceHint = code === 0 ? "Voice service restarted" : "Voice service could not be restarted \u2014 " + Agent.clip(Agent.lastLine(out + "\n" + (err || "")) || "see journalctl --user -u fabos-voiced", 100)
+                         hintTimer.restart(); root.refreshVoice(true); break
         case "imgcheck": root.onImageChecked(ref, code, out); break
         case "bins": if (viewerLoader.item) { viewerLoader.item.viewer.bins = Agent.parseBins(out); viewerLoader.item.viewer.binsKnown = true } break
         case "vsave": case "vcopy": case "vopen": case "vwall": if (viewerLoader.item) viewerLoader.item.viewer.outcome(kind, code, out); break
@@ -230,6 +251,10 @@ PlasmoidItem {
         root.configured = !!j.provider_ready
         root.aiEnabled = j.ai_enabled === undefined ? true : !!j.ai_enabled
         root.provider = String(j.provider || "")
+        if (j.voice) {   // the microphone permission and voice.enabled straight from the daemon (fresher than the 30 s fabos-voice status cache)
+            if (j.voice.mic_allowed !== undefined) root.voiceMicAllowed = String(j.voice.mic_allowed) === "true"
+            if (j.voice.enabled !== undefined) root.voiceOn = String(j.voice.enabled) === "true"
+        }
         if (j.ui_show_raw !== undefined) root.showRaw = j.ui_show_raw === true || String(j.ui_show_raw) === "true"
         var t = j.tasks || {}
         var n = (t.running || 0) + (t.queued || 0) + (t.waiting_approval || 0) + (t.waiting_user || 0)
@@ -292,7 +317,7 @@ PlasmoidItem {
     }
     function switchTask(id, noteText) {
         root.trailing = 0
-        root.taskId = id; root.taskStatus = "queued"; root.resultText = ""
+        root.taskId = id; root.taskStatus = "queued"; root.taskQueue = ""; root.resultText = ""
         root.currentGroup = -1; root.groupHeaderRow = -1; root.lastStepRow = -1; root.taskFirstGroup = root.groupSerial
         if (noteText.length) root.note(noteText)
         root.wake()
@@ -378,6 +403,7 @@ PlasmoidItem {
     }
     function ingest(t) {
         root.taskStatus = String(t.status || "")
+        root.taskQueue = t.queue && t.queue.text ? String(t.queue.text) : ""
         root.resultText = String(t.result || "")
         root.taskTitle = String(t.title || "")
         var steps = t.steps || [], i, s, key
@@ -535,18 +561,36 @@ PlasmoidItem {
         root.voiceStatusAt = Date.now()
         root.run("voicestatus", 0, "fabos-voice status")
     }
-    // a tap always tries — even when the last status said "no voice" — and the CLI's own reason lands in the status line
+    // a tap always tries — even when the last status said "no voice" — and the CLI's own reason lands in the status line.
+    // Exception (permissions only enable): while the microphone is off in Settings the tap opens that setting and never records.
+    // The recording state is visible at once (listening + "Starting the microphone…"); "speak now" appears when the progress
+    // file says audio flows; the level meter follows; "Understanding…" while whisper runs; any failure names its reason.
     function startListening() {
         if (root.listening || root.sending) return
-        root.wake(); root.listening = true; root.voiceHint = ""
-        root.run("listen", 0, "fabos-voice listen-once --timeout 10")
+        root.wake()
+        if (Agent.micTapAction(root.voiceMicAllowed) === "settings") {
+            root.voiceHint = Agent.MIC_OFF_TIP + " \u2014 opening Fab AI Controls\u2026"; hintTimer.restart()
+            root.openControls("--settings voice")
+            return
+        }
+        root.listening = true; root.voiceHint = ""; root.voicePhase = "starting"; root.voiceLevel = 0; root.voiceSpeech = false
+        root.run("listen", 0, Agent.listenCommand(10))
+        progressTimer.start()
+    }
+    function onProgress(out) {
+        if (!root.listening) return
+        var p = Agent.voiceProgress(out)
+        if (!p.phase.length || p.phase === "done" || p.phase === "error") return   // the listen command itself has the last word (onListened)
+        root.voicePhase = p.phase; root.voiceLevel = p.level; root.voiceSpeech = p.speech
     }
     function onListened(code, out, err) {
-        root.listening = false
+        progressTimer.stop()
+        root.listening = false; root.voicePhase = ""; root.voiceLevel = 0
         var t = out.trim()
         if (code === 0 && t.length) { root.typeInto(t); return }
         root.voiceHint = Agent.voiceFailure(code, out, err)
         hintTimer.restart()
+        root.voiceRepair = true
         root.refreshVoice(true)
     }
     function typeInto(t) { root.typeBuffer = t; typeAnim.stop(); typeAnim.to = t.length; typeAnim.duration = Math.min(2500, 25 * t.length); typeAnim.start() }
@@ -605,7 +649,7 @@ PlasmoidItem {
                     Layout.preferredHeight: root.compact ? Math.max(Kirigami.Units.gridUnit * 1.6, root.height - Kirigami.Units.smallSpacing * 2) : Kirigami.Units.gridUnit * 2.4
                     // the status line under the field carries the voice hint on the desktop; when it is hidden (compact form) the
                     // placeholder carries it instead, so a failed mic tap is never a silent no-op
-                    placeholderText: root.listening ? "Listening… speak now" : (root.voiceHint.length && !statusRow.visible ? root.voiceHint : "Ask me to do anything…")
+                    placeholderText: root.listening ? Agent.voicePhaseText(root.voicePhase, root.voiceSpeech) : (root.voiceHint.length && !statusRow.visible ? root.voiceHint : "Ask me to do anything…")
                     font.family: "Inter"; font.pixelSize: 16; color: Kirigami.Theme.textColor; placeholderTextColor: Kirigami.Theme.disabledTextColor
                     leftPadding: 16; rightPadding: 16; verticalAlignment: TextInput.AlignVCenter
                     background: Rectangle {
@@ -617,24 +661,26 @@ PlasmoidItem {
                     Keys.onEscapePressed: (event) => { if (root.panelMode === "open") { root.panelMode = "min"; event.accepted = true } else event.accepted = false }
                     onActiveFocusChanged: if (activeFocus) { root.wake(); root.refreshVoice(false); if (root.voiceHint.length) root.voiceHint = "" }
                 }
-                IconButton {   // microphone: records only on click; dimmed (never dead) when no speech backend / mic is known
-                    id: micButton
-                    icon: "audio-input-microphone"
+                IconButton {   // microphone: records only on click; dimmed (never dead) when no speech backend / mic is known,
+                    id: micButton  // or when the microphone is off in Settings (then a tap opens Fab AI Controls › Settings › Voice)
+                    icon: root.voiceMicAllowed ? "audio-input-microphone" : "microphone-sensitivity-muted"
                     size: root.compact ? Math.max(22, field.height - 4) : 36
                     iconSize: root.compact ? 16 : 20
                     active: !root.listening && !root.sending
-                    dim: root.voiceChecked && root.voiceReason.length > 0 && !root.listening
+                    dim: !root.voiceMicAllowed || (root.voiceChecked && root.voiceReason.length > 0 && !root.listening)
                     danger: root.listening
-                    tip: root.listening ? "Listening… speak now" : (root.voiceChecked && root.voiceReason.length ? root.voiceReason + " — tap to try anyway" : "Speak your request")
+                    tip: root.listening ? Agent.voicePhaseText(root.voicePhase, root.voiceSpeech)
+                       : (!root.voiceMicAllowed ? Agent.MIC_OFF_TIP : (root.voiceChecked && root.voiceReason.length ? root.voiceReason + " — tap to try anyway" : "Speak your request"))
                     onClicked: root.startListening()
                     HoverHandler { onHoveredChanged: if (hovered) root.refreshVoice(false) }
-                    Rectangle {   // soft accent ring while listening
+                    Rectangle {   // ring while listening: red until words are heard, then the accent; it breathes with the level
                         anchors.fill: parent; radius: width / 2; color: "transparent"
-                        border.color: Kirigami.Theme.negativeTextColor; border.width: 1.5
+                        border.color: root.voiceSpeech ? Kirigami.Theme.highlightColor : Kirigami.Theme.negativeTextColor; border.width: 1.5
                         opacity: root.listening ? 0.9 : 0
-                        scale: root.listening ? 1.0 : 0.8
+                        scale: root.listening ? 1.0 + root.voiceLevel * 0.3 : 0.8
                         Behavior on opacity { NumberAnimation { duration: 200 } }
-                        Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                        Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+                        Behavior on border.color { ColorAnimation { duration: 200 } }
                     }
                 }
                 Rectangle {   // Do it — animated pill. DISABLED (40 %, no hover, not clickable; Enter in the field is ignored by submit())
@@ -677,10 +723,15 @@ PlasmoidItem {
                         NumberAnimation { to: 1.0; duration: 450 }
                     }
                 }
+                MicLevel {   // microphone level while recording (accent once speech is heard)
+                    visible: root.listening && root.voicePhase === "recording"
+                    level: root.voiceLevel; speech: root.voiceSpeech
+                    Layout.preferredHeight: 14; Layout.preferredWidth: implicitWidth
+                }
                 Text {
                     id: statusText
                     Layout.fillWidth: true
-                    text: root.listening ? "Listening…" : (root.voiceHint.length ? root.voiceHint : root.status)
+                    text: root.listening ? Agent.voicePhaseText(root.voicePhase, root.voiceSpeech) : (root.voiceHint.length ? root.voiceHint : root.status)
                     wrapMode: Text.WordWrap; maximumLineCount: 2
                     color: root.listening ? Kirigami.Theme.negativeTextColor
                          : (root.voiceHint.length || !(root.configured && root.aiEnabled && root.daemonUp) ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.disabledTextColor)
@@ -771,7 +822,7 @@ PlasmoidItem {
                     Kirigami.Icon { visible: !root.taskActive && (root.taskStatus === "failed" || root.taskStatus === "cancelled"); source: "dialog-cancel"; isMask: true; color: Kirigami.Theme.neutralTextColor; Layout.preferredWidth: 16; Layout.preferredHeight: 16; Layout.leftMargin: 6 }
                     Text {
                         Layout.fillWidth: true; Layout.leftMargin: 6
-                        text: root.toast.length ? root.toast : Agent.statusLabel(root.taskStatus)
+                        text: root.toast.length ? root.toast : Agent.statusLabel(root.taskStatus, root.taskQueue)
                         color: Kirigami.Theme.textColor; opacity: 0.7
                         font.family: "Inter"; font.pixelSize: 12; font.weight: Font.Medium; elide: Text.ElideRight
                     }
@@ -869,7 +920,7 @@ PlasmoidItem {
                     Kirigami.Icon { visible: !root.taskActive && root.taskStatus !== "done"; source: "dialog-cancel"; isMask: true; color: Kirigami.Theme.neutralTextColor; Layout.preferredWidth: 16; Layout.preferredHeight: 16 }
                     Text {
                         Layout.fillWidth: true
-                        text: Agent.statusLabel(root.taskStatus) + (root.taskTitle.length ? " · " + root.taskTitle : "")
+                        text: Agent.statusLabel(root.taskStatus, root.taskQueue) + (root.taskTitle.length ? " · " + root.taskTitle : "")
                         color: Kirigami.Theme.textColor; opacity: 0.85
                         font.family: "Inter"; font.pixelSize: 13; elide: Text.ElideRight
                     }

@@ -105,6 +105,90 @@ t("stepError is friendly and hides raw output unless showRaw", () => {
   assert.strictEqual(A.stepError({ output: "" }, false), "This step did not work");
   assert.strictEqual(A.stepError({ output: JSON.stringify({ error: "RuntimeError: Mail is not configured. Ask the user\nmore" }) }, false), "Mail is not configured. Ask the user");
 });
+t("statusLabel: a queued task says WHY it waits (task.queue.text from the daemon, 1.0-8)", () => {
+  assert.strictEqual(A.statusLabel("queued", "waiting for the previous step in this chat"), "Queued — waiting for the previous step in this chat");
+  assert.strictEqual(A.statusLabel("queued", "another chat is running: 2 of 2 slots busy"), "Queued — another chat is running: 2 of 2 slots busy");
+  assert.strictEqual(A.statusLabel("queued", ""), "Getting ready…");                 // the instant before the daemon has looked
+  assert.strictEqual(A.statusLabel("running", "stale queue text"), "Working on it…");  // only a queued task carries the reason
+});
+t("voice (1.0-8): the listen command runs through the progress file the bar polls; the token never appears", () => {
+  const c = A.listenCommand(10);
+  assert.ok(c.includes('fabos-voice listen-once --timeout 10 --progress "$F"'), c);
+  assert.ok(c.includes('F="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fabos-voice/askbar-listen.json"'), c);
+  assert.ok(c.includes('rm -f "$F"'), "a stale file from the last run must not show its state");
+  assert.strictEqual(A.listenCommand("abc").includes("--timeout 10"), true, "a bad timeout falls back to 10");
+  assert.ok(A.listenProgressCommand().includes('cat "$F" 2>/dev/null'));
+});
+t("voice (1.0-8): mic state machine idle -> starting -> recording (+level) -> transcribing -> done | error", () => {
+  eq(A.voiceProgress(""), { phase: "", level: 0, peak: 0, speech: false, reason: "", code: -1, text: "" });
+  const st = A.voiceProgress('{"state":"starting","level":0,"peak":0,"speech":false,"seconds":0.1}');
+  assert.strictEqual(st.phase, "starting"); assert.strictEqual(A.voicePhaseText(st.phase, st.speech), "Starting the microphone…");
+  const rec = A.voiceProgress('{"state":"recording","level":0.62,"peak":0.7,"speech":false,"seconds":1.3}');
+  assert.strictEqual(rec.phase, "recording"); assert.strictEqual(rec.level, 0.62); assert.strictEqual(A.voicePhaseText("recording", false), "Listening… speak now");
+  assert.strictEqual(A.voicePhaseText("recording", true), "Listening…", "once words are heard the bar stops saying 'speak now'");
+  assert.strictEqual(A.voiceProgress('{"state":"recording","level":7}').level, 1, "level is clamped to 0..1");
+  assert.strictEqual(A.voiceProgress('{"state":"recording","level":-1}').level, 0);
+  assert.strictEqual(A.voicePhaseText("transcribing", true), "Understanding what you said…");
+  assert.strictEqual(A.voicePhaseText("", false), "Listening…");
+  const done = A.voiceProgress('{"state":"done","text":"open the files app","backend":"whisper.cpp"}');
+  assert.strictEqual(done.phase, "done"); assert.strictEqual(done.text, "open the files app");
+  const err = A.voiceProgress('{"state":"error","reason":"No microphone found on this computer.","code":4}');
+  assert.strictEqual(err.phase, "error"); assert.strictEqual(err.code, 4); assert.strictEqual(err.reason, "No microphone found on this computer.");
+  assert.strictEqual(A.voiceProgress('{"state":"weird"}').phase, "", "unknown states are ignored");
+});
+t("voice (1.0-8): every failure has an exact inline reason", () => {
+  const vf = A.voiceFailure;
+  assert.strictEqual(vf(4, "", "No microphone found on this computer."), "No microphone found — plug one in or check Fab Settings › Sound");
+  assert.strictEqual(vf(4, "", "Not enough free memory for offline speech recognition right now (it needs about 210 MB)."), "Speech recognition needs 210 MB free — close some apps");
+  assert.strictEqual(vf(4, "", "Not enough free memory for offline speech recognition right now (it needs about 600 MB)."), "Speech recognition needs 600 MB free — close some apps", "the figure comes from the CLI");
+  assert.strictEqual(vf(4, "", "Microphone is off in Settings. Allow it in Fab AI Controls › Settings › Voice (“Allow Fab OS to use the microphone”)."), "Microphone is off in Settings — tap the mic to open them");
+  assert.strictEqual(vf(3, "", "The microphone is muted or silent: it sent only zeros. Check the input device and its level in the volume applet."), "Microphone is silent — check the input device and its level in the volume applet");
+  assert.strictEqual(vf(4, "", "The microphone is muted. Unmute it in the volume applet and try again."), "Microphone is muted — unmute it in the volume applet");
+  assert.strictEqual(vf(4, "", "No audio session: PipeWire is not running for this user, so nothing can record or play."), "No audio session — PipeWire is not running for this login");
+  assert.strictEqual(vf(4, "", "Speech recognition is not available: no offline model and no cloud provider key."), "Speech recognition is not available — no offline model and no cloud provider key");
+  assert.strictEqual(vf(3, "", "listen-once gave up: recording or transcription did not finish in time"), "Speech recognition took too long — tap the mic to try again");
+  assert.strictEqual(vf(3, "", "Sorry, I did not catch that. Say it once more?"), "I did not catch that — tap the mic and speak after the chime", "nothing heard: the bar's own sentence");
+  assert.strictEqual(vf(4, "", "Some new reason the bar does not know."), "Some new reason the bar does not know.", "an unknown CLI sentence is shown as it is");
+  assert.strictEqual(vf(3, "", ""), "I did not catch that — tap the mic and speak after the chime");
+  assert.strictEqual(vf(0, "", ""), "I did not catch that — tap the mic and speak after the chime");
+  assert.strictEqual(vf(127, "", "sh: fabos-voice: command not found"), "Voice is not installed on this machine (fabos-voice is missing)");
+  assert.strictEqual(vf(4, "", ""), "Voice is not available on this machine");
+  assert.strictEqual(vf(1, "", "boom"), "Voice did not work just now — boom");
+  assert.strictEqual(A.voiceReasonText("something else"), "");
+});
+t("voice (1.0-8): the microphone permission dims the mic, names the reason, and routes the tap to Settings", () => {
+  assert.strictEqual(A.MIC_OFF_TIP, "Microphone is off in Settings");
+  const off = A.voiceInfo(0, '{"wake":false,"listening":false,"stt":"whisper.cpp","tts":"espeak-ng","mic":true,"mic_allowed":false,"service":true}');
+  assert.strictEqual(off.micAllowed, false); assert.strictEqual(off.available, true);
+  assert.strictEqual(A.voiceReason(0, off), "Microphone is off in Settings", "the dimmed mic's tooltip");
+  assert.strictEqual(A.micTapAction(false), "settings", "a tap opens Fab AI Controls › Settings › Voice instead of recording");
+  assert.strictEqual(A.micTapAction(true), "listen"); assert.strictEqual(A.micTapAction(undefined), "listen");
+  const on = A.voiceInfo(0, '{"stt":"whisper.cpp","tts":"espeak-ng","mic":true,"mic_allowed":true,"service":true}');
+  assert.strictEqual(on.micAllowed, true); assert.strictEqual(A.voiceReason(0, on), "");
+  const old = A.voiceInfo(0, '{"stt":"whisper.cpp","tts":"espeak-ng","mic":true}');
+  assert.strictEqual(old.micAllowed, true, "an older fabos-voice without the key must not produce a dead mic"); assert.strictEqual(old.service, true);
+  assert.strictEqual(A.voiceReason(0, A.voiceInfo(0, '{"stt":"whisper.cpp","mic":false,"mic_allowed":false}')), "Microphone is off in Settings", "the permission comes before the hardware");
+  // the QML wiring: the mic button is dimmed by the permission, carries the tooltip, and startListening routes through micTapAction to the setting
+  const qml = fs.readFileSync(path.join(__dirname, "..", "packages/fabos-agent/usr/share/plasma/plasmoids/in.patienceai.fabos.askbar/contents/ui/main.qml"), "utf8");
+  assert.ok(/dim:\s*!root\.voiceMicAllowed/.test(qml), "mic IconButton dim binding must include the permission");
+  assert.ok(qml.includes("!root.voiceMicAllowed ? Agent.MIC_OFF_TIP"), "mic tooltip must be the permission text while off");
+  assert.ok(qml.includes('if (Agent.micTapAction(root.voiceMicAllowed) === "settings")') && qml.includes('root.openControls("--settings voice")'), "the tap must open Settings › Voice, never record");
+  assert.ok(qml.includes("root.voicePhase = \"starting\"") && qml.includes("progressTimer.start()") && qml.includes("Agent.listenCommand(10)"), "startListening shows the starting state at once and polls the progress file");
+  assert.ok(qml.includes("MicLevel {") && fs.existsSync(path.join(__dirname, "..", "packages/fabos-agent/usr/share/plasma/plasmoids/in.patienceai.fabos.askbar/contents/ui/MicLevel.qml")), "the level meter is in the status row");
+  assert.ok(qml.includes("Agent.statusLabel(root.taskStatus, root.taskQueue)"), "the queued reason reaches the bar's status label");
+});
+t("voice (1.0-8): a dead 'Hey Fab' service is restarted only on the repair path, once a minute", () => {
+  const down = A.voiceInfo(0, '{"stt":"whisper.cpp","mic":true,"mic_allowed":true,"service":false}');
+  assert.strictEqual(A.voiceServiceRestart(down, true, 0, 100000), true);
+  assert.strictEqual(A.voiceServiceRestart(down, true, 70000, 100000), false, "not twice within a minute");
+  assert.strictEqual(A.voiceServiceRestart(down, false, 0, 100000), false, "voice is off: nothing to restart");
+  assert.strictEqual(A.voiceServiceRestart(A.voiceInfo(0, '{"stt":"whisper.cpp","mic":true,"mic_allowed":false,"service":false}'), true, 0, 100000), false, "permission off: the spotter is meant to be idle");
+  assert.strictEqual(A.voiceServiceRestart(A.voiceInfo(0, '{"stt":"whisper.cpp","mic":true,"service":true}'), true, 0, 100000), false);
+  assert.strictEqual(A.voiceServiceRestart(null, true, 0, 100000), false);
+  const qml = fs.readFileSync(path.join(__dirname, "..", "packages/fabos-agent/usr/share/plasma/plasmoids/in.patienceai.fabos.askbar/contents/ui/main.qml"), "utf8");
+  assert.ok(qml.includes("if (root.voiceRepair) {") && qml.includes("systemctl --user restart fabos-voiced.service"), "the restart runs from the voicestatus handler after a failed listen only");
+  assert.ok(qml.includes('"Voice service not running \\u2014 restarting\\u2026"'), "the exact inline text");
+});
 t("statusLabel / isActive / riskLabel", () => {
   assert.strictEqual(A.statusLabel("running"), "Working on it…"); assert.strictEqual(A.statusLabel("waiting_approval"), "Needs your permission");
   assert.strictEqual(A.statusLabel("weird"), "");
@@ -134,7 +218,7 @@ t("plainSummary strips markup and truncates", () => {
   assert.strictEqual(A.plainSummary("abcdefghij", 5), "abcd…");
 });
 t("voiceInfo: available only with exit 0 and a real STT backend", () => {
-  eq(A.voiceInfo(0, '{"wake": false, "listening": false, "stt": "whisper.cpp", "tts": "espeak-ng", "mic": true}'), { available: true, stt: "whisper.cpp", tts: "espeak-ng", mic: true });
+  eq(A.voiceInfo(0, '{"wake": false, "listening": false, "stt": "whisper.cpp", "tts": "espeak-ng", "mic": true}'), { available: true, stt: "whisper.cpp", tts: "espeak-ng", mic: true, micAllowed: true, service: true });
   assert.strictEqual(A.voiceInfo(0, '{"stt":"none","tts":"none","mic":false}').available, false);
   assert.strictEqual(A.voiceInfo(127, "").available, false);   // binary missing
   assert.strictEqual(A.voiceInfo(4, "").available, false);
@@ -147,13 +231,13 @@ t("voiceReason: why the mic is dimmed after fabos-voice status ('' = ready)", ()
   assert.strictEqual(A.voiceReason(1, A.voiceInfo(1, "")), "Voice is not available right now");
 });
 t("voiceFailure: a failed listen-once is never silent; the CLI's own last stderr line is what the user reads", () => {
-  assert.strictEqual(A.voiceFailure(4, "", "No microphone found on this computer."), "No microphone found on this computer.");
+  assert.strictEqual(A.voiceFailure(4, "", "No microphone found on this computer."), "No microphone found — plug one in or check Fab Settings › Sound");
   assert.strictEqual(A.voiceFailure(4, "", "backend: whisper.cpp\nSpeech recognition is not available: no offline model and no cloud provider key.\n"),
-    "Speech recognition is not available: no offline model and no cloud provider key.");
+    "Speech recognition is not available — no offline model and no cloud provider key");
   assert.strictEqual(A.voiceFailure(4, "", ""), "Voice is not available on this machine");
   assert.strictEqual(A.voiceFailure(127, "", "sh: 1: fabos-voice: not found"), "Voice is not installed on this machine (fabos-voice is missing)");
-  assert.strictEqual(A.voiceFailure(3, "", "Sorry, I did not catch that. Say it once more?"), "I did not catch that. Tap the mic and try again.");
-  assert.strictEqual(A.voiceFailure(0, "   \n", ""), "I did not catch that. Tap the mic and try again.");   // exit 0 but nothing printed
+  assert.strictEqual(A.voiceFailure(3, "", "Sorry, I did not catch that. Say it once more?"), "I did not catch that — tap the mic and speak after the chime");
+  assert.strictEqual(A.voiceFailure(0, "   \n", ""), "I did not catch that — tap the mic and speak after the chime");   // exit 0 but nothing printed
   assert.strictEqual(A.voiceFailure(1, "", "Traceback (most recent call last):\n  ...\nRuntimeError: boom"), "Voice did not work just now — RuntimeError: boom");
   assert.strictEqual(A.voiceFailure(1, "", ""), "Voice did not work just now. Tap the mic to try again.");
   const long = A.voiceFailure(4, "", "x".repeat(400));
