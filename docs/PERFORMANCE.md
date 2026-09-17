@@ -65,6 +65,10 @@ Findings, each one verified in the guest rather than assumed:
   (322 MB PSS) and the Discover update notifier (148 MB PSS, still, 3 minutes after login) — neither is the lag the owner
   describes; with memory free, lag is CPU and I/O scheduling. (The notifier is the "Fab Software Updater"; its footprint
   is a follow-up for the owner to decide, not changed here.)
+- **Launch latency** (exec → KWin maps the window, 3 runs each, software rendering): Fab Terminal (konsole) cold 373 ms /
+  warm median 209 ms, Fab Files (dolphin) 274 / 198 ms, Fab Editor (kate) 317 / 214 ms, Firefox 1840 / 794 ms. Nothing
+  in the desktop delays a launch; "any app opening lags" on the laptop is therefore not the session's doing — it points
+  at the disk (see the I/O scheduler change) or at what else is running there.
 - Session start: `systemd-analyze --user blame` puts plasma-kcminit at 1.5 s, the polkit agent 1.1 s, PowerDevil 1.0 s;
   boot to graphical.target 5.2 s; `systemd --user` `DefaultTimeoutStopSec` was 1 min 30 s. 33 journal warnings, none
   about performance (locale, missing evolution registry, no backlight in the VM).

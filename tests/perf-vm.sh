@@ -42,8 +42,8 @@
 #   BUDGET_VOICED_PCT     fabos-voiced + its recorder + spotter together        < 1.5 % of one core while idle
 #   BUDGET_PROC_PCT       any other single process while idle                    < 5 %   (plasmashell, kwin_wayland < BUDGET_SHELL_PCT = 3 %)
 #   BUDGET_TASKS_PER_S    system-wide task creations while idle                  < 2 /s
-#   BUDGET_LAUNCH_MS      warm launch latency per application (VM: 2 vCPU, llvmpipe) — see the table in the code
-#   BUDGET_REGRESSION     warm latency vs --baseline-json                         <= 1.25 x + 200 ms
+#   BUDGET_LAUNCH_MS      warm launch latency per application (VM: 2 vCPU, llvmpipe)  konsole/dolphin/kate < 1000 ms, firefox < 4000 ms
+#   BUDGET_REGRESSION     warm latency vs --baseline-json                         <= 1.5 x + 300 ms (the host is shared; launches jitter)
 #   every `apt-get install` of --debs exits 0 (a postinst may never fail an upgrade); no llama-server process after login
 #   (the model is loaded on demand only); no baloo_file process (indexing off by default); the mode table holds.
 set -uo pipefail
@@ -70,8 +70,10 @@ fi
 
 # ---------------------------------------------------------------- budgets
 BUDGET_VOICED_PCT=1.5; BUDGET_PROC_PCT=5; BUDGET_SHELL_PCT=3; BUDGET_TASKS_PER_S=2.0   # tasks: system-wide (systemd, journald and the probes of the bar included); 1.0-7 measured 1.5/s
-declare -A BUDGET_LAUNCH_MS=([konsole]=4000 [dolphin]=6000 [kate]=6000 [firefox]=30000)   # warm, in THIS VM (2 vCPU, llvmpipe); the regression check against --baseline-json is the sharp guard
-BUDGET_REGRESSION_FACTOR=1.25; BUDGET_REGRESSION_SLACK_MS=200
+# warm launch (median of runs 2..N) in THIS VM (2 vCPU, llvmpipe). 1.0-7 measured konsole 209, dolphin 198, kate 214, firefox 794 ms
+# (cold 373 / 274 / 317 / 1840); the budgets leave room for a busy host, the regression check against --baseline-json is the sharper guard.
+declare -A BUDGET_LAUNCH_MS=([konsole]=1000 [dolphin]=1000 [kate]=1000 [firefox]=4000)
+BUDGET_REGRESSION_FACTOR=1.5; BUDGET_REGRESSION_SLACK_MS=300
 
 LOG=$OUT/perf-vm.out; JSON=$OUT/perf-vm.json; : > "$LOG"; exec > >(tee -a "$LOG") 2>&1
 SSH="sshpass -p fabos ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -p 2222 fabos@127.0.0.1"
