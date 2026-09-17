@@ -1474,4 +1474,4 @@ Archive key. Changelog entry 1.0-8 published on the site (`/changelog/`, feed it
 `v1.0.7` (over-the-air mode: notes, package index, signed sums, archive key; no image). No ISO was built or uploaded.
 
 **Public update-channel test** (`tests/update-channel-test.sh`, the same disk now at 1.0-7, pulling from the live repository):
-<!-- R8-PUBLIC -->
+**PASS** (2026-09-17, 18:40 IST) — newer fabos packages offered by the channel; fabos-desktop updated 1.0-7 -> 1.0-8 — over the public signed repository, through the same helper Fab Updates uses (`build/r8-update-channel.out`).
