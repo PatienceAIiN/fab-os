@@ -1690,6 +1690,11 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         # a clearer time in the answer replaces the guess
         r = self.cli("do", "--mode", "auto", "remind me to submit the report at 4"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user")
         self.cli("answer", str(r["id"]), "tomorrow at 10am"); t = self.wait(r["id"], ("done", "failed")); self.assertIn("Tomorrow, 10:00 — Submit the report", t["result"], t["result"])
+        # two unclear answers in a row: the agent gives up politely instead of guessing (and the task ends 'done', not 'failed')
+        r = self.cli("do", "--mode", "auto", "remind me to call the plumber at 4"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user")
+        self.cli("answer", str(r["id"]), "at 5"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user"); self.assertIn("17:00 — Call the plumber", t["questions"][-1]["question"])
+        self.cli("answer", str(r["id"]), "6 o'clock"); t = self.wait(r["id"], ("done", "failed")); self.assertEqual(t["status"], "done"); self.assertIn("not added", t["result"])
+        self.assertFalse([i for i in self.http("GET", "/schedule?scope=all")[1]["items"] if "plumber" in i["title"].lower()])
         # listing
         t = self.wait(self.cli("do", "--mode", "auto", "my reminders for tomorrow")["id"])
         self.assertTrue(t["result"].startswith("Tomorrow: 3 items"), t["result"]); self.assertIn("09:00 Call the bank", t["result"]); self.assertIn("Water the plants", t["result"]); self.assertIn("Submit the report", t["result"])

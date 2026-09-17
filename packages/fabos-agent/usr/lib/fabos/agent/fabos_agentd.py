@@ -2798,6 +2798,7 @@ class Agent:
                 if not p["ok"] and not re.search(r"\b(?:when should i remind you|two times)\b", p["error"] or "", re.I):
                     return False                                      # an impossible date etc.: the model explains, with the tool at hand
                 rounds = 0
+                final = "Okay, I have not added anything. You can add it in Fab AI Controls › Schedule."
                 while p["ok"] and p["needs_confirm"] and rounds < 2:
                     rounds += 1
                     ans = self.ask_user(tid, "I read that as %s. Shall I add it? Say yes, or give the time again." % p["interpretation"])
