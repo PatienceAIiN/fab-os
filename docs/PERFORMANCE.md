@@ -136,10 +136,13 @@ dpkg error, fabos-tuning's postinst enabled its units and re-ran the udev rule o
 | `fabos-llama.service` Nice | 5 | 10 |
 | kwinrc translucency key | `kwin4_effect_translucencyEnabled` (dead) | `translucencyEnabled=false` |
 
-¹ the first 1.0-8 run counted 6.5 task creations/s in its 60 s window against 1.53/s before; the sampler could not say
-who forked (it recorded PIDs only at the ends), no Fab OS process restarted (the voice daemon's journal shows one start),
-and the system CPU stayed at 3 %. `tests/perf/sample.py` now attributes every new process to "command (parent)"; the
-re-run's figure and attribution are in `build/r8-perf/after/idle.json`.
+¹ the first two 1.0-8 runs counted 6.5 and 7.4 task creations/s against 1.53/s before. `tests/perf/sample.py` was given
+a spawn attribution (every new process as "command (parent)") and named the culprit at once: the new battery card was
+running `fabos-perf-mode status --json` (about 25 short processes — one kreadconfig6 per key, busctl, awk, sed,
+powerprofilesctl) four times a minute, because it re-probed whenever the bar's own status changed. The card now probes
+only on a user's action (load, pane shown, hover, switch; one probe per 10 s at most) — the same rule the 1.0-3 idle
+budget imposed on the bar. The final run's figure is the one in the table; the two earlier runs are kept under
+`build/r8-perf/after-run1-*` and `after-attempt3-cardprobe/` (whose `idle.json` carries the attribution).
 ² in the VM the microphone is near-silent, so the gate changes little on the CPU side (pocketsphinx already sat at
 0.05 %; the daemon's RMS pass adds ~0.1 %). What the gate buys is decoder time on a real microphone in a room with
 noise; what the *policy* buys is measured below — the whole capture chain gone.
