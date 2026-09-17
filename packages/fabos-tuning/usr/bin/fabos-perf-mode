@@ -25,9 +25,12 @@ CFG=${XDG_CONFIG_HOME:-$HOME/.config}
 DIR=$CFG/fabos; MODE_FILE=$DIR/performance-mode; SNAP=$DIR/performance-mode.snapshot
 MODES="power-saver balanced performance gaming server"
 PPD="busctl --system --timeout=3"; PPD_DEST=net.hadess.PowerProfiles; PPD_PATH=/net/hadess/PowerProfiles
-# every key a mode may write: FILE|GROUP|SUBGROUP-or-'-'|KEY (the snapshot records the user's own value of each)
+# every key a mode may write: FILE|GROUP|SUBGROUP-or-'-'|KEY (the snapshot records the user's own value of each).
+# Effect keys are <id>Enabled with the id from the effect's metadata.json: KWin 6.6's scripted effects are plain ids
+# (fade, scale, dimscreen, translucency, squash — /usr/share/kwin-wayland/effects/*/metadata.json), the C++ plugins keep
+# theirs (blur, magiclamp, slide, slidingpopups, kwin4_effect_shapecorners).
 KEYS="kwinrc|Plugins|-|blurEnabled
-kwinrc|Plugins|-|kwin4_effect_translucencyEnabled
+kwinrc|Plugins|-|translucencyEnabled
 kwinrc|Plugins|-|magiclampEnabled
 kwinrc|Plugins|-|dimscreenEnabled
 kwinrc|Plugins|-|slideEnabled
@@ -112,11 +115,11 @@ apply_mode() {
   case "$m" in
     gaming)
       kw kwinrc Compositing - AllowTearing true
-      for e in blur kwin4_effect_translucency magiclamp dimscreen; do kw kwinrc Plugins - "${e}Enabled" false; done
+      for e in blur translucency magiclamp dimscreen; do kw kwinrc Plugins - "${e}Enabled" false; done
       ;;
     server)
       kw kwinrc Compositing - AllowTearing false
-      for e in blur kwin4_effect_translucency magiclamp dimscreen slide fade scale slidingpopups kwin4_effect_shapecorners; do kw kwinrc Plugins - "${e}Enabled" false; done
+      for e in blur translucency magiclamp dimscreen slide fade scale slidingpopups kwin4_effect_shapecorners; do kw kwinrc Plugins - "${e}Enabled" false; done
       for g in AC Battery; do
         kw powerdevilrc "$g" Display TurnOffDisplayWhenIdle false; kw powerdevilrc "$g" Display DimDisplayWhenIdle false
         kw powerdevilrc "$g" SuspendAndShutdown AutoSuspendAction 0; kw powerdevilrc "$g" SuspendAndShutdown LidAction 0
@@ -164,7 +167,7 @@ cmd_status() {
   sp=$(spotter_policy "${m:-balanced}")
   if [ "${1:-}" = "--json" ]; then
     printf '{"mode":%s,"persisted":%s,"ppd":%s,"ppd_available":%s,"tearing":%s,"vrr":%s,' "$(js "${m:-balanced}")" "$([ -n "$m" ] && echo true || echo false)" "$(js "$p")" "$([ -n "$p" ] && echo true || echo false)" "$(jb "$(kr kwinrc Compositing - AllowTearing)")" "$(js "$vrr")"
-    printf '"effects":{"blur":%s,"translucency":%s,"magiclamp":%s,"dimscreen":%s,"slide":%s,"corners":%s},' "$(jb "$(kr kwinrc Plugins - blurEnabled)")" "$(jb "$(kr kwinrc Plugins - kwin4_effect_translucencyEnabled)")" "$(jb "$(kr kwinrc Plugins - magiclampEnabled)")" "$(jb "$(kr kwinrc Plugins - dimscreenEnabled)")" "$(jb "$(kr kwinrc Plugins - slideEnabled)")" "$(jb "$(kr kwinrc Plugins - kwin4_effect_shapecornersEnabled)")"
+    printf '"effects":{"blur":%s,"translucency":%s,"magiclamp":%s,"dimscreen":%s,"slide":%s,"corners":%s},' "$(jb "$(kr kwinrc Plugins - blurEnabled)")" "$(jb "$(kr kwinrc Plugins - translucencyEnabled)")" "$(jb "$(kr kwinrc Plugins - magiclampEnabled)")" "$(jb "$(kr kwinrc Plugins - dimscreenEnabled)")" "$(jb "$(kr kwinrc Plugins - slideEnabled)")" "$(jb "$(kr kwinrc Plugins - kwin4_effect_shapecornersEnabled)")"
     printf '"spotter":%s,' "$(js "$sp")"
     printf '"display":{"turn_off_when_idle":%s,"dim_when_idle":%s,"autosuspend":%s,"lid":%s},' "$(jb "$(kr powerdevilrc AC Display TurnOffDisplayWhenIdle)")" "$(jb "$(kr powerdevilrc AC Display DimDisplayWhenIdle)")" "$(jn "$(kr powerdevilrc AC SuspendAndShutdown AutoSuspendAction)")" "$(jn "$(kr powerdevilrc AC SuspendAndShutdown LidAction)")"
     printf '"governor":%s,"split_lock_mitigate":%s,"root_mode":%s,"snapshot":%s}\n' "$(js "${gov:-unavailable}")" "$(js "${slm:-unavailable}")" "$(js "$rootm")" "$([ -f "$SNAP" ] && echo true || echo false)"
@@ -172,7 +175,7 @@ cmd_status() {
     echo "mode:              ${m:-balanced}$([ -n "$m" ] || echo ' (never chosen)')"
     echo "power profile:     ${p:-unavailable (power-profiles-daemon not running)}"
     echo "tearing allowed:   $(kr kwinrc Compositing - AllowTearing)   variable refresh: ${vrr:-unknown}"
-    echo "effects:           blur=$(kr kwinrc Plugins - blurEnabled) translucency=$(kr kwinrc Plugins - kwin4_effect_translucencyEnabled) magiclamp=$(kr kwinrc Plugins - magiclampEnabled) dimscreen=$(kr kwinrc Plugins - dimscreenEnabled) slide=$(kr kwinrc Plugins - slideEnabled) corners=$(kr kwinrc Plugins - kwin4_effect_shapecornersEnabled)"
+    echo "effects:           blur=$(kr kwinrc Plugins - blurEnabled) translucency=$(kr kwinrc Plugins - translucencyEnabled) magiclamp=$(kr kwinrc Plugins - magiclampEnabled) dimscreen=$(kr kwinrc Plugins - dimscreenEnabled) slide=$(kr kwinrc Plugins - slideEnabled) corners=$(kr kwinrc Plugins - kwin4_effect_shapecornersEnabled)"
     echo "wake-word policy:  $sp"
     echo "display (AC):      turn off when idle=$(kr powerdevilrc AC Display TurnOffDisplayWhenIdle) dim=$(kr powerdevilrc AC Display DimDisplayWhenIdle) autosuspend=$(kr powerdevilrc AC SuspendAndShutdown AutoSuspendAction) lid=$(kr powerdevilrc AC SuspendAndShutdown LidAction)   (empty = system default)"
     echo "cpu governor:      ${gov:-unavailable}   split_lock_mitigate: ${slm:-unavailable}   root-side mode: ${rootm:-none}"

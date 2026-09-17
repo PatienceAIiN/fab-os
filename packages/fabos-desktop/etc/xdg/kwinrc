@@ -24,7 +24,12 @@ squashEnabled=false
 scaleEnabled=true
 fadeEnabled=true
 dimscreenEnabled=true
-kwin4_effect_translucencyEnabled=true
+# Scripted effects are keyed by the id in /usr/share/kwin-wayland/effects/<name>/metadata.json, which in KWin 6.6 is the
+# plain name (fade, scale, dimscreen, translucency — not the kwin4_effect_* ids of Plasma 5). Until 1.0-7 this line read
+# kwin4_effect_translucencyEnabled=true, a key KWin never looked at, so the effect (windows go see-through while they are
+# moved) has never been active on a Fab OS desktop; 1.0-8 names the key correctly and keeps the effect off — it is
+# per-frame GPU work on every drag and its absence is what every user has seen so far (docs/PERFORMANCE.md).
+translucencyEnabled=false
 zoomEnabled=true
 slidingpopupsEnabled=true
 # Snap Assist (KWin script in /usr/share/kwin/scripts/fabos-snap-assist, ADR-0011): after a window is tiled to one half,

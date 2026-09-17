@@ -33,7 +33,7 @@ command -v fabos-perf-mode >/dev/null 2>&1 && fabos-perf-mode status --json 2>/d
 
 sec kwin
 printf 'kwinrc [Compositing] AllowTearing=%s  [KDE] AnimationDurationFactor=%s\n' "$(kr kwinrc Compositing AllowTearing)" "$(kr kdeglobals KDE AnimationDurationFactor)"
-for e in blur kwin4_effect_translucency magiclamp slide fade scale dimscreen squash slidingpopups zoom overview kwin4_effect_shapecorners fabos-snap-assist; do printf '%s=%s ' "$e" "$(kr kwinrc Plugins "${e}Enabled")"; done; echo
+for e in blur translucency magiclamp slide fade scale dimscreen squash slidingpopups zoom overview kwin4_effect_shapecorners fabos-snap-assist; do printf '%s=%s ' "$e" "$(kr kwinrc Plugins "${e}Enabled")"; done; echo
 printf 'loaded effects: '; qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.loadedEffects 2>/dev/null | tr '\n' ' '; echo
 printf 'active effects: '; qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.activeEffects 2>/dev/null | tr '\n' ' '; echo
 kscreen-doctor -o 2>/dev/null | grep -i -E "Output|VRR|Vrr|enabled|Modes:" | head -12
