@@ -61,6 +61,8 @@ CORPUS = [
     ("remind me in a week to follow up with the vendor", L(2026, 9, 24, 10), "Follow up with the vendor", "none", False),
     ("tomorrow noon lunch with Aman", L(2026, 9, 18, 12), "Lunch with Aman", "none", False),
     ("remind me at midnight to switch off the router", L(2026, 9, 18, 0), "Switch off the router", "none", False),
+    ("remind me at 12 tonight to sleep", L(2026, 9, 18, 0), "Sleep", "none", False),                 # the midnight that ends tonight (was: 'Today, 00:00 has already passed')
+    ("tomorrow night at 12 backup", L(2026, 9, 19, 0), "Backup", "none", False),                      # the midnight that ends tomorrow night
     ("remind me on Sunday evening to prepare for the week", L(2026, 9, 20, 18), "Prepare for the week", "none", False),
     ("remind me tmrw 7am yoga", L(2026, 9, 18, 7), "Yoga", "none", False),
     ("remind me to pay the credit card bill on the 5th of every month at 10am", L(2026, 10, 5, 10), "Pay the credit card bill", "monthly", False),
@@ -373,7 +375,7 @@ class MailIntakeTest(unittest.TestCase):
         self.assertTrue(skipped["<5@x>"].startswith("ambiguous: Today, 15:00 — Dentist"), skipped["<5@x>"])  # a bare "at 3" is never guessed from mail
         # replies only where the mail asked for one: #2 ("Please confirm") and #5 ("let me know"); never to other senders
         self.assertEqual(r["replied"], 2); self.assertEqual([x[0] for x in self.replies], ["me@example.com", "me@example.com"])
-        self.assertIn("Added to your schedule: Sun 20 Sep, 15:00 — Meeting with Rohan", self.replies[0][2]); self.assertEqual(self.replies[0][1], "Re: Schedule")
+        self.assertIn("Added to your schedule: Sun 20 Sep, 15:00 — Meeting with Rohan", self.replies[0][2]); self.assertEqual(self.replies[0][1], "Your schedule: added — Meeting with Rohan")
         self.assertIn("could not add", self.replies[1][2]); self.assertIn("Today, 15:00 — Dentist", self.replies[1][2])
         # the second pass sees the same (still unseen) mail and does nothing
         r2 = self.intake.run_once(NOW); self.assertEqual((r2["created"], r2["skipped"], r2["replied"]), ([], [], 0))
@@ -382,6 +384,32 @@ class MailIntakeTest(unittest.TestCase):
         # a search failure is reported, not raised
         broken = S.MailIntake(self.sched, "me@example.com", lambda: (_ for _ in ()).throw(RuntimeError("IMAP down")))
         self.assertIn("IMAP down", broken.run_once(NOW)["error"])
+
+    def test_own_reply_is_never_read_back(self):
+        """The confirmation goes to the user's own address, i.e. into the inbox the intake reads: own sender, new Message-ID,
+        unseen. It must never become a new item, another mail or a popup (before the fix: a duplicate + a 'Re: Re: …' mail
+        every pass, for ever). 'please confirm' at the end is the request for a reply, not part of the title."""
+        inbox = [{"message_id": "<a@x>", "uid": "1", "from": "me@example.com", "subject": "Reminder: call the bank tomorrow 9am, please confirm", "body": "", "date": ""}]
+        sent = []
+
+        def send(to, subj, body):
+            sent.append((to, subj, body))
+            inbox.append({"message_id": "<r%d@x>" % len(sent), "uid": str(10 + len(sent)), "from": "me@example.com", "subject": subj, "body": body, "date": ""})
+        intake = S.MailIntake(self.sched, "me@example.com", lambda: list(inbox), send)
+        r1 = intake.run_once(NOW)
+        self.assertEqual([i["title"] for i in r1["created"]], ["Call the bank"]); self.assertEqual(r1["replied"], 1); self.assertEqual(sent[0][0], "me@example.com")
+        self.assertIsNone(S.SUBJECT_RE.match(sent[0][1]), sent[0][1]); self.assertIn(S.REPLY_MARK, sent[0][2])
+        r2 = intake.run_once(NOW)
+        self.assertEqual((r2["created"], r2["replied"]), ([], 0)); self.assertEqual(dict(r2["skipped"]), {"<r1@x>": "the schedule's own reply"})
+        for _ in range(3):
+            r = intake.run_once(NOW)
+            self.assertEqual((r["created"], r["skipped"], r["replied"]), ([], [], 0))
+        self.assertEqual(len(self.sched.list("all")), 1); self.assertEqual(len(sent), 1)
+        # the user's own "Re:" to the confirmation (it quotes the marker) is skipped too, even with a "confirm" in it
+        inbox.append({"message_id": "<u@x>", "uid": "30", "from": "me@example.com", "subject": "Re: " + sent[0][1], "body": "ok, confirm\n\n> " + S.REPLY_MARK, "date": ""})
+        r = intake.run_once(NOW)
+        self.assertEqual((r["created"], r["replied"]), ([], 0)); self.assertEqual(dict(r["skipped"])["<u@x>"], "the schedule's own reply")
+        self.assertEqual(len(self.sched.list("all")), 1); self.assertEqual(len(sent), 1)
 
 
 if __name__ == "__main__":

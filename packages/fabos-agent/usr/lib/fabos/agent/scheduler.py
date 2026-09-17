@@ -52,6 +52,7 @@ DAY_PARTS = {"early morning": (7, 0), "morning": (9, 0), "before work": (8, 0), 
              "end of day": (18, 0), "end of the day": (18, 0), "eod": (18, 0), "dinner": (20, 0), "dinner time": (20, 0), "dinnertime": (20, 0), "after dinner": (21, 0),
              "night": (21, 0), "tonight": (21, 0), "bedtime": (22, 0), "bed time": (22, 0), "midnight": (0, 0)}
 PM_PARTS = {"afternoon", "evening", "night", "tonight", "after lunch", "after work", "end of day", "end of the day", "eod", "dinner", "dinner time", "dinnertime", "after dinner", "bedtime", "bed time", "lunch", "lunchtime", "lunch time", "noon", "midday", "mid-day"}
+NIGHT_PARTS = ("night", "tonight", "after dinner", "bedtime", "bed time")
 WEEKDAYS = {"monday": 0, "mon": 0, "tuesday": 1, "tues": 1, "tue": 1, "wednesday": 2, "wed": 2, "thursday": 3, "thurs": 3, "thur": 3, "thu": 3,
             "friday": 4, "fri": 4, "saturday": 5, "sat": 5, "sunday": 6, "sun": 6}
 MONTHS = {"january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3, "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
@@ -607,6 +608,9 @@ def parse(text, now=None, tz=None, clock="24"):
                 return _fail(res, "There is no %dth day in a month." % dom)
         if date is None:
             date = now.date()
+        if hour == 0 and minute == 0 and part in NIGHT_PARTS:   # "at 12 tonight" / "tomorrow night at midnight": the midnight that ENDS that night
+            date += dt.timedelta(days=1)
+            assumptions.append("midnight at the end of that night")
         when = dt.datetime.combine(date, t, tzinfo=tz)
         if when <= now:
             if date_kind is None and repeat == "none":
@@ -1044,6 +1048,12 @@ def open_schedule_tab(env=None, log=None):
 # ----------------------------------------------------------------------------- mail intake
 SUBJECT_RE = re.compile(r"^\s*(?:(?:re|fw|fwd)\s*:\s*)*(remind(?:er)?|schedule)\b\s*[:\-–—]?\s*(.*)$", re.I | re.S)
 WANTS_REPLY_RE = re.compile(r"\b(?:reply|confirm|confirmation|let me know|acknowledge|ack|write back|revert)\b", re.I)
+# The confirmation goes to the user's OWN address, i.e. into the very inbox the intake reads. Its subject must therefore never
+# start with Remind / Reminder / Schedule (SUBJECT_RE also strips "Re:"), and its body carries a marker the intake skips on —
+# otherwise every pass would read the previous reply as a new request: a duplicate item, another mail and a popup every 10 min.
+REPLY_SUBJECT = "Your schedule"
+REPLY_MARK = "(automatic reply from the Fab OS schedule)"
+REPLY_ASK_TAIL = re.compile(r"[\s,;\-]*(?:and\s+)?(?:please\s+|pls\s+|kindly\s+)?(?:confirm|reply|revert|acknowledge|ack|let\s+me\s+know|write\s+back)(?:\s+(?:me|back|please|pls|asap))?[\s.!?]*$", re.I)
 
 
 class MailIntake:
@@ -1062,14 +1072,22 @@ class MailIntake:
     def wants_reply(msg):
         return bool(WANTS_REPLY_RE.search((msg.get("subject") or "") + "\n" + (msg.get("body") or "")[:2000]))
 
+    @staticmethod
+    def is_own_reply(msg):
+        """The intake's own confirmation coming back into the inbox (or the user's answer to it, which quotes the marker):
+        skipped, never parsed, never answered — the loop guard."""
+        subj = re.sub(r"^\s*(?:(?:re|fw|fwd)\s*:\s*)*", "", msg.get("subject") or "", flags=re.I)
+        return subj.lower().startswith(REPLY_SUBJECT.lower()) or REPLY_MARK in (msg.get("body") or "")
+
     def candidate_texts(self, msg):
-        """The texts to try, in order: the subject after the keyword, then the first body lines (unquoted, non-empty)."""
+        """The texts to try, in order: the subject after the keyword, then the first body lines (unquoted, non-empty).
+        A trailing 'please confirm' / 'let me know' is the request for a reply, not part of the reminder."""
         m = SUBJECT_RE.match(msg.get("subject") or "")
         if not m:
             return []
         out = []
-        rest = (m.group(2) or "").strip()
-        body_lines = [ln.strip() for ln in (msg.get("body") or "").splitlines()]
+        rest = REPLY_ASK_TAIL.sub("", (m.group(2) or "").strip()).strip()
+        body_lines = [REPLY_ASK_TAIL.sub("", ln.strip()).strip() for ln in (msg.get("body") or "").splitlines()]
         body_lines = [ln for ln in body_lines if ln and not ln.startswith(">") and not re.match(r"^(on .* wrote:|--\s*$|sent from)", ln, re.I)][:6]
         if rest:
             out.append(rest)
@@ -1099,7 +1117,9 @@ class MailIntake:
             if self.sched.s.one("SELECT 1 FROM schedule_mail WHERE message_id=?", mid):
                 continue
             why, item = None, None
-            if self.sender(msg) != self.own:
+            if self.is_own_reply(msg):
+                why = "the schedule's own reply"
+            elif self.sender(msg) != self.own:
                 why = "not from the user's own address"
             elif not SUBJECT_RE.match(msg.get("subject") or ""):
                 why = "subject does not start with Remind / Reminder / Schedule"
@@ -1131,11 +1151,12 @@ class MailIntake:
             self.sched.s.activity("schedule", "mail_intake", None, "%s: %s" % ((msg.get("subject") or "")[:80], (item["interpretation"] if item else why)[:200]))
             if why:
                 report["skipped"].append((mid, why))
-            if self.send and self.sender(msg) == self.own and SUBJECT_RE.match(msg.get("subject") or "") and self.wants_reply(msg):
+            if self.send and self.sender(msg) == self.own and not self.is_own_reply(msg) and SUBJECT_RE.match(msg.get("subject") or "") and self.wants_reply(msg):
                 try:
                     body = ("Added to your schedule: %s\n\nYou will get a reminder on this computer at that time; it is also in Fab AI Controls › Schedule." % item["interpretation"]) if item else \
                            ("I could not add this to your schedule: %s\n\nWrite the time plainly, for example 'Reminder: call the bank tomorrow 9am'." % why)
-                    self.send(self.own, "Re: " + (msg.get("subject") or "Reminder"), body)
+                    body += "\n\n" + REPLY_MARK
+                    self.send(self.own, "%s: %s" % (REPLY_SUBJECT, ("added — " + item["title"]) if item else "not added"), body)
                     report["replied"] += 1
                 except Exception as e:
                     self.log("scheduler mail intake: reply failed: %s" % e)
@@ -1231,9 +1252,15 @@ class SchedulerLoop(threading.Thread):
             self.mail_report = {"skipped": "mail intake off or mail not configured"}
             return self.mail_report
         self.mail_report = intake.run_once(now)
-        if self.mail_report.get("created"):
-            for it in self.mail_report["created"]:
-                self.notifier.send("Added from your mail", html.escape(it["interpretation"], quote=False), actions=(("default", "Open"), ("open", "Open Schedule")), tag=("mail", it["id"]))
+        created = self.mail_report.get("created") or []
+        if len(created) == 1:
+            it = created[0]
+            self.notifier.send("Added from your mail", html.escape(it["interpretation"], quote=False), actions=(("default", "Open"), ("open", "Open Schedule")), tag=("mail", it["id"]))
+        elif created:                                # ONE notification per pass, never one per mail (a pass reads up to 20)
+            body = "\n".join(html.escape(it["interpretation"], quote=False) for it in created[:SUMMARY_LINES])
+            if len(created) > SUMMARY_LINES:
+                body += "\nand %d more in Schedule" % (len(created) - SUMMARY_LINES)
+            self.notifier.send("Added %d items from your mail" % len(created), body, actions=(("default", "Open"), ("open", "Open Schedule")), tag=("mail", created[0]["id"]))
         return self.mail_report
 
     def brief(self):

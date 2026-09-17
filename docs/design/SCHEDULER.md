@@ -39,8 +39,9 @@ both. The time zone is the system's (`/etc/timezone`, `/etc/localtime`) unless `
 (IANA name, validated). Items store the UTC instant **and** the zone name; repeating items keep their wall-clock time
 across DST (`next_occurrence` combines the local date with the local time).
 
-`tests/scheduler-test.py` carries the corpus: 66 cases — 53 phrasings with the expected local date/time, title, repeat
-and confirm flag, and 13 that must fail with a reason.
+`tests/scheduler-test.py` carries the corpus: 68 cases — 55 phrasings with the expected local date/time, title, repeat
+and confirm flag, and 13 that must fail with a reason. A midnight named with a night part (`at 12 tonight`, `tomorrow
+night at midnight`) is the midnight that ends that night.
 
 ## Store
 
@@ -100,6 +101,15 @@ remembers processed Message-IDs. Every change is an `activity` row (`item_added`
 * Day-part conventions are fixed (morning 09:00 …) and stated in the echo rather than asked.
 * Mail intake requires the sender to be the user's own address **and** the subject keyword; the mail stays unseen
   (IMAP read-only) and is remembered by Message-ID so it is processed once.
+* That sender check trusts the **From header** (what the IMAP `FROM` search and `parseaddr` see); it does not verify
+  DKIM/SPF, so a forged From that gets past the provider's filters could plant a reminder. That is the whole blast
+  radius: an item with the forger's words and its notification — never a command, never a reply to the forger (the
+  confirmation goes to the user's own address only, and only when the mail asks for one). Intake reads at most 20
+  mails a pass and shows ONE notification per pass however many were added.
+* The confirmation's subject is `Your schedule: added — …` / `Your schedule: not added` and its body ends with a
+  marker line; the intake skips mail with either (`MailIntake.is_own_reply`). The reply lands in the same inbox from
+  the same address, and without this guard every pass would read the previous reply as a new request
+  (`SUBJECT_RE` strips `Re:`): a duplicate item, another mail and a popup every 10 minutes.
 * "schedule the system update tonight" makes a *reminder* — the agent has no deferred task execution.
 * The ask bar shows the chat reply; it has no dedicated Today card (optional in the brief; not done in this round).
 * Indian-language words are limited to `baje`, `kal` is deliberately not read (it means both yesterday and tomorrow).
