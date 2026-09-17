@@ -155,6 +155,8 @@ print("    %-7s %-6s %-9s %-8s %-8s %s" % ("pid", "cpu%", "wakeups/s", "rss_MB",
 for p in d["top15_cpu"]:
     print("    %-7d %-6.2f %-9.1f %-8.1f %-8.1f %s" % (p["pid"], p["cpu_pct"], p["wakeups_per_s"], p["rss_kb"] / 1024, p["pss_kb"] / 1024, (p["cmd"] or p["comm"])[:70]))
 print("    top PSS: " + ", ".join("%s %.0f MB" % (p["comm"], p["pss_kb"] / 1024) for p in d["top15_pss"][:10]))
+sp = d.get("spawns_seen") or {}
+print("    spawners seen (%d new processes in %.0f s; comm (parent) x count): %s" % (d.get("spawns_seen_total", 0), d["elapsed_s"], ", ".join("%s x%d" % kv for kv in list(sp.items())[:10]) or "none"))
 PY
 voiced=$(jq_ "$OUT/idle.json" 'round(sum(p["cpu_pct"] for p in d["procs"] if "fabos_voiced" in p["cmd"] or p["comm"] in ("pw-record","pocketsphinx")), 2)')
 voiced_w=$(jq_ "$OUT/idle.json" 'round(sum(p["wakeups_per_s"] for p in d["procs"] if "fabos_voiced" in p["cmd"] or p["comm"] in ("pw-record","pocketsphinx")), 1)')
@@ -232,8 +234,12 @@ want = {"power-saver": dict(ppd="power-saver", tearing=False, spotter="battery-o
 ok = True
 for line in open(sys.argv[1]):
     if not line.strip(): continue
-    j = json.loads(line); m = j.get("mode"); w = want.get(m)
+    j = json.loads(line); m = j.get("mode"); w = dict(want.get(m) or {})
     if not w: print("    unexpected mode in status:", m); ok = False; continue
+    # "performance" exists only where power-profiles-daemon has a platform driver for it (not in QEMU: placeholder driver,
+    # balanced + power-saver only); fabos-perf-mode then sets balanced, and that is what must be read back
+    if w["ppd"] == "performance" and "performance" not in (j.get("ppd_profiles") or []):
+        w["ppd"] = "balanced"; print("    %s: this machine offers %s — performance is not among them, balanced expected" % (m, j.get("ppd_profiles")))
     got = dict(ppd=j.get("ppd"), tearing=j.get("tearing"), spotter=j.get("spotter"), blur=j.get("effects", {}).get("blur"), translucency=j.get("effects", {}).get("translucency"),
                display_off=j.get("display", {}).get("turn_off_when_idle"), autosuspend=j.get("display", {}).get("autosuspend"))
     for k, v in w.items():
@@ -249,7 +255,7 @@ PY
     echo "    persistence: set gaming, reboot, read back"
     vmu "fabos-perf-mode set gaming" >/dev/null 2>&1; reboot_guest; sleep 20
     js=$(vms "fabos-perf-mode status --json 2>/dev/null"); echo "$js" > "$OUT/mode-after-reboot.json"; echo "    after reboot: $js"
-    echo "$js" | python3 -c 'import sys,json; j=json.load(sys.stdin); sys.exit(0 if j.get("mode")=="gaming" and j.get("ppd")=="performance" and j.get("tearing") is True else 1)' && verdict PASS "gaming mode survived the reboot (mode, ppd, tearing)" || verdict FAIL "gaming mode did not survive the reboot: $js"
+    echo "$js" | python3 -c 'import sys,json; j=json.load(sys.stdin); want="performance" if "performance" in (j.get("ppd_profiles") or []) else "balanced"; sys.exit(0 if j.get("mode")=="gaming" and j.get("ppd")==want and j.get("tearing") is True and j.get("root_mode")=="gaming" else 1)' && verdict PASS "gaming mode survived the reboot (mode, ppd, tearing, root-side mode)" || verdict FAIL "gaming mode did not survive the reboot: $js"
     vmu "fabos-perf-mode set balanced" >/dev/null 2>&1
   fi
   vmu "fabos-perf-mode set ${before_mode:-balanced}" >/dev/null 2>&1

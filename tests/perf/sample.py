@@ -116,8 +116,35 @@ def cmdline(pid):
     return read("/proc/%d/cmdline" % pid).replace(b"\0", b" ").decode(errors="replace").strip()[:120]
 
 
+def pids():
+    return {int(d) for d in os.listdir("/proc") if d.isdigit()}
+
+
+def comm_of(pid):
+    st = read("/proc/%d/stat" % pid)
+    i, j = st.find(b"("), st.rfind(b")")
+    if i < 0 or j < 0:
+        return "?", 0
+    try:
+        return st[i + 1:j].decode(errors="replace"), int(st[j + 2:].split()[1])
+    except (IndexError, ValueError):
+        return st[i + 1:j].decode(errors="replace"), 0
+
+
 t0 = time.monotonic(); p0 = stat_all(); c0 = cpu_total(); f0 = stat_field("processes"); x0 = stat_field("ctxt"); i0 = irqs()
-time.sleep(DUR)
+# who forks while we wait: every 100 ms the new PIDs are attributed "comm (parent comm)". Processes only (threads are not
+# in /proc's top level), and a process that lives < 100 ms can be missed — a lower bound that names the spawners.
+known = pids(); spawns = {}
+end = t0 + DUR
+while time.monotonic() < end:
+    time.sleep(0.1)
+    cur = pids()
+    for pid in cur - known:
+        c, pp = comm_of(pid)
+        pc = comm_of(pp)[0] if pp else "?"
+        key = "%s (%s)" % (c, pc)
+        spawns[key] = spawns.get(key, 0) + 1
+    known = cur
 t1 = time.monotonic(); p1 = stat_all(); c1 = cpu_total(); f1 = stat_field("processes"); x1 = stat_field("ctxt"); i1 = irqs()
 el = t1 - t0
 procs = []
@@ -140,5 +167,6 @@ out = {"elapsed_s": round(el, 1), "ncpu": ncpu, "clk_tck": CLK,
        "tasks_per_s": round((f1 - f0) / el, 2), "ctxt_switches_per_s": round((x1 - x0) / el, 1),
        "interrupts_per_s": round((i1[0] - i0[0]) / el, 1), "timer_interrupts_per_s": round((i1[1] - i0[1]) / el, 1),
        "loadavg": read("/proc/loadavg").decode().split()[:3], "meminfo_kb": meminfo(),
+       "spawns_seen": dict(sorted(spawns.items(), key=lambda kv: -kv[1])), "spawns_seen_total": sum(spawns.values()),
        "top15_cpu": procs[:15], "top15_pss": sorted(procs, key=lambda p: -p["pss_kb"])[:15], "procs": procs}
 print(json.dumps(out))

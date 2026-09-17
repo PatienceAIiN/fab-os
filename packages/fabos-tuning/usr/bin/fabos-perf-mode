@@ -93,7 +93,17 @@ ppd_set() {
   have powerprofilesctl && powerprofilesctl set "$1" >/dev/null 2>&1 && return 0
   echo "fabos-perf-mode: power-profiles-daemon did not accept the profile '$1' (is it running?)" >&2; return 1
 }
-ppd_for() { case "$1" in power-saver) echo power-saver;; performance|gaming) echo performance;; *) echo balanced;; esac; }
+# the profiles this machine's power-profiles-daemon offers (one name per line): "performance" exists only with a platform
+# driver that can deliver it (intel_pstate, amd-pstate, some ACPI platform_profile firmware); a machine without one — a
+# virtual machine, an older laptop on the placeholder driver — has balanced and power-saver only
+ppd_profiles() { have powerprofilesctl && powerprofilesctl list 2>/dev/null | sed -n 's/^[ *]*\([a-z-]*\):$/\1/p'; }
+ppd_wanted() { case "$1" in power-saver) echo power-saver;; performance|gaming) echo performance;; *) echo balanced;; esac; }
+# what to set: the wanted profile, or balanced when performance is not offered here
+ppd_for() {
+  w=$(ppd_wanted "$1")
+  if [ "$w" = performance ]; then case " $(ppd_profiles | tr '\n' ' ') " in *" performance "*) ;; *) w=balanced;; esac; fi
+  echo "$w"
+}
 kwin_reconfigure() { session_bus && have qdbus6 && qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1; return 0; }
 # PowerDevil re-reads powerdevilrc on refreshStatus (what its own settings module calls after saving)
 powerdevil_refresh() { session_bus && have qdbus6 && qdbus6 org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement org.kde.Solid.PowerManagement.refreshStatus >/dev/null 2>&1; return 0; }
@@ -173,15 +183,17 @@ cmd_status() {
   rootm=""; [ -r /var/lib/fabos/perf-mode ] && read -r rootm < /var/lib/fabos/perf-mode
   vrr=""; [ -r "$CFG/kwinoutputconfig.json" ] && vrr=$(tr -d '\n' < "$CFG/kwinoutputconfig.json" | sed -n 's/.*"vrrPolicy": *"\([A-Za-z]*\)".*/\1/p')
   sp=$(spotter_policy "${m:-balanced}")
+  profiles=$(ppd_profiles | tr '\n' ' ')
   if [ "${1:-}" = "--json" ]; then
-    printf '{"mode":%s,"persisted":%s,"ppd":%s,"ppd_available":%s,"tearing":%s,"vrr":%s,' "$(js "${m:-balanced}")" "$([ -n "$m" ] && echo true || echo false)" "$(js "$p")" "$([ -n "$p" ] && echo true || echo false)" "$(jb "$(kr kwinrc Compositing - AllowTearing)")" "$(js "$vrr")"
+    plist=""; for x in $profiles; do plist="$plist${plist:+,}\"$x\""; done
+    printf '{"mode":%s,"persisted":%s,"ppd":%s,"ppd_available":%s,"ppd_profiles":[%s],"ppd_wanted":%s,"tearing":%s,"vrr":%s,' "$(js "${m:-balanced}")" "$([ -n "$m" ] && echo true || echo false)" "$(js "$p")" "$([ -n "$p" ] && echo true || echo false)" "$plist" "$(js "$(ppd_wanted "${m:-balanced}")")" "$(jb "$(kr kwinrc Compositing - AllowTearing)")" "$(js "$vrr")"
     printf '"effects":{"blur":%s,"translucency":%s,"magiclamp":%s,"dimscreen":%s,"slide":%s,"corners":%s},' "$(jb "$(kr kwinrc Plugins - blurEnabled)")" "$(jb "$(kr kwinrc Plugins - translucencyEnabled)")" "$(jb "$(kr kwinrc Plugins - magiclampEnabled)")" "$(jb "$(kr kwinrc Plugins - dimscreenEnabled)")" "$(jb "$(kr kwinrc Plugins - slideEnabled)")" "$(jb "$(kr kwinrc Plugins - kwin4_effect_shapecornersEnabled)")"
     printf '"spotter":%s,' "$(js "$sp")"
     printf '"display":{"turn_off_when_idle":%s,"dim_when_idle":%s,"autosuspend":%s,"lid":%s},' "$(jb "$(kr powerdevilrc AC Display TurnOffDisplayWhenIdle)")" "$(jb "$(kr powerdevilrc AC Display DimDisplayWhenIdle)")" "$(jn "$(kr powerdevilrc AC SuspendAndShutdown AutoSuspendAction)")" "$(jn "$(kr powerdevilrc AC SuspendAndShutdown LidAction)")"
     printf '"governor":%s,"split_lock_mitigate":%s,"root_mode":%s,"snapshot":%s}\n' "$(js "${gov:-unavailable}")" "$(js "${slm:-unavailable}")" "$(js "$rootm")" "$([ -f "$SNAP" ] && echo true || echo false)"
   else
     echo "mode:              ${m:-balanced}$([ -n "$m" ] || echo ' (never chosen)')"
-    echo "power profile:     ${p:-unavailable (power-profiles-daemon not running)}"
+    echo "power profile:     ${p:-unavailable (power-profiles-daemon not running)}   (wanted: $(ppd_wanted "${m:-balanced}"); offered: ${profiles:-none})"
     echo "tearing allowed:   $(kr kwinrc Compositing - AllowTearing)   variable refresh: ${vrr:-unknown}"
     echo "effects:           blur=$(kr kwinrc Plugins - blurEnabled) translucency=$(kr kwinrc Plugins - translucencyEnabled) magiclamp=$(kr kwinrc Plugins - magiclampEnabled) dimscreen=$(kr kwinrc Plugins - dimscreenEnabled) slide=$(kr kwinrc Plugins - slideEnabled) corners=$(kr kwinrc Plugins - kwin4_effect_shapecornersEnabled)"
     echo "wake-word policy:  $sp"
