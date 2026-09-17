@@ -2093,58 +2093,6 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
             if len(nudges()) > before + 1: break
             time.sleep(0.05)
         self.assertEqual(len(nudges()), before + 2, "off again: the second nudge")
-
-
-class MicPermissionAndSlots(unittest.TestCase):
-    """The once-only migration of the microphone permission (1.0-8) and the RAM cap on parallel slots."""
-
-    def store(self):
-        return fa.Store(os.path.join(tempfile.mkdtemp(prefix="fabos-mic-"), "agent.db"))
-
-    def test_fresh_install_starts_off_and_decides_once(self):
-        st = self.store()
-        self.assertEqual(fa.migrate_mic_permission(st), "false"); self.assertEqual(st.setting("voice.mic_allowed"), "false")
-        self.assertIsNone(fa.migrate_mic_permission(st))
-        st.set_setting("voice.mic_allowed", "true"); self.assertIsNone(fa.migrate_mic_permission(st)); self.assertEqual(st.setting("voice.mic_allowed"), "true")
-
-    def test_install_in_use_with_voice_on_keeps_a_working_microphone(self):
-        st = self.store(); st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('a','a','done',1,1)")
-        self.assertEqual(fa.migrate_mic_permission(st), "true")
-        st = self.store(); st.set_setting("voice.wake_word", "hey fab")            # the user touched a voice setting: in use
-        self.assertEqual(fa.migrate_mic_permission(st), "true")
-
-    def test_install_in_use_with_voice_off_stays_off(self):
-        st = self.store(); st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('a','a','done',1,1)"); st.set_setting("voice.enabled", "false")
-        self.assertEqual(fa.migrate_mic_permission(st), "false")
-
-    def test_an_explicit_choice_is_never_overridden(self):
-        st = self.store(); st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('a','a','done',1,1)"); st.set_setting("voice.mic_allowed", "false")
-        self.assertEqual(fa.migrate_mic_permission(st), "false"); self.assertEqual(st.setting("voice.mic_migrated"), "1")
-
-    def test_a_restart_never_runs_a_half_done_task_twice(self):
-        """_reacquire sets a task back to 'queued' while it waits for a slot after an approval or an answer. Should the service
-        stop right then, that task must not be started from scratch at the next start (its earlier steps had effects): like
-        the 'running' ones it is failed with the restart message. A queued task without steps is genuinely fresh and runs."""
-        st = self.store()
-        fresh = st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('fresh','fresh','queued',1,1)").lastrowid
-        half = st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('half','half','queued',1,1)").lastrowid
-        done = st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('done','done','done',1,1)").lastrowid
-        st.step(half, "tool_call", "run_shell", '{"command": "touch x"}'); st.step(done, "final", "", "", "ok")
-        self.assertEqual(fa.recover_queued_tasks(st), [fresh])
-        self.assertEqual(st.one("SELECT status, error FROM tasks WHERE id=?", half), {"status": "failed", "error": fa.RESTARTED_MSG})
-        self.assertEqual(st.one("SELECT status FROM tasks WHERE id=?", fresh)["status"], "queued")
-        self.assertEqual(st.one("SELECT status FROM tasks WHERE id=?", done)["status"], "done")
-        self.assertEqual(fa.recover_queued_tasks(st), [fresh], "idempotent")
-
-    def test_parallel_cap_follows_the_ram(self):
-        G = 1024 ** 3
-        self.assertEqual(fa.parallel_cap(2 * G), 2); self.assertEqual(fa.parallel_cap(int(1.9 * G)), 2); self.assertEqual(fa.parallel_cap(2560 * 1024 ** 2), 2)
-        self.assertEqual(fa.parallel_cap(int(3.7 * G)), 4); self.assertEqual(fa.parallel_cap(G // 2), 1); self.assertEqual(fa.parallel_cap(0), fa.MAX_PARALLEL_DEFAULT)
-        self.assertEqual(fa.MAX_PARALLEL_DEFAULT, 3)
-        st = self.store(); a = fa.Agent.__new__(fa.Agent); a.store = st
-        st.set_setting("agent.max_parallel", "8"); self.assertEqual(a.max_parallel(), min(8, fa.parallel_cap()))
-        st.set_setting("agent.max_parallel", "0"); self.assertEqual(a.max_parallel(), 1)
-        st.set_setting("agent.max_parallel", "x"); self.assertEqual(a.max_parallel(), min(3, fa.parallel_cap()))
     def test_37b_disk_unlock_diagnosis_is_served_cached_and_repair_goes_through_the_root_path(self):
         """1.0-8: GET /system/disk-unlock carries the helper's `diagnose` (the REAL start-up state: items + verdict), cached 30 s
         (?refresh=1 looks again), and `last_request` (the last change asked for here and how it ended). POST {action: "repair"} runs
@@ -2155,7 +2103,7 @@ class MicPermissionAndSlots(unittest.TestCase):
         tok = open(os.path.join(self.tmp, "fabos-agent/token")).read()
 
         def call(method, path, body=None):
-            req = urllib.request.Request("http://127.0.0.1:18790" + path, data=json.dumps(body).encode() if body is not None else None, method=method,
+            req = urllib.request.Request("http://127.0.0.1:%s" % DPORT + path, data=json.dumps(body).encode() if body is not None else None, method=method,
                                          headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=90) as r:
@@ -2242,6 +2190,59 @@ class MicPermissionAndSlots(unittest.TestCase):
             self.assertFalse([w for w in ("chatgpt", "openai", "gpt", "snowui", "download") if w in low], name_)
 
 
+
+
+
+class MicPermissionAndSlots(unittest.TestCase):
+    """The once-only migration of the microphone permission (1.0-8) and the RAM cap on parallel slots."""
+
+    def store(self):
+        return fa.Store(os.path.join(tempfile.mkdtemp(prefix="fabos-mic-"), "agent.db"))
+
+    def test_fresh_install_starts_off_and_decides_once(self):
+        st = self.store()
+        self.assertEqual(fa.migrate_mic_permission(st), "false"); self.assertEqual(st.setting("voice.mic_allowed"), "false")
+        self.assertIsNone(fa.migrate_mic_permission(st))
+        st.set_setting("voice.mic_allowed", "true"); self.assertIsNone(fa.migrate_mic_permission(st)); self.assertEqual(st.setting("voice.mic_allowed"), "true")
+
+    def test_install_in_use_with_voice_on_keeps_a_working_microphone(self):
+        st = self.store(); st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('a','a','done',1,1)")
+        self.assertEqual(fa.migrate_mic_permission(st), "true")
+        st = self.store(); st.set_setting("voice.wake_word", "hey fab")            # the user touched a voice setting: in use
+        self.assertEqual(fa.migrate_mic_permission(st), "true")
+
+    def test_install_in_use_with_voice_off_stays_off(self):
+        st = self.store(); st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('a','a','done',1,1)"); st.set_setting("voice.enabled", "false")
+        self.assertEqual(fa.migrate_mic_permission(st), "false")
+
+    def test_an_explicit_choice_is_never_overridden(self):
+        st = self.store(); st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('a','a','done',1,1)"); st.set_setting("voice.mic_allowed", "false")
+        self.assertEqual(fa.migrate_mic_permission(st), "false"); self.assertEqual(st.setting("voice.mic_migrated"), "1")
+
+    def test_a_restart_never_runs_a_half_done_task_twice(self):
+        """_reacquire sets a task back to 'queued' while it waits for a slot after an approval or an answer. Should the service
+        stop right then, that task must not be started from scratch at the next start (its earlier steps had effects): like
+        the 'running' ones it is failed with the restart message. A queued task without steps is genuinely fresh and runs."""
+        st = self.store()
+        fresh = st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('fresh','fresh','queued',1,1)").lastrowid
+        half = st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('half','half','queued',1,1)").lastrowid
+        done = st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('done','done','done',1,1)").lastrowid
+        st.step(half, "tool_call", "run_shell", '{"command": "touch x"}'); st.step(done, "final", "", "", "ok")
+        self.assertEqual(fa.recover_queued_tasks(st), [fresh])
+        self.assertEqual(st.one("SELECT status, error FROM tasks WHERE id=?", half), {"status": "failed", "error": fa.RESTARTED_MSG})
+        self.assertEqual(st.one("SELECT status FROM tasks WHERE id=?", fresh)["status"], "queued")
+        self.assertEqual(st.one("SELECT status FROM tasks WHERE id=?", done)["status"], "done")
+        self.assertEqual(fa.recover_queued_tasks(st), [fresh], "idempotent")
+
+    def test_parallel_cap_follows_the_ram(self):
+        G = 1024 ** 3
+        self.assertEqual(fa.parallel_cap(2 * G), 2); self.assertEqual(fa.parallel_cap(int(1.9 * G)), 2); self.assertEqual(fa.parallel_cap(2560 * 1024 ** 2), 2)
+        self.assertEqual(fa.parallel_cap(int(3.7 * G)), 4); self.assertEqual(fa.parallel_cap(G // 2), 1); self.assertEqual(fa.parallel_cap(0), fa.MAX_PARALLEL_DEFAULT)
+        self.assertEqual(fa.MAX_PARALLEL_DEFAULT, 3)
+        st = self.store(); a = fa.Agent.__new__(fa.Agent); a.store = st
+        st.set_setting("agent.max_parallel", "8"); self.assertEqual(a.max_parallel(), min(8, fa.parallel_cap()))
+        st.set_setting("agent.max_parallel", "0"); self.assertEqual(a.max_parallel(), 1)
+        st.set_setting("agent.max_parallel", "x"); self.assertEqual(a.max_parallel(), min(3, fa.parallel_cap()))
 class StepwiseUnits(unittest.TestCase):
     """In-process checks of the small-model driver's pieces (ADR-0020): plan parsing, deterministic step checks, the compact
     turn text, the prompt budget, driver selection, the online probe, and the OpenAI-compatible provider's schema call."""
