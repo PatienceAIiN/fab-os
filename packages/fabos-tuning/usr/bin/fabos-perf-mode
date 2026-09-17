@@ -54,7 +54,6 @@ die() { echo "fabos-perf-mode: $*" >&2; exit 2; }
 # kreadconfig6 / kwriteconfig6 with an optional second (nested) group: kr FILE GROUP SUB|- KEY ; kw ... KEY VALUE ; kdel ... KEY
 kr() { if [ "$3" = "-" ]; then kreadconfig6 --file "$1" --group "$2" --key "$4" --default "" 2>/dev/null; else kreadconfig6 --file "$1" --group "$2" --group "$3" --key "$4" --default "" 2>/dev/null; fi; }
 kw() { if [ "$3" = "-" ]; then kwriteconfig6 --file "$1" --group "$2" --key "$4" "$5" 2>/dev/null; else kwriteconfig6 --file "$1" --group "$2" --group "$3" --key "$4" "$5" 2>/dev/null; fi; }
-kdel() { if [ "$3" = "-" ]; then kwriteconfig6 --file "$1" --group "$2" --key "$4" --delete 2>/dev/null; else kwriteconfig6 --file "$1" --group "$2" --group "$3" --key "$4" --delete 2>/dev/null; fi; }
 # the value of KEY in the USER's own FILE (not the merged view kreadconfig6 gives), or UNSET. SECTION is the header
 # without brackets: "Plugins" or "AC][Display" (KConfig writes nested groups as [AC][Display]).
 uval() {
@@ -62,6 +61,15 @@ uval() {
   awk -v sec="[$2]" -v key="$3" 'BEGIN { v = "UNSET" } /^\[/ { cur = $0 } cur == sec && index($0, key "=") == 1 { v = substr($0, length(key) + 2) } END { print v }' "$f"
 }
 sect() { if [ "$2" = "-" ]; then printf '%s' "$1"; else printf '%s][%s' "$1" "$2"; fi; }
+# remove KEY from the USER's own FILE under SECTION (a value line or a "KEY[$d]" deletion marker), so the /etc/xdg default
+# cascades again. `kwriteconfig6 --delete` is not used for this: it leaves KEY[$d] behind, which hides the /etc/xdg value
+# and falls back to the program's compiled default — for AllowTearing that is true, the opposite of restoring the default.
+udel() {
+  f=$CFG/$1; [ -r "$f" ] || return 0
+  awk -v sec="[$2]" -v key="$3" '/^\[/ { cur = $0 } !(cur == sec && (index($0, key "=") == 1 || index($0, key "[$") == 1))' "$f" > "$f.fabos-tmp" && mv "$f.fabos-tmp" "$f"
+}
+# KWin, PowerDevil and kscreen-doctor are reached over the session bus; without one (a console login, the image build) skip them
+session_bus() { [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]; }
 
 take_snapshot() {
   mkdir -p "$DIR" 2>/dev/null || return
@@ -74,7 +82,7 @@ restore_snapshot() {
   [ -r "$SNAP" ] || return 0
   while IFS='|' read -r f g s k v; do
     [ -n "$k" ] || continue
-    if [ "$v" = UNSET ]; then kdel "$f" "$g" "$s" "$k"; else kw "$f" "$g" "$s" "$k" "$v"; fi
+    if [ "$v" = UNSET ]; then udel "$f" "$(sect "$g" "$s")" "$k"; else kw "$f" "$g" "$s" "$k" "$v"; fi
   done < "$SNAP"
   rm -f "$SNAP"
 }
@@ -86,12 +94,12 @@ ppd_set() {
   echo "fabos-perf-mode: power-profiles-daemon did not accept the profile '$1' (is it running?)" >&2; return 1
 }
 ppd_for() { case "$1" in power-saver) echo power-saver;; performance|gaming) echo performance;; *) echo balanced;; esac; }
-kwin_reconfigure() { have qdbus6 && qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1; return 0; }
+kwin_reconfigure() { session_bus && have qdbus6 && qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1; return 0; }
 # PowerDevil re-reads powerdevilrc on refreshStatus (what its own settings module calls after saving)
-powerdevil_refresh() { have qdbus6 && qdbus6 org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement org.kde.Solid.PowerManagement.refreshStatus >/dev/null 2>&1; return 0; }
+powerdevil_refresh() { session_bus && have qdbus6 && qdbus6 org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement org.kde.Solid.PowerManagement.refreshStatus >/dev/null 2>&1; return 0; }
 # variable refresh rate: KWin keeps the policy per output in kwinoutputconfig.json; kscreen-doctor sets it live
 vrr_automatic() {
-  have kscreen-doctor || return 0
+  session_bus && have kscreen-doctor || return 0
   kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^Output: *[0-9][0-9]* *\([^ ]*\).*/\1/p' | while read -r o; do
     [ -n "$o" ] && kscreen-doctor "output.$o.vrrpolicy.automatic" >/dev/null 2>&1
   done
