@@ -3842,6 +3842,7 @@ class SettingsDialog(RoundedDialog):
     # ---- voice section
     def _refresh_voice_note(self):
         v = self.voice
+        self._refresh_mic_indicator()
         if v is None or not v.bin:
             self.voice_note.setText(VOICE_UNAVAILABLE + " (fabos-voice is not installed).")
             self.test_voice_btn.setEnabled(False)
@@ -3852,7 +3853,6 @@ class SettingsDialog(RoundedDialog):
         st = v.status or {}
         parts = ["speech-to-text: %s" % st.get("stt", "…"), "text-to-speech: %s" % st.get("tts", "…"), "microphone: %s" % ("yes" if st.get("mic") else "no")]
         self.voice_note.setText(" · ".join(parts))
-        self._refresh_mic_indicator()
         ok = v.tts_available()
         self.test_voice_btn.setEnabled(ok)
         self.test_voice_btn.setToolTip("Says: “%s” (fabos-voice say --test)" % VOICE_TEST_LINE if ok else VOICE_UNAVAILABLE)

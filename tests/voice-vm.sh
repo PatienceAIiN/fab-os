@@ -95,19 +95,30 @@ vm "fabos settings voice.mic_allowed true >/dev/null"; sleep 1
 [ "$(vm 'fabos-voice status' | jget '["mic_allowed"]')" = True ] && verdict PASS "permission back on" || verdict FAIL "permission did not come back"
 
 # ---------- 7. a spoken sentence reaches the transcript through the ask bar's EXACT listen command (1.0-8): a null sink whose monitor
-#              is remapped as the default source; espeak-ng speaks a known sentence into it 1.5 s after the recorder starts
+#              is remapped as the default source; espeak-ng's sentence (padded with a faint noise floor) plays into it
 echo; echo "=== spoken sentence -> transcript (virtual source, the ask bar's command)"
 SENT="good morning everyone how are you today"
 orig_src=$(vm "pactl get-default-source")
 vm "pactl load-module module-null-sink sink_name=fabtest sink_properties=device.description=FabTest >/dev/null && pactl load-module module-remap-source master=fabtest.monitor source_name=fabmic source_properties=device.description=FabTestMic >/dev/null && pactl set-default-source fabmic && echo default-source=\$(pactl get-default-source)"
 vm "command -v espeak-ng >/dev/null && espeak-ng -v en-gb-x-rp -s 150 -a 175 -w /tmp/say.wav 'good morning everyone, how are you today' && ls -la /tmp/say.wav" || echo "no espeak-ng in the VM"
+# A null sink's monitor is DIGITALLY silent, and the recorder treats a first second of exact zeros as a muted microphone (exit 3,
+# MIC_SILENT) — so the played file carries a faint room-like noise floor (RMS ~30, under MIN_FLOOR) before and after the sentence:
+# 2.5 s in front (the recorder opens and calibrates on it), the sentence, 2 s behind (the trailing-silence rule ends the take).
+vm "python3 - <<'EOP'
+import array, random, wave
+w = wave.open('/tmp/say.wav'); rate, ch, sw, n = w.getframerate(), w.getnchannels(), w.getsampwidth(), w.getnframes(); pcm = w.readframes(n); w.close()
+r = random.Random(7)
+noise = lambda sec: array.array('h', (r.randint(-30, 30) for _ in range(int(rate * sec) * ch))).tobytes()
+o = wave.open('/tmp/say-padded.wav', 'wb'); o.setnchannels(ch); o.setsampwidth(sw); o.setframerate(rate); o.writeframes(noise(2.5) + pcm + noise(2.0)); o.close()
+print('padded: %d Hz, %d ch, %.1f s' % (rate, ch, (2.5 + 2.0) + n / float(rate)))
+EOP"
 cat > /tmp/r8-listen-vm.sh <<'EOS'
 #!/bin/bash
 # runs INSIDE the VM: the ask bar's exact listen command (agent.js listenCommand(10), pinned by tests/askbar-js-test.js) while the
 # progress file is sampled every 50 ms (timestamp + raw JSON), and the sentence is played into the virtual source 1.5 s in
 F="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fabos-voice/askbar-listen.json"; rm -f "$F"
 ( while :; do echo "$(date +%s%N) $(cat "$F" 2>/dev/null)"; sleep 0.05; done ) > /tmp/prog.trace & TR=$!
-( sleep 1.5; paplay --device=fabtest /tmp/say.wav ) &
+( sleep 0.2; paplay --device=fabtest /tmp/say-padded.wav ) &
 t0=$(date +%s%N)
 F="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fabos-voice/askbar-listen.json"; rm -f "$F"; fabos-voice listen-once --timeout 10 --progress "$F" > /tmp/lo.out 2> /tmp/lo.err; rc=$?
 t1=$(date +%s%N); kill $TR 2>/dev/null; wait $TR 2>/dev/null
