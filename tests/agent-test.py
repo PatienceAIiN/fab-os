@@ -1863,6 +1863,7 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         q = t["questions"][-1]["question"]; self.assertIn("I read that as", q); self.assertIn("15:00 — Call Rohan", q); self.assertIn("'at 3' read as 15:00", q)
         self.assertEqual(self.http("GET", "/schedule?scope=all")[1]["count"], 1, "nothing is created before the answer")
         self.cli("answer", str(r["id"]), "yes"); t = self.wait(r["id"], ("done", "failed")); self.assertTrue(t["result"].startswith("Added:") and "15:00 — Call Rohan" in t["result"], t["result"])
+        rohan_tomorrow = t["result"].startswith("Added: Tomorrow")   # 'at 3' is today's 15:00 before 15:00 local time, tomorrow's after it
         # no time at all: 'When should I remind you?' — the answer supplies it, the title comes from the first message
         r = self.cli("do", "--mode", "auto", "remind me to water the plants"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user")
         self.assertIn("When should I remind you", t["questions"][-1]["question"])
@@ -1881,7 +1882,8 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         self.assertFalse([i for i in self.http("GET", "/schedule?scope=all")[1]["items"] if "plumber" in i["title"].lower()])
         # listing
         t = self.wait(self.cli("do", "--mode", "auto", "my reminders for tomorrow")["id"])
-        self.assertTrue(t["result"].startswith("Tomorrow: 3 items"), t["result"]); self.assertIn("09:00 Call the bank", t["result"]); self.assertIn("Water the plants", t["result"]); self.assertIn("Submit the report", t["result"])
+        expected = 3 + (1 if rohan_tomorrow else 0)                  # the listing depends on the clock only through 'Call Rohan'
+        self.assertTrue(t["result"].startswith("Tomorrow: %d items" % expected), t["result"]); self.assertIn("09:00 Call the bank", t["result"]); self.assertIn("Water the plants", t["result"]); self.assertIn("Submit the report", t["result"])
         self.assertEqual([s["name"] for s in t["steps"] if s["kind"] == "tool_call"], ["schedule"])
         # not a reminder: the scripted provider handles it (its run_shell step), no schedule step
         t = self.wait(self.cli("do", "--mode", "auto", "remind me what the capital of France is")["id"])
