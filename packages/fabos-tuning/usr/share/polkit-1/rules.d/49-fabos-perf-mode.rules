@@ -1,0 +1,11 @@
+// Fab OS performance mode (docs/PERFORMANCE.md): a logged-in, active, local user may START the one-shot root helper of
+// their chosen mode — fabos-perf-mode@<mode>.service writes the CPU frequency governor, kernel.split_lock_mitigate and
+// /var/lib/fabos/perf-mode — without a password. Nothing else: only that template with one of the five mode names,
+// only the "start" verb (systemd passes the unit and the verb as action details), never a remote or inactive session.
+polkit.addRule(function (action, subject) {
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        /^fabos-perf-mode@(power-saver|balanced|performance|gaming|server)\.service$/.test(action.lookup("unit")) &&
+        action.lookup("verb") === "start" && subject.active && subject.local) {
+        return polkit.Result.YES;
+    }
+});

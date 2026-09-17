@@ -1,0 +1,12 @@
+# @DISTRO_NAME@ I/O scheduler per device class (docs/PERFORMANCE.md). What the kernel documentation recommends, made
+# explicit so every @DISTRO_NAME@ machine behaves the same:
+#   NVMe            -> none         the device queues itself; a software scheduler only adds latency
+#   other flash     -> mq-deadline  the kernel's default for single-queue flash, restated
+#   spinning disks  -> bfq          fair queueing keeps the desktop (and the application being started) responsive while
+#                                   something else streams from the disk; bfq is a module here (CONFIG_IOSCHED_BFQ=m)
+#                                   and the kernel loads it on this write
+# Partitions have no queue/ attributes, so the rules match whole devices only. Applied to devices already present by
+# fabos-tuning's postinst (udevadm trigger --subsystem-match=block --action=change). Check: cat /sys/block/*/queue/scheduler
+ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/scheduler}="none"
+ACTION=="add|change", KERNEL=="sd[a-z]*|vd[a-z]*|mmcblk[0-9]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline"
+ACTION=="add|change", KERNEL=="sd[a-z]*|vd[a-z]*", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"

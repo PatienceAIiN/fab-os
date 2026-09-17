@@ -20,7 +20,10 @@ ExecStartPost=/usr/lib/fabos/ai/llama-start.sh --wait-healthy 90
 TimeoutStartSec=120
 TimeoutStopSec=15
 Restart=no
-Nice=5
+# Background priority (docs/PERFORMANCE.md): generation saturates every thread it was given; at Nice=10 the compositor,
+# the shell and the application in front always win the core when they need it, and the model only slows down while
+# they are busy. (5 until 1.0-7.) Threads are one per physical core, at most 8 (llama-start.sh).
+Nice=10
 # If memory does run out, the kernel (and systemd-oomd) should take the model before anything the user is looking at.
 OOMScoreAdjust=500
 # Soft limit: past this the kernel reclaims the memory-mapped weights first (slower, never the desktop). Hard stop at 3 GB.
