@@ -35,9 +35,12 @@ should see on a real machine, how it is wired, and — honestly — what the QEM
 
 ### Camera
 
-* **Fab Camera** (Plasma Camera under its Fab OS name — the desktop entry is overridden, the program and its About
-  dialog are unchanged, KDE is credited in ATTRIBUTIONS.md) takes photos and records video from the built-in or a
-  USB webcam on Wayland, through Qt Multimedia / GStreamer / V4L2.
+* **Fab Camera** (Plasma Camera under its Fab OS name — the desktop entry is overridden and the window title reads
+  "Fab OS Camera"; the program and its About dialog are unchanged, KDE is credited in ATTRIBUTIONS.md) takes photos
+  and records video from the built-in or a USB webcam on Wayland. It finds cameras through **libcamera** (GStreamer
+  `libcamerasrc` / PipeWire): every UVC webcam — which is what laptops have — is a libcamera device; the kernel's
+  `vivid` test driver used in the QEMU checks is not, so there Fab Camera correctly says "Camera not available" while
+  `v4l2-ctl` and PipeWire do list the virtual device.
 * **PipeWire camera**: `libspa-0.2-libcamera` lets PipeWire offer the camera to the camera portal
   (`xdg-desktop-portal`), so Flatpak apps and browsers using the portal see the camera without direct `/dev/video*`
   access. `v4l2-ctl --list-devices` (v4l-utils) lists what the kernel sees.
@@ -77,8 +80,10 @@ Everything above was exercised on the QEMU test VM (`tests/hardware-vm.sh`, `tes
   `common-auth` with `pam_fprintd` before `pam_unix`;
 * `fprintd` starts, answers `GetDevices` with an empty array and `fprintd-list` with "No devices available" — no
   error;
-* Fab Settings › Users opens with fprintd present and stays up; Fab Camera starts and stays up, both without a real
-  device (the kernel's `vivid` test driver provided a virtual `/dev/video0` for the camera app);
+* Fab Settings › Users opens with fprintd present and stays up (no enrolment button: KDE shows it only when fprintd
+  reports a reader); Fab Camera starts and stays up without a camera ("Camera not available"); the kernel's `vivid`
+  test driver gave `v4l2-ctl` and PipeWire a virtual `/dev/video0` to list, which libcamera (and so Fab Camera) does
+  not treat as a camera;
 * the Microphone row's exact `wpctl` commands move the VM's emulated microphone (Intel HDA `hda-micro`) and the probe
   follows them; a `pw-record` process shows as "1 app is using the microphone".
 
