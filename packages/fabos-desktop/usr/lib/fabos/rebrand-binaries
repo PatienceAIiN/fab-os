@@ -46,7 +46,8 @@ GROUPS = [
       "/usr/bin/plasma-systemmonitor"],
      COMMON, COMMON, []),
     ([PLUG + "/plasma/kcms/**/*.so", PLUG + "/kf6/kded/*.so", PLUG + "/kf6/krunner/*.so", PLUG + "/plasma/applets/*.so",
-      PLUG + "/kf6/kfileitemaction/*.so", "/usr/bin/krunner", "/usr/bin/kded6", "/usr/bin/ksmserver"],
+      PLUG + "/kf6/kfileitemaction/*.so", "/usr/bin/krunner", "/usr/bin/kded6", "/usr/bin/ksmserver",
+      "/usr/bin/plasma-camera"],                                  # window title "Camera — Plasma Camera" -> "… — Fab OS Camera" (fabos-hardware's Fab Camera)
      PLASMA, PLASMA, []),
     ([PLUG + "/kf6/ktexteditor/katebacktracebrowserplugin.so"], [("KDE development", "app development")], [], []),
     ([LIB + "/packagekit-backend/libpk_backend_apt.so"], [], [], NUL_PACKAGEKIT),

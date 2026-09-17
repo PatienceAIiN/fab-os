@@ -96,6 +96,8 @@ o=$(vsudo "ls -la /dev/video* 2>&1 | head -3; v4l2-ctl --list-devices 2>&1 | hea
 echo "$o" | sed 's/^/    /'
 echo "$o" | grep -q 'v4l2-ctl' || echo "$o" | grep -qE 'rc=|Cannot open|Failed' && verdict PASS "v4l-utils present (v4l2-ctl runs; no camera device in QEMU$(echo "$o" | grep -q vivid-loaded && echo ', vivid virtual camera loaded'))" || verdict FAIL "v4l2-ctl missing"
 st=$(app_up r8camera "plasma-camera" 16 fab-camera); echo "    $st"
+# what each camera path sees of the virtual device (evidence for docs/HARDWARE.md; no verdict — vivid is a test driver, not a webcam)
+usr 'echo "--- v4l2:"; v4l2-ctl -d /dev/video0 --list-formats 2>&1 | head -6; echo "--- libcamera:"; cam -l 2>&1 | head -4; echo "--- PipeWire video nodes:"; pw-dump 2>/dev/null | grep -E "\"(media.class|node.description)\": \"(Video|.*[Vv]ivid.*)" | sort | uniq -c | head -6; echo "--- Fab Camera journal:"; journalctl --user -u r8camera --no-pager -b 2>/dev/null | grep -iE "camera|device|pipewire|gst" | tail -6' | sed 's/^/    /'
 echo "$st" | grep -q '^active' && echo "$st" | grep -qE ' 0 ?$' && verdict PASS "Fab Camera (plasma-camera) starts and stays up $(echo "$o" | grep -q vivid-loaded && echo 'with the vivid virtual camera' || echo 'without a camera device') — no crash" || verdict FAIL "Fab Camera: $st"
 vm 'test -f /usr/lib/x86_64-linux-gnu/spa-0.2/libcamera/libspa-libcamera.so && test -f /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstpipewire.so' && verdict PASS "PipeWire camera plugins (libspa-libcamera, gstpipewire) in place for portal / Flatpak camera access" || verdict FAIL "PipeWire camera plugins missing"
 
