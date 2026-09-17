@@ -1637,6 +1637,134 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         self.assertIn("dismissed", ref["detail"]); self.assertIn("via pkexec", [e for e in rows if e["kind"] == "root_exec_requested"][0]["detail"])
 
 
+    # ---- 1.0-8 concurrency (owner's report on 1.0-7: a new chat stayed 'queued' while another chat waited for approval).
+    # A slot is held only while a step executes; the queue says WHY a task waits; cancel frees slots.
+    def http(self, method, path, body=None):
+        with open(os.path.join(self.tmp, "fabos-agent/token")) as f:
+            tok = f.read()
+        req = urllib.request.Request("http://127.0.0.1:18790" + path, data=json.dumps(body).encode() if body is not None else None, method=method,
+                                     headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return dict(json.loads(e.read() or b"{}"), http=e.code)
+
+    def test_38a_two_chats_run_side_by_side(self):
+        if fa.parallel_cap() < 2:
+            self.skipTest("this machine's RAM allows one slot only")
+        self.cli("settings", "agent.max_parallel", "3")
+        a = self.cli("do", "--mode", "auto", "sleep 3 seconds"); b = self.cli("do", "--mode", "auto", "sleep 3 seconds"); t0 = time.time()
+        sa = sb = None
+        for _ in range(50):
+            sa, sb = self.cli("show", str(a["id"]))["status"], self.cli("show", str(b["id"]))["status"]
+            if sa == "running" and sb == "running": break
+            time.sleep(0.1)
+        self.assertEqual((sa, sb), ("running", "running"), "both chats must be in a step at the same moment")
+        st = self.http("GET", "/status")["parallel"]; self.assertEqual((st["busy"], st["max"]), (2, 3), st)
+        self.assertEqual(self.wait(a["id"], ("done", "failed"))["status"], "done"); self.assertEqual(self.wait(b["id"], ("done", "failed"))["status"], "done")
+        self.assertLess(time.time() - t0, 5.5, "two 3 s steps in different chats must overlap, not run one after the other")
+        self.assertEqual(self.http("GET", "/status")["parallel"]["busy"], 0)
+
+    def test_38b_a_task_waiting_for_approval_holds_no_slot(self):
+        self.cli("settings", "agent.max_parallel", "1")
+        try:
+            a = self.cli("do", "--mode", "ask", "show me the system"); self.wait(a["id"], ("waiting_approval",))
+            self.assertEqual(self.http("GET", "/status")["parallel"]["busy"], 0, "an approval wait must not occupy the only slot")
+            b = self.cli("do", "--mode", "auto", "say hi"); tb = self.wait(b["id"], ("done", "failed"), timeout=15)
+            self.assertEqual(tb["status"], "done", tb); self.assertIn("hi", json.dumps(tb["steps"]))
+            self.assertEqual(self.cli("show", str(a["id"]))["status"], "waiting_approval")
+            pend = [p for p in self.cli("approvals") if p["task_id"] == a["id"]]; self.cli("approve", str(pend[0]["id"]))
+            self.assertEqual(self.wait(a["id"], ("done", "failed"))["status"], "done")
+        finally:
+            self.cli("settings", "agent.max_parallel", "3")
+
+    def test_38c_a_follow_up_waits_for_the_chats_earlier_turn_and_says_so(self):
+        a = self.cli("do", "--mode", "ask", "show me the system"); self.wait(a["id"], ("waiting_approval",))
+        b = self.http("POST", "/tasks", {"request": "say hi", "parent_id": a["id"], "mode": "auto"}); self.assertEqual(b["status"], "queued")
+        time.sleep(1.5)
+        tb = self.http("GET", "/tasks/%d" % b["id"])
+        self.assertEqual(tb["status"], "queued", tb); self.assertEqual(tb["queue"]["why"], "chat"); self.assertEqual(tb["queue"]["blocked_by"], a["id"])
+        self.assertEqual(tb["queue"]["text"], "waiting for the previous step in this chat")
+        row = next(t for t in self.http("GET", "/tasks") if t["id"] == b["id"]); self.assertEqual(row["queue"]["why"], "chat")
+        # a NEW chat is held back by neither of them
+        c = self.cli("do", "--mode", "auto", "say hi"); self.assertEqual(self.wait(c["id"], ("done", "failed"))["status"], "done")
+        self.assertEqual(self.http("GET", "/tasks/%d" % b["id"])["status"], "queued")
+        pend = [p for p in self.cli("approvals") if p["task_id"] == a["id"]]; self.cli("approve", str(pend[0]["id"]))
+        self.assertEqual(self.wait(a["id"], ("done", "failed"))["status"], "done")
+        self.assertEqual(self.wait(b["id"], ("done", "failed"))["status"], "done", "the follow-up runs once the earlier turn is over")
+        self.assertNotIn("queue", self.http("GET", "/tasks/%d" % b["id"]))
+
+    def test_38d_cancel_frees_the_slot_and_the_queue_says_why_it_waited(self):
+        self.cli("settings", "agent.max_parallel", "1")
+        try:
+            a = self.cli("do", "--mode", "auto", "sleep 30 seconds"); self.wait(a["id"], ("running",))
+            b = self.cli("do", "--mode", "auto", "say hi"); time.sleep(1.5)
+            tb = self.http("GET", "/tasks/%d" % b["id"])
+            self.assertEqual(tb["status"], "queued", tb); self.assertEqual(tb["queue"]["why"], "slots")
+            self.assertEqual(tb["queue"]["text"], "another chat is running: 1 of 1 slots busy"); self.assertEqual((tb["queue"]["busy"], tb["queue"]["max"]), (1, 1))
+            # cancelling a QUEUED task takes it out of the queue at once
+            c = self.cli("do", "--mode", "auto", "say hi"); time.sleep(0.5); self.cli("cancel", str(c["id"]))
+            self.assertEqual(self.wait(c["id"], ("cancelled",))["status"], "cancelled")
+            time.sleep(0.3); self.assertNotIn(str(c["id"]), self.http("GET", "/status")["parallel"]["waiting"])
+            # cancelling the RUNNING task frees its slot: b runs and finishes
+            self.cli("cancel", str(a["id"])); self.assertEqual(self.wait(a["id"], ("cancelled", "failed"), timeout=20)["status"], "cancelled")
+            self.assertEqual(self.wait(b["id"], ("done", "failed"), timeout=20)["status"], "done")
+            time.sleep(0.5); st = self.http("GET", "/status")["parallel"]; self.assertEqual((st["busy"], st["waiting"]), (0, {}), st)
+        finally:
+            self.cli("settings", "agent.max_parallel", "3")
+
+    def test_38e_microphone_permission_refuses_transcription_while_off(self):
+        # this daemon started on an empty database: a fresh install, so the permission is OFF until the user allows it
+        self.assertEqual(self.cli("settings")["voice.mic_allowed"], "false")
+        wav = base64.b64encode(b"RIFF\x00\x00\x00\x00WAVEfmt ").decode()
+        r = self.http("POST", "/speech/transcribe", {"audio_b64": wav, "format": "wav"})
+        self.assertEqual(r.get("http"), 403, r); self.assertFalse(r["ok"]); self.assertIn("Microphone is off in Settings", r["error"]); self.assertIn("Allow Fab OS to use the microphone", r["error"])
+        self.assertTrue(self.http("PUT", "/settings", {"voice.mic_allowed": "on"})["ok"]); self.assertEqual(self.cli("settings")["voice.mic_allowed"], "true")
+        r = self.http("POST", "/speech/transcribe", {"audio_b64": wav, "format": "wav"})
+        self.assertNotEqual(r.get("http"), 403, "with the permission on, the provider decides")
+        self.assertIn("mic_allowed", self.http("GET", "/status")["voice"])
+        self.cli("settings", "voice.mic_allowed", "false")
+
+
+class MicPermissionAndSlots(unittest.TestCase):
+    """The once-only migration of the microphone permission (1.0-8) and the RAM cap on parallel slots."""
+
+    def store(self):
+        return fa.Store(os.path.join(tempfile.mkdtemp(prefix="fabos-mic-"), "agent.db"))
+
+    def test_fresh_install_starts_off_and_decides_once(self):
+        st = self.store()
+        self.assertEqual(fa.migrate_mic_permission(st), "false"); self.assertEqual(st.setting("voice.mic_allowed"), "false")
+        self.assertIsNone(fa.migrate_mic_permission(st))
+        st.set_setting("voice.mic_allowed", "true"); self.assertIsNone(fa.migrate_mic_permission(st)); self.assertEqual(st.setting("voice.mic_allowed"), "true")
+
+    def test_install_in_use_with_voice_on_keeps_a_working_microphone(self):
+        st = self.store(); st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('a','a','done',1,1)")
+        self.assertEqual(fa.migrate_mic_permission(st), "true")
+        st = self.store(); st.set_setting("voice.wake_word", "hey fab")            # the user touched a voice setting: in use
+        self.assertEqual(fa.migrate_mic_permission(st), "true")
+
+    def test_install_in_use_with_voice_off_stays_off(self):
+        st = self.store(); st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('a','a','done',1,1)"); st.set_setting("voice.enabled", "false")
+        self.assertEqual(fa.migrate_mic_permission(st), "false")
+
+    def test_an_explicit_choice_is_never_overridden(self):
+        st = self.store(); st.q("INSERT INTO tasks(title,request,status,created,updated) VALUES('a','a','done',1,1)"); st.set_setting("voice.mic_allowed", "false")
+        self.assertEqual(fa.migrate_mic_permission(st), "false"); self.assertEqual(st.setting("voice.mic_migrated"), "1")
+
+    def test_parallel_cap_follows_the_ram(self):
+        G = 1024 ** 3
+        self.assertEqual(fa.parallel_cap(2 * G), 2); self.assertEqual(fa.parallel_cap(int(1.9 * G)), 2); self.assertEqual(fa.parallel_cap(2560 * 1024 ** 2), 2)
+        self.assertEqual(fa.parallel_cap(int(3.7 * G)), 4); self.assertEqual(fa.parallel_cap(G // 2), 1); self.assertEqual(fa.parallel_cap(0), fa.MAX_PARALLEL_DEFAULT)
+        self.assertEqual(fa.MAX_PARALLEL_DEFAULT, 3)
+        st = self.store(); a = fa.Agent.__new__(fa.Agent); a.store = st
+        st.set_setting("agent.max_parallel", "8"); self.assertEqual(a.max_parallel(), min(8, fa.parallel_cap()))
+        st.set_setting("agent.max_parallel", "0"); self.assertEqual(a.max_parallel(), 1)
+        st.set_setting("agent.max_parallel", "x"); self.assertEqual(a.max_parallel(), min(3, fa.parallel_cap()))
+
+
 class StepwiseUnits(unittest.TestCase):
     """In-process checks of the small-model driver's pieces (ADR-0020): plan parsing, deterministic step checks, the compact
     turn text, the prompt budget, driver selection, the online probe, and the OpenAI-compatible provider's schema call."""
