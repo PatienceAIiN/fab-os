@@ -719,6 +719,10 @@ class Endpoints(unittest.TestCase):
         self.store.set_setting("provider", "openai"); fa.set_secret("openai_api_key", "sk-o")
         urllib.request.urlopen = FakeHTTP([("audio/transcriptions", (200, {"text": "open fab files"})), ("audio/speech", (200, fa.pcm_to_wav(b"\x00" * 200)))])
         wav = base64.b64encode(fa.pcm_to_wav(b"\x00\x01" * 100)).decode()
+        # a fresh store has the microphone permission OFF (1.0-8): the recording endpoint refuses before any audio is looked at
+        st, r = self.call("POST", "/speech/transcribe", {"audio_b64": wav, "format": "wav"})
+        self.assertEqual((st, r["ok"]), (403, False)); self.assertIn("Microphone is off in Settings", r["error"])
+        self.store.set_setting("voice.mic_allowed", "true")
         st, r = self.call("POST", "/speech/transcribe", {"audio_b64": wav, "format": "wav"})
         self.assertEqual((st, r["ok"], r["text"], r["backend"]), (200, True, "open fab files", "openai:gpt-4o-mini-transcribe"))
         st, r = self.call("POST", "/speech/say", {"text": "Namaste"})
