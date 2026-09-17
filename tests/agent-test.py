@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end test of fabos-agentd with the scripted provider (no network, no GUI).
 Runs the daemon from packages/, drives it through the CLI + HTTP API, checks policy, approvals, CRUD, watches."""
-import base64, datetime, hashlib, http.client, imaplib, importlib.machinery, importlib.util, io, json, os, shutil, signal, smtplib, socket, sqlite3, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, unittest, wave
+import base64, datetime, hashlib, http.client, re, imaplib, importlib.machinery, importlib.util, io, json, os, shutil, signal, smtplib, socket, sqlite3, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, unittest, wave
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DAEMON = os.path.join(ROOT, "packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py")
@@ -1761,8 +1761,9 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         st, s2 = self.http("POST", "/schedule/login-summary", {}); self.assertFalse(s2["sent"]); self.assertTrue(s2["deduped"])
         st, s3 = self.http("POST", "/schedule/login-summary", {"force": True}); self.assertTrue(s3["sent"])
         st, today = self.http("GET", "/schedule/today"); self.assertEqual((today["title"], today["body"]), (s["title"], s["body"])); self.assertIn("items", today)
-        shown = [ln for ln in self._nlog().splitlines() if ln.split(" -u normal ")[-1].startswith(("-h string:desktop-entry:fabos-command-center Today:",))]
+        shown = [ln for ln in self._nlog().splitlines() if re.search(r"desktop-entry:fabos-command-center -t 20000 Today: (\d+ items?|nothing scheduled)", ln)]
         self.assertEqual(len(shown), 2, "the summary notification went out twice: once at 'login', once forced")
+        self.assertNotIn(" -t ", lines[0], "a reminder popup has no timeout: it stays until answered")
         self.assertTrue(any(e["kind"] == "login_summary" for e in self.cli("log", "--limit", "40")))
 
 

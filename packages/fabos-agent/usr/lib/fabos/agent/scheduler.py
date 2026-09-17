@@ -46,6 +46,7 @@ MISSED_GRACE_S = 15 * 60                              # due more than this long 
 ROLL_AFTER_S = 3 * 3600                               # a repeating item that fired and got no answer rolls forward after this
 MAIL_INTAKE_EVERY_S = 600
 SUMMARY_LINES = 5
+SUMMARY_TIMEOUT_MS = 20000                            # the login summary stays 20 s (then it is in the notification history)
 DAY_PARTS = {"early morning": (7, 0), "morning": (9, 0), "before work": (8, 0), "first thing": (9, 0), "noon": (12, 0), "midday": (12, 0), "mid-day": (12, 0),
              "lunch": (13, 0), "lunchtime": (13, 0), "lunch time": (13, 0), "after lunch": (14, 0), "afternoon": (15, 0), "evening": (18, 0), "after work": (18, 0),
              "end of day": (18, 0), "end of the day": (18, 0), "eod": (18, 0), "dinner": (20, 0), "dinner time": (20, 0), "dinnertime": (20, 0), "after dinner": (21, 0),
@@ -1194,8 +1195,9 @@ class SchedulerLoop(threading.Thread):
             body += "\n" + item["notes"][:160]
         self.sched.mark_fired(item["id"], now)
         self.store.activity("schedule", "reminder_shown", None, "#%d %s" % (item["id"], item["title"]))
+        # timeout 0 = the popup stays until the user answers it (Done / Snooze / close): a reminder that vanished after six seconds is no reminder
         self.notifier.send(item["title"], html.escape(body, quote=False), actions=(("default", "Open"), ("done", "Done"), ("snooze", "Snooze %d min" % SNOOZE_MIN), ("open", "Open")),
-                           urgency="normal", tag=("item", item["id"]))
+                           urgency="normal", tag=("item", item["id"]), timeout_ms=0)
 
     def on_action(self, tag, action):
         kind, item_id = tag if isinstance(tag, tuple) else ("item", tag)
@@ -1253,7 +1255,7 @@ class SchedulerLoop(threading.Thread):
         title, body, items = self.sched.summary(now)
         if last == key and not force:
             return {"sent": False, "deduped": True, "title": title, "body": body, "count": len(items), "key": key}
-        self.notifier.send(title, html.escape(body, quote=False), actions=(("default", "Open"), ("open", "Open Schedule")), tag=("summary", 0))
+        self.notifier.send(title, html.escape(body, quote=False), actions=(("default", "Open"), ("open", "Open Schedule")), tag=("summary", 0), timeout_ms=SUMMARY_TIMEOUT_MS)
         self.store.set_setting("scheduler.summary_sent", key)
         self.store.activity("schedule", "login_summary", None, "%s | %s" % (title, body.replace("\n", " · ")[:300]))
         self.summary_sent = True

@@ -212,7 +212,7 @@ class FakeNotifier:
         return self
 
     def send(self, title, body, actions=(), urgency="normal", tag=None, timeout_ms=-1):
-        self.sent.append({"title": title, "body": body, "actions": tuple(actions), "tag": tag, "urgency": urgency})
+        self.sent.append({"title": title, "body": body, "actions": tuple(actions), "tag": tag, "urgency": urgency, "timeout_ms": timeout_ms})
         return len(self.sent)
 
 
@@ -270,7 +270,7 @@ class StoreAndLoop(unittest.TestCase):
         self.assertEqual([n["title"] for n in self.notifier.sent], ["Gym", "Call the bank"])
         n = self.notifier.sent[1]
         self.assertEqual([x[0] for x in n["actions"]], ["default", "done", "snooze", "open"]); self.assertEqual(n["actions"][2][1], "Snooze 10 min")
-        self.assertEqual(n["tag"], ("item", a["id"])); self.assertIn("in 5 min", n["body"])
+        self.assertEqual(n["tag"], ("item", a["id"])); self.assertIn("in 5 min", n["body"]); self.assertEqual(n["timeout_ms"], 0, "a reminder stays until answered")
         loop.tick_once(NOW + dt.timedelta(minutes=1))
         self.assertEqual(len(self.notifier.sent), 2, "a fired reminder does not fire again")
         # the buttons: Done completes (the repeating Gym rolls to Friday 10:00), Snooze re-arms 10 minutes later, Open opens the tab
