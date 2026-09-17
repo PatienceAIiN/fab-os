@@ -60,8 +60,10 @@ microphone or **Do it**. It yields to the one notice that makes it pointless —
 then); with no provider or System-Wide AI off the strip stays, dimmed. In the compact (panel) form the 36 px card has no room: the strip
 is the popup's first header row. The strips are Loaders that exist only while shown, so a folded bar has no pointer area under the field. A toggle is
 applied at once (both knobs slide), persisted with ONE request — `PATCH /tasks/{root}` while a chat is open, `PUT /settings` otherwise —
-and confirmed in the status line; while the request is in flight no snapshot may write an older value back (`modeInflight`); a failure is
-a sentence in the status line and a re-sync. A new chat is posted with the strip's state (`Modes.taskFields`), so it remembers them.
+and confirmed in one line **beside the switches, in the strip's own row** (a new row would recentre the card's rows and move the field —
+seen on the VM, so the note never adds a row); while the request is in flight no snapshot may write an older value back
+(`modeInflight`); a failure is a sentence in the status line and a re-sync. A new chat is posted with the strip's state
+(`Modes.taskFields`), so it remembers them.
 
 **Fab AI Controls** (`ModeSwitch`, `ModeStrip` in `command_center.py`): the same strip in the chat header (hidden under 1060 px, where
 the composer's copy remains) and in the composer's second row beside the permission-mode chip; both are one state (`set_modes`) and move

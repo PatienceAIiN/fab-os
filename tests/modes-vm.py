@@ -140,11 +140,19 @@ def accent_pills(im, region=None, wmin=37, wmax=43, hmin=20, hmax=24):
     return sorted(boxes, key=lambda b: (b[1], b[0]))
 def centre(b): return (b[0] + b[2] // 2, b[1] + b[3] // 2)
 def fabos(args):
-    """The fabos CLI inside the session's environment (it reads $XDG_RUNTIME_DIR/fabos-agent/token; a plain ssh command has no XDG_RUNTIME_DIR)."""
-    return vms("fabos " + args + " 2>&1")
+    """The fabos CLI (--json goes BEFORE the subcommand) inside the session's environment: it reads $XDG_RUNTIME_DIR/fabos-agent/token,
+    and a plain ssh command has no XDG_RUNTIME_DIR."""
+    return vms("fabos --json " + args + " 2>&1")
 def settings():
-    try: return json.loads(fabos("settings --json"))
+    try: return json.loads(fabos("settings"))
     except ValueError: return {}
+def pill_at(label, region, index):
+    """A fresh screendump -> the centre of the index-th accent pill in the region (the card's centred rows move by a few px while a
+    confirmation line shows, so a click never reuses coordinates from an earlier picture)."""
+    q.move(W - 2, 2, W, H); time.sleep(0.3)
+    im, _ = shot(label)
+    p = accent_pills(im, region)
+    return (centre(p[index]) if len(p) > index else None), p, im
 def research_default():
     return str(settings().get("agent.research", "?"))
 
@@ -179,8 +187,8 @@ if not a.no_install:
     vms("systemctl --user daemon-reload; systemctl --user restart fabos-agent; sleep 2; kbuildsycoca6 --noincremental >/dev/null 2>&1; systemctl --user restart plasma-plasmashell; sleep 6")
     check(wait_for(lambda: "1" in vm("pgrep -x plasmashell >/dev/null && echo 1"), 60, 2) is not None, "plasmashell restarted with the new ask bar")
     time.sleep(4)
-st = wait_for(lambda: (lambda o: o if "capabilities" in o else None)(fabos("status --json")), 60, 2)
-check(st is not None, "fabos-agentd is the 1.0-8 daemon: /status carries `capabilities` " + (json.dumps(json.loads(st).get("capabilities")) if st else "(missing: %s)" % fabos("status --json").strip()[:160]))
+st = wait_for(lambda: (lambda o: o if "capabilities" in o else None)(fabos("status")), 60, 2)
+check(st is not None, "fabos-agentd is the 1.0-8 daemon: /status carries `capabilities` " + (json.dumps(json.loads(st).get("capabilities")) if st else "(missing: %s)" % fabos("status").strip()[:160]))
 check(research_default() == "true", "fabos settings agent.research is true to begin with (got %s)" % research_default())
 
 # ---------------------------------------------------------------- the home bar
@@ -205,34 +213,45 @@ if len(pills) >= 2:
     q.click(rx, ry, W, H)                                  # a REAL pointer click on the Research switch
     time.sleep(0.5)
     q.move(W - 2, 2, W, H); time.sleep(0.3)
-    im2, _ = shot("bar-research-off")                      # within the 2.4 s confirmation line
+    im2, _ = shot("bar-research-off")                      # within the 2.4 s confirmation line ("Research off for new chats" beside the switches)
     spectacle("bar-research-off")
     v = research_default()
     check(v == "false", "fabos settings agent.research after the click: %s (no chat open -> the default for new chats)" % v)
     p2 = accent_pills(im2, bar_region)
     check(len(p2) == 1 and abs(p2[0][0] - computer[0]) <= 2, "one accent pill left (Computer use); Research's track is grey: %s" % p2)
-    try: caps = json.loads(fabos("status --json")).get("capabilities")
+    check(len(p2) == 1 and abs(p2[0][1] - computer[1]) <= 2, "the row did not move while the confirmation shows (pill y %s before, %s now)" % (computer[1], p2[0][1] if p2 else "-"))
+    try: caps = json.loads(fabos("status")).get("capabilities")
     except ValueError: caps = None
     check(caps == {"research": False, "computer_use": True}, "/status.capabilities follows: %s" % json.dumps(caps))
+    time.sleep(2.4)                                        # the confirmation has gone
+    c1, p3, _ = pill_at("bar-before-click-2", bar_region, 0)    # the one accent pill is Computer use; Research sits 40 + 16 + label to its left — click where it WAS
     q.click(rx, ry, W, H); time.sleep(0.6)                # and back on
     q.move(W - 2, 2, W, H); time.sleep(0.3)
     im3, _ = shot("bar-both-on-again")
     check(research_default() == "true", "second click: agent.research back to true")
     check(len(accent_pills(im3, bar_region)) == 2, "both pills accent again")
-    # Computer use through the pointer too
-    cx, cy = centre(computer)
-    q.click(cx, cy, W, H); time.sleep(0.6); q.move(W - 2, 2, W, H); time.sleep(0.3)
-    im4, _ = shot("bar-computer-use-off")
-    check(str(settings().get("agent.computer_use")) == "false", "Computer use click: agent.computer_use false")
-    p4 = accent_pills(im4, bar_region)
-    check(len(p4) == 1 and abs(p4[0][0] - research[0]) <= 2, "one accent pill left (Research): %s" % p4)
-    q.click(cx, cy, W, H); time.sleep(0.6)
-    check(str(settings().get("agent.computer_use")) == "true", "Computer use back to true")
+    time.sleep(2.4)
+    # Computer use through the pointer too (fresh coordinates from a fresh picture)
+    c2, p5, _ = pill_at("bar-before-computer-click", bar_region, 1)
+    check(c2 is not None, "Computer use pill found again for the click: %s" % p5)
+    if c2:
+        q.click(c2[0], c2[1], W, H); time.sleep(0.6); q.move(W - 2, 2, W, H); time.sleep(0.3)
+        im4, _ = shot("bar-computer-use-off")
+        spectacle("bar-computer-use-off")
+        check(str(settings().get("agent.computer_use")) == "false", "Computer use click: agent.computer_use false")
+        p4 = accent_pills(im4, bar_region)
+        check(len(p4) == 1 and abs(p4[0][0] - research[0]) <= 2, "one accent pill left (Research): %s" % p4)
+        time.sleep(2.4)
+        q.click(c2[0], c2[1], W, H); time.sleep(0.6)
+        check(str(settings().get("agent.computer_use")) == "true", "Computer use back to true")
+        time.sleep(2.4)
 
 # ---------------------------------------------------------------- Fab AI Controls
 log("== Fab AI Controls: the same strip in the chat header and the composer; click the composer's Research switch")
-vms("pkill -f command_center.py; sleep 1; rm -f /tmp/r8-controls.log; setsid -f fabos-command-center > /tmp/r8-controls.log 2>&1")
-check(wait_for(lambda: "1" in vm("pgrep -f 'command_center.py' >/dev/null && echo 1"), 30, 1) is not None, "Fab AI Controls process is up")
+# the bracket in the pattern keeps pkill/pgrep from matching the very shell that carries the text (run 2: the launcher shell killed
+# itself before setsid ran, and the liveness check matched its own ssh shell — a false "up")
+vms("pkill -f 'command_cente[r].py'; sleep 1; rm -f /tmp/r8-controls.log; setsid -f fabos-command-center > /tmp/r8-controls.log 2>&1")
+check(wait_for(lambda: "1" in vm("pgrep -f 'command_cente[r].py' >/dev/null && echo 1"), 30, 1) is not None, "Fab AI Controls process is up")
 # the window takes its time on a 2-vCPU guest with a cold cache: poll the screen for the composer strip (up to 60 s), then read the log
 def controls_pills():
     q.move(W - 2, 2, W, H); time.sleep(0.3)
@@ -240,7 +259,7 @@ def controls_pills():
     found = [p for p in accent_pills(im) if p[1] > H * 0.55]
     return (im, found) if len(found) >= 2 else None
 got = wait_for(controls_pills, 60, 4)
-alive = "1" in vm("pgrep -f 'command_center.py' >/dev/null && echo 1")
+alive = "1" in vm("pgrep -f 'command_cente[r].py' >/dev/null && echo 1")
 clog = vm("tail -n 12 /tmp/r8-controls.log 2>/dev/null").strip()
 open(os.path.join(OUT, "controls-stderr.log"), "w").write(vm("cat /tmp/r8-controls.log 2>/dev/null"))
 check(alive, "Fab AI Controls still running once its window is up" + ("" if alive else " — its log: " + clog[:400].replace("\n", " | ")))
@@ -267,11 +286,14 @@ if len(lower) >= 2:
     if upper:
         u6 = [p for p in accent_pills(im6) if p[1] <= H * 0.55]
         check(len(u6) == len(upper) - 1, "the header strip mirrored the change (%d -> %d accent pills)" % (len(upper), len(u6)))
+    time.sleep(2.4)                                        # the toast has gone
+    c3, p7, _ = pill_at("controls-before-click-2", (0, int(H * 0.55), W, H), 0)   # Research is grey now; Computer use is the one pill; Research sits where it was
     q.click(rx, ry, W, H); time.sleep(0.6)
     check(research_default() == "true", "second click in Fab AI Controls: agent.research back to true")
     q.move(W - 2, 2, W, H); time.sleep(0.3)
-    shot("controls-both-on-again")
-vms("pkill -f command_center.py")
+    im8, _ = shot("controls-both-on-again")
+    check(len([p for p in accent_pills(im8) if p[1] > H * 0.55]) == 2, "the composer strip shows both pills accent again")
+vms("pkill -f 'command_cente[r].py'")
 
 # ---------------------------------------------------------------- health + evidence
 log("== health + evidence")
@@ -282,8 +304,8 @@ agent_log = vm("journalctl --user -b --no-pager -o cat -u fabos-agent 2>/dev/nul
 check("Traceback" not in agent_log, "no Python traceback in the fabos-agent journal")
 open(os.path.join(OUT, "fabos-agent-journal.log"), "w").write(agent_log)
 open(os.path.join(OUT, "plasmashell-journal.log"), "w").write(vm("journalctl --user -b --no-pager -o short-iso _COMM=plasmashell 2>/dev/null | tail -150", timeout=120))
-open(os.path.join(OUT, "fabos-settings.json"), "w").write(fabos("settings --json"))
-open(os.path.join(OUT, "fabos-status.json"), "w").write(fabos("status --json"))
-open(os.path.join(OUT, "fabos-log.json"), "w").write(fabos("log --json --limit 40"))
+open(os.path.join(OUT, "fabos-settings.json"), "w").write(fabos("settings"))
+open(os.path.join(OUT, "fabos-status.json"), "w").write(fabos("status"))
+open(os.path.join(OUT, "fabos-log.json"), "w").write(fabos("log --limit 40"))
 log("VM MODES DONE failures=%d" % failures)
 sys.exit(1 if failures else 0)

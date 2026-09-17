@@ -88,11 +88,11 @@ PlasmoidItem {
     // ---- Research · Computer use (docs/design/MODES.md, contents/code/modes.js): the open chat's own choice while a conversation is
     // open (GET /tasks/{id} carries the effective values), else the defaults GET /status reports under `capabilities`. A toggle is
     // applied at once, persisted with ONE request (PATCH /tasks/{root} in a chat, PUT /settings otherwise) and confirmed in one line
-    // under the field; while that request is in flight no snapshot may write an older value back over it (modeInflight).
+    // beside the switches; while that request is in flight no snapshot may write an older value back over it (modeInflight).
     property var modes: Modes.defaults()
     property int modeInflight: 0
     property var modeLast: ({ key: "", on: true })
-    property string modeNote: ""              // "Research off for this chat" — 2.4 s in the status line
+    property string modeNote: ""              // "Research off for this chat" — 2.4 s, in the strip's own row after the switches (never a new row: nothing moves)
     readonly property int modeThread: root.followUp ? root.rootTaskId : 0
     property var seen: ({})                   // "t<task>s<step>" / "a<approval>" / "q<question>" -> model row
     property int serial: 0
@@ -718,12 +718,20 @@ PlasmoidItem {
                         onToggled: (key, on) => root.setMode(key, on)
                     }
                 }
+                Text {   // the one-line confirmation ("Research off for this chat"), IN this row after the switches: no new row, so nothing in the card moves
+                    id: modeNoteText
+                    anchors.left: modeStrip.right; anchors.leftMargin: 14; anchors.right: parent.right; anchors.verticalCenter: modeStrip.verticalCenter
+                    text: root.modeNote
+                    color: Kirigami.Theme.textColor; opacity: root.modeNote.length && modesRow.shown ? 0.75 : 0
+                    font.family: "Inter"; font.pixelSize: 12; elide: Text.ElideRight
+                    Behavior on opacity { NumberAnimation { duration: Modes.TOKENS.motion.reveal_ms } }
+                }
             }
-            RowLayout {   // status line: red dot + "Listening…" while the mic is open, a voice failure for 6 s, a switch confirmation for 2.4 s, else the daemon status
+            RowLayout {   // status line: red dot + "Listening…" while the mic is open, a voice failure for 6 s, else the daemon status
                 id: statusRow
                 Layout.fillWidth: true
                 Layout.leftMargin: (root.compact ? 22 : 32) + Kirigami.Units.smallSpacing * 2
-                visible: !root.compact && (root.listening || root.voiceHint.length > 0 || root.modeNote.length > 0 || (root.showStatus && root.status.length > 0))
+                visible: !root.compact && (root.listening || root.voiceHint.length > 0 || (root.showStatus && root.status.length > 0))
                 spacing: 6
                 Rectangle {
                     id: recDot
@@ -741,14 +749,12 @@ PlasmoidItem {
                 Text {
                     id: statusText
                     Layout.fillWidth: true
-                    text: root.listening ? "Listening…" : (root.voiceHint.length ? root.voiceHint : (root.modeNote.length ? root.modeNote : root.status))
+                    text: root.listening ? "Listening…" : (root.voiceHint.length ? root.voiceHint : root.status)
                     wrapMode: Text.WordWrap; maximumLineCount: 2
                     color: root.listening ? Kirigami.Theme.negativeTextColor
-                         : (root.voiceHint.length || (!root.modeNote.length && !(root.configured && root.aiEnabled && root.daemonUp)) ? Kirigami.Theme.neutralTextColor
-                         : (root.modeNote.length ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor))
-                    opacity: root.modeNote.length && !root.listening && !root.voiceHint.length ? 0.8 : 1
+                         : (root.voiceHint.length || !(root.configured && root.aiEnabled && root.daemonUp) ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.disabledTextColor)
                     font.family: "Inter"; font.pixelSize: 12; elide: Text.ElideRight
-                    MouseArea { anchors.fill: parent; enabled: !root.listening && !root.voiceHint.length && !root.modeNote.length; cursorShape: Qt.PointingHandCursor
+                    MouseArea { anchors.fill: parent; enabled: !root.listening && !root.voiceHint.length; cursorShape: Qt.PointingHandCursor
                                 onClicked: root.openControls(root.configured && root.aiEnabled ? "" : "--settings" + (field.text.trim().length ? " --prefill " + root.shellQuote(field.text.trim()) : "")) }
                 }
             }
@@ -841,6 +847,13 @@ PlasmoidItem {
                             active: root.daemonUp && root.aiEnabled
                             onToggled: (key, on) => root.setMode(key, on)
                         }
+                    }
+                    Text {   // the confirmation, after the switches (as in the card)
+                        anchors.left: compactStrip.right; anchors.leftMargin: 14; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                        text: root.modeNote
+                        color: Kirigami.Theme.textColor; opacity: root.modeNote.length && root.compact ? 0.75 : 0
+                        font.family: "Inter"; font.pixelSize: 12; elide: Text.ElideRight
+                        Behavior on opacity { NumberAnimation { duration: Modes.TOKENS.motion.reveal_ms } }
                     }
                 }
                 RowLayout {   // status line left, icon controls right
