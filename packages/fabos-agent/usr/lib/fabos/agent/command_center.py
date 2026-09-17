@@ -3279,7 +3279,7 @@ class SettingsDialog(RoundedDialog):
         self.boot_items_area.setWidgetResizable(True)
         self.boot_items_area.setFrameShape(QFrame.Shape.NoFrame)
         self.boot_items_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.boot_items_area.setMaximumHeight(88)
+        self.boot_items_area.setMaximumHeight(80)
         self.boot_items_area.setSizeAdjustPolicy(QScrollArea.SizeAdjustPolicy.AdjustToContents)
         self.boot_items_area.viewport().setAutoFillBackground(False)
         self.boot_items_area.setWidget(self.boot_items)
@@ -3649,9 +3649,20 @@ class SettingsDialog(RoundedDialog):
                 lab.setStyleSheet("color: %s;" % (RED if d.get("boot_risk") else AMBER))
             det = WrapLabel(str(it.get("detail") or ""))
             det.setObjectName("muted")
-            self.boot_items_form.addRow(lab, det)
+            self.boot_items_form.addRow(self._boot_item_block(lab, det))
         self.boot_details.setVisible(bool(items))
         QTimer.singleShot(0, self.refit)
+
+    @staticmethod
+    def _boot_item_block(*widgets):
+        """One Details entry: the label line and the detail line at full width (a two-column form squeezed the detail)."""
+        blk = QWidget()
+        v = QVBoxLayout(blk)
+        v.setContentsMargins(0, 0, 0, 4)
+        v.setSpacing(1)
+        for wd in widgets:
+            v.addWidget(wd)
+        return blk
 
     def _boot_howto(self, _href=None):
         DiskUnlockHowTo(self).exec()
@@ -3707,7 +3718,7 @@ class SettingsDialog(RoundedDialog):
             while self.boot_items_form.rowCount():
                 self.boot_items_form.removeRow(0)
             for s in steps:
-                self.boot_items_form.addRow(QLabel("→"), WrapLabel(str(s)))
+                self.boot_items_form.addRow(self._boot_item_block(WrapLabel("→ " + str(s))))
             self.boot_details.setVisible(True)
             self.boot_details.set_open(True)
         self._load_boot_prompt(diag_only=True)
