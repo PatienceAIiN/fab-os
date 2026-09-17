@@ -25,10 +25,10 @@ api GET /health | grep -q '"ok"' || { echo "agent daemon not reachable in the se
 
 if [ "${INJECT:-0}" = 1 ]; then   # test the working-tree agent code without rebuilding the image
   echo "### injecting working-tree agent files into the VM"
-  sshpass -p fabos scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -P 2222 packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py packages/fabos-agent/usr/lib/fabos/agent/command_center.py packages/fabos-agent/usr/bin/fabos fabos@127.0.0.1:/tmp/ >/dev/null
+  sshpass -p fabos scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -P 2222 packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py packages/fabos-agent/usr/lib/fabos/agent/scheduler.py packages/fabos-agent/usr/lib/fabos/agent/command_center.py packages/fabos-agent/usr/bin/fabos fabos@127.0.0.1:/tmp/ >/dev/null
   for f in fabos_agentd.py command_center.py fabos; do local_sz=$(stat -c %s "$(ls packages/fabos-agent/usr/lib/fabos/agent/$f packages/fabos-agent/usr/bin/$f 2>/dev/null | head -1)"); remote_sz=$(vm "stat -c %s /tmp/$f" 2>/dev/null)
     [ "$local_sz" = "$remote_sz" ] || { echo "inject: size mismatch for $f ($local_sz vs $remote_sz) — aborting"; exit 1; }; done
-  vm "echo fabos | sudo -S install -m 755 /tmp/fabos_agentd.py /tmp/command_center.py /usr/lib/fabos/agent/ 2>/dev/null; echo fabos | sudo -S install -m 755 /tmp/fabos /usr/bin/fabos 2>/dev/null; systemctl --user restart fabos-agent; sleep 4; systemctl --user is-active fabos-agent; test -s /usr/lib/fabos/agent/fabos_agentd.py && echo injected-ok"
+  vm "echo fabos | sudo -S install -m 755 /tmp/fabos_agentd.py /tmp/scheduler.py /tmp/command_center.py /usr/lib/fabos/agent/ 2>/dev/null; echo fabos | sudo -S install -m 755 /tmp/fabos /usr/bin/fabos 2>/dev/null; systemctl --user restart fabos-agent; sleep 4; systemctl --user is-active fabos-agent; test -s /usr/lib/fabos/agent/fabos_agentd.py && echo injected-ok"
 fi
 echo "### configure provider + mail"
 if [ "${AGENT_PROVIDER:-claude}" = fake ]; then   # the scripted provider (no network): the concurrency proof can run offline

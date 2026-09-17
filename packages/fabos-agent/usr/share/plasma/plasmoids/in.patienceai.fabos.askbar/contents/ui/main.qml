@@ -8,6 +8,7 @@ import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.plasma5support as P5Support
 import org.kde.kirigami as Kirigami
 import "agent.js" as Agent
+import "../code/modes.js" as Modes
 
 // "Ask me to do anything…" — the Fab OS agent's front door on the home screen.
 // On the desktop the applet is a tall, full-width transparent strip in the DESKTOP LAYER (the look-and-feel layout
@@ -84,6 +85,15 @@ PlasmoidItem {
     property bool closing: false              // closePanel() called; panelMode stays "open"/"min" for the 220 ms shrink
     readonly property bool followUp: panelMode !== "closed" && !closing && rootTaskId > 0   // the next submit threads under rootTaskId
     property bool showRaw: false              // daemon setting ui.show_raw
+    // ---- Research · Computer use (docs/design/MODES.md, contents/code/modes.js): the open chat's own choice while a conversation is
+    // open (GET /tasks/{id} carries the effective values), else the defaults GET /status reports under `capabilities`. A toggle is
+    // applied at once, persisted with ONE request (PATCH /tasks/{root} in a chat, PUT /settings otherwise) and confirmed in one line
+    // beside the switches; while that request is in flight no snapshot may write an older value back over it (modeInflight).
+    property var modes: Modes.defaults()
+    property int modeInflight: 0
+    property var modeLast: ({ key: "", on: true })
+    property string modeNote: ""              // "Research off for this chat" — 2.4 s, in the strip's own row after the switches (never a new row: nothing moves)
+    readonly property int modeThread: root.followUp ? root.rootTaskId : 0
     property var seen: ({})                   // "t<task>s<step>" / "a<approval>" / "q<question>" -> model row
     property int serial: 0
     property int groupSerial: 0
@@ -149,8 +159,10 @@ PlasmoidItem {
     Timer { id: hintTimer; interval: 12000; onTriggered: root.voiceHint = "" }
     Timer { id: progressTimer; interval: 150; repeat: true; onTriggered: root.run("vprog", 0, Agent.listenProgressCommand()) }
     Timer { id: toastTimer; interval: 1600; onTriggered: root.toast = "" }
-    // panel fully shrunk: forget the task in the bar so the mark returns to idle (the task itself carries on in the daemon)
-    Timer { id: closeTimer; interval: 220; onTriggered: { root.closing = false; root.panelMode = "closed"; root.taskStatus = "" } }   // = the shrink duration
+    Timer { id: modeNoteTimer; interval: Modes.TOKENS.strip.confirm_ms; onTriggered: root.modeNote = "" }
+    // panel fully shrunk: forget the task in the bar so the mark returns to idle (the task itself carries on in the daemon); the strip
+    // goes back to the defaults for new chats, which the next snapshot brings
+    Timer { id: closeTimer; interval: 220; onTriggered: { root.closing = false; root.panelMode = "closed"; root.taskStatus = ""; root.pollSoon() } }   // = the shrink duration
     Timer { id: stickyTimer; interval: 10000; onTriggered: root.stickyStatus = false }
     property bool stickyStatus: false
     function say(msg) { root.status = msg; root.stickyStatus = true; stickyTimer.restart() }
@@ -207,6 +219,7 @@ PlasmoidItem {
         }
         case "status": root.onStatus(j); break
         case "settings": if (j) root.showRaw = String(j["ui.show_raw"] || "") === "true"; break
+        case "mode": root.onModeSaved(ref, code, j); break
         case "create": case "follow": root.onCreated(kind === "follow", code, j); break
         case "poll": if (ref === root.taskId && j && j.id === root.taskId) root.ingest(j); break
         case "restore": root.onRestore(ref, code, j); break
@@ -261,6 +274,7 @@ PlasmoidItem {
             if (j.voice.enabled !== undefined) root.voiceOn = String(j.voice.enabled) === "true"
         }
         if (j.ui_show_raw !== undefined) root.showRaw = j.ui_show_raw === true || String(j.ui_show_raw) === "true"
+        if (j.capabilities && root.modeThread === 0 && root.modeInflight === 0) root.modes = Modes.fromStatus(j)   // no chat open: the defaults
         var t = j.tasks || {}
         var n = (t.running || 0) + (t.queued || 0) + (t.waiting_approval || 0) + (t.waiting_user || 0)
         root.busy = n > 0
@@ -293,7 +307,26 @@ PlasmoidItem {
         root.pendingRequest = t
         var body = { request: t }
         if (follow) body.parent_id = root.rootTaskId
+        else { var f = Modes.taskFields(root.modes); for (var k in f) body[k] = f[k] }   // a new chat starts with the strip's state
         root.api(follow ? "follow" : "create", 0, "POST", "/tasks", body)
+    }
+    // ---- Research · Computer use: applied at once, ONE request persists it, one line confirms it; a failure says so and re-syncs
+    function setMode(key, on) {
+        var r = Modes.toggle(root.modes, key, on, root.modeThread)
+        if (!r) return
+        root.wake()
+        root.modes = r.state
+        root.modeLast = { key: key, on: on }
+        root.modeInflight++
+        root.api("mode", root.modeThread, r.request.method, r.request.path, r.request.body)
+        root.modeNote = r.message; modeNoteTimer.restart()
+    }
+    function onModeSaved(ref, code, j) {
+        root.modeInflight = Math.max(0, root.modeInflight - 1)
+        if (j && !j.error && code === 0) { if (j.research !== undefined) root.modes = Modes.fromTask(j, root.modes); return }
+        root.modeNote = ""; modeNoteTimer.stop()
+        root.say(Modes.failureMessage(root.modeLast.key, root.modeLast.on, j, code))
+        root.pollSoon()                                                                   // the snapshot brings back what the daemon has
     }
     // the viewer's Regenerate: a follow-up in the same conversation (the daemon has the prompt in the task context). Never a
     // silent no-op: while the previous POST is still in flight the viewer closes and the status line says why
@@ -411,6 +444,7 @@ PlasmoidItem {
         root.taskQueue = t.queue && t.queue.text ? String(t.queue.text) : ""
         root.resultText = String(t.result || "")
         root.taskTitle = String(t.title || "")
+        if (t.research !== undefined && root.modeInflight === 0) root.modes = Modes.fromTask(t, root.modes)   // the chat's own Research / Computer use
         var steps = t.steps || [], i, s, key
         for (i = 0; i < steps.length; i++) {
             s = steps[i]; key = "t" + t.id + "s" + s.id
@@ -617,6 +651,8 @@ PlasmoidItem {
         x: root.onDesktop ? Math.max(0, Math.round((Screen.width - width) / 2 - appletScreenX)) : 0
         y: 0
 
+        Behavior on height { enabled: root.onDesktop; NumberAnimation { duration: Modes.TOKENS.motion.reveal_ms; easing.type: Easing.OutCubic } }   // the strip's reveal grows the card smoothly
+
         Rectangle {   // Material-expressive surface: large radius, tinted, hairline border
             anchors.fill: parent
             visible: root.onDesktop
@@ -709,6 +745,39 @@ PlasmoidItem {
                     QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
                 }
             }
+            Item {   // Research · Computer use strip (docs/design/MODES.md): part of the bar's awake state — it unfolds under the field
+                id: modesRow   // in 180 ms while the bar is awake / focused / a chat is open, aligned with the field's left edge, in its
+                               // own row (never over the mic or Do it); the compact card has no room, so there it is the popup's header row
+                Layout.fillWidth: true
+                Layout.leftMargin: (root.compact ? 22 : 32) + Kirigami.Units.smallSpacing * 2
+                readonly property bool problem: !root.daemonUp   // the service is down: its notice takes the row and a switch could not be kept anyway (no provider / AI off only dim the strip)
+                readonly property bool shown: Modes.stripVisible(root.markAwake, field.activeFocus, root.panelMode !== "closed", root.compact, problem)
+                implicitHeight: shown ? Modes.TOKENS.strip.height : 0
+                visible: root.onDesktop && implicitHeight > 0.5
+                clip: true
+                Behavior on implicitHeight { NumberAnimation { duration: Modes.TOKENS.motion.reveal_ms; easing.type: Easing.OutCubic } }
+                Loader {   // the strip exists only while it shows (or folds away): a folded bar has no pointer area under the field
+                    id: modeStrip
+                    anchors.left: parent.left; anchors.bottom: parent.bottom
+                    active: root.onDesktop && (modesRow.shown || modesRow.implicitHeight > 0.5)
+                    opacity: modesRow.shown ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: Modes.TOKENS.motion.reveal_ms } }
+                    sourceComponent: ModeStrip {
+                        state: root.modes
+                        threadId: root.modeThread
+                        active: root.daemonUp && root.aiEnabled
+                        onToggled: (key, on) => root.setMode(key, on)
+                    }
+                }
+                Text {   // the one-line confirmation ("Research off for this chat"), IN this row after the switches: no new row, so nothing in the card moves
+                    id: modeNoteText
+                    anchors.left: modeStrip.right; anchors.leftMargin: 14; anchors.right: parent.right; anchors.verticalCenter: modeStrip.verticalCenter
+                    text: root.modeNote
+                    color: Kirigami.Theme.textColor; opacity: root.modeNote.length && modesRow.shown ? 0.75 : 0
+                    font.family: "Inter"; font.pixelSize: 12; elide: Text.ElideRight
+                    Behavior on opacity { NumberAnimation { duration: Modes.TOKENS.motion.reveal_ms } }
+                }
+            }
             RowLayout {   // status line: red dot + "Listening…" while the mic is open, a voice failure for 6 s, else the daemon status
                 id: statusRow
                 Layout.fillWidth: true
@@ -776,7 +845,7 @@ PlasmoidItem {
         // content height: fixed header + list + fixed foot (typing dots while working) capped by the strip; the one-line
         // pill when minimised. Below the cap the panel grows with its rows (200 ms, no scrollbar); at the cap the list
         // scrolls and the 6 px overlay bar appears (`overflowing`).
-        readonly property real wanted: (compactHint.visible ? compactHint.height + 6 : 0) + panelHeader.implicitHeight + 6 + list.contentHeight + panelFoot.height + 16
+        readonly property real wanted: (compactHint.visible ? compactHint.height + 6 : 0) + (compactModes.visible ? compactModes.height + 6 : 0) + panelHeader.implicitHeight + 6 + list.contentHeight + panelFoot.height + 16
         readonly property real contentTarget: root.panelMode === "min" ? minPill.implicitHeight : Math.min(root.maxPanelHeight, wanted)
         readonly property bool overflowing: root.panelMode === "open" && wanted > root.maxPanelHeight + 0.5
         property real panelHeight: contentTarget
@@ -817,10 +886,36 @@ PlasmoidItem {
                     onChoose: root.openControls("--settings provider")
                     onDismiss: root.dismissCloudHint()
                 }
-                RowLayout {   // status line left, icon controls right
-                    id: panelHeader
+                Item {   // compact (panel) form only: the Research · Computer use strip is the popup's header row (the 36 px card has no room)
+                    id: compactModes
                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: compactHint.bottom
                     anchors.topMargin: compactHint.visible ? 6 : 0
+                    anchors.leftMargin: 6; anchors.rightMargin: root.listGutter
+                    visible: root.compact
+                    height: root.compact ? Modes.TOKENS.strip.height : 0
+                    Loader {   // created only in the compact form: on the desktop the strip lives in the card, and nothing of it sits in the panel
+                        id: compactStrip
+                        anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                        active: root.compact
+                        sourceComponent: ModeStrip {
+                            state: root.modes
+                            threadId: root.modeThread
+                            active: root.daemonUp && root.aiEnabled
+                            onToggled: (key, on) => root.setMode(key, on)
+                        }
+                    }
+                    Text {   // the confirmation, after the switches (as in the card)
+                        anchors.left: compactStrip.right; anchors.leftMargin: 14; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                        text: root.modeNote
+                        color: Kirigami.Theme.textColor; opacity: root.modeNote.length && root.compact ? 0.75 : 0
+                        font.family: "Inter"; font.pixelSize: 12; elide: Text.ElideRight
+                        Behavior on opacity { NumberAnimation { duration: Modes.TOKENS.motion.reveal_ms } }
+                    }
+                }
+                RowLayout {   // status line left, icon controls right
+                    id: panelHeader
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: compactModes.bottom
+                    anchors.topMargin: compactModes.visible ? 6 : 0
                     spacing: 2
                     Spinner { visible: root.taskActive; running: root.panelMode === "open"; Layout.preferredWidth: 14; Layout.preferredHeight: 14; Layout.leftMargin: 6 }
                     Kirigami.Icon { visible: !root.taskActive && root.taskStatus === "done"; source: "checkmark"; isMask: true; color: Kirigami.Theme.positiveTextColor; Layout.preferredWidth: 16; Layout.preferredHeight: 16; Layout.leftMargin: 6 }

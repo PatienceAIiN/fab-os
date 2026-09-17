@@ -10,6 +10,9 @@
 #   stage 2  boot the INSTALLED disk alone (no ISO, no network) with the same OVMF variable store; for the luks variant the
 #            driver types the passphrase at the Plymouth prompt; wait for FABOS_INSTALLED_OK (fabos-firstboot.service
 #            ExecStartPost on the installed system), then power the VM down
+# Variants: luks = the driver TICKS "Encrypt system" on the partition page (encryption is opt-in in partition.conf since
+#   2026-09-17) and types the passphrase; plain = it makes sure the box is unticked. Both read the box's state from the
+#   screendump first (install-vm-driver.py encrypt_state), so the test runs against the 1.0 ISO (pre-ticked) and the next one.
 # Usage: tests/install-vm.sh [luks|plain|both] [--mem MB] [--cpus N] [--keep-disk] [--image localhost/fabos:iso]
 #   ISO=path/to/x.iso overrides the ISO (default build/fabos-1.0-desktop-amd64.iso, see scripts/boot-iso.sh)
 # Output: build/install-vm-<variant>.log (this log), build/install-vm-<variant>/ (screenshots + OCR text, session.log =
@@ -66,7 +69,9 @@ for V in $VARIANTS; do
   verdict $v2c "install-$V: every job of the sequence started (${jobs_line:-no AUTOINSTALL_JOBS line})"
   if [ -s "$OUT/session.log" ] && grep -q '^SESSION_LOG_DECODE=ok' "$OUT/guest-evidence.txt" 2>/dev/null; then verdict PASS "install-$V: Calamares session log received intact ($OUT/session.log, $(wc -l < "$OUT/session.log") lines; $(grep -m1 '^SESSION_LOG_DECODE' "$OUT/guest-evidence.txt"))"
   else verdict FAIL "install-$V: Calamares session log not received intact from the guest ($(grep -m1 '^SESSION_LOG_DECODE' "$OUT/guest-evidence.txt" 2>/dev/null || echo 'no decode record'))"; fi
-  if [ "$V" = luks ]; then grep -q '^LUKS .*Version:.*2' build/install-vm-$V-serial-1.log && v3=PASS || v3=FAIL; verdict $v3 "install-$V: target disk shows a LUKS2 container (luksDump on the root partition)"; fi
+  if [ "$V" = luks ]; then grep -q '^LUKS .*Version:.*2' build/install-vm-$V-serial-1.log && v3=PASS || v3=FAIL; verdict $v3 "install-$V: target disk shows a LUKS2 container (luksDump on the root partition; the driver ticked 'Encrypt system')"
+  else if grep -q '^LSBLK:' build/install-vm-$V-serial-1.log && ! grep -q '^LSBLK:.*crypto_LUKS' build/install-vm-$V-serial-1.log && ! grep -q '^LUKS ' build/install-vm-$V-serial-1.log; then v3=PASS; else v3=FAIL; fi
+    verdict $v3 "install-$V: target disk has NO LUKS container (the driver left/made 'Encrypt system' unticked; root filesystem directly on the partition)"; fi
   # FAT keeps the case the writer used: Ubuntu's grub-install creates EFI/BOOT/BOOTX64.EFI (shim) - compare case-insensitively
   grep -qi '^ESP:/EFI/ubuntu/grubx64.efi' build/install-vm-$V-serial-1.log && grep -qi '^ESP:/EFI/boot/bootx64.efi' build/install-vm-$V-serial-1.log && v4=PASS || v4=FAIL
   verdict $v4 "install-$V: EFI system partition holds EFI/ubuntu/grubx64.efi + EFI/boot/bootx64.efi (shim fallback)"

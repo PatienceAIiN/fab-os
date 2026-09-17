@@ -35,6 +35,10 @@ Quick passes (no chat seeding; the output directory stays the first argument):
               (settings-startup-dialog-*.png) and posts the passphrase, ON posts nothing else, Cancel posts nothing, a refused
               passphrase puts the switch back with the reason, an unencrypted disk disables the row
   --welcome   the welcome wizard's Mail page (welcome-mail-*.png) and its "Use your own mail" button
+  --schedule  the Schedule tab with sample items in dark + light (ai-controls-schedule-{dark,light}.png, -edit-dark.png): the sidebar
+              entry opens it and hides the composer, rows land in Today / Upcoming / Done with their badges, the plain-language field
+              shows the daemon's reading live and fills the editable date/time + repeat, Add / Done / Edit go through the API, the
+              12-hour setting round-trips (docs/design/SCHEDULER.md)
 """
 import json, os, shutil, sqlite3, subprocess, sys, tempfile, time, traceback, urllib.request
 
@@ -518,7 +522,190 @@ def quick_passes():
     return rc
 
 
+def schedule_pass():
+    """--schedule: the Schedule tab (docs/design/SCHEDULER.md) offscreen in dark + light with sample items — a missed one, two
+    for today, a repeating one for tomorrow, a done one and one that came from mail — saved as ai-controls-schedule-{dark,light}.png
+    (+ ai-controls-schedule-edit-dark.png with the inline editor). Checks: the sidebar's Schedule entry opens the tab and hides the
+    composer; the rows land in Today / Upcoming / Done; the plain-language field shows the daemon's reading live and fills the
+    editable date/time + repeat (an ambiguous 'meeting at 3' is flagged, 'call the bank' without a time says so); Add creates the
+    item with the title from the words and the date/time from the form; Done on a row moves it to Done; the settings row follows
+    the daemon (12-hour switches the display). Exit 0 only if every assertion held."""
+    os.makedirs(OUT, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix="fabos-schedule-render-")
+    os.makedirs(os.path.join(tmp, "bin"))
+    nlog = os.path.join(tmp, "notify.log")
+    with open(os.path.join(tmp, "bin", "notify-send"), "w") as f:
+        f.write('#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' % nlog)
+    os.chmod(os.path.join(tmp, "bin", "notify-send"), 0o755)
+    env = dict(os.environ, XDG_RUNTIME_DIR=tmp, FABOS_AGENT_DATA=os.path.join(tmp, "data"), XDG_CONFIG_HOME=os.path.join(tmp, "cfg"),
+               FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT=PORT, HOME=os.path.join(tmp, "home"), PATH=os.path.join(tmp, "bin") + ":/usr/bin:/bin",
+               FABOS_SCHED_NOTIFY="notify-send", FABOS_SCHED_TICK="3600")
+    os.makedirs(env["HOME"])
+    proc = subprocess.Popen([sys.executable, os.path.join(AGENT_DIR, "fabos_agentd.py")], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    rc = 1
+    try:
+        for _ in range(60):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:%s/health" % PORT, timeout=1)
+                break
+            except Exception:
+                time.sleep(0.2)
+        else:
+            raise RuntimeError("daemon did not start")
+        os.environ["XDG_RUNTIME_DIR"] = tmp
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        sys.path.insert(0, AGENT_DIR)
+        import command_center as cc
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtGui import QPalette, QColor, QFont
+        from PyQt6.QtCore import QEvent
+        app = QApplication(sys.argv)
+        app.setFont(QFont("Inter", 10))
+
+        def spin(n=10):
+            for _ in range(n):
+                app.processEvents()
+
+        def wait_for(pred, what, timeout=10):
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                app.processEvents()
+                if pred():
+                    return
+                time.sleep(0.02)
+            raise AssertionError("timed out waiting for " + what)
+
+        def close_window(win):
+            win.close()
+            win.deleteLater()
+            app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            spin(5)
+        # --- seed through the API (times relative to the real clock; a missed item is made by moving one into the past and sweeping)
+        now = time.time()
+        a = cc.api("POST", "/schedule", {"title": "Call the bank", "when": now + 3600, "source": "chat"})["item"]
+        b = cc.api("POST", "/schedule", {"title": "Meeting with Rohan", "when": now + 3 * 3600, "remind_before": 10, "source": "chat"})["item"]
+        c = cc.api("POST", "/schedule", {"title": "Send the invoice", "when": now + 26 * 3600, "repeat": "weekdays", "source": "ui"})["item"]
+        d = cc.api("POST", "/schedule", {"title": "Renew the passport", "when": now + 5 * 86400, "source": "mail"})["item"]
+        e = cc.api("POST", "/schedule", {"title": "Pay rent", "when": now + 3600})["item"]
+        cc.api("PATCH", "/schedule/%d" % e["id"], {"when": now - 20 * 3600})
+        f = cc.api("POST", "/schedule", {"title": "Book the cab", "when": now + 3600})["item"]
+        cc.api("POST", "/schedule/%d/done" % f["id"])
+        tick = cc.api("POST", "/schedule/tick")
+        assert [m["title"] for m in tick["missed"]] == ["Pay rent"], tick
+        assert cc.api("GET", "/schedule/%d" % e["id"])["status"] == "missed"
+        summary = cc.api("GET", "/schedule/today")
+        assert summary["title"].startswith("Today:") and "Missed while you were away: Pay rent" in summary["body"], summary
+        results = {}
+        for name, scheme in SCHEMES.items():
+            app.setPalette(make_palette(QPalette, QColor, scheme))
+            w = cc.AIControls()
+            w.resize(1280, 800)
+            w.show()
+            spin()
+            assert w.sidebar.schedule_btn.text() == "Schedule"
+            w.sidebar.schedule_btn.click()
+            spin()
+            assert w.stack.currentWidget() is w.schedule_page, "the sidebar entry opens the Schedule tab"
+            assert not w.composer.isVisible(), "the composer belongs to chats"
+            page = w.schedule_page
+            wait_for(lambda: len(page.rows) == 6, "the six seeded rows (have %d)" % len(page.rows))
+            rows = page.rows
+            assert rows[e["id"]].property("status") == "missed" and any(x.text() == "missed" for x in rows[e["id"]].findChildren(cc.QLabel))
+            assert any(x.text() == "every weekday" for x in rows[c["id"]].findChildren(cc.QLabel)), "repeat badge"
+            assert any(x.text() == "from mail" for x in rows[d["id"]].findChildren(cc.QLabel)), "source badge"
+            assert rows[f["id"]].property("status") == "done" and "retry" in rows[f["id"]].buttons and "check" not in rows[f["id"]].buttons
+            assert "check" in rows[a["id"]].buttons and "edit" in rows[a["id"]].buttons and "delete" in rows[a["id"]].buttons
+            sections = {k: [page.sections[k][1].itemAt(i).widget() for i in range(page.sections[k][1].count())] for k in page.sections}
+            assert rows[f["id"]] in sections["done"] and rows[d["id"]] in sections["upcoming"] and rows[e["id"]] in sections["today"], "rows land in their sections"
+            assert page.sub.text().startswith("Today ·") and "24-hour" in page.sub.text(), page.sub.text()
+            # --- the live reading of the plain-language field
+            page.nl.setText("remind me tomorrow at 9am to call the bank")
+            wait_for(lambda: "Call the bank" in page.parsed.text() and "09:00" in page.parsed.text(), "live parse (have %r)" % page.parsed.text())
+            assert page.when.dateTime().toString("HH:mm") == "09:00" and page.repeat.currentData() == "none" and page.parsed.property("state") == "ok"
+            page.nl.setText("every weekday 6:30 pm gym")
+            wait_for(lambda: page.repeat.currentData() == "weekdays" and "18:30" in page.parsed.text(), "repeat + time from the words")
+            page.nl.setText("meeting at 3")
+            wait_for(lambda: "please check the time" in page.parsed.text(), "an ambiguous reading is flagged")
+            assert page.parsed.property("state") == "warn" and page.when.dateTime().toString("HH:mm") == "15:00"
+            page.nl.setText("call the bank")
+            wait_for(lambda: page.parsed.property("state") == "error" and "When should I remind you" in page.parsed.text(), "no time -> says so")
+            page.nl.setText("water the plants tomorrow at 7am")
+            wait_for(lambda: "Water the plants" in page.parsed.text(), "parse before Add")
+            page.add_btn.click()
+            wait_for(lambda: len(page.rows) == 7 and page.nl.text() == "", "the added row (and a cleared field)")
+            added = [i for i in cc.api("GET", "/schedule?scope=upcoming")["items"] if i["title"] == "Water the plants"]
+            assert added and "T07:00" in added[0]["when_local"] and added[0]["source"] == "ui", added
+            # --- Done on a row
+            rows[a["id"]].buttons["check"].click()
+            wait_for(lambda: cc.api("GET", "/schedule/%d" % a["id"])["status"] == "done", "Done through the row")
+            wait_for(lambda: page.rows.get(a["id"]) is not None and page.rows[a["id"]].property("status") == "done", "the row moved to Done")
+            spin(30)                                     # the rebuilt rows need a layout pass before they paint
+            assert all(r.isVisible() for r in page.rows.values()), "every row is laid out and visible"
+            pix = w.grab()
+            path = os.path.join(OUT, "ai-controls-schedule-%s.png" % name)
+            pix.save(path)
+            results[name] = (pix.width(), pix.height())
+            # --- inline editor on the meeting row (rendered once, dark)
+            if name == "dark":
+                page.start_edit(b["id"])
+                spin()
+                ed = page.rows[b["id"]]
+                assert isinstance(ed, cc.ScheduleEditor) and ed.before.currentData() == 10, "the editor shows the item's remind-before"
+                ed.repeat.setCurrentIndex(1)
+                ed.save_btn.click()
+                wait_for(lambda: cc.api("GET", "/schedule/%d" % b["id"])["repeat"] == "daily", "Save in the editor patches the item")
+                page.start_edit(b["id"])
+                spin()
+                w.grab().save(os.path.join(OUT, "ai-controls-schedule-edit-dark.png"))
+                page._cancel_edit()
+                spin()
+            # --- the settings row follows the daemon: 12-hour changes the display
+            page.clock_box.setCurrentIndex(1)
+            page.clock_box.activated.emit(1)
+            wait_for(lambda: "12-hour" in page.sub.text(), "the clock setting round-trips")
+            assert cc.api("GET", "/settings")["scheduler.clock"] == "12"
+            assert any(("AM" in r.time.text() or "PM" in r.time.text()) for r in page.rows.values() if isinstance(r, cc.ScheduleRow)), "12-hour times shown"
+            page.clock_box.setCurrentIndex(0)
+            page.clock_box.activated.emit(0)
+            wait_for(lambda: "24-hour" in page.sub.text(), "back to 24-hour")
+            assert not page.mail_switch.isEnabled(), "mail intake is off/disabled until a mail account is signed in"
+            # back to a chat: the composer returns
+            w.new_chat()
+            spin()
+            assert w.composer.isVisible() and w.stack.currentIndex() == 0
+            close_window(w)
+            del w
+            # undo the mutations so the light pass sees the same picture
+            cc.api("POST", "/schedule/%d/reopen" % a["id"])
+            for i in cc.api("GET", "/schedule?scope=all")["items"]:
+                if i["title"] == "Water the plants":
+                    cc.api("DELETE", "/schedule/%d" % i["id"])
+            cc.api("PATCH", "/schedule/%d" % b["id"], {"repeat": "none"})
+        for k, (wd, ht) in results.items():
+            print("ai-controls-schedule-%s %dx%d" % (k, wd, ht))
+        rc = 0
+    except Exception:
+        traceback.print_exc()
+        try:
+            print("--- daemon output ---")
+            proc.terminate()
+            print(proc.communicate(timeout=5)[0][-3000:])
+        except Exception:
+            pass
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(5)
+            except Exception:
+                proc.kill()
+        shutil.rmtree(tmp, ignore_errors=True)
+    return rc
+
+
 def main():
+    if "--schedule" in sys.argv:
+        sys.exit(schedule_pass())
     if "--settings" in sys.argv or "--welcome" in sys.argv:
         sys.exit(quick_passes())
     os.makedirs(OUT, exist_ok=True)
@@ -545,6 +732,19 @@ def main():
         from PyQt6.QtWidgets import QApplication, QDialog
         from PyQt6.QtGui import QPalette, QColor, QFont, QGuiApplication
         from PyQt6.QtCore import QPoint, QTimer, QEvent
+        # every daemon call the window makes goes through here: a call that takes over a second is printed (with the job it
+        # belongs to nothing else can be told apart when sync() times out on a loaded host)
+        _plain_api = cc.api
+
+        def timed_api(method, path, body=None, *a, **k):
+            t0 = time.time()
+            try:
+                return _plain_api(method, path, body, *a, **k)
+            finally:
+                dt = time.time() - t0
+                if dt > 1.0:
+                    print("    (slow daemon call %.1f s: %s %s)" % (dt, method, path), flush=True)
+        cc.api = timed_api
 
         def wait_until(app, pred, what, timeout=8):
             deadline = time.time() + timeout
@@ -1233,6 +1433,139 @@ def main():
             w.update_header()
             spin(app)
             assert not w.cloud_hint.isVisible(), "never with a cloud / non-local provider"
+            # --- Research · Computer use strips (docs/design/MODES.md): the header strip and the composer strip are ONE state, drawn from the
+            # ask bar's modes.js numbers; a real click on a switch moves both knobs (200 ms), PATCHes the open chat's root and toasts the
+            # one-line confirmation; Space on a focused switch does the same; a new chat shows the defaults and POSTs them; a toggle with
+            # no chat open PUTs the default setting. Renders ai-controls-modes-{on,research-off,both-off}-<scheme>.png (the strip) and
+            # ai-controls-modes-<scheme>.png (the window with both off).
+            from PyQt6.QtCore import QSize, QAbstractAnimation
+            from PyQt6.QtGui import QKeyEvent
+            import re as _re
+            assert cc.MODE_TOKENS_SOURCE == "file", "the strip's tokens must come from modes.js, not the fallback (%s)" % cc.MODE_TOKENS_SOURCE
+            js = open(os.path.join(ROOT, "packages/fabos-agent/usr/share/plasma/plasmoids/in.patienceai.fabos.askbar/contents/code/modes.js"), encoding="utf-8").read()
+            block = json.loads(_re.search(r"/\* MODES-TOKENS \*/\s*(\{.*?\})\s*/\* /MODES-TOKENS \*/", js, _re.S).group(1))
+            assert block == cc.MODE_TOKENS == cc.MODE_TOKENS_FALLBACK, "modes.js, the loaded tokens and the Python fallback must be one set of numbers"
+            T = cc.MODE_TOKENS["switch"]
+            w.select_conversation(root)                   # the earlier checks left the window on New chat; the strips are about THIS chat
+            sync(w)
+            spin(app, 3)
+            # the header strip is a wide-layout feature (main column >= 1110 px); the composer's copy is always there
+            assert w.composer_modes.isVisible() and not w.header_modes.isVisible(), ("1280 px with the sidebar: composer strip only", w.header_modes.isVisible())
+            w.resize(1480, 800)
+            spin(app, 5)
+            assert w.header_modes.isVisible(), "1480 px: the header strip appears"
+            for strip in (w.header_modes, w.composer_modes):
+                assert list(strip.switches) == ["research", "computer_use"], list(strip.switches)
+                assert strip.isVisible() and strip.height() == cc.MODE_TOKENS["strip"]["height"], (strip.isVisible(), strip.height())
+                assert strip.width() == strip.sizeHint().width(), ("the strip is never squeezed (labels stay whole)", strip.width(), strip.sizeHint().width())
+                for lab in strip.labels.values():
+                    assert lab.width() >= lab.fontMetrics().horizontalAdvance(lab.text()), ("label clipped", lab.text(), lab.width())
+                for sw in strip.switches.values():
+                    assert sw.size() == QSize(T["width"] + 6, T["height"] + 6), sw.size()          # 40x22 track + 3 px ring margin
+                    assert sw.anim.duration() == cc.MODE_TOKENS["motion"]["knob_ms"] == 200, sw.anim.duration()
+                    assert (sw.knob_x(0), sw.knob_x(1)) == (3, 21), (sw.knob_x(0), sw.knob_x(1))    # modes.js knobX
+                    assert sw.focusPolicy() == cc.Qt.FocusPolicy.TabFocus and sw.toolTip().endswith("(Space toggles)"), sw.toolTip()
+            assert w.current_root == root and w.modes == {"research": True, "computer_use": True}, (w.current_root, w.modes)
+            assert all(s.is_on() for s in w.header_modes.switches.values()) and all(s.is_on() for s in w.composer_modes.switches.values())
+            src0 = real_api("GET", "/tasks/%d" % root)["capabilities_source"]
+            assert src0 == ("global" if name == "dark" else "chat"), ("the seeded chat has no choice of its own until this test PATCHes it (the light pass sees the dark pass's)", src0)
+            hs = w.header_modes.grab()
+            assert hs.save(os.path.join(OUT, "ai-controls-modes-on-%s.png" % name))
+            results[name + "-modes-on"] = (hs.width(), hs.height())
+            # a real click on the COMPOSER strip's Research switch: both strips animate to off, the toast confirms, the daemon has it on the chat
+            w.toast.timer.stop(); w.toast.hide()
+            w.composer_modes.switches["research"].click()
+            spin(app, 3)
+            assert w.modes == {"research": False, "computer_use": True}, w.modes
+            assert not w.header_modes.switches["research"].is_on() and not w.composer_modes.switches["research"].is_on(), "both strips must move together"
+            assert w.header_modes.switches["research"].anim.state() == QAbstractAnimation.State.Running, "the header knob must slide (200 ms), not jump"
+            assert w.toast.isVisible() and w.toast.text() == "Research off for this chat", w.toast.text()
+            assert 0.0 < w.header_modes.switches["research"]._pos <= 1.0, w.header_modes.switches["research"]._pos
+            deadline = time.time() + 0.35
+            while time.time() < deadline:
+                app.processEvents()
+                time.sleep(0.01)
+            assert w.header_modes.switches["research"]._pos == 0.0 and w.composer_modes.switches["research"]._pos == 0.0, "the knobs settle at off within 350 ms"
+            assert w.header_modes.labels["research"].property("on") is False and w.header_modes.labels["computer_use"].property("on") is True
+            sync(w)
+            got = real_api("GET", "/tasks/%d" % root)
+            assert (got["research"], got["computer_use"], got["capabilities_source"]) == (False, True, "chat"), (got["research"], got["computer_use"], got["capabilities_source"])
+            assert real_api("GET", "/tasks/%d" % fu)["research"] is False, "the follow-up inherits the chat's choice"
+            hs = w.header_modes.grab()
+            assert hs.save(os.path.join(OUT, "ai-controls-modes-research-off-%s.png" % name))
+            # keyboard: Space on the focused HEADER Computer use switch -> both strips off, PATCHed, confirmed
+            sw = w.header_modes.switches["computer_use"]
+            sw.setFocus()
+            spin(app)
+            sw.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, cc.Qt.Key.Key_Space, cc.Qt.KeyboardModifier.NoModifier))
+            spin(app, 3)
+            assert w.modes == {"research": False, "computer_use": False}, w.modes
+            assert not w.composer_modes.switches["computer_use"].is_on(), "the composer mirror must follow the header"
+            assert w.toast.text() == "Computer use off for this chat", w.toast.text()
+            sync(w)
+            got = real_api("GET", "/tasks/%d" % root)
+            assert (got["research"], got["computer_use"]) == (False, False), got
+            deadline = time.time() + 0.35
+            while time.time() < deadline:
+                app.processEvents()
+                time.sleep(0.01)
+            hs = w.header_modes.grab()
+            assert hs.save(os.path.join(OUT, "ai-controls-modes-both-off-%s.png" % name))
+            w.toast.timer.stop(); w.toast.hide()
+            spin(app)
+            wp = w.grab()
+            assert wp.save(os.path.join(OUT, "ai-controls-modes-%s.png" % name))
+            results[name + "-modes"] = (wp.width(), wp.height())
+            # a poll does not undo it: the chat's values survive a forced re-fetch
+            w.refresh_thread(force=True)
+            sync(w)
+            assert w.modes == {"research": False, "computer_use": False}, w.modes
+            # New chat: the strips show the defaults for new chats (both on) — animated back; the chat keeps its own choice when reopened
+            w.new_chat()
+            spin(app, 3)
+            assert w.modes == {"research": True, "computer_use": True}, w.modes
+            assert w.composer_modes.switches["research"].anim.state() == QAbstractAnimation.State.Running
+            deadline = time.time() + 0.35
+            while time.time() < deadline:
+                app.processEvents()
+                time.sleep(0.01)
+            assert all(s._pos == 1.0 for s in w.composer_modes.switches.values())
+            w.select_conversation(root)
+            sync(w)
+            assert w.modes == {"research": False, "computer_use": False}, ("reopening the chat restores its choice", w.modes)
+            assert w.composer_modes.switches["research"].toolTip().endswith("Remembered for this chat (Space toggles)"), w.composer_modes.switches["research"].toolTip()
+            # no chat open: a toggle changes the DEFAULT (PUT /settings) and says so; the next new chat POSTs the strip's state
+            w.new_chat()
+            spin(app, 3)
+            assert w.composer_modes.switches["research"].toolTip().endswith("The default for new chats (Space toggles)"), w.composer_modes.switches["research"].toolTip()
+            w.composer_modes.labels["computer_use"].clicked.emit()                       # the label is part of the control
+            spin(app, 3)
+            assert w.modes == {"research": True, "computer_use": False}, w.modes
+            assert w.toast.text() == "Computer use off for new chats", w.toast.text()
+            sync(w)
+            assert real_api("GET", "/settings")["agent.computer_use"] == "false"
+            assert real_api("GET", "/status")["capabilities"] == {"research": True, "computer_use": False}
+            w.ask.setText("say hi")
+            w.submit()
+            sync(w)
+            newest = max(real_api("GET", "/tasks?limit=5"), key=lambda x: x["id"])
+            nt = real_api("GET", "/tasks/%d" % newest["id"])
+            assert (nt["research"], nt["computer_use"], nt["capabilities_source"]) == (True, False, "chat"), ("the new chat starts with the strip's state", nt["research"], nt["computer_use"], nt["capabilities_source"])
+            assert w.current_root == newest["id"] and w.modes == {"research": True, "computer_use": False}, (w.current_root, w.modes)
+            wait(newest["id"])
+            # leave the daemon as the rest of the render expects it: defaults on, the seeded chat back to both on, the extra chat gone
+            real_api("PUT", "/settings", {"agent.computer_use": "true"})
+            real_api("PATCH", "/tasks/%d" % root, {"research": True, "computer_use": True})
+            real_api("DELETE", "/tasks/%d" % newest["id"])
+            w.refresh_list()
+            sync(w)
+            w.select_conversation(root)
+            sync(w)
+            assert w.modes == {"research": True, "computer_use": True}, w.modes
+            w.toast.timer.stop(); w.toast.hide()
+            w.resize(1280, 800)
+            spin(app, 3)
+            print("[%s] modes strips: header + composer mirror one state; PATCH/PUT reached the daemon; knob 200 ms; tokens from modes.js" % name)
             w.list_timer.start()
             close_window(app, w)
             del w

@@ -17,8 +17,15 @@ Page recognition uses the page BODY texts of Calamares 3.3.14
 (src/modules/*: "Welcome to the %1 installer", "Region:"/"Zone:", "Keyboard Model", "Select storage device:",
 "What is your name?", "This is an overview of what will happen", "Continue with Installation?"), never the sidebar.
 
+The partition page is STATE-AWARE: encrypt_state() reads whether "Encrypt system" is ticked from the screendump (OCR of the
+passphrase placeholders, else pixels of the line-edit row and of the indicator box), then the luks variant ticks the box
+when needed and the plain variant unticks it when needed - so the same driver works with an ISO whose partition.conf
+pre-checks encryption (1.0 ISO) and with one where encryption is opt-in (preCheckEncryption: false, the tree since
+2026-09-17). tests/installer-ui-vm.sh reuses QMP/Screen/encrypt_state to prove the sidebar and the checkbox on a live VM.
+
   install-vm-driver.py install --qmp SOCK --serial LOG --variant luks|plain --outdir DIR [--image localhost/fabos:iso]
   install-vm-driver.py boot    --qmp SOCK --serial LOG --variant luks|plain --outdir DIR [--passphrase fabos-test]
+  install-vm-driver.py encrypt-state --shot FILE.png --outdir DIR [--expect ticked|unticked]   (offline detector check)
 Exit 0 = stage passed. Screenshots (PNG when Pillow is available, else PPM) + OCR text land in DIR as evidence.
 """
 import argparse, atexit, json, os, re, shutil, socket, subprocess, sys, time
@@ -143,39 +150,67 @@ class Screen:
         else:
             log("OCR container could not start (%s); falling back to podman run per shot" % r.stderr.strip()[:200])
     def grab(self, label):
-        """Returns (text_lower, words[(text,x,y,w,h)], width, height, png_or_ppm_path)."""
+        """Screendump -> OCR. Returns (text_lower, words[(text,x,y,w,h)], width, height, png_or_ppm_path)."""
         self.n += 1; base = "%03d-%s" % (self.n, re.sub(r"[^a-z0-9]+", "-", label.lower()))
         ppm = os.path.join(self.out, base + ".ppm"); self.q.screendump(ppm)
         for _ in range(30):
             if os.path.exists(ppm) and os.path.getsize(ppm) > 100: break
             time.sleep(0.2)
-        w, h = self._ppm_size(ppm); ocr_src = base + ".ppm"; scale = 1; shot = ppm
+        return self.ocr_file(ppm, base)
+    def ocr_file(self, path, base):
+        """OCR of a screenshot file: the PPM a screendump wrote (converted to <base>.png and removed when Pillow is present) or,
+        with Pillow, any PNG (the fixtures of tests/calamares-jobs-test.sh). 2x upscaled; a mostly dark frame (Plymouth, GRUB)
+        is inverted first. Writes <base>.txt with the OCR text. Returns (text_lower, words, width, height, shot_path)."""
         if self.pil:
-            from PIL import Image, ImageOps
-            im = Image.open(ppm).convert("RGB"); im.save(os.path.join(self.out, base + ".png")); os.unlink(ppm); shot = os.path.join(self.out, base + ".png")
+            from PIL import Image, ImageOps, ImageStat
+            im = Image.open(path).convert("RGB"); w, h = im.size; shot = os.path.join(self.out, base + ".png")
+            if os.path.abspath(path) != os.path.abspath(shot): im.save(shot)
+            if path.endswith(".ppm") and os.path.dirname(os.path.abspath(path)) == self.out: os.unlink(path)
             g = ImageOps.grayscale(im)
-            if sum(g.resize((64, 48)).getdata()) / (64 * 48) < 90: g = ImageOps.invert(g)   # light text on dark (Plymouth, GRUB)
+            if ImageStat.Stat(g.resize((64, 48))).mean[0] < 90: g = ImageOps.invert(g)   # light text on dark (Plymouth, GRUB)
             scale = 2; g = g.resize((w * scale, h * scale), Image.LANCZOS); g.save(os.path.join(self.out, "ocr-input.png")); ocr_src = "ocr-input.png"
-        tsv = self._tesseract(ocr_src)
+        else:
+            w, h = self._ppm_size(path); scale = 1; shot = path; ocr_src = os.path.basename(path)   # PPM inside self.out
+        words = self._words(self._tesseract(ocr_src), scale)
+        text = re.sub(r"\s+", " ", " ".join(t for t, *_ in words)).lower()
+        with open(os.path.join(self.out, base + ".txt"), "w") as f: f.write(text + "\n")
+        return text, words, w, h, shot
+    def ocr_region(self, shot, box, label, scale=3, psm=6, thresholds=()):
+        """OCR of one region (box = x0, y0, x1, y1 in frame pixels) of a PNG screenshot, upscaled and read in BOTH polarities,
+        plus a black/white version (and its inverse) per threshold in `thresholds`: tesseract misses dark text on a mid-grey
+        highlight (the sidebar's current step: threshold 96 separates it) and light-grey placeholder text in a white line edit
+        (threshold 200). Returns the union of the words, in frame coordinates. Needs Pillow (returns [] without it)."""
+        if not self.pil: return []
+        from PIL import Image, ImageOps
+        g = ImageOps.grayscale(Image.open(shot).convert("RGB").crop(box))
+        variants = [g, ImageOps.invert(g)]
+        for t in thresholds:
+            b = g.point(lambda v, t=t: 255 if v > t else 0); variants += [b, ImageOps.invert(b)]
+        size = ((box[2] - box[0]) * scale, (box[3] - box[1]) * scale); words = []
+        for i, img in enumerate(variants):
+            # threshold at 1x, THEN upscale: the LANCZOS resize gives tesseract anti-aliased glyphs (hard-edged 3x binaries read worse)
+            name = "region-%s-%d.png" % (re.sub(r"[^a-z0-9]+", "-", label.lower()), i); img.resize(size, Image.LANCZOS).save(os.path.join(self.out, name))
+            words += self._words(self._tesseract(name, psm), scale, box[0], box[1])
+        return words
+    def _words(self, tsv, scale, dx=0, dy=0):
+        """tesseract tsv -> [(text, x, y, w, h)] in frame pixels (word boxes = level 5)."""
         words = []
         for line in tsv.splitlines()[1:]:
             p = line.split("\t")
             if len(p) >= 12 and p[0] == "5" and p[11].strip():
-                try: words.append((p[11].strip(), int(p[6]) // scale, int(p[7]) // scale, int(p[8]) // scale, int(p[9]) // scale))
+                try: words.append((p[11].strip(), int(p[6]) // scale + dx, int(p[7]) // scale + dy, int(p[8]) // scale, int(p[9]) // scale))
                 except ValueError: pass
-        text = re.sub(r"\s+", " ", " ".join(t for t, *_ in words)).lower()
-        with open(os.path.join(self.out, base + ".txt"), "w") as f: f.write(text + "\n")
-        return text, words, w, h, shot
+        return words
     def _ppm_size(self, path):
         with open(path, "rb") as f:
             head = f.read(64).split()
         return int(head[1]), int(head[2])
-    def _tesseract(self, name):
+    def _tesseract(self, name, psm=3):
         if self.ctr:
-            r = subprocess.run(["podman", "exec", self.ctr, "tesseract", "/w/" + name, "stdout", "--psm", "3", "tsv"], capture_output=True, text=True, timeout=120)
+            r = subprocess.run(["podman", "exec", self.ctr, "tesseract", "/w/" + name, "stdout", "--psm", str(psm), "tsv"], capture_output=True, text=True, timeout=120)
             if r.returncode == 0: return r.stdout
             log("podman exec tesseract failed (%s)" % r.stderr.strip()[-200:])
-        r = subprocess.run(["podman", "run", "--rm", "--network", "none", "-v", self.out + ":/w:Z", self.image, "tesseract", "/w/" + name, "stdout", "--psm", "3", "tsv"],
+        r = subprocess.run(["podman", "run", "--rm", "--network", "none", "-v", self.out + ":/w:Z", self.image, "tesseract", "/w/" + name, "stdout", "--psm", str(psm), "tsv"],
                            capture_output=True, text=True, timeout=180)
         return r.stdout
 
@@ -189,6 +224,66 @@ def find_word(words, target, exclude_prev=None):
             return x + w // 2, y + h // 2
         prev = clean
     return None
+
+# ---------------------------------------------------------------- pixels + the "Encrypt system" checkbox
+class Pixels:
+    """Read access to a screenshot's pixels: a PNG through Pillow, or the binary P6 PPM QEMU's screendump writes (no Pillow)."""
+    def __init__(self, path):
+        self.im = None
+        if path.endswith(".ppm"):
+            with open(path, "rb") as f: data = f.read()
+            m = re.match(rb"P6\s+(\d+)\s+(\d+)\s+(\d+)\s", data)
+            if not m: raise ValueError("not a binary PPM: %s" % path)
+            self.w, self.h = int(m.group(1)), int(m.group(2)); self.raw = data[m.end():]
+        else:
+            from PIL import Image
+            self.im = Image.open(path).convert("RGB"); self.w, self.h = self.im.size
+    def px(self, x, y):
+        x = min(max(x, 0), self.w - 1); y = min(max(y, 0), self.h - 1)
+        if self.im is not None: return self.im.getpixel((x, y))
+        i = (y * self.w + x) * 3; return tuple(self.raw[i:i + 3])
+    def patch(self, cx, cy, hw, hh):
+        """(mean colour (r, g, b), darkest luminance) of the box cx+-hw, cy+-hh."""
+        pts = [self.px(x, y) for x in range(cx - hw, cx + hw + 1) for y in range(cy - hh, cy + hh + 1)]
+        n = float(len(pts)); mean = tuple(sum(p[c] for p in pts) / n for c in range(3))
+        return mean, min((p[0] * 299 + p[1] * 587 + p[2] * 114) / 1000.0 for p in pts)
+
+def find_encrypt(words):
+    """The 'Encrypt system' checkbox label (EncryptWidget.ui). OCR may glue the two words ('encryptsystem') or misread one
+    letter (the mnemonic underline under the c), so a word starting with 'encrypt' or one edit away from it is accepted.
+    Returns (left_x, centre_y, right_x) of the label's first word, or None."""
+    import difflib
+    for t, x, y, w, h in words:
+        c = re.sub(r"[^a-z]", "", t.lower())
+        if c.startswith("encrypt") or (5 <= len(c) <= 9 and difflib.SequenceMatcher(None, c, "encrypt").ratio() >= 0.8):
+            return x, y + h // 2, x + w
+    return None
+
+# thresholds calibrated on tests/fixtures/installer/*.png (crops of real 1280x800 partition-page screendumps, Fusion style):
+# ticked -> the line-edit row differs from the plain background by >= 24 (mean colour, sum over r,g,b), unticked -> ~0
+FIELD_DX, FIELD_DIFF_MIN, INDICATOR_DX = 210, 24, -12
+def encrypt_state(words, shot):
+    """Is 'Encrypt system' ticked? Read from the screendump, so the driver works whatever the ISO's preCheckEncryption says:
+      1. OCR: the 'Passphrase' / 'Confirm passphrase' placeholders exist only while the box is ticked (EncryptWidget hides the
+         line edits otherwise) - certain when seen, but OCR often misses that light-grey text;
+      2. pixels: the passphrase line edit starts ~210 px right of the label's left edge on the same row; its frame, base colour
+         and placeholder differ from the plain window background 45 px above the row, while unticked that spot IS background;
+      3. pixels: the indicator box ~12 px left of the label carries dark ink (the check mark) only when ticked (light styles).
+    Returns (state 'ticked'|'unticked'|None, anchor (label_left_x, row_y) or None, evidence string)."""
+    e = find_encrypt(words)
+    if not e: return None, None, "no 'Encrypt system' label among %s" % [t for t, *_ in words][:40]
+    left, y, right = e
+    if find_word(words, "passphrase"): return "ticked", (left, y), "OCR sees the passphrase placeholder"
+    try:
+        P = Pixels(shot)
+        field, _ = P.patch(left + FIELD_DX, y, 24, 6); ref, ref_dark = P.patch(left + FIELD_DX, y - 45, 24, 6)
+        diff = sum(abs(a - b) for a, b in zip(field, ref))
+        _, ink = P.patch(left + INDICATOR_DX, y, 4, 4)
+        ev = "line-edit row vs background diff %.0f (min %d), indicator darkest %.0f vs background %.0f" % (diff, FIELD_DIFF_MIN, ink, ref_dark)
+        ticked = diff >= FIELD_DIFF_MIN or (ref_dark > 160 and ink < 100)
+        return ("ticked" if ticked else "unticked"), (left, y), ev
+    except Exception as ex:
+        return None, (left, y), "pixel read failed: %s" % ex
 
 # ---------------------------------------------------------------- stage 1: drive Calamares
 def stage_install(a):
@@ -243,27 +338,32 @@ def stage_install(a):
             log("users -> Alt+N"); alt(q, "n"); time.sleep(3)
         elif page == "partition":
             if not done["partition"]:
+                # state-aware: read whether "Encrypt system" is ticked, then click the label only if the variant needs the
+                # other state (the 1.0 ISO pre-checks the box; the tree since 2026-09-17 leaves it unticked - both must work)
+                want = "ticked" if a.variant == "luks" else "unticked"
+                state, anchor, why = encrypt_state(words, shot)
+                if anchor is None:
+                    log("'Encrypt system' checkbox not found by OCR (%s)" % why); return fail_install(ser, a, q, wait_guest=False)
+                log("partition page: 'Encrypt system' is %s (%s); variant %s wants it %s" % (state, why, a.variant, want))
+                for attempt in (1, 2):
+                    if state == want: break
+                    log("clicking the 'Encrypt system' label at %s (attempt %d)" % ((anchor[0] + 20, anchor[1]), attempt))
+                    q.pointer(anchor[0] + 20, anchor[1], w, h); time.sleep(1.2)
+                    text, words, w, h, shot = scr.grab("partition-toggled-" + want)
+                    state, anchor2, why = encrypt_state(words, shot); anchor = anchor2 or anchor
+                    log("after the click: 'Encrypt system' is %s (%s)" % (state, why))
+                if state != want:
+                    log("could not bring 'Encrypt system' to %s" % want); return fail_install(ser, a, q, wait_guest=False)
                 if a.variant == "luks":
                     p = find_word(words, "passphrase", exclude_prev="confirm")
                     if not p:
                         # the placeholder "Passphrase" is light grey and OCR often misses it; the field sits on the same row
-                        # as the "Encrypt system" checkbox label, ~190 px to the right of the word "Encrypt" (1280x800 layout)
-                        e = find_word(words, "encrypt")
-                        if e: p = (e[0] + 190, e[1]); log("passphrase placeholder not read by OCR; using the row of 'Encrypt system' at %s" % (p,))
-                    if not p:
-                        log("passphrase field not found by OCR (words: %s)" % [t for t, *_ in words][:60]); return fail_install(ser, a, q, wait_guest=False)
+                        # as the checkbox label, ~210 px right of the label's left edge (EncryptWidget.ui, 1280x800 layout)
+                        p = (anchor[0] + FIELD_DX, anchor[1]); log("passphrase placeholder not read by OCR; using the row of 'Encrypt system' at %s" % (p,))
                     log("partition page: click the Passphrase field at %s, type passphrase, Tab, repeat" % (p,))
                     q.pointer(p[0], p[1], w, h); time.sleep(0.4)
                     type_text(q, PASSPHRASE); time.sleep(0.4); q.send_keys(["tab"]); time.sleep(0.4); type_text(q, PASSPHRASE); time.sleep(1.0)
                     scr.grab("partition-passphrase-typed")
-                else:
-                    p = find_word(words, "encrypt")
-                    if not p:
-                        log("'Encrypt system' checkbox not found by OCR (words: %s)" % [t for t, *_ in words][:60]); return fail_install(ser, a, q, wait_guest=False)
-                    log("partition page: untick 'Encrypt system' at %s" % (p,)); q.pointer(p[0], p[1], w, h); time.sleep(1.2)
-                    t2, w2, *_ = scr.grab("partition-unticked")
-                    if find_word(w2, "passphrase"):
-                        log("passphrase fields still visible after the click -> clicking once more"); q.pointer(p[0], p[1], w, h); time.sleep(1.2); scr.grab("partition-unticked-2")
                 done["partition"] = True
             attempts["partition"] = attempts.get("partition", 0) + 1
             if attempts["partition"] > 6: log("partition page did not accept Next"); return fail_install(ser, a, q)
@@ -432,9 +532,11 @@ def shutdown(q, hard=False):
 def main():
     global PASSPHRASE
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=["install", "boot"])
-    ap.add_argument("--qmp", required=True); ap.add_argument("--serial", required=True); ap.add_argument("--variant", choices=["luks", "plain"], required=True)
+    ap.add_argument("stage", choices=["install", "boot", "encrypt-state"])
+    ap.add_argument("--qmp"); ap.add_argument("--serial"); ap.add_argument("--variant", choices=["luks", "plain"])
     ap.add_argument("--outdir", required=True); ap.add_argument("--image", default="localhost/fabos:iso")
+    ap.add_argument("--shot", help="encrypt-state: screenshot file (PNG needs Pillow; PPM works without)")
+    ap.add_argument("--expect", choices=["ticked", "unticked"], help="encrypt-state: exit 1 unless the detector says this")
     ap.add_argument("--timeout-live", type=int, default=420, help="s to wait for AUTOINSTALL_UI_READY")
     ap.add_argument("--timeout-ui", type=int, default=600, help="s for the page-driving phase")
     ap.add_argument("--timeout-install", type=int, default=2400, help="s for the job phase (unpackfs of 8.8 GB dominates)")
@@ -444,7 +546,21 @@ def main():
     a = ap.parse_args()
     PASSPHRASE = a.passphrase
     os.makedirs(a.outdir, exist_ok=True)
+    if a.stage == "encrypt-state":
+        if not a.shot: ap.error("encrypt-state needs --shot")
+        return stage_encrypt_state(a)
+    if not (a.qmp and a.serial and a.variant): ap.error("%s needs --qmp, --serial and --variant" % a.stage)
     return stage_install(a) if a.stage == "install" else stage_boot(a)
+
+def stage_encrypt_state(a):
+    """Offline check of encrypt_state() on a screenshot file - tests/calamares-jobs-test.sh runs it on the fixtures cropped
+    from real partition-page screendumps (ticked, ticked with a passphrase typed, unticked). Prints the verdict + evidence."""
+    scr = Screen(None, a.outdir, a.image)
+    base = "encrypt-state-" + re.sub(r"[^a-z0-9]+", "-", os.path.basename(a.shot).rsplit(".", 1)[0].lower())
+    text, words, w, h, shot = scr.ocr_file(os.path.abspath(a.shot), base)
+    state, anchor, why = encrypt_state(words, shot)
+    print("%s: %s (anchor %s; %s)" % (os.path.basename(a.shot), state, anchor, why))
+    return 0 if (state == a.expect if a.expect else state is not None) else 1
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """End-to-end test of fabos-agentd with the scripted provider (no network, no GUI).
 Runs the daemon from packages/, drives it through the CLI + HTTP API, checks policy, approvals, CRUD, watches."""
-import base64, hashlib, http.client, imaplib, importlib.machinery, importlib.util, io, json, os, shutil, signal, smtplib, socket, sqlite3, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, unittest, wave
+import base64, datetime, hashlib, http.client, re, imaplib, importlib.machinery, importlib.util, io, json, os, shutil, signal, smtplib, socket, sqlite3, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, unittest, wave
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DAEMON = os.path.join(ROOT, "packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py")
 CLI = os.path.join(ROOT, "packages/fabos-agent/usr/bin/fabos")
 ROOTEXEC = os.path.join(ROOT, "packages/fabos-agent/usr/lib/fabos/agent/rootexec")
+DPORT = os.environ.get("FABOS_AGENT_TEST_PORT", "18790")      # the Daemon fixture's port (override to run two copies of this file side by side)
 os.environ.setdefault("FABOS_POLICY_FILE", os.path.join(tempfile.gettempdir(), "fabos-test-no-policy-%d.json" % os.getpid()))   # never the developer's /etc/fabos/policy.json
 sys.path.insert(0, os.path.dirname(DAEMON))
 import fabos_agentd as fa  # noqa: E402
@@ -858,24 +859,30 @@ class Daemon(unittest.TestCase):
         # test_25 proves none of it reaches a shell step.
         cls.agent_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); cls.agent_sock.bind(os.path.join(cls.tmp, "openssh_agent")); cls.agent_sock.listen(1)
         env = dict(os.environ, XDG_RUNTIME_DIR=cls.tmp, FABOS_AGENT_DATA=os.path.join(cls.tmp, "data"), XDG_CONFIG_HOME=os.path.join(cls.tmp, "cfg"),
-                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT="18790", HOME=os.path.join(cls.tmp, "home"), PATH=os.path.join(cls.tmp, "bin") + ":/usr/bin:/bin",
+                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT=DPORT, HOME=os.path.join(cls.tmp, "home"), PATH=os.path.join(cls.tmp, "bin") + ":/usr/bin:/bin",
                    ANTHROPIC_API_KEY="sk-ant-LEAKTEST-0000", MY_SERVICE_TOKEN="LEAKTEST-token", SSH_AUTH_SOCK=os.path.join(cls.tmp, "openssh_agent"),
-                   FABOS_DISK_UNLOCK_HELPER=os.path.join(cls.tmp, "bin", "disk_unlock_stub.sh"))     # test_37 writes the stub; absent until then
+                   FABOS_DISK_UNLOCK_HELPER=os.path.join(cls.tmp, "bin", "disk_unlock_stub.sh"),     # test_37 writes the stub; absent until then
+                   FABOS_SCHED_NOTIFY="notify-send", FABOS_SCHED_TICK="3600")                      # the schedule's reminders go to the notify-send shim below, never a session bus
         os.makedirs(env["HOME"]); cls.env = env
         # wtype shim: there is no Wayland seat in a unit test; the text type_text would have typed is appended to typed.log (as tests/local-driver-image.sh does)
         os.makedirs(os.path.join(cls.tmp, "bin")); cls.typed_log = os.path.join(cls.tmp, "typed.log")
         with open(os.path.join(cls.tmp, "bin", "wtype"), "w") as f:
             f.write('#!/bin/sh\n[ "$1" = "-k" ] && { printf "\\n" >> %s; exit 0; }\nprintf "%%s" "$*" >> %s\n' % (cls.typed_log, cls.typed_log))
         os.chmod(os.path.join(cls.tmp, "bin", "wtype"), 0o755)
-        # systemctl shim: no user manager in a unit test; what the daemon asks systemd for lands in systemctl.log (the fabos-voiced nudge, test_38e)
+        # systemctl shim: no user manager in a unit test; what the daemon asks systemd for lands in systemctl.log (the fabos-voiced nudge, test_42e)
         cls.systemctl_log = os.path.join(cls.tmp, "systemctl.log")
         with open(os.path.join(cls.tmp, "bin", "systemctl"), "w") as f:
             f.write('#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' % cls.systemctl_log)
         os.chmod(os.path.join(cls.tmp, "bin", "systemctl"), 0o755)
+        # notify-send shim: every desktop notification the daemon would show (task done, approvals, schedule reminders) is one line in notify.log
+        cls.notify_log = os.path.join(cls.tmp, "notify.log")
+        with open(os.path.join(cls.tmp, "bin", "notify-send"), "w") as f:
+            f.write('#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' % cls.notify_log)
+        os.chmod(os.path.join(cls.tmp, "bin", "notify-send"), 0o755)
         cls.proc = subprocess.Popen([sys.executable, DAEMON], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for _ in range(50):
             try:
-                urllib.request.urlopen("http://127.0.0.1:18790/health", timeout=1); break
+                urllib.request.urlopen("http://127.0.0.1:" + DPORT + "/health", timeout=1); break
             except Exception: time.sleep(0.2)
         else: raise RuntimeError("daemon did not start: " + cls.proc.stdout.read())
 
@@ -897,9 +904,19 @@ class Daemon(unittest.TestCase):
             time.sleep(0.2)
         self.fail("task %d stuck in %s" % (tid, t["status"]))
 
+    def api(self, method, path, body=None):
+        """A raw authenticated call (the UIs' path); an HTTP error comes back as {"error", "http"} like the CLI's --json output."""
+        tok = open(os.path.join(self.tmp, "fabos-agent/token")).read().strip()
+        req = urllib.request.Request("http://127.0.0.1:%s" % DPORT + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r: return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return dict(json.loads(e.read() or b"{}"), http=e.code)
+
     def test_01_unauthorized(self):
         try:
-            urllib.request.urlopen("http://127.0.0.1:18790/tasks", timeout=2); self.fail("expected 401")
+            urllib.request.urlopen("http://127.0.0.1:" + DPORT + "/tasks", timeout=2); self.fail("expected 401")
         except urllib.error.HTTPError as e: self.assertEqual(e.code, 401)
 
     def test_02_simple_task_auto(self):
@@ -936,7 +953,7 @@ class Daemon(unittest.TestCase):
     def test_07_secret_roundtrip(self):
         body = json.dumps({"name": "claude_api_key", "value": "sk-test-123"}).encode()
         tok = open(os.path.join(self.tmp, "fabos-agent/token")).read()
-        req = urllib.request.Request("http://127.0.0.1:18790/secrets", data=body, headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+        req = urllib.request.Request("http://127.0.0.1:" + DPORT + "/secrets", data=body, headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
         self.assertTrue(json.loads(urllib.request.urlopen(req).read())["ok"])
         os.environ["XDG_CONFIG_HOME"] = self.env["XDG_CONFIG_HOME"]; fa.CONF_DIR = os.path.join(self.env["XDG_CONFIG_HOME"], "fabos", "agent")
         self.assertEqual(fa.get_secret("claude_api_key"), "sk-test-123"); self.assertTrue(self.cli("settings")["secrets"]["claude_api_key"])
@@ -1081,7 +1098,7 @@ class Daemon(unittest.TestCase):
         tok = open(os.path.join(self.tmp, "fabos-agent/token")).read()
 
         def post(path, body):
-            req = urllib.request.Request("http://127.0.0.1:18790" + path, data=json.dumps(body).encode(), headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+            req = urllib.request.Request("http://127.0.0.1:" + DPORT + "" + path, data=json.dumps(body).encode(), headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
             return json.loads(urllib.request.urlopen(req, timeout=10).read())
         for k, v in (("mail.provider", "other"), ("mail.address", "me@example.com"), ("mail.from_name", "Me"), ("mail.smtp_host", "127.0.0.1"),
                      ("mail.smtp_port", str(srv.port)), ("mail.smtp_security", "none"), ("mail.imap_host", "")):
@@ -1558,7 +1575,7 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         tok = open(os.path.join(self.tmp, "fabos-agent/token")).read()
 
         def call(method, path, body=None):
-            req = urllib.request.Request("http://127.0.0.1:18790" + path, data=json.dumps(body).encode() if body is not None else None, method=method,
+            req = urllib.request.Request("http://127.0.0.1:" + DPORT + "" + path, data=json.dumps(body).encode() if body is not None else None, method=method,
                                          headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=90) as r:
@@ -1645,13 +1662,303 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         rows = self.cli("log", "--limit", "30"); ref = [e for e in rows if e["kind"] == "root_exec_refused"][0]
         self.assertIn("dismissed", ref["detail"]); self.assertIn("via pkexec", [e for e in rows if e["kind"] == "root_exec_requested"][0]["detail"])
 
+    # ---- the Research / Computer use switches (docs/design/MODES.md): two settings as the defaults, a per-chat choice on the root task,
+    # and — the point — a different tool list and prompt, so the agent's behaviour actually changes
+    def test_38_capabilities_settings_defaults_and_per_chat_choice(self):
+        s = self.cli("settings"); self.assertEqual((s["agent.research"], s["agent.computer_use"]), ("true", "true"))          # defaults: both on
+        self.assertEqual(self.cli("status")["capabilities"], {"research": True, "computer_use": True})
+        self.assertEqual(self.cli("settings", "agent.research", "maybe").get("http"), 400)                                       # only true / false
+        self.cli("settings", "agent.research", "off"); self.assertEqual(self.cli("settings")["agent.research"], "false")          # normalised like ui.show_raw
+        self.assertFalse(self.cli("status")["capabilities"]["research"])
+        self.cli("settings", "agent.research", "true")
+        # a chat started with computer use off keeps it on its root; a follow-up inherits; PATCH through the follow-up's id writes the root
+        r = self.api("POST", "/tasks", {"request": "say hi", "mode": "bypass", "computer_use": False}); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        self.assertEqual((t["research"], t["computer_use"], t["capabilities_source"]), (True, False, "chat"))
+        fu = self.api("POST", "/tasks", {"request": "say hi", "mode": "bypass", "parent_id": r["id"]}); t2 = self.wait(fu["id"])
+        self.assertEqual((t2["computer_use"], t2["capabilities_source"]), (False, "chat"))
+        rep = self.api("PATCH", "/tasks/%d" % fu["id"], {"computer_use": True, "research": False})
+        self.assertEqual((rep["ok"], rep["root_id"], rep["research"], rep["computer_use"]), (True, r["id"], False, True), rep)
+        self.assertEqual((self.cli("show", str(r["id"]))["research"], self.cli("show", str(fu["id"]))["computer_use"]), (False, True))
+        self.assertEqual(self.api("PATCH", "/tasks/%d" % r["id"], {"research": "sometimes"}).get("http"), 400)
+        self.assertEqual(self.api("POST", "/tasks", {"request": "x", "research": "sometimes"}).get("http"), 400)
+        self.cli("settings", "agent.computer_use", "false")                                    # the default moves; the chat keeps its own choice
+        self.assertEqual(self.cli("show", str(fu["id"]))["computer_use"], True)
+        self.cli("settings", "agent.computer_use", "true")
+        plain = self.api("POST", "/tasks", {"request": "say hi", "mode": "bypass"}); tp = self.wait(plain["id"])
+        self.assertEqual((tp["research"], tp["computer_use"], tp["capabilities_source"]), (True, True, "global"))
+        self.assertTrue(any(e["kind"] == "chat_capability" and e["task_id"] == r["id"] for e in self.cli("log")))
+
+    def test_39_computer_use_off_means_no_open_app_step_and_a_helpful_message(self):
+        # on (the default): "open the files app" is ONE open_app step, Fab Files
+        r = self.api("POST", "/tasks", {"request": "open the files app", "mode": "bypass"}); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        calls = [s for s in t["steps"] if s["kind"] == "tool_call"]; self.assertEqual([s["name"] for s in calls], ["open_app"], t["steps"])
+        self.assertEqual(json.loads(calls[0]["input"])["app"], "dolphin"); self.assertIn("opened Fab Files", t["result"])
+        # off for this chat: no open_app (or type_text) step at all, the reply names the switch, the history says why
+        r = self.api("POST", "/tasks", {"request": "open the files app", "mode": "bypass", "computer_use": False}); t = self.wait(r["id"])
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in t["steps"] if s["kind"] == "tool_call"], [], t["steps"])
+        self.assertEqual(t["result"], fa.CAPABILITY_OFF_REPLY["computer_use"]); self.assertIn("Computer use switch", t["result"])
+        ver = [s for s in t["steps"] if s["kind"] == "verify" and s["name"] == "capabilities"]
+        self.assertEqual(len(ver), 1); self.assertIn("Computer use", ver[0]["output"]); self.assertIn("open_app, type_text", ver[0]["output"])
+        # what the model was given: no open_app / type_text in the tool list, the switch and the sentence in the prompt
+        st = fa.Store(os.path.join(self.env["FABOS_AGENT_DATA"], "agent.db")); caps = fa.capabilities(st, st.one("SELECT * FROM tasks WHERE id=?", r["id"]))
+        self.assertEqual((caps["research"], caps["computer_use"], caps["source"]), (True, False, "chat"))
+        a = fa.Agent.__new__(fa.Agent); a.store = st; a.cancel = set()   # _run_call looks at the cancel flag after _gate (1.0-8)
+        names = {x["name"] for x in a.tools_for_model(caps)}
+        self.assertFalse(names & {"open_app", "type_text"}, names); self.assertTrue({"run_shell", "write_file", "web_fetch", "list_apps"} <= names, names)
+        prompt = fa.build_system_prompt(st, "auto", [], caps)
+        self.assertIn("Computer use is OFF for this chat", prompt); self.assertIn(fa.CAPABILITY_OFF_REPLY["computer_use"], prompt); self.assertIn("Research is ON", prompt)
+        self.assertIn("Computer use is ON", fa.build_system_prompt(st, "auto", [], {"research": True, "computer_use": True}))
+        # a model that still names the tool is refused deterministically (never asked, never run) and told which switch turns it on
+        tid = st.q("INSERT INTO tasks(request,status,created,updated,computer_use) VALUES('x','running',0,0,0)").lastrowid
+        task = st.one("SELECT * FROM tasks WHERE id=?", tid); task["_caps"] = fa.capabilities(st, task)
+        sid, ok, risk, reason = a._gate(tid, task, "open_app", {"app": "dolphin"})
+        self.assertFalse(ok); self.assertEqual(reason, "Computer use is off for this chat: the open_app tool is not available")
+        self.assertEqual(st.one("SELECT decision FROM steps WHERE id=?", sid)["decision"], "off-for-this-chat")
+        a.tools = fa.Tools(st, a)
+        out, err, _inp = a._run_call(tid, task, {"id": "t1", "name": "type_text", "input": {"text": "hi"}})
+        self.assertTrue(err); self.assertIn("Computer use is off for this chat", out["error"]); self.assertIn("Computer use switch", out["error"])
+        self.assertEqual(st.one("SELECT narration_done FROM steps WHERE task_id=? ORDER BY id DESC LIMIT 1", tid)["narration_done"], "Sorry, computer use is off for this chat.")
+        # the stepwise driver: its planner never sees the tools either, and a plan_sanity "show your work" insertion is undone
+        stp = [{"tool": "write_file", "goal": "save the note to ~/n.txt"}]
+        fa.plan_sanity("Write a short note saying hi and save it as ~/n.txt", stp)
+        self.assertEqual([s["tool"] for s in stp], ["open_app", "type_text", "write_file"])          # what sanity does on its own
+        self.assertEqual([s["tool"] for s in stp if s["tool"] not in fa.capability_blocked(caps)], ["write_file"])
+        self.assertIn("Computer use is OFF for this chat", fa.local_system_prompt("auto", dict(fa.NET_SKIPPED), caps))
+        self.assertNotIn("OFF for this chat", fa.local_system_prompt("auto", dict(fa.NET_SKIPPED), {"research": True, "computer_use": True}))
+        st.q("DELETE FROM tasks WHERE id=?", tid)
+
+    def test_40_research_off_means_no_web_fetch_and_on_means_a_cited_fetch(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        hits = []
+
+        class Page(BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(self.path)
+                body = b"<html><head><title>Fab OS test page</title></head><body><p>The answer is 42.</p></body></html>"
+                self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+            def log_message(self, *a): pass
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Page); srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, daemon=True).start(); self.addCleanup(srv.shutdown)
+        url = "http://127.0.0.1:%d/page" % srv.server_address[1]
+        ask = "look up %s and tell me what it says" % url
+        # on (the default): the page IS fetched and the answer carries the fact and the source (research style: gather, then cite)
+        r = self.api("POST", "/tasks", {"request": ask, "mode": "bypass"}); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        calls = [s for s in t["steps"] if s["kind"] == "tool_call"]; self.assertEqual([s["name"] for s in calls], ["web_fetch"], t["steps"])
+        self.assertEqual(json.loads(calls[0]["input"])["url"], url); self.assertIn("The answer is 42", json.loads(calls[0]["output"])["text"])
+        self.assertIn("The answer is 42", t["result"]); self.assertIn("Sources:", t["result"]); self.assertIn(url, t["result"]); self.assertEqual(hits, ["/page"])
+        # off for this chat: web_fetch is not offered, nothing is fetched, the reply names the switch
+        r = self.api("POST", "/tasks", {"request": ask, "mode": "bypass", "research": False}); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in t["steps"] if s["kind"] == "tool_call"], [], t["steps"])
+        self.assertEqual(t["result"], fa.CAPABILITY_OFF_REPLY["research"]); self.assertIn("Research switch", t["result"]); self.assertEqual(hits, ["/page"])
+        st = fa.Store(os.path.join(self.env["FABOS_AGENT_DATA"], "agent.db")); caps = fa.capabilities(st, st.one("SELECT * FROM tasks WHERE id=?", r["id"]))
+        a = fa.Agent.__new__(fa.Agent); a.store = st; a.cancel = set()   # _run_call looks at the cancel flag after _gate (1.0-8)
+        self.assertNotIn("web_fetch", {x["name"] for x in a.tools_for_model(caps)}); self.assertIn("open_app", {x["name"] for x in a.tools_for_model(caps)})
+        prompt = fa.build_system_prompt(st, "auto", [], caps)
+        self.assertIn("Research is OFF for this chat", prompt); self.assertIn("no curl", prompt); self.assertIn(fa.CAPABILITY_OFF_REPLY["research"], prompt)
+        self.assertIn("'Sources:' list", fa.build_system_prompt(st, "auto", [], {"research": True, "computer_use": True}))
+        # off as the DEFAULT: a new chat inherits it (source global); switching it back on for that chat makes its next follow-up fetch again
+        self.cli("settings", "agent.research", "false")
+        r = self.api("POST", "/tasks", {"request": ask, "mode": "bypass"}); t = self.wait(r["id"])
+        self.assertEqual((t["research"], t["capabilities_source"]), (False, "global")); self.assertEqual(hits, ["/page"]); self.assertEqual(t["result"], fa.CAPABILITY_OFF_REPLY["research"])
+        self.assertEqual(self.api("PATCH", "/tasks/%d" % r["id"], {"research": True})["research"], True)
+        fu = self.api("POST", "/tasks", {"request": ask, "mode": "bypass", "parent_id": r["id"]}); t = self.wait(fu["id"]); self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in t["steps"] if s["kind"] == "tool_call"], ["web_fetch"]); self.assertEqual(hits, ["/page", "/page"])
+        self.assertEqual((t["research"], t["capabilities_source"]), (True, "chat"))
+        self.cli("settings", "agent.research", "true")
+
+    def test_41_a_switched_off_capability_binds_run_shell_too(self):
+        # The switch's promise holds for the shell as well (review of the track: run_shell keeps the session's Wayland socket and D-Bus, so
+        # `dolphin &` / `wtype` / `qdbus6` would have worked with Computer use off, and `curl` with Research off). With Computer use off a
+        # command that starts a graphical program, types on the screen, drives the session bus or captures the screen is refused in _gate
+        # (decision off-for-this-chat, the switch named); with Research off the same for whatever fetches from the network. Loopback targets,
+        # --headless / --version / --help runs, the system bus and plain commands pass; with both switches on nothing here is refused.
+        st = fa.Store(os.path.join(self.env["FABOS_AGENT_DATA"], "agent.db")); a = fa.Agent.__new__(fa.Agent); a.store = st; a.cancel = set()   # _run_call looks at the cancel flag after _gate (1.0-8)
+        fa._GUI_EXEC_CACHE.update(at=time.time() + 3600, names=frozenset({"dolphin", "kate", "firefox", "libreoffice", "konsole"}))   # a fixed app registry
+        self.addCleanup(lambda: fa._GUI_EXEC_CACHE.update(at=0.0, names=frozenset()))
+        cu_off, r_off, both_on = {"research": True, "computer_use": False}, {"research": False, "computer_use": True}, {"research": True, "computer_use": True}
+        gui = ["wtype hello", "setsid -f dolphin ~/Downloads", "nohup kate ~/n.txt &", "WAYLAND_DISPLAY=wayland-0 firefox https://example.com", "timeout 5 konsole",
+               "qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure", "dbus-send --session --dest=org.kde.klauncher5 / org.kde.KLauncher.exec_blind", "busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure",
+               "kstart6 konsole", "xdg-open ~/Documents/a.pdf", "kdialog --msgbox hi", "ls; kioclient6 exec ~/a.txt", "spectacle -b -o /tmp/s.png", "flatpak run org.kde.okular",
+               "cd ~ && ydotool type hello", "bash -c 'xdotool key ctrl+s'"]
+        gui_ok = ["ls -la ~", "libreoffice --headless --convert-to pdf ~/a.odt", "dolphin --version", "firefox --help",
+                  "dbus-send --system --dest=org.freedesktop.NetworkManager /org/freedesktop/NetworkManager org.freedesktop.DBus.Introspectable.Introspect",
+                  "python3 -c 'print(1)'", "grep -r dolphin ~/notes", "kioclient6 copy a b", "notify-send hi", "echo kate > ~/apps.txt", "cat ~/kate-notes.txt"]
+        for cmd in gui:
+            b = fa.capability_shell_block(cu_off, "run_shell", {"command": cmd}); self.assertEqual(b and b[0], "computer_use", cmd)
+        for cmd in gui_ok:
+            self.assertIsNone(fa.capability_shell_block(cu_off, "run_shell", {"command": cmd}), cmd)
+        self.assertEqual(fa.capability_shell_block(cu_off, "run_shell", {"command": "setsid -f dolphin"}), ("computer_use", "starts dolphin on the screen"))
+        self.assertEqual(fa.capability_shell_block(cu_off, "run_shell", {"command": "wtype hi"}), ("computer_use", "sends keystrokes or pointer input to the screen (wtype)"))
+        net = ["curl -s https://example.com/", "wget https://example.com/x.zip", "pip install requests", "pip3 install --user rich", "apt-get install -y jq", "sudo apt update",
+               "git clone https://github.com/x/y", "cd ~/p && git pull", "python3 -c 'import urllib.request; print(urllib.request.urlopen(\"https://example.com\").read())'",
+               "node -e 'fetch(\"https://example.com\")'", "npm install left-pad", "yt-dlp https://youtu.be/x", "ls --help; curl https://example.com", "x=$(curl -s https://example.com)",
+               "http GET https://example.com", "cargo install ripgrep", "ollama pull llama3"]
+        net_ok = ["curl -s http://127.0.0.1:8790/status", "curl http://localhost:11434/api/tags", "git status", "git log -3", "apt list --installed", "pip list", "python3 -m http.server 8000",
+                  "echo see http://example.com", "curl --version", "cat ~/urls.txt", "grep curl ~/notes.txt", "ssh nas ls", "ping -c 1 192.168.1.1"]
+        for cmd in net:
+            b = fa.capability_shell_block(r_off, "run_shell", {"command": cmd}); self.assertEqual(b and b[0], "research", cmd)
+        for cmd in net_ok:
+            self.assertIsNone(fa.capability_shell_block(r_off, "run_shell", {"command": cmd}), cmd)
+        self.assertEqual(fa.capability_shell_block(r_off, "run_shell", {"command": "curl -s https://example.com/"}), ("research", "fetches from the network (curl)"))
+        for cmd in gui + net + gui_ok + net_ok:
+            self.assertIsNone(fa.capability_shell_block(both_on, "run_shell", {"command": cmd}), cmd)      # both on: the shell is untouched
+        self.assertIsNone(fa.capability_shell_block(cu_off, "web_fetch", {"url": "https://example.com"}))     # only the shell tool is classified here
+        self.assertIsNone(fa.capability_shell_block(None, "run_shell", {"command": "wtype x"}))                # no caps computed = nothing to bind
+        # through the gate: recorded with the decision and the switch, never run; the model is told what to do instead
+        tid = st.q("INSERT INTO tasks(request,status,created,updated,computer_use,research) VALUES('x','running',0,0,0,0)").lastrowid
+        task = st.one("SELECT * FROM tasks WHERE id=?", tid); task["_caps"] = fa.capabilities(st, task)
+        sid, ok, risk, reason = a._gate(tid, task, "run_shell", {"command": "setsid -f dolphin"})
+        self.assertFalse(ok); self.assertEqual(reason, "Computer use is off for this chat: this command starts dolphin on the screen")
+        self.assertEqual(st.one("SELECT decision FROM steps WHERE id=?", sid)["decision"], "off-for-this-chat")
+        a.tools = fa.Tools(st, a)
+        out, err, _inp = a._run_call(tid, task, {"id": "t1", "name": "run_shell", "input": {"command": "curl -s https://example.com/"}})
+        self.assertTrue(err); self.assertIn("Research is off for this chat: this command fetches from the network (curl)", out["error"])
+        self.assertIn("another command", out["error"]); self.assertIn(fa.CAPABILITY_OFF_REPLY["research"], out["error"])
+        self.assertEqual(st.one("SELECT narration_done FROM steps WHERE task_id=? ORDER BY id DESC LIMIT 1", tid)["narration_done"], "Sorry, research is off for this chat.")
+        self.assertTrue(any(e["kind"] == "tool_off_for_chat" and e["task_id"] == tid and "curl" in e["detail"] for e in self.cli("log", "--limit", "50")))
+        # the prompts say so before the model tries (free-form and stepwise alike)
+        self.assertIn("run_shell may not reach the screen", fa.build_system_prompt(st, "auto", [], cu_off)); self.assertIn("such commands are refused", fa.build_system_prompt(st, "auto", [], r_off))
+        self.assertIn("(refused)", fa.local_system_prompt("auto", dict(fa.NET_SKIPPED), r_off)); self.assertIn("may not start graphical programs", fa.local_system_prompt("auto", dict(fa.NET_SKIPPED), cu_off))
+        st.q("DELETE FROM tasks WHERE id=?", tid)
+        # end to end: the scripted provider, told to do it "from the shell", reaches for run_shell (xdg-open) — refused, and it says the sentence
+        r = self.api("POST", "/tasks", {"request": "open the files app from the shell", "mode": "bypass", "computer_use": False}); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        calls = [s for s in t["steps"] if s["kind"] == "tool_call"]
+        self.assertEqual([(s["name"], s["decision"]) for s in calls], [("run_shell", "off-for-this-chat")], t["steps"])
+        self.assertEqual(t["result"], fa.CAPABILITY_OFF_REPLY["computer_use"]); self.assertEqual(calls[0]["narration_done"], "Sorry, computer use is off for this chat.")
+        self.assertIn("xdg-open", json.loads(calls[0]["input"])["command"])
+    # ---- the schedule (scheduler.py, docs/design/SCHEDULER.md)
+    def http(self, method, path, body=None):
+        with open(os.path.join(self.tmp, "fabos-agent", "token")) as f:
+            tok = f.read().strip()
+        req = urllib.request.Request("http://127.0.0.1:" + DPORT + path, data=json.dumps(body).encode() if body is not None else None, method=method,
+                                     headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return r.status, json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read() or b"{}")
+
+    def _nlog(self):
+        if not os.path.exists(self.notify_log):
+            return ""
+        with open(self.notify_log) as f:
+            return f.read()
+
+    def test_60_schedule_chat_shortcut_asks_when_unsure_and_lists(self):
+        """'remind me …' in a chat is handled without the provider: a LOW `schedule` tool step (auto-approved even in ask mode) and the
+        interpretation as the reply. A reading the parser is not sure about ('at 3') is put to the user first and the item exists only
+        after 'yes'; a missing time asks 'When…?'; 'no' adds nothing; 'my reminders for tomorrow' lists; a question that merely starts
+        with 'remind me' goes to the model."""
+        t = self.wait(self.cli("do", "--mode", "ask", "remind me tomorrow at 9am to call the bank")["id"])
+        self.assertEqual(t["status"], "done", t); self.assertTrue(t["result"].startswith("Added: Tomorrow, 09:00 — Call the bank"), t["result"])
+        step = [s for s in t["steps"] if s["kind"] == "tool_call"][0]
+        self.assertEqual((step["name"], step["risk"], step["decision"]), ("schedule", "LOW", "auto-approved")); self.assertEqual(step["narration"], "Adding that to your schedule.")
+        self.assertTrue(step["narration_done"].startswith("Added: Tomorrow, 09:00")); self.assertFalse(t["approvals"])
+        st, items = self.http("GET", "/schedule?scope=upcoming"); bank = [i for i in items["items"] if i["title"] == "Call the bank"][0]
+        self.assertEqual((bank["source"], bank["status"], bank["repeat"], bank["when_local"][11:16]), ("chat", "pending", "none", "09:00"))
+        # ambiguous: the question carries the reading; yes creates it
+        r = self.cli("do", "--mode", "auto", "remind me to call Rohan at 3"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user", t)
+        q = t["questions"][-1]["question"]; self.assertIn("I read that as", q); self.assertIn("15:00 — Call Rohan", q); self.assertIn("'at 3' read as 15:00", q)
+        self.assertEqual(self.http("GET", "/schedule?scope=all")[1]["count"], 1, "nothing is created before the answer")
+        self.cli("answer", str(r["id"]), "yes"); t = self.wait(r["id"], ("done", "failed")); self.assertTrue(t["result"].startswith("Added:") and "15:00 — Call Rohan" in t["result"], t["result"])
+        # no time at all: 'When should I remind you?' — the answer supplies it, the title comes from the first message
+        r = self.cli("do", "--mode", "auto", "remind me to water the plants"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user")
+        self.assertIn("When should I remind you", t["questions"][-1]["question"])
+        self.cli("answer", str(r["id"]), "tomorrow 7am"); t = self.wait(r["id"], ("done", "failed")); self.assertIn("07:00 — Water the plants", t["result"], t["result"])
+        # no: nothing added
+        r = self.cli("do", "--mode", "auto", "remind me on the 1st to pay rent"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user")
+        self.cli("answer", str(r["id"]), "no"); t = self.wait(r["id"], ("done", "failed")); self.assertIn("not added", t["result"])
+        self.assertFalse([i for i in self.http("GET", "/schedule?scope=all")[1]["items"] if i["title"] == "Pay rent"])
+        # a clearer time in the answer replaces the guess
+        r = self.cli("do", "--mode", "auto", "remind me to submit the report at 4"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user")
+        self.cli("answer", str(r["id"]), "tomorrow at 10am"); t = self.wait(r["id"], ("done", "failed")); self.assertIn("Tomorrow, 10:00 — Submit the report", t["result"], t["result"])
+        # two unclear answers in a row: the agent gives up politely instead of guessing (and the task ends 'done', not 'failed')
+        r = self.cli("do", "--mode", "auto", "remind me to call the plumber at 4"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user")
+        self.cli("answer", str(r["id"]), "at 5"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user"); self.assertIn("17:00 — Call the plumber", t["questions"][-1]["question"])
+        self.cli("answer", str(r["id"]), "6 o'clock"); t = self.wait(r["id"], ("done", "failed")); self.assertEqual(t["status"], "done"); self.assertIn("not added", t["result"])
+        self.assertFalse([i for i in self.http("GET", "/schedule?scope=all")[1]["items"] if "plumber" in i["title"].lower()])
+        # listing
+        t = self.wait(self.cli("do", "--mode", "auto", "my reminders for tomorrow")["id"])
+        self.assertTrue(t["result"].startswith("Tomorrow: 3 items"), t["result"]); self.assertIn("09:00 Call the bank", t["result"]); self.assertIn("Water the plants", t["result"]); self.assertIn("Submit the report", t["result"])
+        self.assertEqual([s["name"] for s in t["steps"] if s["kind"] == "tool_call"], ["schedule"])
+        # not a reminder: the scripted provider handles it (its run_shell step), no schedule step
+        t = self.wait(self.cli("do", "--mode", "auto", "remind me what the capital of France is")["id"])
+        self.assertNotIn("schedule", [s["name"] for s in t["steps"]])
+        kinds = [e["kind"] for e in self.cli("log", "--limit", "80")]; self.assertIn("item_added", kinds)
+
+    def test_61_schedule_endpoints_parse_crud_roll_and_settings(self):
+        """/schedule: parse (no side effect), add from words (needs_confirm gate -> 200, confirm -> 201), add from title + when + repeat,
+        get / patch / done (a repeating item leaves a done copy and rolls a week) / snooze / dismiss / reopen / delete; /status.schedule;
+        scheduler.* settings are validated and 12-hour changes every time_text."""
+        st, p = self.http("POST", "/schedule/parse", {"text": "meeting with Rohan on 20 Sep 3pm"}); self.assertEqual(st, 200)
+        self.assertEqual((p["ok"], p["title"], p["when"][11:16], p["needs_confirm"]), (True, "Meeting with Rohan", "15:00", False))
+        st, r = self.http("POST", "/schedule", {"text": "meeting at 3"}); self.assertEqual(st, 200); self.assertTrue(r["needs_confirm"]); self.assertIn("Is that right?", r["text"])
+        n0 = self.http("GET", "/schedule?scope=all")[1]["count"]
+        st, r = self.http("POST", "/schedule", {"text": "meeting at 3", "confirm": True}); self.assertEqual(st, 201); self.assertEqual(r["item"]["title"], "Meeting")
+        self.assertEqual(self.http("GET", "/schedule?scope=all")[1]["count"], n0 + 1)
+        st, r = self.http("POST", "/schedule", {"text": "gym at 25:00"}); self.assertEqual(st, 400); self.assertIn("not a valid time", r["error"])
+        st, r = self.http("POST", "/schedule", {"text": "call the bank"}); self.assertEqual(st, 400); self.assertIn("When should I remind you", r["error"])
+        tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+        st, r = self.http("POST", "/schedule", {"title": "Weekly review", "when": tomorrow + "T10:00", "repeat": "weekly", "remind_before": 5, "notes": "bring the numbers"})
+        self.assertEqual(st, 201); w = r["item"]; self.assertEqual((w["repeat"], w["remind_before"], w["notes"], w["when_local"][:16]), ("weekly", 5, "bring the numbers", tomorrow + "T10:00"))
+        self.assertEqual(r["interpretation"], "Tomorrow, 10:00 — Weekly review · every week · reminder 5 min before")
+        st, r = self.http("PATCH", "/schedule/%d" % w["id"], {"title": "Weekly review (team)", "remind_before": 15}); self.assertEqual(st, 200); self.assertEqual(r["item"]["remind_before"], 15)
+        st, r = self.http("PATCH", "/schedule/%d" % w["id"], {"repeat": "fortnightly"}); self.assertEqual(st, 400)
+        st, r = self.http("PATCH", "/schedule/%d" % w["id"], {"when": "next week"}); self.assertEqual(st, 400); self.assertIn("YYYY-MM-DD", r["error"])
+        st, r = self.http("POST", "/schedule/%d/done" % w["id"]); self.assertEqual(st, 200)
+        nxt = (datetime.date.today() + datetime.timedelta(days=8)).isoformat()
+        self.assertEqual((r["item"]["status"], r["item"]["when_local"][:16]), ("pending", nxt + "T10:00"), "a weekly item rolls a week on Done")
+        done = [i for i in self.http("GET", "/schedule?scope=done")[1]["items"] if i["parent_id"] == w["id"]]; self.assertEqual(len(done), 1); self.assertEqual(done[0]["status"], "done")
+        st, r = self.http("POST", "/schedule/%d/snooze" % w["id"], {"minutes": 20}); self.assertGreater(r["item"]["snoozed_until"], time.time() + 19 * 60)
+        st, r = self.http("POST", "/schedule/%d/dismiss" % done[0]["id"]); self.assertEqual(r["item"]["status"], "dismissed")
+        st, r = self.http("POST", "/schedule/%d/reopen" % done[0]["id"]); self.assertEqual(r["item"]["status"], "pending")
+        st, r = self.http("DELETE", "/schedule/%d" % done[0]["id"]); self.assertEqual(st, 200); self.assertEqual(self.http("GET", "/schedule/%d" % done[0]["id"])[0], 404)
+        self.assertEqual(self.http("DELETE", "/schedule/99999")[0], 404); self.assertEqual(self.http("POST", "/schedule/99999/done")[0], 404)
+        st, s = self.http("GET", "/status"); self.assertIn("schedule", s); self.assertIn("today", s["schedule"]); self.assertTrue(s["schedule"]["next"])
+        # settings: a bad zone is refused; 12-hour shows AM/PM everywhere; the system zone is reported
+        self.assertEqual(self.cli("settings", "scheduler.timezone", "Mars/Base").get("http"), 400)
+        self.assertEqual(self.cli("settings", "scheduler.clock", "12"), {"ok": True})
+        st, r = self.http("GET", "/schedule?scope=all"); self.assertEqual(r["clock"], "12"); self.assertTrue(all(("AM" in i["time_text"] or "PM" in i["time_text"]) for i in r["items"]))
+        self.assertTrue(r["system_timezone"]); self.assertEqual(self.http("GET", "/settings")[1]["scheduler.clock"], "12")
+        self.cli("settings", "scheduler.clock", "24"); self.assertEqual(self.cli("settings", "scheduler.mail_intake", "off"), {"ok": True})
+        self.assertFalse(self.http("GET", "/schedule?scope=all")[1]["mail_intake"]); self.cli("settings", "scheduler.mail_intake", "true")
+
+    def test_62_schedule_reminder_fires_and_login_summary_once_per_login(self):
+        """A due item reaches the desktop (the notify-send shim on PATH; the D-Bus path with buttons is the daemon's default) exactly once,
+        with the item's title and the Fab AI Controls desktop entry; /schedule/login-summary sends 'Today: N items' once per login
+        (the second call is de-duplicated, force resends) and /schedule/today gives the same text to the UIs."""
+        st, r = self.http("POST", "/schedule", {"title": "Ping from the schedule", "when": time.time() + 1}); self.assertEqual(st, 201)
+        pid = r["item"]["id"]; time.sleep(1.5)
+        st, t = self.http("POST", "/schedule/tick"); self.assertEqual(st, 200)
+        for _ in range(30):
+            if "Ping from the schedule" in self._nlog(): break
+            time.sleep(0.1)
+        lines = [ln for ln in self._nlog().splitlines() if "Ping from the schedule" in ln]
+        self.assertEqual(len(lines), 1, lines); self.assertIn("-i fabos-command-center", lines[0]); self.assertIn("desktop-entry:fabos-command-center", lines[0])
+        self.assertIsNotNone(self.http("GET", "/schedule/%d" % pid)[1]["fired"])
+        self.http("POST", "/schedule/tick"); self.assertEqual(len([ln for ln in self._nlog().splitlines() if "Ping from the schedule" in ln]), 1, "fires once")
+        self.assertTrue(any(e["kind"] == "reminder_shown" for e in self.cli("log", "--limit", "40")))
+        st, s = self.http("POST", "/schedule/login-summary", {}); self.assertEqual(st, 200)
+        self.assertTrue(s["sent"]); self.assertRegex(s["title"], r"^Today: (\d+ items?|nothing scheduled)$"); self.assertLessEqual(len(s["body"].split("\n")), 7)
+        st, s2 = self.http("POST", "/schedule/login-summary", {}); self.assertFalse(s2["sent"]); self.assertTrue(s2["deduped"])
+        st, s3 = self.http("POST", "/schedule/login-summary", {"force": True}); self.assertTrue(s3["sent"])
+        st, s4 = self.http("POST", "/schedule/login-summary", {"session": "77"}); self.assertTrue(s4["sent"], "a second login the same day (new session id) gets its summary")
+        self.assertTrue(self.http("POST", "/schedule/login-summary", {"session": "77"})[1]["deduped"])
+        st, today = self.http("GET", "/schedule/today"); self.assertEqual((today["title"], today["body"]), (s["title"], s["body"])); self.assertIn("items", today)
+        shown = [ln for ln in self._nlog().splitlines() if re.search(r"desktop-entry:fabos-command-center -t 20000 Today: (\d+ items?|nothing scheduled)", ln)]
+        self.assertEqual(len(shown), 3, "the summary notification went out three times: at 'login', forced, and for the second session")
+        self.assertNotIn(" -t ", lines[0], "a reminder popup has no timeout: it stays until answered")
+        self.assertTrue(any(e["kind"] == "login_summary" for e in self.cli("log", "--limit", "40")))
+
 
     # ---- 1.0-8 concurrency (owner's report on 1.0-7: a new chat stayed 'queued' while another chat waited for approval).
     # A slot is held only while a step executes; the queue says WHY a task waits; cancel frees slots.
-    def http(self, method, path, body=None):
+    def rq(self, method, path, body=None):
         with open(os.path.join(self.tmp, "fabos-agent/token")) as f:
             tok = f.read()
-        req = urllib.request.Request("http://127.0.0.1:18790" + path, data=json.dumps(body).encode() if body is not None else None, method=method,
+        req = urllib.request.Request("http://127.0.0.1:" + DPORT + path, data=json.dumps(body).encode() if body is not None else None, method=method,
                                      headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
@@ -1660,7 +1967,7 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
             with e:
                 return dict(json.loads(e.read() or b"{}"), http=e.code)
 
-    def test_38a_two_chats_run_side_by_side(self):
+    def test_42a_two_chats_run_side_by_side(self):
         if fa.parallel_cap() < 2:
             self.skipTest("this machine's RAM allows one slot only")
         self.cli("settings", "agent.max_parallel", "3")
@@ -1671,16 +1978,16 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
             if sa == "running" and sb == "running": break
             time.sleep(0.1)
         self.assertEqual((sa, sb), ("running", "running"), "both chats must be in a step at the same moment")
-        st = self.http("GET", "/status")["parallel"]; self.assertEqual((st["busy"], st["max"]), (2, 3), st)
+        st = self.rq("GET", "/status")["parallel"]; self.assertEqual((st["busy"], st["max"]), (2, 3), st)
         self.assertEqual(self.wait(a["id"], ("done", "failed"))["status"], "done"); self.assertEqual(self.wait(b["id"], ("done", "failed"))["status"], "done")
         self.assertLess(time.time() - t0, 5.5, "two 3 s steps in different chats must overlap, not run one after the other")
-        self.assertEqual(self.http("GET", "/status")["parallel"]["busy"], 0)
+        self.assertEqual(self.rq("GET", "/status")["parallel"]["busy"], 0)
 
-    def test_38b_a_task_waiting_for_approval_holds_no_slot(self):
+    def test_42b_a_task_waiting_for_approval_holds_no_slot(self):
         self.cli("settings", "agent.max_parallel", "1")
         try:
             a = self.cli("do", "--mode", "ask", "show me the system"); self.wait(a["id"], ("waiting_approval",))
-            self.assertEqual(self.http("GET", "/status")["parallel"]["busy"], 0, "an approval wait must not occupy the only slot")
+            self.assertEqual(self.rq("GET", "/status")["parallel"]["busy"], 0, "an approval wait must not occupy the only slot")
             b = self.cli("do", "--mode", "auto", "say hi"); tb = self.wait(b["id"], ("done", "failed"), timeout=15)
             self.assertEqual(tb["status"], "done", tb); self.assertIn("hi", json.dumps(tb["steps"]))
             self.assertEqual(self.cli("show", str(a["id"]))["status"], "waiting_approval")
@@ -1689,42 +1996,42 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         finally:
             self.cli("settings", "agent.max_parallel", "3")
 
-    def test_38c_a_follow_up_waits_for_the_chats_earlier_turn_and_says_so(self):
+    def test_42c_a_follow_up_waits_for_the_chats_earlier_turn_and_says_so(self):
         a = self.cli("do", "--mode", "ask", "show me the system"); self.wait(a["id"], ("waiting_approval",))
-        b = self.http("POST", "/tasks", {"request": "say hi", "parent_id": a["id"], "mode": "auto"}); self.assertEqual(b["status"], "queued")
+        b = self.rq("POST", "/tasks", {"request": "say hi", "parent_id": a["id"], "mode": "auto"}); self.assertEqual(b["status"], "queued")
         time.sleep(1.5)
-        tb = self.http("GET", "/tasks/%d" % b["id"])
+        tb = self.rq("GET", "/tasks/%d" % b["id"])
         self.assertEqual(tb["status"], "queued", tb); self.assertEqual(tb["queue"]["why"], "chat"); self.assertEqual(tb["queue"]["blocked_by"], a["id"])
         self.assertEqual(tb["queue"]["text"], "waiting for the previous step in this chat")
-        row = next(t for t in self.http("GET", "/tasks") if t["id"] == b["id"]); self.assertEqual(row["queue"]["why"], "chat")
+        row = next(t for t in self.rq("GET", "/tasks") if t["id"] == b["id"]); self.assertEqual(row["queue"]["why"], "chat")
         # a NEW chat is held back by neither of them
         c = self.cli("do", "--mode", "auto", "say hi"); self.assertEqual(self.wait(c["id"], ("done", "failed"))["status"], "done")
-        self.assertEqual(self.http("GET", "/tasks/%d" % b["id"])["status"], "queued")
+        self.assertEqual(self.rq("GET", "/tasks/%d" % b["id"])["status"], "queued")
         pend = [p for p in self.cli("approvals") if p["task_id"] == a["id"]]; self.cli("approve", str(pend[0]["id"]))
         self.assertEqual(self.wait(a["id"], ("done", "failed"))["status"], "done")
         self.assertEqual(self.wait(b["id"], ("done", "failed"))["status"], "done", "the follow-up runs once the earlier turn is over")
-        self.assertNotIn("queue", self.http("GET", "/tasks/%d" % b["id"]))
+        self.assertNotIn("queue", self.rq("GET", "/tasks/%d" % b["id"]))
 
-    def test_38d_cancel_frees_the_slot_and_the_queue_says_why_it_waited(self):
+    def test_42d_cancel_frees_the_slot_and_the_queue_says_why_it_waited(self):
         self.cli("settings", "agent.max_parallel", "1")
         try:
             a = self.cli("do", "--mode", "auto", "sleep 30 seconds"); self.wait(a["id"], ("running",))
             b = self.cli("do", "--mode", "auto", "say hi"); time.sleep(1.5)
-            tb = self.http("GET", "/tasks/%d" % b["id"])
+            tb = self.rq("GET", "/tasks/%d" % b["id"])
             self.assertEqual(tb["status"], "queued", tb); self.assertEqual(tb["queue"]["why"], "slots")
             self.assertEqual(tb["queue"]["text"], "another chat is running: 1 of 1 slots busy"); self.assertEqual((tb["queue"]["busy"], tb["queue"]["max"]), (1, 1))
             # cancelling a QUEUED task takes it out of the queue at once
             c = self.cli("do", "--mode", "auto", "say hi"); time.sleep(0.5); self.cli("cancel", str(c["id"]))
             self.assertEqual(self.wait(c["id"], ("cancelled",))["status"], "cancelled")
-            time.sleep(0.3); self.assertNotIn(str(c["id"]), self.http("GET", "/status")["parallel"]["waiting"])
+            time.sleep(0.3); self.assertNotIn(str(c["id"]), self.rq("GET", "/status")["parallel"]["waiting"])
             # cancelling the RUNNING task frees its slot: b runs and finishes
             self.cli("cancel", str(a["id"])); self.assertEqual(self.wait(a["id"], ("cancelled", "failed"), timeout=20)["status"], "cancelled")
             self.assertEqual(self.wait(b["id"], ("done", "failed"), timeout=20)["status"], "done")
-            time.sleep(0.5); st = self.http("GET", "/status")["parallel"]; self.assertEqual((st["busy"], st["waiting"]), (0, {}), st)
+            time.sleep(0.5); st = self.rq("GET", "/status")["parallel"]; self.assertEqual((st["busy"], st["waiting"]), (0, {}), st)
         finally:
             self.cli("settings", "agent.max_parallel", "3")
 
-    def test_38f_cancel_while_an_approved_step_waits_for_a_slot_never_runs_it(self):
+    def test_42f_cancel_while_an_approved_step_waits_for_a_slot_never_runs_it(self):
         """Approved, then waiting for a slot (status honestly back to 'queued', why=slots), then Stop: the approved step must not
         run. Before 1.0-8 the approve-then-cancel window was an instant; with slots yielded around approvals it lasts as long as
         the wait for a slot, and the task holds no slot then."""
@@ -1734,22 +2041,22 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
             b = self.cli("do", "--mode", "auto", "sleep 8 seconds"); self.wait(b["id"], ("running",))        # B takes the only slot
             pend = [p for p in self.cli("approvals") if p["task_id"] == a["id"]]; self.cli("approve", str(pend[0]["id"]))
             self.wait(a["id"], ("queued",), timeout=5)
-            time.sleep(1.2); ta = self.http("GET", "/tasks/%d" % a["id"])
+            time.sleep(1.2); ta = self.rq("GET", "/tasks/%d" % a["id"])
             self.assertEqual((ta["status"], ta["queue"]["why"]), ("queued", "slots"), ta)
             self.cli("cancel", str(a["id"]))
             ta = self.wait(a["id"], ("cancelled", "done", "failed"), timeout=10); self.assertEqual(ta["status"], "cancelled", ta)
             self.assertNotIn("slept-2", " ".join(str(st.get("output") or "") for st in ta["steps"]), "the approved step must not run after Stop")
             step = [st for st in ta["steps"] if st["kind"] == "tool_call"][0]; self.assertIn("cancelled by user", step["output"] or "")
             self.assertEqual(self.wait(b["id"], ("done", "failed"), timeout=20)["status"], "done")
-            time.sleep(0.5); st = self.http("GET", "/status")["parallel"]; self.assertEqual((st["busy"], st["waiting"]), (0, {}), st)
+            time.sleep(0.5); st = self.rq("GET", "/status")["parallel"]; self.assertEqual((st["busy"], st["waiting"]), (0, {}), st)
         finally:
             self.cli("settings", "agent.max_parallel", "3")
 
-    def test_38e_microphone_permission_refuses_transcription_while_off(self):
+    def test_42e_microphone_permission_refuses_transcription_while_off(self):
         # this daemon started on an empty database: a fresh install, so the permission is OFF until the user allows it
         self.assertEqual(self.cli("settings")["voice.mic_allowed"], "false")
         wav = base64.b64encode(b"RIFF\x00\x00\x00\x00WAVEfmt ").decode()
-        r = self.http("POST", "/speech/transcribe", {"audio_b64": wav, "format": "wav"})
+        r = self.rq("POST", "/speech/transcribe", {"audio_b64": wav, "format": "wav"})
         self.assertEqual(r.get("http"), 403, r); self.assertFalse(r["ok"]); self.assertIn("Microphone is off in Settings", r["error"]); self.assertIn("Allow Fab OS to use the microphone", r["error"])
         def nudges():
             try:
@@ -1758,17 +2065,17 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
             except FileNotFoundError:
                 return []
         before = len(nudges())
-        self.assertTrue(self.http("PUT", "/settings", {"voice.mic_allowed": "on"})["ok"]); self.assertEqual(self.cli("settings")["voice.mic_allowed"], "true")
+        self.assertTrue(self.rq("PUT", "/settings", {"voice.mic_allowed": "on"})["ok"]); self.assertEqual(self.cli("settings")["voice.mic_allowed"], "true")
         # the spotter must follow the switch at once: the daemon SIGHUPs fabos-voiced through systemd (best effort) when the value changes
         for _ in range(40):
             if len(nudges()) > before: break
             time.sleep(0.05)
         self.assertEqual(len(nudges()), before + 1, "one nudge for the change of value")
-        self.assertTrue(self.http("PUT", "/settings", {"voice.mic_allowed": "true", "voice.speak_replies": "true"})["ok"]); time.sleep(0.3)
+        self.assertTrue(self.rq("PUT", "/settings", {"voice.mic_allowed": "true", "voice.speak_replies": "true"})["ok"]); time.sleep(0.3)
         self.assertEqual(len(nudges()), before + 1, "an unchanged value is no nudge")
-        r = self.http("POST", "/speech/transcribe", {"audio_b64": wav, "format": "wav"})
+        r = self.rq("POST", "/speech/transcribe", {"audio_b64": wav, "format": "wav"})
         self.assertNotEqual(r.get("http"), 403, "with the permission on, the provider decides")
-        self.assertIn("mic_allowed", self.http("GET", "/status")["voice"])
+        self.assertIn("mic_allowed", self.rq("GET", "/status")["voice"])
         self.cli("settings", "voice.mic_allowed", "false")
         for _ in range(40):
             if len(nudges()) > before + 1: break

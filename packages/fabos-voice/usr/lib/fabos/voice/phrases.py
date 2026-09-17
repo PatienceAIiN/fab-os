@@ -136,6 +136,10 @@ NARRATION = {
     "notify_user": lambda i: "Sending you a quick notification.",
     "ask_user": lambda i: "I need to ask you something.",
     "list_apps": lambda i: "Checking which applications are installed.",
+    # the schedule tool (1.0-8, scheduler.py): the same words as the daemon's narration_for("schedule")
+    "schedule": lambda i: {"list": "Looking at your schedule now.", "done": "Marking that as done in your schedule.",
+                           "remove": "Removing that from your schedule.", "snooze": "Snoozing that reminder.",
+                           "dismiss": "Dismissing that reminder."}.get(str(i.get("action") or "add"), "Adding that to your schedule now."),
 }
 
 NARRATION_DONE = {
@@ -153,6 +157,9 @@ NARRATION_DONE = {
     "notify_user": lambda i: "Notification sent.",
     "ask_user": lambda i: "Thanks for the answer.",
     "list_apps": lambda i: "Done, I have the list of applications.",
+    "schedule": lambda i: {"list": "Done, that is your schedule.", "done": "Done, that is marked as done.",
+                           "remove": "Done, it is off your schedule.", "snooze": "Done, the reminder is snoozed.",
+                           "dismiss": "Done, the reminder is dismissed."}.get(str(i.get("action") or "add"), "Done, it is on your schedule."),
 }
 
 GENERIC_NARRATION = "Working on the next step now."
@@ -208,6 +215,8 @@ def approval_summary(tool, inp=None, reason="", raw=False):
         return "type into the current window"
     if tool == "web_fetch":
         return "fetch a page from %s" % _host(i.get("url"))
+    if tool == "schedule":
+        return "change your schedule"
     if tool == "schedule_watch":
         return "keep a background watch"
     if tool == "notify_user":
