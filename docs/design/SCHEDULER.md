@@ -73,11 +73,16 @@ remembers processed Message-IDs. Every change is an `activity` row (`item_added`
   today's count and the next item; `/settings` carries `scheduler.*` and `scheduler_system_timezone`.
 * `SchedulerLoop` (daemon thread, 30 s): sweep → fire due → roll → mail intake every 10 min. `Notifier` owns a GLib
   main loop on a thread of its own and maps notification ids to items so `ActionInvoked` (Done / Snooze / Open, or the
-  body click) acts on the right one. `FABOS_SCHED_NOTIFY=notify-send` forces the button-less fallback (tests shim the
-  binary; nothing under test ever reaches the developer's session bus).
+  body click) acts on the right one. Its proxy follows the owner of `org.freedesktop.Notifications`
+  (`follow_name_owner_changes`) and a failed `Notify` gets one fresh proxy and a retry: plasmashell restarts at every
+  login, and the first VM proof lost the "Today" summary to a proxy still bound to the old server's unique name.
+  Reminder popups carry timeout 0 (they stay until answered); the summary 20 s. `FABOS_SCHED_NOTIFY=notify-send` forces
+  the button-less fallback (tests shim the binary; nothing under test ever reaches the developer's session bus).
 * `fabos-schedule-summary.service` (`WantedBy=graphical-session.target`, enabled `--global` in postinst) runs
-  `scheduler.py --login-summary`: waits for the agent (≤ 90 s) and for a notification server on the bus (≤ 60 s), then
-  `POST /schedule/login-summary`. The daemon de-duplicates, so a unit restart never shows it twice; `{force: true}` does.
+  `scheduler.py --login-summary`: waits for the agent (≤ 90 s) and for a notification server on the bus (≤ 60 s, plus
+  5 s for its popups), then `POST /schedule/login-summary {session}` with the graphical session's id from `loginctl`
+  (the user manager's own environment keeps the FIRST session's id all day). The daemon de-duplicates per
+  date + boot + session, so a unit restart never shows it twice, a second login the same day does; `{force: true}` always.
 
 ## Settings
 
