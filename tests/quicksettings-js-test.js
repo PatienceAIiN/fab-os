@@ -228,9 +228,9 @@ t("JSON probe: a --light line refreshes the kernel readings AND the active Wi-Fi
 // ---- the tile model
 t("tiles v3: defaults (three-column spans, three optional extras off), round trip, unknown ids dropped, new ids appended, sizes validated", () => {
   const d = S.defaultTiles();
-  assert.strictEqual(d.length, 12); assert.deepStrictEqual(d.map(x => x.id), ["wifi", "bluetooth", "volume", "brightness", "battery", "dnd", "nightlight", "screenshot", "settings", "notifications", "powerprofile", "netspeed"]);
+  assert.strictEqual(d.length, 13); assert.deepStrictEqual(d.map(x => x.id), ["wifi", "bluetooth", "volume", "mic", "brightness", "battery", "dnd", "nightlight", "screenshot", "settings", "notifications", "powerprofile", "netspeed"]);
   assert.deepStrictEqual(d.filter(x => !x.enabled).map(x => x.id), ["notifications", "powerprofile", "netspeed"], "the footer carries the network line, the battery card the power profile");
-  assert.strictEqual(d[0].size, "medium"); assert.strictEqual(d[1].size, "small"); assert.strictEqual(d[2].size, "wide"); assert.strictEqual(d[4].size, "medium");
+  assert.strictEqual(d[0].size, "medium"); assert.strictEqual(d[1].size, "small"); assert.strictEqual(d[2].size, "wide"); assert.strictEqual(d[3].size, "wide", "the microphone row is a full-width slider like the volume row"); assert.strictEqual(d[5].size, "medium");
   assert.strictEqual(S.spanOf("small"), 1); assert.strictEqual(S.spanOf("medium"), 2); assert.strictEqual(S.spanOf("wide"), 3); assert.strictEqual(S.COLUMNS, 3);
   assert.deepStrictEqual(S.parseTiles(S.tilesJson(d)), d, "round trip");
   assert.deepStrictEqual(S.parseTiles(""), d); assert.deepStrictEqual(S.parseTiles("{bad"), d); assert.deepStrictEqual(S.parseTiles("[]"), d);
@@ -238,16 +238,19 @@ t("tiles v3: defaults (three-column spans, three optional extras off), round tri
   assert.strictEqual(p[0].id, "dnd"); assert.strictEqual(p[0].size, "wide"); assert.strictEqual(p[0].enabled, false);
   assert.strictEqual(p[1].id, "wifi"); assert.strictEqual(p[1].size, "medium", "invalid size -> the tile's default"); assert.strictEqual(p[1].enabled, true);
   assert.strictEqual(p[2].id, "netspeed"); assert.strictEqual(p[2].enabled, true, "an explicit enabled wins over the default");
-  assert.strictEqual(p.length, 12, "every known tile present exactly once"); assert.ok(!p.some(x => x.id === "bogus"));
+  assert.strictEqual(p.length, 13, "every known tile present exactly once"); assert.ok(!p.some(x => x.id === "bogus"));
   assert.strictEqual(p[3].id, "bluetooth", "the rest appended in default order"); assert.strictEqual(p.find(x => x.id === "notifications").enabled, false, "an appended optional tile keeps its default: off");
   // a 1.0-5 layout (two sizes, twelve enabled tiles) still parses: small = one column, wide = the full row
   const old = S.parseTiles(JSON.stringify([{ id: "wifi", size: "small", enabled: true }, { id: "volume", size: "wide", enabled: true }]));
-  assert.strictEqual(old[0].size, "small"); assert.strictEqual(old[1].size, "wide"); assert.strictEqual(old.length, 12);
+  assert.strictEqual(old[0].size, "small"); assert.strictEqual(old[1].size, "wide"); assert.strictEqual(old.length, 13);
+  // a 1.0-7 layout (twelve tiles, no microphone row) gains the Microphone row at the end, enabled (1.0-8)
+  const v7 = S.parseTiles(JSON.stringify(["wifi", "bluetooth", "volume", "brightness", "battery", "dnd", "nightlight", "screenshot", "settings", "notifications", "powerprofile", "netspeed"].map(id => ({ id, size: "small", enabled: id !== "netspeed" }))));
+  assert.strictEqual(v7.length, 13); assert.strictEqual(v7[12].id, "mic"); assert.strictEqual(v7[12].enabled, true); assert.strictEqual(v7[12].size, "wide");
 });
 t("tiles v3: move / size cycle / enable are pure and bounded", () => {
   const d = S.defaultTiles();
   const m = S.moveTile(d, 0, 3);
-  assert.deepStrictEqual(m.map(x => x.id).slice(0, 4), ["bluetooth", "volume", "brightness", "wifi"]); assert.strictEqual(d[0].id, "wifi", "input untouched");
+  assert.deepStrictEqual(m.map(x => x.id).slice(0, 4), ["bluetooth", "volume", "mic", "wifi"]); assert.strictEqual(d[0].id, "wifi", "input untouched");
   assert.deepStrictEqual(S.moveTile(d, 5, 5), d); assert.deepStrictEqual(S.moveTile(d, -1, 2), d); assert.deepStrictEqual(S.moveTile(d, 2, 99), d);
   assert.strictEqual(S.nextSize("small"), "medium"); assert.strictEqual(S.nextSize("medium"), "wide"); assert.strictEqual(S.nextSize("wide"), "small");
   assert.strictEqual(S.toggleTileSize(d, "wifi").find(x => x.id === "wifi").size, "wide", "medium -> wide");
@@ -278,12 +281,12 @@ t("tiles v3: grid geometry — three integer columns, spans 1/2/3, a row wraps w
   const wrap = S.layoutTiles([{ id: "bluetooth", size: "small" }, { id: "wifi", size: "medium" }, { id: "dnd", size: "small" }, { id: "battery", size: "medium" }], 608, 12);
   assert.strictEqual(wrap.items[2].y, 0 + 76 + 12, "small + medium fill a row; the next small starts a new row"); assert.strictEqual(wrap.items[3].x, 206, "a medium tile after a small one takes columns 2-3 of that row");
   const all = S.layoutTiles(S.defaultTiles(), 608, 12);
-  assert.strictEqual(all.items.length, 9, "the three optional tiles are off by default"); assert.strictEqual(all.height, 76 + 12 + 64 + 12 + 64 + 12 + 96 + 12 + 76, "five rows: 76 · 64 · 64 · 96 · 76 with 12 px gaps");
-  assert.deepStrictEqual(all.items.map(i => i.id), ["wifi", "bluetooth", "volume", "brightness", "battery", "dnd", "nightlight", "screenshot", "settings"]);
+  assert.strictEqual(all.items.length, 10, "the three optional tiles are off by default"); assert.strictEqual(all.height, 76 + 12 + 64 + 12 + 64 + 12 + 64 + 12 + 96 + 12 + 76, "six rows: 76 · 64 · 64 (microphone) · 64 · 96 · 76 with 12 px gaps");
+  assert.deepStrictEqual(all.items.map(i => i.id), ["wifi", "bluetooth", "volume", "mic", "brightness", "battery", "dnd", "nightlight", "screenshot", "settings"]);
   assert.ok(all.items.every(i => i.x + i.w <= 608), "nothing past the right edge");
   for (const a of all.items) for (const b of all.items) if (a !== b) assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, "no overlap " + a.id + "/" + b.id);
   const everything = S.layoutTiles(S.defaultTiles().map(t => ({ id: t.id, size: t.size, enabled: true })), 608, 12);
-  assert.strictEqual(everything.items.length, 12); assert.strictEqual(everything.items.map(i => i.n).join(","), "0,1,2,3,4,5,6,7,8,9,10,11", "n is the placement order (the open animation staggers by it)");
+  assert.strictEqual(everything.items.length, 13); assert.strictEqual(everything.items.map(i => i.n).join(","), "0,1,2,3,4,5,6,7,8,9,10,11,12", "n is the placement order (the open animation staggers by it)");
 });
 t("tiles v3: drag helpers — tileAt finds the slot under a point (or the nearest within a tile height), moveTileTo takes the hovered tile's slot; the short Bluetooth line", () => {
   const d = S.defaultTiles(), L = S.layoutTiles(d, 608, 12);
@@ -352,5 +355,26 @@ t("the shipped status.sh prints one JSON line in both modes (syntax + shape; too
   const sh = fs.readFileSync(script, "utf8");
   assert.ok(sh.includes("--rescan no"), "every nmcli wifi list call says --rescan no: the 5 s probe must never trigger a scan");
   assert.ok(!sh.includes("/proc/net/wireless") || sh.includes("wifi_quality"), "kernel link quality, if read, is only the fallback");
+});
+// ---- microphone row + privacy indicators (1.0-8)
+t("microphone: the default source parses like the sink (JSON and key=value), glyphs by level, lines; privacy counts -> tooltip line", () => {
+  const j = S.parseStatus(JSON.stringify({ net: { iface: "", rx: 0, tx: 0 }, wifi: "", devs: [], volume: "Volume: 0.45", mic: "Volume: 0.80 [MUTED]", privacy: { mic_used: 0, cam_used: 0, cam_present: 1 } }));
+  assert.strictEqual(j.hasMic, true); assert.strictEqual(j.micVolume, 80); assert.strictEqual(j.micMuted, true); assert.strictEqual(j.camPresent, true); assert.strictEqual(j.micUsed, 0);
+  assert.strictEqual(S.micIcon(j.micVolume, j.micMuted), "microphone-sensitivity-muted"); assert.strictEqual(S.micLine(j), "Muted");
+  const k = S.parseStatus("volume=Volume: 0.45\nmic=Volume: 0.20\n");
+  assert.strictEqual(k.hasMic, true); assert.strictEqual(k.micVolume, 20); assert.strictEqual(k.micMuted, false); assert.strictEqual(S.micIcon(20, false), "microphone-sensitivity-low");
+  assert.strictEqual(S.micIcon(50, false), "microphone-sensitivity-medium"); assert.strictEqual(S.micIcon(90, false), "microphone-sensitivity-high"); assert.strictEqual(S.micIcon(0, false), "microphone-sensitivity-muted");
+  const none = S.parseStatus(JSON.stringify({ net: { iface: "", rx: 0, tx: 0 }, wifi: "", devs: [], volume: "Volume: 0.45", mic: "" }));
+  assert.strictEqual(none.hasMic, false); assert.strictEqual(none.micVolume, -1); assert.strictEqual(S.micLine(none), "No microphone"); assert.strictEqual(S.privacyLine(none), "");
+  const busy = S.parseStatus(JSON.stringify({ net: { iface: "", rx: 0, tx: 0 }, wifi: "", devs: [], mic: "Volume: 1.00", privacy: { mic_used: 1, cam_used: 2, cam_present: 1 } }));
+  assert.strictEqual(S.privacyLine(busy), "1 app is using the microphone · 2 apps are using the camera"); assert.strictEqual(S.micLine(busy), "100% · in use");
+  assert.strictEqual(S.privacyLine(S.parseStatus(JSON.stringify({ net: {}, wifi: "", devs: [], privacy: { mic_used: 3, cam_used: 0 } }))), "3 apps are using the microphone");
+  // the probe's shell side names the same fields and both wpctl targets; the tile's actions hit the default SOURCE only
+  const sh = fs.readFileSync(path.join(__dirname, "..", "packages/fabos-desktop/usr/share/plasma/plasmoids/in.patienceai.fabos.quicksettings/contents/code/status.sh"), "utf8");
+  assert.ok(sh.includes("wpctl get-volume @DEFAULT_AUDIO_SOURCE@") && sh.includes('\\"mic\\":') && sh.includes('\\"mic_used\\":') && sh.includes('\\"cam_used\\":') && sh.includes("Stream/Input/Audio") && sh.includes("Stream/Input/Video"), "status.sh probes the default source and the PipeWire capture streams");
+  const qml = fs.readFileSync(path.join(__dirname, "..", "packages/fabos-desktop/usr/share/plasma/plasmoids/in.patienceai.fabos.quicksettings/contents/ui/main.qml"), "utf8");
+  assert.ok(qml.includes('root.run("wpctl set-volume @DEFAULT_AUDIO_SOURCE@ "') && qml.includes('root.run("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle")') && qml.includes('id: micRow') && qml.includes('id: micInd') && qml.includes('id: camInd'), "main.qml: microphone row + bar glyphs for microphone and camera use");
+  const xml = fs.readFileSync(path.join(__dirname, "..", "packages/fabos-desktop/usr/share/plasma/plasmoids/in.patienceai.fabos.quicksettings/contents/config/main.xml"), "utf8");
+  assert.ok(xml.includes('{"id":"volume","size":"wide","enabled":true},{"id":"mic","size":"wide","enabled":true}'), "main.xml default layout: the microphone row under Volume");
 });
 console.log("quicksettings-js-test: " + n + " groups passed");

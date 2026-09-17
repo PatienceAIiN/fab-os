@@ -1,0 +1,3 @@
+// Fab OS: after every apt run, refresh the Fab-named copies under /usr/share/fabos from the (possibly updated) upstream
+// files. Runs after 90fabos-rebrand (fabos-desktop's generic pass), whose output is one of the sources.
+DPkg::Post-Invoke { "if [ -x /usr/lib/fabos/rebrand-overrides ]; then /usr/lib/fabos/rebrand-overrides || true; fi"; };

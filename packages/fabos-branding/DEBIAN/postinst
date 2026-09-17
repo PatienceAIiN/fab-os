@@ -34,5 +34,9 @@ case "$1" in configure)
   if command -v update-initramfs >/dev/null 2>&1 && ls /boot/vmlinuz-* >/dev/null 2>&1; then update-initramfs -u -k all || true; fi
   if command -v update-grub >/dev/null 2>&1 && [ -d /boot/grub ]; then update-grub || true; fi
   command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -f /usr/share/icons/hicolor || true
+  # Fab-named copies of upstream XDG data files under /usr/share/fabos (rules: /usr/lib/fabos/overrides.d; the session puts
+  # that directory first in XDG_DATA_DIRS). Re-run after every apt run by /etc/apt/apt.conf.d/91fabos-rebrand-overrides.
+  chmod 755 /usr/lib/fabos/rebrand-overrides 2>/dev/null || true
+  [ -x /usr/lib/fabos/rebrand-overrides ] && /usr/lib/fabos/rebrand-overrides || true
 ;; esac
 exit 0

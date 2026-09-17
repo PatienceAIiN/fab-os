@@ -1,0 +1,20 @@
+Fab OS hardware integration (fabos-hardware)
+Copyright 2026 Patience AI and Fab OS contributors.
+
+This package carries only Fab OS configuration and packaging: the dependency
+set for fingerprint readers, cameras and microphones, the PAM profile
+activation, and the Fab OS name rule for the camera application.
+License: Apache License 2.0 (see /usr/share/doc/fabos-branding/copyright).
+
+The software it pulls in keeps its own licences and copyright holders:
+- fprintd, libpam-fprintd: GPL-2.0-or-later, the fprintd authors.
+- libfprint, libfprint-2-tod1: LGPL-2.1-or-later, the libfprint authors
+  (TOD = "touch OEM drivers" loader for vendor-supplied Synaptics/Goodix
+  drivers, which are not part of Fab OS).
+- PipeWire, WirePlumber, libspa-0.2-libcamera: MIT, the PipeWire authors.
+- libcamera: LGPL-2.1-or-later, the libcamera authors.
+- v4l-utils: GPL-2.0 / LGPL-2.1, the LinuxTV authors.
+- Plasma Camera (shown as "Fab Camera"): GPL-2.0-or-later / LGPL-2.0-or-later,
+  KDE e.V. and contributors. KDE and Plasma are trademarks of KDE e.V.;
+  only the visible application name is overridden (a desktop-entry copy),
+  the program and its About dialog are unchanged. See ATTRIBUTIONS.md.

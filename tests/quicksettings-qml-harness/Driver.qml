@@ -113,7 +113,7 @@ Item {
 
     readonly property string status: [
         "wifi_radio=enabled", "conn=802-11-wireless|wlp2s0|Home Net", "wifi=*:Home Net:78:WPA2", "iface=wlp2s0", "ip4=10.0.0.5/24",
-        "bt_present=yes", "bt_powered=yes", "bt_connected=1", "volume=Volume: 0.45", "bat_pct=87", "bat_status=Discharging",
+        "bt_present=yes", "bt_powered=yes", "bt_connected=1", "volume=Volume: 0.45", "mic=Volume: 0.80", "bat_pct=87", "bat_status=Discharging",
         "bat_time=3.2 hours", "profile=balanced", "bl_cur=45528", "bl_max=64764", ""].join("\n")
     // the same machine as ONE JSON line, the form contents/code/status.sh prints today (status.js fromJson); it adds
     // KWin's night light, so the Night light tile takes its slot in row 5
@@ -121,7 +121,7 @@ Item {
         net: { iface: "wlp2s0", rx: 1000, tx: 500 }, wifi_quality: -1,
         battery: { pct: 87, status: "Discharging", time: "3.2 hours" }, backlight: { cur: 45528, max: 64764 },
         wifi: "yes:78:Home Net:WPA2", devs: ["wlp2s0:wifi:connected:Home Net", "enp3s0:ethernet:unavailable:"], ip4: "10.0.0.5/24",
-        bt: { present: true, powered: true, connected: 1 }, volume: "Volume: 0.45", profile: "balanced",
+        bt: { present: true, powered: true, connected: 1 }, volume: "Volume: 0.45", mic: "Volume: 0.80", privacy: { mic_used: 0, cam_used: 0, cam_present: 0 }, profile: "balanced",
         night: { enabled: false, running: false } })
     function net(rx, tx) {
         return "Iface\tDestination\tGateway\n" + "wlp2s0\t00000000\t3B03EC0A\t0003\t0\t0\t600\t00000000\t0\t0\t0\n---\n"
@@ -161,9 +161,9 @@ Item {
         check(netInd.scale === 1 && batInd.scale === 1 && netInd.glyphScale === 1 && typeof netInd.hovered === "boolean" && netInd.hovered === false, "indicators rest unscaled; magnify is on the glyph only (item scale stays 1)")
         check(pane.visible === false && root.paneMode === "closed", "pane hidden at start (imperative visibility, no dead binding)")
         // the tile model before the pane opens: three-column defaults
-        check(root.tiles.length === 12 && root.tiles[0].id === "wifi" && root.tiles[0].size === "medium" && root.tiles[1].id === "bluetooth" && root.tiles[1].size === "small" && root.tiles[2].id === "volume" && root.tiles[2].size === "wide" && root.tiles[4].id === "battery" && root.tiles[4].size === "medium", "12 tiles in the default order from tilesJson: Wi-Fi medium (2 cols), Bluetooth small, volume wide, battery medium")
+        check(root.tiles.length === 13 && root.tiles[0].id === "wifi" && root.tiles[0].size === "medium" && root.tiles[1].id === "bluetooth" && root.tiles[1].size === "small" && root.tiles[2].id === "volume" && root.tiles[2].size === "wide" && root.tiles[3].id === "mic" && root.tiles[3].size === "wide" && root.tiles[5].id === "battery" && root.tiles[5].size === "medium", "13 tiles in the default order from tilesJson: Wi-Fi medium (2 cols), Bluetooth small, volume wide, microphone wide, battery medium")
         check(root.tiles.filter(function (t) { return t.enabled }).length === 9 && root.tiles.filter(function (t) { return !t.enabled }).map(function (t) { return t.id }).join(",") === "notifications,powerprofile,netspeed", "9 tiles on by default; Notifications, Power profile and Network speed are optional extras")
-        check(root.shownTiles.length === 9 && root.tileRect("nightlight") !== null && root.tileRect("brightness") !== null && root.tileRect("battery") !== null, "night light (KWin reports it), brightness (backlight fed) and battery (fed) shown: " + root.shownTiles.length + " tiles")
+        check(root.shownTiles.length === 10 && root.tileRect("mic") !== null && root.tileRect("nightlight") !== null && root.tileRect("brightness") !== null && root.tileRect("battery") !== null, "night light (KWin reports it), brightness (backlight fed) and battery (fed) shown: " + root.shownTiles.length + " tiles")
         check(root.paneUnits === 36 && root.settingsWidth === Kirigami.Units.gridUnit * 36 && root.cardPad === 20 && root.tileGap === 12, "pane geometry at Medium: 36 gridUnits = " + root.settingsWidth + " px, padding 20, 12 px gaps")
         check(root.tileLayout.items.length === 9 && root.tileLayout.height === 76 + 12 + 64 + 12 + 64 + 12 + 96 + 12 + 76 && root.settingsHeight === 2 * root.cardPad + root.tileLayout.height + root.footerGap + root.footerH, "settings card height is arithmetic on the tile layout (grid " + root.tileLayout.height + " px, card " + root.settingsHeight + " px)")
         stage1b.start()
@@ -220,7 +220,7 @@ Item {
         root.editing = true
         var wifi = tileItem("wifi"), bt = tileItem("bluetooth")
         check(wifi.frame.visible && wifi.editBar.visible && wifi.content.enabled === false, "edit mode: accent frame + size/remove controls, the tile's own controls inert")
-        check(tileItem("nightlight").visible === true && near(tileItem("nightlight").opacity, 0.5) && root.shownTiles.length === 9, "edit mode shows every enabled tile, the unavailable one dimmed (" + tileItem("nightlight").opacity + ")")
+        check(tileItem("nightlight").visible === true && near(tileItem("nightlight").opacity, 0.5) && root.shownTiles.length === 10, "edit mode shows every enabled tile, the unavailable one dimmed (" + tileItem("nightlight").opacity + ")")
         check(settingsPane.footerItem.pill.visible && settingsPane.footerItem.pencil.visible === false, "footer swaps to the edit controls (Done pill, no pencil)")
         // programmatic drag: Wi-Fi (two columns wide) carried until its CENTRE lies over Bluetooth's slot takes that slot; Bluetooth shifts to the first
         var target = bt.rect
@@ -252,16 +252,30 @@ Item {
         root.editing = false
         check(tileItem("wifi").frame.visible === false && tileItem("wifi").content.enabled === true, "done: frames gone, tiles live again")
         root.applyStatus(h.statusJson)   // KWin's night light known again: the tile is back
-        check(root.shownTiles.length === 9 && tileItem("nightlight").visible === true && near(tileItem("nightlight").opacity, 1), "night light back in the grid once the probe reports it")
+        check(root.shownTiles.length === 10 && tileItem("nightlight").visible === true && near(tileItem("nightlight").opacity, 1), "night light back in the grid once the probe reports it")
         // volume slider path: coalesced wpctl call + glyph flash
         root.setVolume(60)
         stage3.start()
+    } }
+    Timer { id: micStage; interval: 400; onTriggered: {   // the coalesced microphone slider write (120 ms) has run by now
+        check(root.st.micVolume === 25 && tileItem("mic").content.valueText === "25%" && tileItem("mic").content.icon === "microphone-sensitivity-low", "microphone set -> state 25, row reads 25%, low glyph")
+        check(root.st.micUsed === 0 && root.st.camUsed === 0 && Status.privacyLine(root.st) === "", "nothing records or films: no privacy line")
+        var busy = Status.parseStatus(JSON.stringify({ net: { iface: "wlp2s0", rx: 1, tx: 1 }, wifi: "", devs: [], mic: "Volume: 0.80", privacy: { mic_used: 1, cam_used: 2, cam_present: 1 } }))
+        check(busy.micUsed === 1 && busy.camUsed === 2 && busy.camPresent === true && Status.privacyLine(busy) === "1 app is using the microphone · 2 apps are using the camera", "privacy counts parse into the tooltip line")
     } }
     Timer { id: stage3; interval: 400; onTriggered: {
         check(root.st.volume === 60 && volInd.visible === true && volInd.icon === "audio-volume-medium" && tileItem("volume").content.valueText === "60%", "volume set -> state 60, glyph flashes, row reads 60%")
         root.toggleMute()
         check(root.st.muted === true && volInd.icon === "audio-volume-muted", "mute toggles the glyph")
         root.toggleMute()
+        // microphone row (1.0-8): same path on the default source — state, row text, the bar's privacy glyph while muted
+        var micRow = tileItem("mic")
+        check(micRow !== null && micRow.rect !== null && micRow.content.valueText === "80%" && micRow.content.icon === "microphone-sensitivity-high", "microphone row placed under Volume, reads the fed 80% with the high glyph")
+        root.toggleMicMute()
+        check(root.st.micMuted === true && micRow.content.icon === "microphone-sensitivity-muted" && micRow.content.glyphTip === "Unmute the microphone", "microphone mute: glyph + tip flip; the bar shows the muted microphone (privacy glyph)")
+        root.toggleMicMute()
+        root.setMicVolume(25)
+        micStage.start()
         // a real notification on the session bus
         shell.connectSource("gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.Notify 'Fab OS Updates' 0 'system-software-update' 'Update ready' 'Fab OS 1.0 revision 5 is ready to install.' '[]' \"{'desktop-entry': <'org.kde.discover'>}\" 1000")   // 1 s timeout: the badge counts notifications whose popup has gone
         stage4.start()
