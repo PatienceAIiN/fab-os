@@ -35,6 +35,7 @@ mkdir -p "$H/contents/harness"
 sed 's/"in.patienceai.fabos.askbar"/"in.patienceai.fabos.askbartest"/' "$PKG/metadata.json" > "$H/metadata.json"
 cp -r "$PKG/contents/ui" "$H/contents/ui"
 cp -r "$PKG/contents/config" "$H/contents/config"
+cp -r "$PKG/contents/code" "$H/contents/code"          # modes.js (Research · Computer use strip): main.qml imports ../code/
 cp "$ROOT/tests/askbar-qml-harness/Driver.qml" "$H/contents/harness/"
 cp "$ROOT/tests/askbar-qml-harness/mkpng.py" "$T/mkpng.py"
 python3 - "$H/contents/ui/main.qml" <<'EOF'

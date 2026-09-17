@@ -888,6 +888,16 @@ class Daemon(unittest.TestCase):
             time.sleep(0.2)
         self.fail("task %d stuck in %s" % (tid, t["status"]))
 
+    def api(self, method, path, body=None):
+        """A raw authenticated call (the UIs' path); an HTTP error comes back as {"error", "http"} like the CLI's --json output."""
+        tok = open(os.path.join(self.tmp, "fabos-agent/token")).read().strip()
+        req = urllib.request.Request("http://127.0.0.1:18790" + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r: return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return dict(json.loads(e.read() or b"{}"), http=e.code)
+
     def test_01_unauthorized(self):
         try:
             urllib.request.urlopen("http://127.0.0.1:18790/tasks", timeout=2); self.fail("expected 401")
@@ -1635,6 +1645,172 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         self.assertEqual(open(log).read().count("pkexec argv="), n_pk + 1, "the bypass-mode agent's root step must go through pkexec")
         rows = self.cli("log", "--limit", "30"); ref = [e for e in rows if e["kind"] == "root_exec_refused"][0]
         self.assertIn("dismissed", ref["detail"]); self.assertIn("via pkexec", [e for e in rows if e["kind"] == "root_exec_requested"][0]["detail"])
+
+    # ---- the Research / Computer use switches (docs/design/MODES.md): two settings as the defaults, a per-chat choice on the root task,
+    # and — the point — a different tool list and prompt, so the agent's behaviour actually changes
+    def test_38_capabilities_settings_defaults_and_per_chat_choice(self):
+        s = self.cli("settings"); self.assertEqual((s["agent.research"], s["agent.computer_use"]), ("true", "true"))          # defaults: both on
+        self.assertEqual(self.cli("status")["capabilities"], {"research": True, "computer_use": True})
+        self.assertEqual(self.cli("settings", "agent.research", "maybe").get("http"), 400)                                       # only true / false
+        self.cli("settings", "agent.research", "off"); self.assertEqual(self.cli("settings")["agent.research"], "false")          # normalised like ui.show_raw
+        self.assertFalse(self.cli("status")["capabilities"]["research"])
+        self.cli("settings", "agent.research", "true")
+        # a chat started with computer use off keeps it on its root; a follow-up inherits; PATCH through the follow-up's id writes the root
+        r = self.api("POST", "/tasks", {"request": "say hi", "mode": "bypass", "computer_use": False}); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        self.assertEqual((t["research"], t["computer_use"], t["capabilities_source"]), (True, False, "chat"))
+        fu = self.api("POST", "/tasks", {"request": "say hi", "mode": "bypass", "parent_id": r["id"]}); t2 = self.wait(fu["id"])
+        self.assertEqual((t2["computer_use"], t2["capabilities_source"]), (False, "chat"))
+        rep = self.api("PATCH", "/tasks/%d" % fu["id"], {"computer_use": True, "research": False})
+        self.assertEqual((rep["ok"], rep["root_id"], rep["research"], rep["computer_use"]), (True, r["id"], False, True), rep)
+        self.assertEqual((self.cli("show", str(r["id"]))["research"], self.cli("show", str(fu["id"]))["computer_use"]), (False, True))
+        self.assertEqual(self.api("PATCH", "/tasks/%d" % r["id"], {"research": "sometimes"}).get("http"), 400)
+        self.assertEqual(self.api("POST", "/tasks", {"request": "x", "research": "sometimes"}).get("http"), 400)
+        self.cli("settings", "agent.computer_use", "false")                                    # the default moves; the chat keeps its own choice
+        self.assertEqual(self.cli("show", str(fu["id"]))["computer_use"], True)
+        self.cli("settings", "agent.computer_use", "true")
+        plain = self.api("POST", "/tasks", {"request": "say hi", "mode": "bypass"}); tp = self.wait(plain["id"])
+        self.assertEqual((tp["research"], tp["computer_use"], tp["capabilities_source"]), (True, True, "global"))
+        self.assertTrue(any(e["kind"] == "chat_capability" and e["task_id"] == r["id"] for e in self.cli("log")))
+
+    def test_39_computer_use_off_means_no_open_app_step_and_a_helpful_message(self):
+        # on (the default): "open the files app" is ONE open_app step, Fab Files
+        r = self.api("POST", "/tasks", {"request": "open the files app", "mode": "bypass"}); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        calls = [s for s in t["steps"] if s["kind"] == "tool_call"]; self.assertEqual([s["name"] for s in calls], ["open_app"], t["steps"])
+        self.assertEqual(json.loads(calls[0]["input"])["app"], "dolphin"); self.assertIn("opened Fab Files", t["result"])
+        # off for this chat: no open_app (or type_text) step at all, the reply names the switch, the history says why
+        r = self.api("POST", "/tasks", {"request": "open the files app", "mode": "bypass", "computer_use": False}); t = self.wait(r["id"])
+        self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in t["steps"] if s["kind"] == "tool_call"], [], t["steps"])
+        self.assertEqual(t["result"], fa.CAPABILITY_OFF_REPLY["computer_use"]); self.assertIn("Computer use switch", t["result"])
+        ver = [s for s in t["steps"] if s["kind"] == "verify" and s["name"] == "capabilities"]
+        self.assertEqual(len(ver), 1); self.assertIn("Computer use", ver[0]["output"]); self.assertIn("open_app, type_text", ver[0]["output"])
+        # what the model was given: no open_app / type_text in the tool list, the switch and the sentence in the prompt
+        st = fa.Store(os.path.join(self.env["FABOS_AGENT_DATA"], "agent.db")); caps = fa.capabilities(st, st.one("SELECT * FROM tasks WHERE id=?", r["id"]))
+        self.assertEqual((caps["research"], caps["computer_use"], caps["source"]), (True, False, "chat"))
+        a = fa.Agent.__new__(fa.Agent); a.store = st
+        names = {x["name"] for x in a.tools_for_model(caps)}
+        self.assertFalse(names & {"open_app", "type_text"}, names); self.assertTrue({"run_shell", "write_file", "web_fetch", "list_apps"} <= names, names)
+        prompt = fa.build_system_prompt(st, "auto", [], caps)
+        self.assertIn("Computer use is OFF for this chat", prompt); self.assertIn(fa.CAPABILITY_OFF_REPLY["computer_use"], prompt); self.assertIn("Research is ON", prompt)
+        self.assertIn("Computer use is ON", fa.build_system_prompt(st, "auto", [], {"research": True, "computer_use": True}))
+        # a model that still names the tool is refused deterministically (never asked, never run) and told which switch turns it on
+        tid = st.q("INSERT INTO tasks(request,status,created,updated,computer_use) VALUES('x','running',0,0,0)").lastrowid
+        task = st.one("SELECT * FROM tasks WHERE id=?", tid); task["_caps"] = fa.capabilities(st, task)
+        sid, ok, risk, reason = a._gate(tid, task, "open_app", {"app": "dolphin"})
+        self.assertFalse(ok); self.assertEqual(reason, "Computer use is off for this chat: the open_app tool is not available")
+        self.assertEqual(st.one("SELECT decision FROM steps WHERE id=?", sid)["decision"], "off-for-this-chat")
+        a.tools = fa.Tools(st, a)
+        out, err, _inp = a._run_call(tid, task, {"id": "t1", "name": "type_text", "input": {"text": "hi"}})
+        self.assertTrue(err); self.assertIn("Computer use is off for this chat", out["error"]); self.assertIn("Computer use switch", out["error"])
+        self.assertEqual(st.one("SELECT narration_done FROM steps WHERE task_id=? ORDER BY id DESC LIMIT 1", tid)["narration_done"], "Sorry, computer use is off for this chat.")
+        # the stepwise driver: its planner never sees the tools either, and a plan_sanity "show your work" insertion is undone
+        stp = [{"tool": "write_file", "goal": "save the note to ~/n.txt"}]
+        fa.plan_sanity("Write a short note saying hi and save it as ~/n.txt", stp)
+        self.assertEqual([s["tool"] for s in stp], ["open_app", "type_text", "write_file"])          # what sanity does on its own
+        self.assertEqual([s["tool"] for s in stp if s["tool"] not in fa.capability_blocked(caps)], ["write_file"])
+        self.assertIn("Computer use is OFF for this chat", fa.local_system_prompt("auto", dict(fa.NET_SKIPPED), caps))
+        self.assertNotIn("OFF for this chat", fa.local_system_prompt("auto", dict(fa.NET_SKIPPED), {"research": True, "computer_use": True}))
+        st.q("DELETE FROM tasks WHERE id=?", tid)
+
+    def test_40_research_off_means_no_web_fetch_and_on_means_a_cited_fetch(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        hits = []
+
+        class Page(BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(self.path)
+                body = b"<html><head><title>Fab OS test page</title></head><body><p>The answer is 42.</p></body></html>"
+                self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+            def log_message(self, *a): pass
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Page); srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, daemon=True).start(); self.addCleanup(srv.shutdown)
+        url = "http://127.0.0.1:%d/page" % srv.server_address[1]
+        ask = "look up %s and tell me what it says" % url
+        # on (the default): the page IS fetched and the answer carries the fact and the source (research style: gather, then cite)
+        r = self.api("POST", "/tasks", {"request": ask, "mode": "bypass"}); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        calls = [s for s in t["steps"] if s["kind"] == "tool_call"]; self.assertEqual([s["name"] for s in calls], ["web_fetch"], t["steps"])
+        self.assertEqual(json.loads(calls[0]["input"])["url"], url); self.assertIn("The answer is 42", json.loads(calls[0]["output"])["text"])
+        self.assertIn("The answer is 42", t["result"]); self.assertIn("Sources:", t["result"]); self.assertIn(url, t["result"]); self.assertEqual(hits, ["/page"])
+        # off for this chat: web_fetch is not offered, nothing is fetched, the reply names the switch
+        r = self.api("POST", "/tasks", {"request": ask, "mode": "bypass", "research": False}); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in t["steps"] if s["kind"] == "tool_call"], [], t["steps"])
+        self.assertEqual(t["result"], fa.CAPABILITY_OFF_REPLY["research"]); self.assertIn("Research switch", t["result"]); self.assertEqual(hits, ["/page"])
+        st = fa.Store(os.path.join(self.env["FABOS_AGENT_DATA"], "agent.db")); caps = fa.capabilities(st, st.one("SELECT * FROM tasks WHERE id=?", r["id"]))
+        a = fa.Agent.__new__(fa.Agent); a.store = st
+        self.assertNotIn("web_fetch", {x["name"] for x in a.tools_for_model(caps)}); self.assertIn("open_app", {x["name"] for x in a.tools_for_model(caps)})
+        prompt = fa.build_system_prompt(st, "auto", [], caps)
+        self.assertIn("Research is OFF for this chat", prompt); self.assertIn("no curl", prompt); self.assertIn(fa.CAPABILITY_OFF_REPLY["research"], prompt)
+        self.assertIn("'Sources:' list", fa.build_system_prompt(st, "auto", [], {"research": True, "computer_use": True}))
+        # off as the DEFAULT: a new chat inherits it (source global); switching it back on for that chat makes its next follow-up fetch again
+        self.cli("settings", "agent.research", "false")
+        r = self.api("POST", "/tasks", {"request": ask, "mode": "bypass"}); t = self.wait(r["id"])
+        self.assertEqual((t["research"], t["capabilities_source"]), (False, "global")); self.assertEqual(hits, ["/page"]); self.assertEqual(t["result"], fa.CAPABILITY_OFF_REPLY["research"])
+        self.assertEqual(self.api("PATCH", "/tasks/%d" % r["id"], {"research": True})["research"], True)
+        fu = self.api("POST", "/tasks", {"request": ask, "mode": "bypass", "parent_id": r["id"]}); t = self.wait(fu["id"]); self.assertEqual(t["status"], "done", t)
+        self.assertEqual([s["name"] for s in t["steps"] if s["kind"] == "tool_call"], ["web_fetch"]); self.assertEqual(hits, ["/page", "/page"])
+        self.assertEqual((t["research"], t["capabilities_source"]), (True, "chat"))
+        self.cli("settings", "agent.research", "true")
+
+    def test_41_a_switched_off_capability_binds_run_shell_too(self):
+        # The switch's promise holds for the shell as well (review of the track: run_shell keeps the session's Wayland socket and D-Bus, so
+        # `dolphin &` / `wtype` / `qdbus6` would have worked with Computer use off, and `curl` with Research off). With Computer use off a
+        # command that starts a graphical program, types on the screen, drives the session bus or captures the screen is refused in _gate
+        # (decision off-for-this-chat, the switch named); with Research off the same for whatever fetches from the network. Loopback targets,
+        # --headless / --version / --help runs, the system bus and plain commands pass; with both switches on nothing here is refused.
+        st = fa.Store(os.path.join(self.env["FABOS_AGENT_DATA"], "agent.db")); a = fa.Agent.__new__(fa.Agent); a.store = st
+        fa._GUI_EXEC_CACHE.update(at=time.time() + 3600, names=frozenset({"dolphin", "kate", "firefox", "libreoffice", "konsole"}))   # a fixed app registry
+        self.addCleanup(lambda: fa._GUI_EXEC_CACHE.update(at=0.0, names=frozenset()))
+        cu_off, r_off, both_on = {"research": True, "computer_use": False}, {"research": False, "computer_use": True}, {"research": True, "computer_use": True}
+        gui = ["wtype hello", "setsid -f dolphin ~/Downloads", "nohup kate ~/n.txt &", "WAYLAND_DISPLAY=wayland-0 firefox https://example.com", "timeout 5 konsole",
+               "qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure", "dbus-send --session --dest=org.kde.klauncher5 / org.kde.KLauncher.exec_blind", "busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure",
+               "kstart6 konsole", "xdg-open ~/Documents/a.pdf", "kdialog --msgbox hi", "ls; kioclient6 exec ~/a.txt", "spectacle -b -o /tmp/s.png", "flatpak run org.kde.okular",
+               "cd ~ && ydotool type hello", "bash -c 'xdotool key ctrl+s'"]
+        gui_ok = ["ls -la ~", "libreoffice --headless --convert-to pdf ~/a.odt", "dolphin --version", "firefox --help",
+                  "dbus-send --system --dest=org.freedesktop.NetworkManager /org/freedesktop/NetworkManager org.freedesktop.DBus.Introspectable.Introspect",
+                  "python3 -c 'print(1)'", "grep -r dolphin ~/notes", "kioclient6 copy a b", "notify-send hi", "echo kate > ~/apps.txt", "cat ~/kate-notes.txt"]
+        for cmd in gui:
+            b = fa.capability_shell_block(cu_off, "run_shell", {"command": cmd}); self.assertEqual(b and b[0], "computer_use", cmd)
+        for cmd in gui_ok:
+            self.assertIsNone(fa.capability_shell_block(cu_off, "run_shell", {"command": cmd}), cmd)
+        self.assertEqual(fa.capability_shell_block(cu_off, "run_shell", {"command": "setsid -f dolphin"}), ("computer_use", "starts dolphin on the screen"))
+        self.assertEqual(fa.capability_shell_block(cu_off, "run_shell", {"command": "wtype hi"}), ("computer_use", "sends keystrokes or pointer input to the screen (wtype)"))
+        net = ["curl -s https://example.com/", "wget https://example.com/x.zip", "pip install requests", "pip3 install --user rich", "apt-get install -y jq", "sudo apt update",
+               "git clone https://github.com/x/y", "cd ~/p && git pull", "python3 -c 'import urllib.request; print(urllib.request.urlopen(\"https://example.com\").read())'",
+               "node -e 'fetch(\"https://example.com\")'", "npm install left-pad", "yt-dlp https://youtu.be/x", "ls --help; curl https://example.com", "x=$(curl -s https://example.com)",
+               "http GET https://example.com", "cargo install ripgrep", "ollama pull llama3"]
+        net_ok = ["curl -s http://127.0.0.1:8790/status", "curl http://localhost:11434/api/tags", "git status", "git log -3", "apt list --installed", "pip list", "python3 -m http.server 8000",
+                  "echo see http://example.com", "curl --version", "cat ~/urls.txt", "grep curl ~/notes.txt", "ssh nas ls", "ping -c 1 192.168.1.1"]
+        for cmd in net:
+            b = fa.capability_shell_block(r_off, "run_shell", {"command": cmd}); self.assertEqual(b and b[0], "research", cmd)
+        for cmd in net_ok:
+            self.assertIsNone(fa.capability_shell_block(r_off, "run_shell", {"command": cmd}), cmd)
+        self.assertEqual(fa.capability_shell_block(r_off, "run_shell", {"command": "curl -s https://example.com/"}), ("research", "fetches from the network (curl)"))
+        for cmd in gui + net + gui_ok + net_ok:
+            self.assertIsNone(fa.capability_shell_block(both_on, "run_shell", {"command": cmd}), cmd)      # both on: the shell is untouched
+        self.assertIsNone(fa.capability_shell_block(cu_off, "web_fetch", {"url": "https://example.com"}))     # only the shell tool is classified here
+        self.assertIsNone(fa.capability_shell_block(None, "run_shell", {"command": "wtype x"}))                # no caps computed = nothing to bind
+        # through the gate: recorded with the decision and the switch, never run; the model is told what to do instead
+        tid = st.q("INSERT INTO tasks(request,status,created,updated,computer_use,research) VALUES('x','running',0,0,0,0)").lastrowid
+        task = st.one("SELECT * FROM tasks WHERE id=?", tid); task["_caps"] = fa.capabilities(st, task)
+        sid, ok, risk, reason = a._gate(tid, task, "run_shell", {"command": "setsid -f dolphin"})
+        self.assertFalse(ok); self.assertEqual(reason, "Computer use is off for this chat: this command starts dolphin on the screen")
+        self.assertEqual(st.one("SELECT decision FROM steps WHERE id=?", sid)["decision"], "off-for-this-chat")
+        a.tools = fa.Tools(st, a)
+        out, err, _inp = a._run_call(tid, task, {"id": "t1", "name": "run_shell", "input": {"command": "curl -s https://example.com/"}})
+        self.assertTrue(err); self.assertIn("Research is off for this chat: this command fetches from the network (curl)", out["error"])
+        self.assertIn("another command", out["error"]); self.assertIn(fa.CAPABILITY_OFF_REPLY["research"], out["error"])
+        self.assertEqual(st.one("SELECT narration_done FROM steps WHERE task_id=? ORDER BY id DESC LIMIT 1", tid)["narration_done"], "Sorry, research is off for this chat.")
+        self.assertTrue(any(e["kind"] == "tool_off_for_chat" and e["task_id"] == tid and "curl" in e["detail"] for e in self.cli("log", "--limit", "50")))
+        # the prompts say so before the model tries (free-form and stepwise alike)
+        self.assertIn("run_shell may not reach the screen", fa.build_system_prompt(st, "auto", [], cu_off)); self.assertIn("such commands are refused", fa.build_system_prompt(st, "auto", [], r_off))
+        self.assertIn("(refused)", fa.local_system_prompt("auto", dict(fa.NET_SKIPPED), r_off)); self.assertIn("may not start graphical programs", fa.local_system_prompt("auto", dict(fa.NET_SKIPPED), cu_off))
+        st.q("DELETE FROM tasks WHERE id=?", tid)
+        # end to end: the scripted provider, told to do it "from the shell", reaches for run_shell (xdg-open) — refused, and it says the sentence
+        r = self.api("POST", "/tasks", {"request": "open the files app from the shell", "mode": "bypass", "computer_use": False}); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        calls = [s for s in t["steps"] if s["kind"] == "tool_call"]
+        self.assertEqual([(s["name"], s["decision"]) for s in calls], [("run_shell", "off-for-this-chat")], t["steps"])
+        self.assertEqual(t["result"], fa.CAPABILITY_OFF_REPLY["computer_use"]); self.assertEqual(calls[0]["narration_done"], "Sorry, computer use is off for this chat.")
+        self.assertIn("xdg-open", json.loads(calls[0]["input"])["command"])
 
 
 class StepwiseUnits(unittest.TestCase):
