@@ -49,7 +49,13 @@ HEADER_RE = re.compile(r"<!--\s*release:\s*([^>]*?)\s*-->")
 FIELD_RE = re.compile(r"([A-Za-z_]+)=(\S+)")
 HEADING_RE = re.compile(r"^## (\d+\.\d+)-(\d+) — (.+)$")
 # extra rules for the changelog page; everything else comes from website/index.html's stylesheet
+PAGE_SIZE = 5   # releases per page on the website
+
 PAGE_CSS = """
+.pager{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin:34px 0 0}.pager[hidden]{display:none}
+.pager button{border:1.5px solid var(--plum);background:#fff;color:var(--plum);border-radius:999px;padding:10px 18px;font:inherit;font-weight:700;cursor:pointer}
+.pager button[aria-current="page"]{background:var(--plum);color:#fff}.pager button:disabled{opacity:.35;cursor:default}.pager .pager-status{color:#75457f;font-size:14px;margin:0 6px}
+.release[data-page-hidden]{display:none}
 .changelog-hero{padding:172px 0 58px;background:linear-gradient(112deg,#f2c4dd 0%,#f8d8e8 44%,#fcecf0 100%)}
 .changelog-hero .section-head{margin-bottom:0;max-width:720px}.changelog-hero .section-head p{color:#75457f}
 .changelog-hero .section-head p+p{margin-top:10px}.changelog-hero a{color:var(--plum);font-weight:700;text-decoration:underline}
@@ -324,7 +330,9 @@ def render_page(releases, index_html):
     footer = relink(slice_between(index_html, '<footer class="footer">', "</footer>", "the site footer"))
     fonts = "\n".join(ln for ln in index_html.split("\n") if "fonts.g" in ln and ln.startswith("<link"))
     shown = [r for r in releases if not r.draft]
-    articles = "\n".join(render_release_html(r) for r in shown)
+    articles = "\n".join(render_release_html(r).replace('<article class="release" ', '<article class="release" data-page="%d" ' % (i // PAGE_SIZE + 1), 1)
+                         for i, r in enumerate(shown))
+    pages = max(1, (len(shown) + PAGE_SIZE - 1) // PAGE_SIZE)
     description = ("What changed in every Fab OS release, newest first: the images you install and the over-the-air "
                    "updates installed systems receive on their own.")
     return """<!doctype html>
@@ -354,16 +362,29 @@ def render_page(releases, index_html):
 <body>
 %(header)s
 <main id="top">
-<section class="section changelog-hero"><div class="wrap"><div class="section-head"><span class="eyebrow">Changelog</span><h2>What changed in Fab OS.</h2><p>Every release, newest first, in plain language. An <b>image</b> is a disc image you write to a USB stick and install from; an <b>over-the-air update</b> reaches installed systems on its own through Fab Updates, with nothing to reinstall. Version numbers read 1.0-N, where N counts the package revision.</p><p>Follow along with the <a href="../updates.xml">RSS feed</a> or the <a href="https://github.com/%(repo)s/releases" target="_blank" rel="noreferrer">releases on GitHub</a>.</p></div></div></section>
-<section class="section white-section"><div class="wrap changelog-list">
+<section class="section changelog-hero"><div class="wrap"><div class="section-head"><span class="eyebrow">Changelog</span><h2>What changed in Fab OS.</h2><p>Follow along with the <a href="../updates.xml">RSS feed</a> or the <a href="https://github.com/%(repo)s/releases" target="_blank" rel="noreferrer">releases on GitHub</a>.</p></div></div></section>
+<section class="section white-section"><div class="wrap changelog-list" data-pages="%(pages)d" data-page-size="%(page_size)d">
 %(articles)s
+<nav class="pager" aria-label="Changelog pages" hidden><button type="button" data-go="prev">Newer</button><span class="pager-status"></span><button type="button" data-go="next">Older</button></nav>
 </div></section>
 </main>
 %(footer)s
+<script>
+(function(){var list=document.querySelector(".changelog-list");if(!list)return;var pages=+list.dataset.pages||1;if(pages<2)return;
+var cards=[].slice.call(list.querySelectorAll(".release"));var nav=list.querySelector(".pager");var status=nav.querySelector(".pager-status");var cur=1;
+function show(n,keepHash){cur=Math.min(pages,Math.max(1,n));cards.forEach(function(c){if(+c.dataset.page===cur){c.removeAttribute("data-page-hidden")}else{c.setAttribute("data-page-hidden","")}});
+var numbers=nav.querySelectorAll("[data-page-number]");numbers.forEach(function(b){if(+b.dataset.pageNumber===cur){b.setAttribute("aria-current","page")}else{b.removeAttribute("aria-current")}});
+nav.querySelector("[data-go=prev]").disabled=cur===1;nav.querySelector("[data-go=next]").disabled=cur===pages;status.textContent="Page "+cur+" of "+pages;
+if(!keepHash){var top=list.getBoundingClientRect().top+window.pageYOffset-96;if(window.pageYOffset>top)window.scrollTo({top:top,behavior:"smooth"})}}
+for(var i=1;i<=pages;i++){var b=document.createElement("button");b.type="button";b.textContent=i;b.dataset.pageNumber=i;b.addEventListener("click",function(){show(+this.dataset.pageNumber)});status.parentNode.insertBefore(b,status)}
+nav.querySelector("[data-go=prev]").addEventListener("click",function(){show(cur-1)});nav.querySelector("[data-go=next]").addEventListener("click",function(){show(cur+1)});
+function fromHash(){var id=decodeURIComponent(location.hash.slice(1));var card=id&&document.getElementById(id);if(card&&card.dataset.page){show(+card.dataset.page,true);card.scrollIntoView()}else{show(1,true)}}
+nav.hidden=false;fromHash();window.addEventListener("hashchange",fromHash)})();
+</script>
 </body>
 </html>
 """ % dict(description=html.escape(description, quote=True), site=SITE_URL, fonts=fonts, style=style, page_css=PAGE_CSS,
-           header=header, articles=articles, footer=footer, repo=GITHUB_REPO)
+           header=header, articles=articles, footer=footer, repo=GITHUB_REPO, pages=pages, page_size=PAGE_SIZE)
 
 
 # ---- the feed -------------------------------------------------------------------------------------------------------

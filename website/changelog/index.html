@@ -42,6 +42,10 @@ a{color:inherit;text-decoration:none}button{font:inherit}.wrap{max-width:1240px;
 .newsletter-section{background:linear-gradient(120deg,#f3deeb,#fffaf9)}.newsletter-card{display:grid;grid-template-columns:1fr .9fr;gap:38px;padding:42px;border:1px solid #ead7e7;border-radius:30px;background:rgba(255,255,255,.7);box-shadow:var(--shadow)}.newsletter-card h2{max-width:560px;margin:10px 0 12px;color:var(--deep);font-size:clamp(36px,4vw,56px);line-height:1}.newsletter-card p{max-width:540px;color:#76517c}.newsletter-form{display:grid;gap:12px;align-content:center}.newsletter-form input[type=email]{width:100%;min-height:50px;padding:13px 15px;border:1px solid #dbc5df;border-radius:15px;background:#fff;color:var(--deep);font:inherit}.newsletter-checks{display:grid;gap:8px;color:#76517c;font-size:13px}.newsletter-checks label{display:flex;gap:9px;align-items:center}.newsletter-checks input{accent-color:var(--plum)}.newsletter-form button{justify-self:start;border:0}.newsletter-note,.newsletter-message{font-size:12px!important;color:#806587!important}.newsletter-message{min-height:18px;margin:0!important}@media(max-width:900px){.newsletter-card{grid-template-columns:1fr;gap:10px;padding:30px}}@media(max-width:560px){.newsletter-card{padding:24px;border-radius:24px}.newsletter-card h2{font-size:36px}.newsletter-form button{width:100%}}
 .install-steps{margin:16px 0 0;padding-left:22px;line-height:1.8;display:grid;gap:6px}.install-steps li{padding-left:4px}.download-actions{display:flex;flex-direction:column;gap:8px;align-items:flex-start}.download-primary{font-size:17px;padding:14px 22px}</style>
 <style>
+.pager{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin:34px 0 0}.pager[hidden]{display:none}
+.pager button{border:1.5px solid var(--plum);background:#fff;color:var(--plum);border-radius:999px;padding:10px 18px;font:inherit;font-weight:700;cursor:pointer}
+.pager button[aria-current="page"]{background:var(--plum);color:#fff}.pager button:disabled{opacity:.35;cursor:default}.pager .pager-status{color:#75457f;font-size:14px;margin:0 6px}
+.release[data-page-hidden]{display:none}
 .changelog-hero{padding:172px 0 58px;background:linear-gradient(112deg,#f2c4dd 0%,#f8d8e8 44%,#fcecf0 100%)}
 .changelog-hero .section-head{margin-bottom:0;max-width:720px}.changelog-hero .section-head p{color:#75457f}
 .changelog-hero .section-head p+p{margin-top:10px}.changelog-hero a{color:var(--plum);font-weight:700;text-decoration:underline}
@@ -63,9 +67,9 @@ a{color:inherit;text-decoration:none}button{font:inherit}.wrap{max-width:1240px;
 <body>
 <header class="site-header"><div class="wrap"><nav class="nav"><a class="brand" href="../#top"><img src="../fabos.svg" alt="Fab OS mark"><span class="brand-text">Fab OS<sup style="font-size:.5em;vertical-align:super">™</sup></span></a><span class="nav-spacer"></span><div class="nav-links"><a href="../#overview">Overview</a><a href="../#principles">Principles</a><a href="../docs/">Docs</a><a href="../#contact">Contact</a></div><a class="pill-button" href="../#status">Download</a></nav></div></header>
 <main id="top">
-<section class="section changelog-hero"><div class="wrap"><div class="section-head"><span class="eyebrow">Changelog</span><h2>What changed in Fab OS.</h2><p>Every release, newest first, in plain language. An <b>image</b> is a disc image you write to a USB stick and install from; an <b>over-the-air update</b> reaches installed systems on its own through Fab Updates, with nothing to reinstall. Version numbers read 1.0-N, where N counts the package revision.</p><p>Follow along with the <a href="../updates.xml">RSS feed</a> or the <a href="https://github.com/PatienceAIiN/fab-os/releases" target="_blank" rel="noreferrer">releases on GitHub</a>.</p></div></div></section>
-<section class="section white-section"><div class="wrap changelog-list">
-<article class="release" id="1.0-7">
+<section class="section changelog-hero"><div class="wrap"><div class="section-head"><span class="eyebrow">Changelog</span><h2>What changed in Fab OS.</h2><p>Follow along with the <a href="../updates.xml">RSS feed</a> or the <a href="https://github.com/PatienceAIiN/fab-os/releases" target="_blank" rel="noreferrer">releases on GitHub</a>.</p></div></div></section>
+<section class="section white-section"><div class="wrap changelog-list" data-pages="2" data-page-size="5">
+<article class="release" data-page="1" id="1.0-7">
 <div class="release-meta"><span class="release-badge ota">Over-the-air update</span><span class="release-date">16 September 2026</span><span class="release-tag">v1.0.6</span></div>
 <h3>Fab OS 1.0-7</h3>
 <p class="release-intro">The first update delivered entirely through Fab Updates, with nothing to reinstall. It answers the first reports from Fab OS running on a real laptop.</p>
@@ -81,7 +85,7 @@ a{color:inherit;text-decoration:none}button{font:inherit}.wrap{max-width:1240px;
 <p class="release-get"><b>How to get it:</b> Installed systems receive it automatically through Fab Updates.</p>
 <p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.6" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
 </article>
-<article class="release" id="1.0-6">
+<article class="release" data-page="1" id="1.0-6">
 <div class="release-meta"><span class="release-badge image">Image</span><span class="release-date">16 September 2026</span><span class="release-tag">v1.0.5</span></div>
 <h3>Fab OS 1.0-6</h3>
 <p class="release-intro">The disc image whose installer was proven by an automated installation before it was published. It replaces 1.0-4, whose installer failed on a real device.</p>
@@ -98,12 +102,12 @@ a{color:inherit;text-decoration:none}button{font:inherit}.wrap{max-width:1240px;
 <p class="release-get"><b>How to get it:</b> <a href="../download/fabos-1.0-desktop-amd64.iso">Get the disc image</a> and install it; systems already installed receive these packages through Fab Updates.</p>
 <p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.5" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
 </article>
-<article class="release" id="1.0-5">
+<article class="release" data-page="1" id="1.0-5">
 <div class="release-meta"><span class="release-badge withheld">Image withheld</span><span class="release-date">15 September 2026</span></div>
 <h3>Fab OS 1.0-5</h3>
 <p class="release-intro">No disc image was published for this revision: one was built and held back after the installer of the previous image failed on a real device. Installed systems did receive 1.0-5 through Fab Updates on 15 September, until 1.0-6 replaced it the next day. What it carried — Firefox returning in place of Brave, rounded corners on every window, a stronger step-by-step mode for the built-in offline model, and a second pass on the top bar and dock — is listed under 1.0-6. There is no GitHub release for this revision.</p>
 </article>
-<article class="release" id="1.0-4">
+<article class="release" data-page="1" id="1.0-4">
 <div class="release-meta"><span class="release-badge image">Image</span><span class="release-date">15 September 2026</span><span class="release-tag">v1.0.3</span></div>
 <h3>Fab OS 1.0-4</h3>
 <ul>
@@ -118,7 +122,7 @@ a{color:inherit;text-decoration:none}button{font:inherit}.wrap{max-width:1240px;
 <p class="release-get"><b>How to get it:</b> <a href="../#status">This image has been superseded — get the current disc image</a> instead; systems already installed receive these packages through Fab Updates.</p>
 <p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.3" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
 </article>
-<article class="release" id="1.0-3">
+<article class="release" data-page="1" id="1.0-3">
 <div class="release-meta"><span class="release-badge image">Image</span><span class="release-date">15 September 2026</span><span class="release-tag">v1.0.2</span></div>
 <h3>Fab OS 1.0-3</h3>
 <ul>
@@ -134,7 +138,7 @@ a{color:inherit;text-decoration:none}button{font:inherit}.wrap{max-width:1240px;
 <p class="release-get"><b>How to get it:</b> <a href="../#status">This image has been superseded — get the current disc image</a> instead; systems already installed receive these packages through Fab Updates.</p>
 <p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.2" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
 </article>
-<article class="release" id="1.0-2">
+<article class="release" data-page="2" id="1.0-2">
 <div class="release-meta"><span class="release-badge image">Image</span><span class="release-date">14 September 2026</span><span class="release-tag">v1.0.1</span></div>
 <h3>Fab OS 1.0-2</h3>
 <p class="release-intro">Published a few hours after 1.0-1, with these changes on top of it:</p>
@@ -152,7 +156,7 @@ a{color:inherit;text-decoration:none}button{font:inherit}.wrap{max-width:1240px;
 <p class="release-get"><b>How to get it:</b> <a href="../#status">This image has been superseded — get the current disc image</a> instead; systems already installed receive these packages through Fab Updates.</p>
 <p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.1" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
 </article>
-<article class="release" id="1.0-1">
+<article class="release" data-page="2" id="1.0-1">
 <div class="release-meta"><span class="release-badge image">Image</span><span class="release-date">14 September 2026</span><span class="release-tag">v1.0.0</span></div>
 <h3>Fab OS 1.0-1</h3>
 <p class="release-intro">The first Fab OS 1.0 build made public, replaced later the same day by 1.0-2.</p>
@@ -167,8 +171,21 @@ a{color:inherit;text-decoration:none}button{font:inherit}.wrap{max-width:1240px;
 <p class="release-get"><b>How to get it:</b> <a href="../#status">This image has been superseded — get the current disc image</a> instead; systems already installed receive these packages through Fab Updates.</p>
 <p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.0" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
 </article>
+<nav class="pager" aria-label="Changelog pages" hidden><button type="button" data-go="prev">Newer</button><span class="pager-status"></span><button type="button" data-go="next">Older</button></nav>
 </div></section>
 </main>
 <footer class="footer"><div class="wrap footer-row"><div class="footer-copy"><b>Fab OS™</b> by Patience AI<br>Copyright 2026 Patience AI. Fab OS is a trademark of Patience AI.</div><div class="footer-links"><a href="../docs/">Documentation</a><a href="../updates/">Updates</a><a href="./">Changelog</a><a href="../community/">Community</a><a href="mailto:info@patienceai.in">Contact</a><a href="https://github.com/PatienceAIiN/fab-os" target="_blank" rel="noreferrer">Source</a></div></div></footer>
+<script>
+(function(){var list=document.querySelector(".changelog-list");if(!list)return;var pages=+list.dataset.pages||1;if(pages<2)return;
+var cards=[].slice.call(list.querySelectorAll(".release"));var nav=list.querySelector(".pager");var status=nav.querySelector(".pager-status");var cur=1;
+function show(n,keepHash){cur=Math.min(pages,Math.max(1,n));cards.forEach(function(c){if(+c.dataset.page===cur){c.removeAttribute("data-page-hidden")}else{c.setAttribute("data-page-hidden","")}});
+var numbers=nav.querySelectorAll("[data-page-number]");numbers.forEach(function(b){if(+b.dataset.pageNumber===cur){b.setAttribute("aria-current","page")}else{b.removeAttribute("aria-current")}});
+nav.querySelector("[data-go=prev]").disabled=cur===1;nav.querySelector("[data-go=next]").disabled=cur===pages;status.textContent="Page "+cur+" of "+pages;
+if(!keepHash){var top=list.getBoundingClientRect().top+window.pageYOffset-96;if(window.pageYOffset>top)window.scrollTo({top:top,behavior:"smooth"})}}
+for(var i=1;i<=pages;i++){var b=document.createElement("button");b.type="button";b.textContent=i;b.dataset.pageNumber=i;b.addEventListener("click",function(){show(+this.dataset.pageNumber)});status.parentNode.insertBefore(b,status)}
+nav.querySelector("[data-go=prev]").addEventListener("click",function(){show(cur-1)});nav.querySelector("[data-go=next]").addEventListener("click",function(){show(cur+1)});
+function fromHash(){var id=decodeURIComponent(location.hash.slice(1));var card=id&&document.getElementById(id);if(card&&card.dataset.page){show(+card.dataset.page,true);card.scrollIntoView()}else{show(1,true)}}
+nav.hidden=false;fromHash();window.addEventListener("hashchange",fromHash)})();
+</script>
 </body>
 </html>
