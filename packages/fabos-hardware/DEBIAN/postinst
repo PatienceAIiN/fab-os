@@ -4,12 +4,18 @@
 set -e
 case "$1" in configure)
   # 1. Fingerprint authentication for every PAM service that includes common-auth (SDDM login, the lock screen, sudo,
-  #    polkit prompts): the pam-auth-update profile "fprintd" that libpam-fprintd ships (Default: yes, so libpam-fprintd's
-  #    own postinst normally enables it; this covers a system where it was switched off before this package arrived).
-  #    Non-interactive: --package never asks. The "unix" (password) profile stays on: a fingerprint is always an
-  #    alternative, never the only way in (docs/HARDWARE.md).
-  if [ -f /usr/share/pam-configs/fprintd ] && ! grep -qs pam_fprintd /etc/pam.d/common-auth; then
+  #    polkit prompts): the pam-auth-update profile "fprintd" that libpam-fprintd ships. In Ubuntu 26.04 that profile is
+  #    "Default: no" (libpam-fprintd's own postinst leaves it off), so it is switched on here, ONCE (stamp in
+  #    /var/lib/fabos): `pam-auth-update --enable` re-enables unconditionally, and a later upgrade of this package must
+  #    not undo a user's own `pam-auth-update` opt-out. Non-interactive: --package never asks. The "unix" (password)
+  #    profile stays on: a fingerprint is always an alternative, never the only way in (docs/HARDWARE.md). The stamp is
+  #    written only after the profile is really in common-auth (pam-auth-update declines locally edited files).
+  stamp=/var/lib/fabos/fprintd-pam-enabled
+  if [ -f /usr/share/pam-configs/fprintd ] && [ ! -f "$stamp" ] && ! grep -qs pam_fprintd /etc/pam.d/common-auth; then
     DEBIAN_FRONTEND=noninteractive pam-auth-update --package --enable fprintd 2>/dev/null || true
+  fi
+  if grep -qs pam_fprintd /etc/pam.d/common-auth && [ ! -f "$stamp" ]; then
+    mkdir -p /var/lib/fabos && date -u +%FT%TZ > "$stamp" 2>/dev/null || true
   fi
   if ! grep -qs pam_unix /etc/pam.d/common-auth; then
     DEBIAN_FRONTEND=noninteractive pam-auth-update --package --enable unix 2>/dev/null || true

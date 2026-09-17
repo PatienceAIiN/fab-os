@@ -47,6 +47,10 @@ Item {
                         passwordField.reveal = false; passwordField.text = ""
                         errorLabel.text = qsTr("Wrong password. Try again."); shakeAnim.restart()
                         after(120, function() { grab("greeter-error", function() {
+                            // a PAM information message (pam_fprintd's prompt while a fingerprint reader with an enrolled
+                            // finger is asked first, 1.0-8): the same line in the neutral hint style, not red
+                            errorLabel.info = true; errorLabel.text = "Place your finger on the fingerprint reader"
+                            after(120, function() { grab("greeter-info", function() {
                             errorLabel.text = ""
                             rootItem.stage = "username"
                             after(400, function() { grab("greeter-username", function() {
@@ -60,6 +64,7 @@ Item {
                                         console.log("HARNESS done"); Qt.quit()
                                     }) })
                                 }) })
+                            }) })
                             }) })
                         }) })
                     }) })

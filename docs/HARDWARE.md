@@ -26,8 +26,16 @@ should see on a real machine, how it is wired, and — honestly — what the QEM
 * **What to expect with a reader present**: touch the reader → you are in. Type the password instead → the password
   is checked after the fingerprint attempt gives up (`timeout=10`: at most ten seconds; a second touch attempt is not
   offered in the same prompt — `max-tries=1`). The same ten-second rule applies to `sudo` in a terminal ("Place your
-  finger on the fingerprint reader" is printed first). This is Ubuntu's standard profile; it is the trade-off for a
-  stack that every PAM user shares.
+  finger on the fingerprint reader" is printed first) and to authorisation prompts. This is Ubuntu's standard profile;
+  it is the trade-off for a stack that every PAM user shares. Two things keep it from being a nuisance:
+  * it only starts once a finger is **enrolled**: with a reader but no enrolled finger, `pam_fprintd` answers "No
+    prints enrolled" at once and the password prompt appears immediately — a laptop that never enrols a finger notices
+    nothing;
+  * the profile is switched on **once** (first install of `fabos-hardware`, stamp `/var/lib/fabos/fprintd-pam-enabled`).
+    Run `sudo pam-auth-update` and untick *Fingerprint authentication* to opt out; later Fab OS updates leave that
+    choice alone.
+  The login screen shows the "Place your finger…" line as a neutral hint under the password field (only a wrong
+  password is red).
 * **Drivers**: libfprint's in-tree drivers cover most Validity/Synaptics/Elan/Goodix/UPEK/AuthenTec readers of the last
   decade; `libfprint-2-tod1` loads the vendor "TOD" drivers that some Lenovo/Dell readers need (the vendor ships those
   separately, e.g. through `fwupd`/LVFS or the OEM archive; Fab OS does not bundle proprietary drivers). Check with

@@ -10,8 +10,10 @@ Rules are strictly LENGTH-PRESERVING so nothing shifts:
     resource name tables are UTF-16BE and a bare UTF-16LE word matches them at odd offsets (this once broke Discover).
 Originals are kept as <file>.fabos-orig and patching always restarts from the original, so rule changes converge.
 Idempotent; re-run by the apt Post-Invoke hook after upgrades.  See legal/PATCHED-BINARIES.md.
+After apt upgrades a target's package the kept original is STALE (the old build): it is recognised through dpkg's own
+md5sums for the file and dropped, and the new build is patched afresh — never overwritten from the old copy (1.0-8).
 """
-import glob, os, shutil
+import glob, hashlib, os, shutil, subprocess
 
 LIB = "/usr/lib/x86_64-linux-gnu"
 PLUG = LIB + "/qt6/plugins"
@@ -73,8 +75,69 @@ def apply(data, rules_utf8, rules_utf16, rules_nul):
     return new
 
 
-def patch(path, rules_utf8, rules_utf16, rules_nul=()):
+def _md5(path):
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def shipped_md5s(paths):
+    """{path: the md5 dpkg recorded for it when its package was installed} — `dpkg -S` for the owner, then the owner's
+    /var/lib/dpkg/info/<pkg>.md5sums. This is what tells a kept original from a STALE one: after apt upgrades the owning
+    package, the installed file is the new build (matches the new md5sums) while <file>.fabos-orig is the old build."""
+    res = {}
+    paths = [p for p in paths if os.path.isfile(p)]
+    if not paths:
+        return res
+    try:
+        out = subprocess.run(["dpkg", "-S"] + paths, capture_output=True, text=True, timeout=300).stdout
+    except Exception:
+        return res
+    owner = {}
+    for line in out.splitlines():
+        if line.startswith("diversion by "):
+            continue
+        pkgs, sep, p = line.partition(": ")
+        if sep and p in paths:
+            owner[p] = pkgs.split(",")[0].strip()          # "libkf6wallet6:amd64" stays arch-qualified: that is the list's file name
+    lists = {}
+    for p, pkg in owner.items():
+        if pkg not in lists:
+            lists[pkg] = {}
+            for cand in ("/var/lib/dpkg/info/%s.md5sums" % pkg, "/var/lib/dpkg/info/%s:amd64.md5sums" % pkg):
+                if not os.path.exists(cand):
+                    continue
+                for l in open(cand, encoding="utf-8", errors="replace"):
+                    h, _, rel = l.rstrip("\n").partition("  ")
+                    if rel:
+                        lists[pkg]["/" + rel] = h
+                break
+        if p in lists[pkg]:
+            res[p] = lists[pkg][p]
+    return res
+
+
+def stale_original(path, orig, shipped):
+    """True when <orig> must not be used any more. Case A (apt upgraded the owning package, the installed file is the
+    new build): the stale copy is dropped and the caller starts over from the installed file. Case B (neither copy is
+    the build dpkg recorded — an earlier run of the pre-1.0-8 script already wrote a stale patch over the new build, or
+    the file was edited by hand): nothing is written; the owning package's reinstall is the only clean way back."""
+    if not shipped or not os.path.exists(orig) or _md5(orig) == shipped:
+        return False
+    if os.path.isfile(path) and _md5(path) == shipped:
+        os.remove(orig); print("upstream upgraded, stale original dropped", path)
+        return False
+    print("WARNING: %s and its .fabos-orig both differ from the md5sum its package recorded; left untouched "
+          "(`apt-get install --reinstall <package>` restores the shipped build, the next run patches it afresh)" % path)
+    return True
+
+
+def patch(path, rules_utf8, rules_utf16, rules_nul=(), shipped=None):
     orig = path + ".fabos-orig"
+    if stale_original(path, orig, shipped):
+        return
     src = orig if os.path.exists(orig) else path
     data = open(src, "rb").read()
     new = apply(data, rules_utf8, rules_utf16, rules_nul)
@@ -103,14 +166,20 @@ def main():
                 p = os.path.realpath(p)                      # /usr/bin/X11 -> /usr/bin: one plan entry per real file
                 a, b, c = plan.setdefault(p, ([], [], []))
                 a += [r for r in u8 if r not in a]; b += [r for r in u16 if r not in b]; c += [r for r in nul if r not in c]
-    for p, (u8, u16, nul) in sorted(plan.items()):
-        patch(p, u8, u16, nul)
     # binaries/catalogs patched by an earlier rule set that are no longer targets: put the originals back
     # (only where this script writes; text files patched by rebrand-desktop-entries keep their own .fabos-orig)
-    sweep = glob.glob("/usr/bin/*.fabos-orig") + glob.glob(LIB + "/**/*.fabos-orig", recursive=True) + glob.glob("/usr/share/locale/**/*.fabos-orig", recursive=True)
+    sweep = [os.path.realpath(o) for o in glob.glob("/usr/bin/*.fabos-orig") + glob.glob(LIB + "/**/*.fabos-orig", recursive=True)
+             + glob.glob("/usr/share/locale/**/*.fabos-orig", recursive=True)]
+    # what dpkg says each target / kept original should be: a kept original that no longer matches is from BEFORE an
+    # upstream upgrade and must never be written over the new build (that is exactly what the pre-1.0-8 script did)
+    shipped = shipped_md5s(sorted(set(plan) | {o[:-len(".fabos-orig")] for o in sweep}))
+    for p, (u8, u16, nul) in sorted(plan.items()):
+        patch(p, u8, u16, nul, shipped.get(p))
     for orig in sweep:
-        orig = os.path.realpath(orig); p = orig[:-len(".fabos-orig")]
+        p = orig[:-len(".fabos-orig")]
         if p not in plan and os.path.isfile(orig) and not os.path.islink(orig):
+            if stale_original(p, orig, shipped.get(p)) or not os.path.exists(orig):
+                continue                                      # stale copy: dropped (or reported), the installed build stays
             os.replace(orig, p); print("restored", p)
 
 

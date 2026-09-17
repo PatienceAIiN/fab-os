@@ -71,7 +71,7 @@ PY
   rbad=$(grep -vE "$ALLOW" "$RLOG" | grep -E "$BAD" | grep -v '^qml: HARNESS' || true)
   chk "no QML errors while rendering"          "test -z \"\$rbad\""
   [ -n "$rbad" ] && echo "$rbad" | sed 's/^/      /' | head -20
-  for s in users password password-reveal error power session username; do
+  for s in users password password-reveal error info power session username; do
     chk "render greeter-$s.png"                "[ \$(stat -c %s '$OUT/greeter-$s.png' 2>/dev/null || echo 0) -gt 20000 ]"
   done
   grep '^qml: HARNESS users=' "$RLOG" | sed 's/^/      /'
