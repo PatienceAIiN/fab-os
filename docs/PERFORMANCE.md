@@ -96,6 +96,10 @@ Findings, each one verified in the guest rather than assumed:
 | Gaming | `performance` | `AllowTearing=true`; VRR `Automatic` on every output; blur, translucency, magic lamp, dim-screen off (rounded corners and fades stay) | as the user has it | the user's `voice.spotter` | governor `performance`, `split_lock_mitigate=0` |
 | Server | `balanced` | `AllowTearing=false`; every animation effect and the rounded corners off | display never dims or turns off, `AutoSuspendAction=0`, `LidAction=0` (AC and battery); the screen still locks after the usual idle time | `off` | saved original governor |
 
+The battery card shows the five modes as icon segments with the active mode named in an accent pill (rendered through
+the quick-settings QML harness with a stand-in `fabos-perf-mode`: `build/r8-perf/modes-render/light/quicksettings-open-end.png`;
+`tests/desktop-applets-qml-test.sh localhost/fabos:vm harness-qs` passes in both colour schemes with the fallback path).
+
 Entering Gaming or Server snapshots the user's own values of every key those modes write (`~/.config/fabos/performance-mode.snapshot`);
 leaving them restores exactly those values, or deletes the key so the `/etc/xdg` default applies again. KWin is told to
 `reconfigure`, PowerDevil to `refreshStatus`; nothing is restarted. The defaults of 1.0-7 (`AllowTearing=false`, blur on
