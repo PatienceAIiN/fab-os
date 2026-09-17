@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """End-to-end test of fabos-agentd with the scripted provider (no network, no GUI).
 Runs the daemon from packages/, drives it through the CLI + HTTP API, checks policy, approvals, CRUD, watches."""
-import base64, hashlib, http.client, imaplib, importlib.machinery, importlib.util, io, json, os, shutil, signal, smtplib, socket, sqlite3, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, unittest, wave
+import base64, datetime, hashlib, http.client, re, imaplib, importlib.machinery, importlib.util, io, json, os, shutil, signal, smtplib, socket, sqlite3, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, unittest, wave
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DAEMON = os.path.join(ROOT, "packages/fabos-agent/usr/lib/fabos/agent/fabos_agentd.py")
 CLI = os.path.join(ROOT, "packages/fabos-agent/usr/bin/fabos")
 ROOTEXEC = os.path.join(ROOT, "packages/fabos-agent/usr/lib/fabos/agent/rootexec")
+DPORT = os.environ.get("FABOS_AGENT_TEST_PORT", "18790")      # the Daemon fixture's port (override to run two copies of this file side by side)
 os.environ.setdefault("FABOS_POLICY_FILE", os.path.join(tempfile.gettempdir(), "fabos-test-no-policy-%d.json" % os.getpid()))   # never the developer's /etc/fabos/policy.json
 sys.path.insert(0, os.path.dirname(DAEMON))
 import fabos_agentd as fa  # noqa: E402
@@ -854,19 +855,25 @@ class Daemon(unittest.TestCase):
         # test_25 proves none of it reaches a shell step.
         cls.agent_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); cls.agent_sock.bind(os.path.join(cls.tmp, "openssh_agent")); cls.agent_sock.listen(1)
         env = dict(os.environ, XDG_RUNTIME_DIR=cls.tmp, FABOS_AGENT_DATA=os.path.join(cls.tmp, "data"), XDG_CONFIG_HOME=os.path.join(cls.tmp, "cfg"),
-                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT="18790", HOME=os.path.join(cls.tmp, "home"), PATH=os.path.join(cls.tmp, "bin") + ":/usr/bin:/bin",
+                   FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT=DPORT, HOME=os.path.join(cls.tmp, "home"), PATH=os.path.join(cls.tmp, "bin") + ":/usr/bin:/bin",
                    ANTHROPIC_API_KEY="sk-ant-LEAKTEST-0000", MY_SERVICE_TOKEN="LEAKTEST-token", SSH_AUTH_SOCK=os.path.join(cls.tmp, "openssh_agent"),
-                   FABOS_DISK_UNLOCK_HELPER=os.path.join(cls.tmp, "bin", "disk_unlock_stub.sh"))     # test_37 writes the stub; absent until then
+                   FABOS_DISK_UNLOCK_HELPER=os.path.join(cls.tmp, "bin", "disk_unlock_stub.sh"),     # test_37 writes the stub; absent until then
+                   FABOS_SCHED_NOTIFY="notify-send", FABOS_SCHED_TICK="3600")                      # the schedule's reminders go to the notify-send shim below, never a session bus
         os.makedirs(env["HOME"]); cls.env = env
         # wtype shim: there is no Wayland seat in a unit test; the text type_text would have typed is appended to typed.log (as tests/local-driver-image.sh does)
         os.makedirs(os.path.join(cls.tmp, "bin")); cls.typed_log = os.path.join(cls.tmp, "typed.log")
         with open(os.path.join(cls.tmp, "bin", "wtype"), "w") as f:
             f.write('#!/bin/sh\n[ "$1" = "-k" ] && { printf "\\n" >> %s; exit 0; }\nprintf "%%s" "$*" >> %s\n' % (cls.typed_log, cls.typed_log))
         os.chmod(os.path.join(cls.tmp, "bin", "wtype"), 0o755)
+        # notify-send shim: every desktop notification the daemon would show (task done, approvals, schedule reminders) is one line in notify.log
+        cls.notify_log = os.path.join(cls.tmp, "notify.log")
+        with open(os.path.join(cls.tmp, "bin", "notify-send"), "w") as f:
+            f.write('#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' % cls.notify_log)
+        os.chmod(os.path.join(cls.tmp, "bin", "notify-send"), 0o755)
         cls.proc = subprocess.Popen([sys.executable, DAEMON], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for _ in range(50):
             try:
-                urllib.request.urlopen("http://127.0.0.1:18790/health", timeout=1); break
+                urllib.request.urlopen("http://127.0.0.1:" + DPORT + "/health", timeout=1); break
             except Exception: time.sleep(0.2)
         else: raise RuntimeError("daemon did not start: " + cls.proc.stdout.read())
 
@@ -891,7 +898,7 @@ class Daemon(unittest.TestCase):
     def api(self, method, path, body=None):
         """A raw authenticated call (the UIs' path); an HTTP error comes back as {"error", "http"} like the CLI's --json output."""
         tok = open(os.path.join(self.tmp, "fabos-agent/token")).read().strip()
-        req = urllib.request.Request("http://127.0.0.1:18790" + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+        req = urllib.request.Request("http://127.0.0.1:%s" % DPORT + path, method=method, data=json.dumps(body).encode() if body is not None else None,
                                      headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=30) as r: return json.loads(r.read())
@@ -900,7 +907,7 @@ class Daemon(unittest.TestCase):
 
     def test_01_unauthorized(self):
         try:
-            urllib.request.urlopen("http://127.0.0.1:18790/tasks", timeout=2); self.fail("expected 401")
+            urllib.request.urlopen("http://127.0.0.1:" + DPORT + "/tasks", timeout=2); self.fail("expected 401")
         except urllib.error.HTTPError as e: self.assertEqual(e.code, 401)
 
     def test_02_simple_task_auto(self):
@@ -937,7 +944,7 @@ class Daemon(unittest.TestCase):
     def test_07_secret_roundtrip(self):
         body = json.dumps({"name": "claude_api_key", "value": "sk-test-123"}).encode()
         tok = open(os.path.join(self.tmp, "fabos-agent/token")).read()
-        req = urllib.request.Request("http://127.0.0.1:18790/secrets", data=body, headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+        req = urllib.request.Request("http://127.0.0.1:" + DPORT + "/secrets", data=body, headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
         self.assertTrue(json.loads(urllib.request.urlopen(req).read())["ok"])
         os.environ["XDG_CONFIG_HOME"] = self.env["XDG_CONFIG_HOME"]; fa.CONF_DIR = os.path.join(self.env["XDG_CONFIG_HOME"], "fabos", "agent")
         self.assertEqual(fa.get_secret("claude_api_key"), "sk-test-123"); self.assertTrue(self.cli("settings")["secrets"]["claude_api_key"])
@@ -1082,7 +1089,7 @@ class Daemon(unittest.TestCase):
         tok = open(os.path.join(self.tmp, "fabos-agent/token")).read()
 
         def post(path, body):
-            req = urllib.request.Request("http://127.0.0.1:18790" + path, data=json.dumps(body).encode(), headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+            req = urllib.request.Request("http://127.0.0.1:" + DPORT + "" + path, data=json.dumps(body).encode(), headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
             return json.loads(urllib.request.urlopen(req, timeout=10).read())
         for k, v in (("mail.provider", "other"), ("mail.address", "me@example.com"), ("mail.from_name", "Me"), ("mail.smtp_host", "127.0.0.1"),
                      ("mail.smtp_port", str(srv.port)), ("mail.smtp_security", "none"), ("mail.imap_host", "")):
@@ -1559,7 +1566,7 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         tok = open(os.path.join(self.tmp, "fabos-agent/token")).read()
 
         def call(method, path, body=None):
-            req = urllib.request.Request("http://127.0.0.1:18790" + path, data=json.dumps(body).encode() if body is not None else None, method=method,
+            req = urllib.request.Request("http://127.0.0.1:" + DPORT + "" + path, data=json.dumps(body).encode() if body is not None else None, method=method,
                                          headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=90) as r:
@@ -1811,6 +1818,130 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         self.assertEqual([(s["name"], s["decision"]) for s in calls], [("run_shell", "off-for-this-chat")], t["steps"])
         self.assertEqual(t["result"], fa.CAPABILITY_OFF_REPLY["computer_use"]); self.assertEqual(calls[0]["narration_done"], "Sorry, computer use is off for this chat.")
         self.assertIn("xdg-open", json.loads(calls[0]["input"])["command"])
+    # ---- the schedule (scheduler.py, docs/design/SCHEDULER.md)
+    def http(self, method, path, body=None):
+        with open(os.path.join(self.tmp, "fabos-agent", "token")) as f:
+            tok = f.read().strip()
+        req = urllib.request.Request("http://127.0.0.1:" + DPORT + path, data=json.dumps(body).encode() if body is not None else None, method=method,
+                                     headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return r.status, json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read() or b"{}")
+
+    def _nlog(self):
+        if not os.path.exists(self.notify_log):
+            return ""
+        with open(self.notify_log) as f:
+            return f.read()
+
+    def test_60_schedule_chat_shortcut_asks_when_unsure_and_lists(self):
+        """'remind me …' in a chat is handled without the provider: a LOW `schedule` tool step (auto-approved even in ask mode) and the
+        interpretation as the reply. A reading the parser is not sure about ('at 3') is put to the user first and the item exists only
+        after 'yes'; a missing time asks 'When…?'; 'no' adds nothing; 'my reminders for tomorrow' lists; a question that merely starts
+        with 'remind me' goes to the model."""
+        t = self.wait(self.cli("do", "--mode", "ask", "remind me tomorrow at 9am to call the bank")["id"])
+        self.assertEqual(t["status"], "done", t); self.assertTrue(t["result"].startswith("Added: Tomorrow, 09:00 — Call the bank"), t["result"])
+        step = [s for s in t["steps"] if s["kind"] == "tool_call"][0]
+        self.assertEqual((step["name"], step["risk"], step["decision"]), ("schedule", "LOW", "auto-approved")); self.assertEqual(step["narration"], "Adding that to your schedule.")
+        self.assertTrue(step["narration_done"].startswith("Added: Tomorrow, 09:00")); self.assertFalse(t["approvals"])
+        st, items = self.http("GET", "/schedule?scope=upcoming"); bank = [i for i in items["items"] if i["title"] == "Call the bank"][0]
+        self.assertEqual((bank["source"], bank["status"], bank["repeat"], bank["when_local"][11:16]), ("chat", "pending", "none", "09:00"))
+        # ambiguous: the question carries the reading; yes creates it
+        r = self.cli("do", "--mode", "auto", "remind me to call Rohan at 3"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user", t)
+        q = t["questions"][-1]["question"]; self.assertIn("I read that as", q); self.assertIn("15:00 — Call Rohan", q); self.assertIn("'at 3' read as 15:00", q)
+        self.assertEqual(self.http("GET", "/schedule?scope=all")[1]["count"], 1, "nothing is created before the answer")
+        self.cli("answer", str(r["id"]), "yes"); t = self.wait(r["id"], ("done", "failed")); self.assertTrue(t["result"].startswith("Added:") and "15:00 — Call Rohan" in t["result"], t["result"])
+        # no time at all: 'When should I remind you?' — the answer supplies it, the title comes from the first message
+        r = self.cli("do", "--mode", "auto", "remind me to water the plants"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user")
+        self.assertIn("When should I remind you", t["questions"][-1]["question"])
+        self.cli("answer", str(r["id"]), "tomorrow 7am"); t = self.wait(r["id"], ("done", "failed")); self.assertIn("07:00 — Water the plants", t["result"], t["result"])
+        # no: nothing added
+        r = self.cli("do", "--mode", "auto", "remind me on the 1st to pay rent"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user")
+        self.cli("answer", str(r["id"]), "no"); t = self.wait(r["id"], ("done", "failed")); self.assertIn("not added", t["result"])
+        self.assertFalse([i for i in self.http("GET", "/schedule?scope=all")[1]["items"] if i["title"] == "Pay rent"])
+        # a clearer time in the answer replaces the guess
+        r = self.cli("do", "--mode", "auto", "remind me to submit the report at 4"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user")
+        self.cli("answer", str(r["id"]), "tomorrow at 10am"); t = self.wait(r["id"], ("done", "failed")); self.assertIn("Tomorrow, 10:00 — Submit the report", t["result"], t["result"])
+        # two unclear answers in a row: the agent gives up politely instead of guessing (and the task ends 'done', not 'failed')
+        r = self.cli("do", "--mode", "auto", "remind me to call the plumber at 4"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user")
+        self.cli("answer", str(r["id"]), "at 5"); t = self.wait(r["id"]); self.assertEqual(t["status"], "waiting_user"); self.assertIn("17:00 — Call the plumber", t["questions"][-1]["question"])
+        self.cli("answer", str(r["id"]), "6 o'clock"); t = self.wait(r["id"], ("done", "failed")); self.assertEqual(t["status"], "done"); self.assertIn("not added", t["result"])
+        self.assertFalse([i for i in self.http("GET", "/schedule?scope=all")[1]["items"] if "plumber" in i["title"].lower()])
+        # listing
+        t = self.wait(self.cli("do", "--mode", "auto", "my reminders for tomorrow")["id"])
+        self.assertTrue(t["result"].startswith("Tomorrow: 3 items"), t["result"]); self.assertIn("09:00 Call the bank", t["result"]); self.assertIn("Water the plants", t["result"]); self.assertIn("Submit the report", t["result"])
+        self.assertEqual([s["name"] for s in t["steps"] if s["kind"] == "tool_call"], ["schedule"])
+        # not a reminder: the scripted provider handles it (its run_shell step), no schedule step
+        t = self.wait(self.cli("do", "--mode", "auto", "remind me what the capital of France is")["id"])
+        self.assertNotIn("schedule", [s["name"] for s in t["steps"]])
+        kinds = [e["kind"] for e in self.cli("log", "--limit", "80")]; self.assertIn("item_added", kinds)
+
+    def test_61_schedule_endpoints_parse_crud_roll_and_settings(self):
+        """/schedule: parse (no side effect), add from words (needs_confirm gate -> 200, confirm -> 201), add from title + when + repeat,
+        get / patch / done (a repeating item leaves a done copy and rolls a week) / snooze / dismiss / reopen / delete; /status.schedule;
+        scheduler.* settings are validated and 12-hour changes every time_text."""
+        st, p = self.http("POST", "/schedule/parse", {"text": "meeting with Rohan on 20 Sep 3pm"}); self.assertEqual(st, 200)
+        self.assertEqual((p["ok"], p["title"], p["when"][11:16], p["needs_confirm"]), (True, "Meeting with Rohan", "15:00", False))
+        st, r = self.http("POST", "/schedule", {"text": "meeting at 3"}); self.assertEqual(st, 200); self.assertTrue(r["needs_confirm"]); self.assertIn("Is that right?", r["text"])
+        n0 = self.http("GET", "/schedule?scope=all")[1]["count"]
+        st, r = self.http("POST", "/schedule", {"text": "meeting at 3", "confirm": True}); self.assertEqual(st, 201); self.assertEqual(r["item"]["title"], "Meeting")
+        self.assertEqual(self.http("GET", "/schedule?scope=all")[1]["count"], n0 + 1)
+        st, r = self.http("POST", "/schedule", {"text": "gym at 25:00"}); self.assertEqual(st, 400); self.assertIn("not a valid time", r["error"])
+        st, r = self.http("POST", "/schedule", {"text": "call the bank"}); self.assertEqual(st, 400); self.assertIn("When should I remind you", r["error"])
+        tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+        st, r = self.http("POST", "/schedule", {"title": "Weekly review", "when": tomorrow + "T10:00", "repeat": "weekly", "remind_before": 5, "notes": "bring the numbers"})
+        self.assertEqual(st, 201); w = r["item"]; self.assertEqual((w["repeat"], w["remind_before"], w["notes"], w["when_local"][:16]), ("weekly", 5, "bring the numbers", tomorrow + "T10:00"))
+        self.assertEqual(r["interpretation"], "Tomorrow, 10:00 — Weekly review · every week · reminder 5 min before")
+        st, r = self.http("PATCH", "/schedule/%d" % w["id"], {"title": "Weekly review (team)", "remind_before": 15}); self.assertEqual(st, 200); self.assertEqual(r["item"]["remind_before"], 15)
+        st, r = self.http("PATCH", "/schedule/%d" % w["id"], {"repeat": "fortnightly"}); self.assertEqual(st, 400)
+        st, r = self.http("PATCH", "/schedule/%d" % w["id"], {"when": "next week"}); self.assertEqual(st, 400); self.assertIn("YYYY-MM-DD", r["error"])
+        st, r = self.http("POST", "/schedule/%d/done" % w["id"]); self.assertEqual(st, 200)
+        nxt = (datetime.date.today() + datetime.timedelta(days=8)).isoformat()
+        self.assertEqual((r["item"]["status"], r["item"]["when_local"][:16]), ("pending", nxt + "T10:00"), "a weekly item rolls a week on Done")
+        done = [i for i in self.http("GET", "/schedule?scope=done")[1]["items"] if i["parent_id"] == w["id"]]; self.assertEqual(len(done), 1); self.assertEqual(done[0]["status"], "done")
+        st, r = self.http("POST", "/schedule/%d/snooze" % w["id"], {"minutes": 20}); self.assertGreater(r["item"]["snoozed_until"], time.time() + 19 * 60)
+        st, r = self.http("POST", "/schedule/%d/dismiss" % done[0]["id"]); self.assertEqual(r["item"]["status"], "dismissed")
+        st, r = self.http("POST", "/schedule/%d/reopen" % done[0]["id"]); self.assertEqual(r["item"]["status"], "pending")
+        st, r = self.http("DELETE", "/schedule/%d" % done[0]["id"]); self.assertEqual(st, 200); self.assertEqual(self.http("GET", "/schedule/%d" % done[0]["id"])[0], 404)
+        self.assertEqual(self.http("DELETE", "/schedule/99999")[0], 404); self.assertEqual(self.http("POST", "/schedule/99999/done")[0], 404)
+        st, s = self.http("GET", "/status"); self.assertIn("schedule", s); self.assertIn("today", s["schedule"]); self.assertTrue(s["schedule"]["next"])
+        # settings: a bad zone is refused; 12-hour shows AM/PM everywhere; the system zone is reported
+        self.assertEqual(self.cli("settings", "scheduler.timezone", "Mars/Base").get("http"), 400)
+        self.assertEqual(self.cli("settings", "scheduler.clock", "12"), {"ok": True})
+        st, r = self.http("GET", "/schedule?scope=all"); self.assertEqual(r["clock"], "12"); self.assertTrue(all(("AM" in i["time_text"] or "PM" in i["time_text"]) for i in r["items"]))
+        self.assertTrue(r["system_timezone"]); self.assertEqual(self.http("GET", "/settings")[1]["scheduler.clock"], "12")
+        self.cli("settings", "scheduler.clock", "24"); self.assertEqual(self.cli("settings", "scheduler.mail_intake", "off"), {"ok": True})
+        self.assertFalse(self.http("GET", "/schedule?scope=all")[1]["mail_intake"]); self.cli("settings", "scheduler.mail_intake", "true")
+
+    def test_62_schedule_reminder_fires_and_login_summary_once_per_login(self):
+        """A due item reaches the desktop (the notify-send shim on PATH; the D-Bus path with buttons is the daemon's default) exactly once,
+        with the item's title and the Fab AI Controls desktop entry; /schedule/login-summary sends 'Today: N items' once per login
+        (the second call is de-duplicated, force resends) and /schedule/today gives the same text to the UIs."""
+        st, r = self.http("POST", "/schedule", {"title": "Ping from the schedule", "when": time.time() + 1}); self.assertEqual(st, 201)
+        pid = r["item"]["id"]; time.sleep(1.5)
+        st, t = self.http("POST", "/schedule/tick"); self.assertEqual(st, 200)
+        for _ in range(30):
+            if "Ping from the schedule" in self._nlog(): break
+            time.sleep(0.1)
+        lines = [ln for ln in self._nlog().splitlines() if "Ping from the schedule" in ln]
+        self.assertEqual(len(lines), 1, lines); self.assertIn("-i fabos-command-center", lines[0]); self.assertIn("desktop-entry:fabos-command-center", lines[0])
+        self.assertIsNotNone(self.http("GET", "/schedule/%d" % pid)[1]["fired"])
+        self.http("POST", "/schedule/tick"); self.assertEqual(len([ln for ln in self._nlog().splitlines() if "Ping from the schedule" in ln]), 1, "fires once")
+        self.assertTrue(any(e["kind"] == "reminder_shown" for e in self.cli("log", "--limit", "40")))
+        st, s = self.http("POST", "/schedule/login-summary", {}); self.assertEqual(st, 200)
+        self.assertTrue(s["sent"]); self.assertRegex(s["title"], r"^Today: (\d+ items?|nothing scheduled)$"); self.assertLessEqual(len(s["body"].split("\n")), 7)
+        st, s2 = self.http("POST", "/schedule/login-summary", {}); self.assertFalse(s2["sent"]); self.assertTrue(s2["deduped"])
+        st, s3 = self.http("POST", "/schedule/login-summary", {"force": True}); self.assertTrue(s3["sent"])
+        st, s4 = self.http("POST", "/schedule/login-summary", {"session": "77"}); self.assertTrue(s4["sent"], "a second login the same day (new session id) gets its summary")
+        self.assertTrue(self.http("POST", "/schedule/login-summary", {"session": "77"})[1]["deduped"])
+        st, today = self.http("GET", "/schedule/today"); self.assertEqual((today["title"], today["body"]), (s["title"], s["body"])); self.assertIn("items", today)
+        shown = [ln for ln in self._nlog().splitlines() if re.search(r"desktop-entry:fabos-command-center -t 20000 Today: (\d+ items?|nothing scheduled)", ln)]
+        self.assertEqual(len(shown), 3, "the summary notification went out three times: at 'login', forced, and for the second session")
+        self.assertNotIn(" -t ", lines[0], "a reminder popup has no timeout: it stays until answered")
+        self.assertTrue(any(e["kind"] == "login_summary" for e in self.cli("log", "--limit", "40")))
 
 
 class StepwiseUnits(unittest.TestCase):

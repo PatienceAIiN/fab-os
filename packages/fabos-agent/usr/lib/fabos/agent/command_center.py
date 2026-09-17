@@ -17,7 +17,7 @@ Responsiveness: every daemon call of the window runs on ONE worker thread (ApiQu
 checks on their own short-lived workers) and its result is applied in place by
 a callback on the GUI thread — a slow or hung daemon reply can never freeze the window; polls coalesce (never stack) and
 slow down to 6 s / 12 s while the window is hidden or minimised. Tickers run only while shown (docs/LOW-RAM.md).
-Launch: fabos-command-center [--ask] [--prefill TEXT] [--settings] [--task ID]   (the executable keeps its historical name)
+Launch: fabos-command-center [--ask] [--prefill TEXT] [--settings] [--task ID] [--schedule]   (the executable keeps its historical name)
 """
 import datetime, http.client, json, math, os, queue, re, shutil, socket, subprocess, sys, threading, time, urllib.parse
 from PyQt6.QtCore import (Qt, QTimer, QSize, QPropertyAnimation, QVariantAnimation, QEasingCurve, QRectF, QEvent, QPointF, QPoint, QProcess, QThread,
@@ -26,7 +26,8 @@ from PyQt6.QtGui import (QFont, QIcon, QImage, QImageReader, QPixmap, QPainter, 
                          QTextCharFormat, QTextFormat, QGuiApplication, QAction, QFontMetrics, QPainterPath, QKeyEvent)
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QPushButton, QListWidget, QListWidgetItem,
                              QTextBrowser, QPlainTextEdit, QLabel, QComboBox, QTabWidget, QDialog, QFormLayout, QFrame, QScrollArea, QSizePolicy, QToolButton,
-                             QCheckBox, QStackedWidget, QMenu, QGraphicsOpacityEffect, QStyle, QFileDialog, QAbstractButton)
+                             QCheckBox, QStackedWidget, QMenu, QGraphicsOpacityEffect, QStyle, QFileDialog, QAbstractButton, QDateTimeEdit)
+from PyQt6.QtCore import QDateTime
 
 APP_NAME = "Fab AI Controls"
 DESKTOP_ID = "fabos-command-center"           # executable / desktop-file / icon id: unchanged so shortcuts and docks keep working
@@ -403,6 +404,7 @@ GLYPHS = {
     "tools": '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9l-3.8 3.8z"/>',
     "question": '<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
     "bell": '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
+    "calendar": '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M3 10h18"/><path d="M8 15h3"/>',
     "warning": '<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
     "mic": '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/><path d="M9 21h6"/>',
     "waveform": '<path d="M4 10v4"/><path d="M8 7v10"/><path d="M12 4v16"/><path d="M16 7v10"/><path d="M20 10v4"/>',
@@ -626,6 +628,26 @@ QPushButton#viewerBtn:hover { background: rgba(255, 255, 255, 0.18); }
 QPushButton#viewerBtn:disabled { color: rgba(244, 246, 250, 0.40); background: rgba(255, 255, 255, 0.05); }
 QToolButton#viewerIcon { background: transparent; border: none; border-radius: 12px; }
 QToolButton#viewerIcon:hover { background: rgba(255, 255, 255, 0.14); }
+QFrame#schedCard { background: %(card)s; border: 1px solid %(line)s; border-radius: %(rcard)dpx; }
+QFrame#schedRow { background: %(tint4)s; border: none; border-radius: %(rctl)dpx; }
+QFrame#schedRow:hover { background: %(tint8)s; }
+QFrame#schedRow[status="done"] QLabel#rowTitle, QFrame#schedRow[status="dismissed"] QLabel#rowTitle { color: %(muted)s; }
+QLabel#schedTime { color: %(hi)s; font-weight: 600; font-size: 13px; }
+QFrame#schedRow[status="missed"] QLabel#schedTime { color: #E0A64B; }
+QFrame#schedRow[status="done"] QLabel#schedTime, QFrame#schedRow[status="dismissed"] QLabel#schedTime { color: %(muted)s; font-weight: 500; }
+QLabel#schedBadge { background: %(hisoft)s; color: %(text)s; border-radius: 9px; padding: 2px 8px; font-size: 11.5px; }
+QLabel#schedBadge[kind="missed"] { background: rgba(224, 166, 75, 0.28); }
+QLabel#schedBadge[kind="mail"] { background: %(tint8)s; color: %(muted)s; }
+QLabel#schedParsed { color: %(hi)s; font-size: 13px; }
+QLabel#schedParsed[state="warn"] { color: #E0A64B; }
+QLabel#schedParsed[state="error"] { color: %(muted)s; }
+QLabel#schedEmpty { color: %(muted)s; font-size: 13px; padding: 6px 12px; }
+QDateTimeEdit { background: %(alt)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 7px 12px; min-height: 22px; selection-background-color: %(hi)s; selection-color: %(hit)s; }
+QDateTimeEdit:focus { border-color: %(hi)s; }
+QDateTimeEdit::drop-down { border: none; width: 26px; }
+QCalendarWidget QWidget { alternate-background-color: %(alt)s; }
+QCalendarWidget QToolButton { color: %(text)s; background: transparent; border-radius: 8px; padding: 4px 8px; }
+QCalendarWidget QAbstractItemView { background: %(card)s; selection-background-color: %(hi)s; selection-color: %(hit)s; }
 """ % dict(text=text.name(), win=win.name(), card=card, alt=alt.name(), hi=hi.name(), hit=hit.name(), line=line, hover=hover, muted=muted, tint4=tint4, tint8=tint8,
            press=rgba(text, 0.12), hisoft=rgba(hi, 0.16 if dark else 0.14), hihover=hi.lighter(112).name() if dark else hi.darker(108).name(),
            hidim=rgba(hi, 0.35), senddim=rgba(hi, 0.40), scroll=rgba(text, 0.18), scrollh=rgba(text, 0.30), errbg=rgba(QColor(RED), 0.14), warnbg=rgba(QColor("#E0A64B"), 0.16),
@@ -2879,6 +2901,7 @@ class Sidebar(QFrame):
     open_settings = pyqtSignal()
     open_about = pyqtSignal()
     open_appearance = pyqtSignal()
+    open_schedule = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2894,6 +2917,10 @@ class Sidebar(QFrame):
         self.new_btn.setFixedHeight(36)
         self.new_btn.clicked.connect(self.new_chat.emit)
         v.addWidget(self.new_btn)
+        # the Schedule tab: reminders for today and the days ahead (also reached by "remind me …" in any chat and by the login notification)
+        self.schedule_btn = SideItem("calendar", "Schedule", "Reminders for today and the days ahead — add them here, or say 'remind me …' in a chat")
+        self.schedule_btn.clicked.connect(self.open_schedule.emit)
+        v.addWidget(self.schedule_btn)
         wrap = QWidget()
         wl = QHBoxLayout(wrap)
         wl.setContentsMargins(0, 0, 0, 0)
@@ -2943,7 +2970,7 @@ class Sidebar(QFrame):
         muted.setAlphaF(0.55)
         self.search_icon.setPixmap(glyph_pixmap("search", muted, 18))
         self.search_icon.move(11, (self.search.sizeHint().height() - 18) // 2 + 1)
-        for b in (self.clear_btn, self.appearance_btn, self.settings_btn, self.about_btn):
+        for b in (self.schedule_btn, self.clear_btn, self.appearance_btn, self.settings_btn, self.about_btn):
             b.refresh_icon()
         for r in self.rows.values():
             r.refresh_glyph()
@@ -4375,6 +4402,450 @@ EMPTY_COLUMNS = [
 ]
 
 
+# ----------------------------------------------------------------------------- the Schedule tab
+REPEAT_CHOICES = (("none", "No repeat"), ("daily", "Every day"), ("weekdays", "Weekdays"), ("weekly", "Every week"), ("monthly", "Every month"))
+BEFORE_CHOICES = ((0, "At the time"), (5, "5 min before"), (10, "10 min before"), (30, "30 min before"), (60, "1 hour before"))
+COMMON_ZONES = ("Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney", "Europe/London", "Europe/Berlin", "Europe/Paris",
+                "America/New_York", "America/Chicago", "America/Los_Angeles", "America/Toronto", "UTC")
+SCHED_POLL_MS = 10000
+SCHED_PARSE_DEBOUNCE_MS = 350
+
+
+def qdt_from_iso(iso):
+    """'2026-09-18T09:00' (the daemon's when_local, zone suffix ignored) -> QDateTime."""
+    return QDateTime.fromString(str(iso or "")[:16], "yyyy-MM-ddTHH:mm")
+
+
+def qdt_format(clock):
+    return "ddd d MMM yyyy, h:mm AP" if clock == "12" else "ddd d MMM yyyy, HH:mm"
+
+
+class ScheduleRow(QFrame):
+    """One item: time · title · badges (repeat / missed / from mail) · Done / Edit / Remove (Reopen / Remove when done)."""
+    done = pyqtSignal(int)
+    edit = pyqtSignal(int)
+    remove = pyqtSignal(int)
+    reopen = pyqtSignal(int)
+
+    def __init__(self, item, section, parent=None):
+        super().__init__(parent)
+        self.item = item
+        self.setObjectName("schedRow")
+        self.setProperty("status", item["status"])
+        h = QHBoxLayout(self)
+        h.setContentsMargins(12, 6, 6, 6)
+        h.setSpacing(10)
+        same_day = section == "today" and item.get("day_text") == "Today"          # an overdue item from another day keeps its day
+        self.time = QLabel(item["time_text"] if same_day else item["when_text"])
+        self.time.setObjectName("schedTime")
+        self.time.setMinimumWidth(64 if same_day else 150)
+        h.addWidget(self.time, 0)
+        self.title = QLabel(item["title"])
+        self.title.setObjectName("rowTitle")
+        self.title.setWordWrap(True)
+        self.title.setToolTip((item.get("notes") or "") + (("\n" + item["when_text"]) if section == "today" else ""))
+        h.addWidget(self.title, 1)
+        badges = []
+        if item["status"] == "missed":
+            badges.append(("missed", "missed"))
+        if item.get("repeat_text"):
+            badges.append(("repeat", item["repeat_text"]))
+        if item.get("source") == "mail":
+            badges.append(("mail", "from mail"))
+        if item["status"] == "dismissed":
+            badges.append(("dismissed", "dismissed"))
+        for kind, text in badges:
+            b = QLabel(text)
+            b.setObjectName("schedBadge")
+            b.setProperty("kind", kind)
+            h.addWidget(b, 0)
+        self.buttons = {}
+        if item["status"] in ("pending", "missed"):
+            specs = (("check", "Done", lambda: self.done.emit(item["id"])), ("edit", "Edit time or repeat", lambda: self.edit.emit(item["id"])), ("delete", "Remove", lambda: self.remove.emit(item["id"])))
+        else:
+            specs = (("retry", "Put it back on the list", lambda: self.reopen.emit(item["id"])), ("delete", "Remove", lambda: self.remove.emit(item["id"])))
+        for glyph, tip, fn in specs:
+            b = IconButton(glyph, tip, size=30, icon_size=16)
+            b.clicked.connect(fn)
+            h.addWidget(b, 0)
+            self.buttons[glyph] = b
+
+
+class ScheduleEditor(QFrame):
+    """The inline editor of one row: title, date/time (editable), repeat, remind-before, Save / Cancel."""
+    saved = pyqtSignal(int, dict)
+    cancelled = pyqtSignal()
+
+    def __init__(self, item, clock, parent=None):
+        super().__init__(parent)
+        self.item = item
+        self.setObjectName("schedCard")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(SP2, SP, SP2, SP)
+        v.setSpacing(8)
+        self.title = QLineEdit(item["title"])
+        v.addWidget(self.title)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.when = QDateTimeEdit(qdt_from_iso(item["when_local"]))
+        self.when.setDisplayFormat(qdt_format(clock))
+        self.when.setCalendarPopup(True)
+        row.addWidget(self.when, 1)
+        self.repeat = QComboBox()
+        for k, lab in REPEAT_CHOICES:
+            self.repeat.addItem(lab, k)
+        self.repeat.setCurrentIndex(max(0, [k for k, _l in REPEAT_CHOICES].index(item["repeat"]) if item["repeat"] in [k for k, _l in REPEAT_CHOICES] else 0))
+        row.addWidget(self.repeat, 0)
+        self.before = QComboBox()
+        for mins, lab in BEFORE_CHOICES:
+            self.before.addItem(lab, mins)
+        idx = [m for m, _l in BEFORE_CHOICES].index(item["remind_before"]) if item["remind_before"] in [m for m, _l in BEFORE_CHOICES] else 0
+        self.before.setCurrentIndex(idx)
+        row.addWidget(self.before, 0)
+        v.addLayout(row)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("ghost")
+        self.cancel_btn.clicked.connect(self.cancelled.emit)
+        self.save_btn = QPushButton("Save")
+        self.save_btn.setObjectName("primary")
+        self.save_btn.clicked.connect(self._save)
+        btns.addWidget(self.cancel_btn)
+        btns.addWidget(self.save_btn)
+        v.addLayout(btns)
+
+    def _save(self):
+        fields = {"title": self.title.text().strip() or self.item["title"], "when": self.when.dateTime().toString("yyyy-MM-ddTHH:mm"),
+                  "repeat": self.repeat.currentData(), "remind_before": self.before.currentData()}
+        self.saved.emit(self.item["id"], fields)
+
+
+class SchedulePage(QWidget):
+    """Fab AI Controls › Schedule: today / upcoming / done, an add form whose plain-language field shows the daemon's reading
+    live (POST /schedule/parse) next to an editable date/time, repeat and remind-before; Done / Edit / Remove per row; the
+    time-zone, 12/24 h and mail-intake settings at the bottom. Every daemon call runs on the window's worker (api_async)."""
+
+    def __init__(self, win, parent=None):
+        super().__init__(parent)
+        self.win = win
+        self.items = []
+        self.rows = {}                  # item id -> ScheduleRow | ScheduleEditor (rebuilt on every load)
+        self.meta = {}
+        self.clock = "24"
+        self.editing = None
+        self._parsed = None
+        self._loading_settings = False
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(SP3, SP, SP3, SP)
+        outer.setSpacing(SP)
+        head = QHBoxLayout()
+        tcol = QVBoxLayout()
+        tcol.setSpacing(2)
+        self.heading = QLabel("Schedule")
+        self.heading.setObjectName("colTitle")
+        self.sub = QLabel("Today")
+        self.sub.setObjectName("muted")
+        tcol.addWidget(self.heading)
+        tcol.addWidget(self.sub)
+        head.addLayout(tcol)
+        head.addStretch(1)
+        self.count = QLabel("")
+        self.count.setObjectName("chipText")
+        head.addWidget(self.count)
+        outer.addLayout(head)
+        # ---- add form
+        self.card = QFrame()
+        self.card.setObjectName("schedCard")
+        cv = QVBoxLayout(self.card)
+        cv.setContentsMargins(SP2, SP, SP2, SP)
+        cv.setSpacing(8)
+        self.nl = QLineEdit()
+        self.nl.setPlaceholderText("Remind me tomorrow at 9am to call the bank…   every weekday 6:30 pm gym   ·   pay rent on the 1st every month")
+        self.nl.setClearButtonEnabled(True)
+        self.nl.returnPressed.connect(self.add)
+        cv.addWidget(self.nl)
+        self.parsed = QLabel("Type it in your words — the date and time appear here, and you can adjust them below.")
+        self.parsed.setObjectName("schedParsed")
+        self.parsed.setProperty("state", "error")
+        self.parsed.setWordWrap(True)
+        cv.addWidget(self.parsed)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        start = QDateTime.currentDateTime().addSecs(3600)                 # the next full hour, until the words say otherwise
+        self.when = QDateTimeEdit(QDateTime.fromString(start.toString("yyyy-MM-ddTHH:00"), "yyyy-MM-ddTHH:mm"))
+        self.when.setDisplayFormat(qdt_format(self.clock))
+        self.when.setCalendarPopup(True)
+        self.when.setToolTip("When — filled from your words, editable")
+        row.addWidget(self.when, 1)
+        self.repeat = QComboBox()
+        for k, lab in REPEAT_CHOICES:
+            self.repeat.addItem(lab, k)
+        row.addWidget(self.repeat, 0)
+        self.before = QComboBox()
+        for mins, lab in BEFORE_CHOICES:
+            self.before.addItem(lab, mins)
+        row.addWidget(self.before, 0)
+        self.add_btn = QPushButton("Add")
+        self.add_btn.setObjectName("primary")
+        self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_btn.clicked.connect(self.add)
+        row.addWidget(self.add_btn, 0)
+        cv.addLayout(row)
+        outer.addWidget(self.card)
+        self._parse_timer = QTimer(self)
+        self._parse_timer.setSingleShot(True)
+        self._parse_timer.setInterval(SCHED_PARSE_DEBOUNCE_MS)
+        self._parse_timer.timeout.connect(self._do_parse)
+        self.nl.textChanged.connect(lambda _t: self._parse_timer.start())
+        # ---- lists
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.list_host = QWidget()
+        self.list_layout = QVBoxLayout(self.list_host)
+        self.list_layout.setContentsMargins(0, 0, 6, 0)
+        self.list_layout.setSpacing(6)
+        self.sections = {}
+        for key, label in (("today", "TODAY"), ("upcoming", "UPCOMING"), ("done", "DONE")):
+            t = QLabel(label)
+            t.setObjectName("sectionTitle")
+            self.list_layout.addWidget(t)
+            box = QVBoxLayout()
+            box.setSpacing(4)
+            self.list_layout.addLayout(box)
+            self.sections[key] = (t, box)
+        self.list_layout.addStretch(1)
+        self.scroll.setWidget(self.list_host)
+        outer.addWidget(self.scroll, 1)
+        # ---- settings row: time zone · clock · mail intake
+        srow = QHBoxLayout()
+        srow.setSpacing(10)
+        tz_l = QLabel("Time zone")
+        tz_l.setObjectName("muted")
+        srow.addWidget(tz_l)
+        self.tz = QComboBox()
+        self.tz.setEditable(True)
+        self.tz.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.tz.addItem("System (…)", "")
+        for z in COMMON_ZONES:
+            self.tz.addItem(z, z)
+        self.tz.setMinimumWidth(190)
+        self.tz.setToolTip("Times are read and shown in this zone; System = the computer's zone")
+        self.tz.activated.connect(lambda _i: self._setting("scheduler.timezone", self.tz.currentData() if self.tz.currentData() is not None else self.tz.currentText().strip()))
+        self.tz.lineEdit().editingFinished.connect(self._tz_typed)
+        srow.addWidget(self.tz)
+        self.clock_box = QComboBox()
+        self.clock_box.addItem("24-hour", "24")
+        self.clock_box.addItem("12-hour", "12")
+        self.clock_box.setToolTip("How times are shown (and how a bare '10:30' is read)")
+        self.clock_box.activated.connect(lambda _i: self._setting("scheduler.clock", self.clock_box.currentData()))
+        srow.addWidget(self.clock_box)
+        srow.addStretch(1)
+        self.mail_label = QLabel("Reminders from your mail")
+        self.mail_label.setObjectName("muted")
+        srow.addWidget(self.mail_label)
+        self.mail_switch = Switch("Every 10 minutes: unseen mail you sent to yourself with a subject starting Remind / Reminder / Schedule becomes an item. Mail from anyone else is never read for this.")
+        self.mail_switch.clicked.connect(lambda on: self._setting("scheduler.mail_intake", "true" if on else "false"))
+        srow.addWidget(self.mail_switch)
+        outer.addLayout(srow)
+        self.timer = QTimer(self)
+        self.timer.setInterval(SCHED_POLL_MS)
+        self.timer.timeout.connect(self.refresh)
+
+    # ---- lifecycle
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.refresh()
+        self.timer.start()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self.timer.stop()
+
+    # ---- data
+    def refresh(self):
+        if self.win._closing:
+            return
+        self.win.api_async("GET", "/schedule?scope=all&limit=300", cb=self._loaded, key="schedule")
+
+    def _loaded(self, r):
+        if not isinstance(r, dict) or "items" not in r:
+            return
+        self.meta = r
+        self.items = r["items"]
+        self.clock = r.get("clock") or "24"
+        self.when.setDisplayFormat(qdt_format(self.clock))
+        today = r.get("today") or ""
+        self.sub.setText("Today · %s · %s · %s" % (QDateTime.fromString(today, "yyyy-MM-dd").toString("ddd d MMM"), r.get("tz") or "", "12-hour" if self.clock == "12" else "24-hour"))
+        groups = {"today": [], "upcoming": [], "done": []}
+        for it in self.items:
+            if it["status"] in ("pending", "missed"):
+                groups["today" if it["date"] <= today else "upcoming"].append(it)
+            else:
+                groups["done"].append(it)
+        groups["done"] = groups["done"][:20]
+        ahead = [i for i in groups["today"] if i["status"] == "pending" and not i.get("overdue")]
+        self.count.setText("%d today · %d upcoming" % (len(groups["today"]), len(groups["upcoming"])) if (groups["today"] or groups["upcoming"]) else "")
+        self.rows = {}
+        for key, (_t, box) in self.sections.items():
+            while box.count():
+                w = box.takeAt(0).widget()
+                if w is not None:
+                    w.hide()
+                    w.deleteLater()
+            if not groups[key]:
+                empty = QLabel({"today": "Nothing today. Add something above, or say 'remind me …' in a chat.", "upcoming": "Nothing coming up.", "done": "Nothing done yet."}[key])
+                empty.setObjectName("schedEmpty")
+                box.addWidget(empty)
+                continue
+            for it in groups[key]:
+                if self.editing == it["id"]:
+                    ed = ScheduleEditor(it, self.clock)
+                    ed.saved.connect(self._save_edit)
+                    ed.cancelled.connect(self._cancel_edit)
+                    box.addWidget(ed)
+                    self.rows[it["id"]] = ed
+                    continue
+                row = ScheduleRow(it, key)
+                row.done.connect(self.mark_done)
+                row.edit.connect(self.start_edit)
+                row.remove.connect(self.remove)
+                row.reopen.connect(self.reopen)
+                box.addWidget(row)
+                self.rows[it["id"]] = row
+        # settings controls follow the daemon (signals blocked: nothing is written back)
+        self._loading_settings = True
+        try:
+            zone = ""
+            self.win.api_async("GET", "/settings", cb=self._settings_loaded, key="schedule-settings")
+            self.tz.setItemText(0, "System (%s)" % (r.get("system_timezone") or "…"))
+            self.clock_box.setCurrentIndex(0 if self.clock == "24" else 1)
+            self.mail_switch.setEnabled(bool(r.get("mail_ready")))
+            self.mail_switch.setChecked(bool(r.get("mail_intake")) and bool(r.get("mail_ready")))
+            self.mail_label.setToolTip("" if r.get("mail_ready") else "Sign in to your mail account in Settings › Mail first")
+            self.mail_label.setEnabled(bool(r.get("mail_ready")))
+            del zone
+        finally:
+            self._loading_settings = False
+
+    def _settings_loaded(self, s):
+        if not isinstance(s, dict):
+            return
+        zone = str(s.get("scheduler.timezone") or "")
+        self._loading_settings = True
+        try:
+            idx = self.tz.findData(zone)
+            if idx >= 0:
+                self.tz.setCurrentIndex(idx)
+            else:
+                self.tz.setEditText(zone)
+        finally:
+            self._loading_settings = False
+
+    def _tz_typed(self):
+        if self._loading_settings:
+            return
+        text = self.tz.currentText().strip()
+        if self.tz.findData(text) >= 0 or text.startswith("System"):
+            return
+        self._setting("scheduler.timezone", text)
+
+    def _setting(self, key, value):
+        if self._loading_settings:
+            return
+        self.win.api_async("PUT", "/settings", {key: value}, cb=lambda r: self._setting_done(key, r))
+
+    def _setting_done(self, key, r):
+        if isinstance(r, dict) and r.get("error"):
+            self.win.toast.show_message(r["error"][:140], 5000)
+        elif key == "scheduler.timezone":
+            self.win.toast.show_message("Time zone updated", 2500)
+        self.refresh()
+
+    # ---- the add form
+    def _do_parse(self):
+        text = self.nl.text().strip()
+        if not text:
+            self._parsed = None
+            self._show_parsed("Type it in your words — the date and time appear here, and you can adjust them below.", "error")
+            return
+        self.win.api_async("POST", "/schedule/parse", {"text": text}, cb=self._parsed_cb, key="sched-parse")
+
+    def _parsed_cb(self, r):
+        if not isinstance(r, dict) or self.nl.text().strip() != (r.get("text") or "").strip():
+            return
+        self._parsed = r if r.get("ok") else None
+        if r.get("ok"):
+            self._show_parsed(r["interpretation"] + (" — please check the time" if r.get("needs_confirm") else ""), "warn" if r.get("needs_confirm") else "ok")
+            q = qdt_from_iso(r.get("when"))
+            if q.isValid():
+                self.when.setDateTime(q)
+            keys = [k for k, _l in REPEAT_CHOICES]
+            self.repeat.setCurrentIndex(keys.index(r.get("repeat")) if r.get("repeat") in keys else 0)
+            mins = [m for m, _l in BEFORE_CHOICES]
+            self.before.setCurrentIndex(mins.index(r.get("remind_before")) if r.get("remind_before") in mins else 0)
+        else:
+            self._show_parsed((r.get("error") or "I could not read a time.") + " Pick the date and time below.", "error")
+
+    def _show_parsed(self, text, state):
+        self.parsed.setText(text)
+        self.parsed.setProperty("state", state)
+        polish(self.parsed)
+
+    def add(self):
+        text = self.nl.text().strip()
+        if not text:
+            self.win.toast.show_message("Type what to remind you of.", 3000)
+            self.nl.setFocus()
+            return
+        title = self._parsed["title"] if self._parsed and self._parsed.get("ok") else text
+        body = {"text": text, "title": title, "when": self.when.dateTime().toString("yyyy-MM-ddTHH:mm"), "repeat": self.repeat.currentData(),
+                "remind_before": self.before.currentData(), "source": "ui"}
+        self.add_btn.setEnabled(False)
+        self.win.api_async("POST", "/schedule", body, cb=self._added, err=lambda: self.add_btn.setEnabled(True))
+
+    def _added(self, r):
+        self.add_btn.setEnabled(True)
+        if isinstance(r, dict) and r.get("added"):
+            self.win.toast.show_message("Added: " + r.get("interpretation", ""), 3500)
+            self.nl.clear()
+            self._parsed = None
+            self.repeat.setCurrentIndex(0)
+            self.before.setCurrentIndex(0)
+            self.refresh()
+        else:
+            self.win.toast.show_message((r.get("error") if isinstance(r, dict) else None) or "Could not add that.", 5000)
+            shake(self.card)
+
+    # ---- row actions
+    def mark_done(self, item_id):
+        self.win.api_async("POST", "/schedule/%d/done" % item_id, {}, cb=lambda _r: self.refresh())
+
+    def remove(self, item_id):
+        self.win.api_async("DELETE", "/schedule/%d" % item_id, cb=lambda _r: self.refresh())
+
+    def reopen(self, item_id):
+        self.win.api_async("POST", "/schedule/%d/reopen" % item_id, {}, cb=lambda _r: self.refresh())
+
+    def start_edit(self, item_id):
+        self.editing = item_id
+        self._loaded(self.meta) if self.meta else None
+
+    def _cancel_edit(self):
+        self.editing = None
+        self.refresh()
+
+    def _save_edit(self, item_id, fields):
+        self.editing = None
+        self.win.api_async("PATCH", "/schedule/%d" % item_id, fields, cb=self._edit_saved)
+
+    def _edit_saved(self, r):
+        if isinstance(r, dict) and r.get("error"):
+            self.win.toast.show_message(r["error"][:140], 5000)
+        self.refresh()
+
+
 class AIControls(QMainWindow):
     def __init__(self, focus_ask=False, prefill="", task_id=None):
         super().__init__()
@@ -4558,6 +5029,9 @@ class AIControls(QMainWindow):
         self.view.feedback.connect(self.send_feedback)
         self.view.regenerate_requested.connect(self.regenerate_image)
         self.stack.addWidget(self.view)
+        self.schedule_page = SchedulePage(self)          # the Schedule tab (sidebar · --schedule · the login notification)
+        self.stack.addWidget(self.schedule_page)
+        self.sidebar.open_schedule.connect(self.open_schedule)
         ml.addWidget(self.stack, 1)
         # ---- cloud hint chip (built-in model only): above the composer, dismissible for the session
         self._cloud_hint_dismissed = False
@@ -4942,7 +5416,7 @@ class AIControls(QMainWindow):
 
     def update_cloud_hint(self):
         """The chip shows only while the built-in (local) model is the provider, until dismissed for this session."""
-        show = self.status.get("provider") == "local" and not self._cloud_hint_dismissed and not self.offline
+        show = self.status.get("provider") == "local" and not self._cloud_hint_dismissed and not self.offline and self.stack.currentWidget() is not self.schedule_page
         if show != self.cloud_hint.isVisible():
             self.cloud_hint.setVisible(show)
 
@@ -5066,6 +5540,8 @@ class AIControls(QMainWindow):
             self.editing = None
         self.sidebar.select(root_id)
         self.stack.setCurrentWidget(self.view)
+        self.composer.show()
+        self.update_cloud_hint()
         self.refresh_thread(force=True)
         self.update_composer()
 
@@ -5077,8 +5553,22 @@ class AIControls(QMainWindow):
         self.stack.setCurrentIndex(0)
         if self._mode_inflight == 0:
             self.set_modes(modes_from_status(self.status), thread_id=0)   # back to the defaults for new chats
+        self.composer.show()
+        self.update_cloud_hint()
         self.update_composer()
         self.ask.setFocus()
+
+    def open_schedule(self):
+        """The Schedule tab takes the main column (the composer belongs to chats; 'remind me …' typed in a chat lands here too)."""
+        self.current_root = None
+        self.editing = None
+        self.view.clear()
+        self.sidebar.select(None)
+        self.stack.setCurrentWidget(self.schedule_page)
+        self.composer.hide()
+        self.update_cloud_hint()
+        self.schedule_page.refresh()
+        self.schedule_page.nl.setFocus()
 
     # ---- Research · Computer use (docs/design/MODES.md): both strips are one state; a toggle is applied at once, persisted with ONE
     # request (PATCH the open chat's root, PUT the default otherwise) and confirmed in a toast; a failure says so and re-fetches
@@ -5363,6 +5853,8 @@ def main():
         tab = _arg("--settings")                   # optional tab: general | provider | voice | mail (the welcome wizard opens Mail)
         tab = tab if tab in SETTINGS_TABS else None
         QTimer.singleShot(300, lambda: w.open_settings(tab))   # straight to Settings (the AI provider tab is where keys go)
+    if "--schedule" in sys.argv:
+        QTimer.singleShot(150, w.open_schedule)    # the login / reminder notifications open here
     sys.exit(app.exec())
 
 

@@ -35,6 +35,10 @@ Quick passes (no chat seeding; the output directory stays the first argument):
               (settings-startup-dialog-*.png) and posts the passphrase, ON posts nothing else, Cancel posts nothing, a refused
               passphrase puts the switch back with the reason, an unencrypted disk disables the row
   --welcome   the welcome wizard's Mail page (welcome-mail-*.png) and its "Use your own mail" button
+  --schedule  the Schedule tab with sample items in dark + light (ai-controls-schedule-{dark,light}.png, -edit-dark.png): the sidebar
+              entry opens it and hides the composer, rows land in Today / Upcoming / Done with their badges, the plain-language field
+              shows the daemon's reading live and fills the editable date/time + repeat, Add / Done / Edit go through the API, the
+              12-hour setting round-trips (docs/design/SCHEDULER.md)
 """
 import json, os, shutil, sqlite3, subprocess, sys, tempfile, time, traceback, urllib.request
 
@@ -480,7 +484,190 @@ def quick_passes():
     return rc
 
 
+def schedule_pass():
+    """--schedule: the Schedule tab (docs/design/SCHEDULER.md) offscreen in dark + light with sample items — a missed one, two
+    for today, a repeating one for tomorrow, a done one and one that came from mail — saved as ai-controls-schedule-{dark,light}.png
+    (+ ai-controls-schedule-edit-dark.png with the inline editor). Checks: the sidebar's Schedule entry opens the tab and hides the
+    composer; the rows land in Today / Upcoming / Done; the plain-language field shows the daemon's reading live and fills the
+    editable date/time + repeat (an ambiguous 'meeting at 3' is flagged, 'call the bank' without a time says so); Add creates the
+    item with the title from the words and the date/time from the form; Done on a row moves it to Done; the settings row follows
+    the daemon (12-hour switches the display). Exit 0 only if every assertion held."""
+    os.makedirs(OUT, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix="fabos-schedule-render-")
+    os.makedirs(os.path.join(tmp, "bin"))
+    nlog = os.path.join(tmp, "notify.log")
+    with open(os.path.join(tmp, "bin", "notify-send"), "w") as f:
+        f.write('#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' % nlog)
+    os.chmod(os.path.join(tmp, "bin", "notify-send"), 0o755)
+    env = dict(os.environ, XDG_RUNTIME_DIR=tmp, FABOS_AGENT_DATA=os.path.join(tmp, "data"), XDG_CONFIG_HOME=os.path.join(tmp, "cfg"),
+               FABOS_AGENT_PROVIDER="fake", FABOS_AGENT_PORT=PORT, HOME=os.path.join(tmp, "home"), PATH=os.path.join(tmp, "bin") + ":/usr/bin:/bin",
+               FABOS_SCHED_NOTIFY="notify-send", FABOS_SCHED_TICK="3600")
+    os.makedirs(env["HOME"])
+    proc = subprocess.Popen([sys.executable, os.path.join(AGENT_DIR, "fabos_agentd.py")], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    rc = 1
+    try:
+        for _ in range(60):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:%s/health" % PORT, timeout=1)
+                break
+            except Exception:
+                time.sleep(0.2)
+        else:
+            raise RuntimeError("daemon did not start")
+        os.environ["XDG_RUNTIME_DIR"] = tmp
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        sys.path.insert(0, AGENT_DIR)
+        import command_center as cc
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtGui import QPalette, QColor, QFont
+        from PyQt6.QtCore import QEvent
+        app = QApplication(sys.argv)
+        app.setFont(QFont("Inter", 10))
+
+        def spin(n=10):
+            for _ in range(n):
+                app.processEvents()
+
+        def wait_for(pred, what, timeout=10):
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                app.processEvents()
+                if pred():
+                    return
+                time.sleep(0.02)
+            raise AssertionError("timed out waiting for " + what)
+
+        def close_window(win):
+            win.close()
+            win.deleteLater()
+            app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            spin(5)
+        # --- seed through the API (times relative to the real clock; a missed item is made by moving one into the past and sweeping)
+        now = time.time()
+        a = cc.api("POST", "/schedule", {"title": "Call the bank", "when": now + 3600, "source": "chat"})["item"]
+        b = cc.api("POST", "/schedule", {"title": "Meeting with Rohan", "when": now + 3 * 3600, "remind_before": 10, "source": "chat"})["item"]
+        c = cc.api("POST", "/schedule", {"title": "Send the invoice", "when": now + 26 * 3600, "repeat": "weekdays", "source": "ui"})["item"]
+        d = cc.api("POST", "/schedule", {"title": "Renew the passport", "when": now + 5 * 86400, "source": "mail"})["item"]
+        e = cc.api("POST", "/schedule", {"title": "Pay rent", "when": now + 3600})["item"]
+        cc.api("PATCH", "/schedule/%d" % e["id"], {"when": now - 20 * 3600})
+        f = cc.api("POST", "/schedule", {"title": "Book the cab", "when": now + 3600})["item"]
+        cc.api("POST", "/schedule/%d/done" % f["id"])
+        tick = cc.api("POST", "/schedule/tick")
+        assert [m["title"] for m in tick["missed"]] == ["Pay rent"], tick
+        assert cc.api("GET", "/schedule/%d" % e["id"])["status"] == "missed"
+        summary = cc.api("GET", "/schedule/today")
+        assert summary["title"].startswith("Today:") and "Missed while you were away: Pay rent" in summary["body"], summary
+        results = {}
+        for name, scheme in SCHEMES.items():
+            app.setPalette(make_palette(QPalette, QColor, scheme))
+            w = cc.AIControls()
+            w.resize(1280, 800)
+            w.show()
+            spin()
+            assert w.sidebar.schedule_btn.text() == "Schedule"
+            w.sidebar.schedule_btn.click()
+            spin()
+            assert w.stack.currentWidget() is w.schedule_page, "the sidebar entry opens the Schedule tab"
+            assert not w.composer.isVisible(), "the composer belongs to chats"
+            page = w.schedule_page
+            wait_for(lambda: len(page.rows) == 6, "the six seeded rows (have %d)" % len(page.rows))
+            rows = page.rows
+            assert rows[e["id"]].property("status") == "missed" and any(x.text() == "missed" for x in rows[e["id"]].findChildren(cc.QLabel))
+            assert any(x.text() == "every weekday" for x in rows[c["id"]].findChildren(cc.QLabel)), "repeat badge"
+            assert any(x.text() == "from mail" for x in rows[d["id"]].findChildren(cc.QLabel)), "source badge"
+            assert rows[f["id"]].property("status") == "done" and "retry" in rows[f["id"]].buttons and "check" not in rows[f["id"]].buttons
+            assert "check" in rows[a["id"]].buttons and "edit" in rows[a["id"]].buttons and "delete" in rows[a["id"]].buttons
+            sections = {k: [page.sections[k][1].itemAt(i).widget() for i in range(page.sections[k][1].count())] for k in page.sections}
+            assert rows[f["id"]] in sections["done"] and rows[d["id"]] in sections["upcoming"] and rows[e["id"]] in sections["today"], "rows land in their sections"
+            assert page.sub.text().startswith("Today ·") and "24-hour" in page.sub.text(), page.sub.text()
+            # --- the live reading of the plain-language field
+            page.nl.setText("remind me tomorrow at 9am to call the bank")
+            wait_for(lambda: "Call the bank" in page.parsed.text() and "09:00" in page.parsed.text(), "live parse (have %r)" % page.parsed.text())
+            assert page.when.dateTime().toString("HH:mm") == "09:00" and page.repeat.currentData() == "none" and page.parsed.property("state") == "ok"
+            page.nl.setText("every weekday 6:30 pm gym")
+            wait_for(lambda: page.repeat.currentData() == "weekdays" and "18:30" in page.parsed.text(), "repeat + time from the words")
+            page.nl.setText("meeting at 3")
+            wait_for(lambda: "please check the time" in page.parsed.text(), "an ambiguous reading is flagged")
+            assert page.parsed.property("state") == "warn" and page.when.dateTime().toString("HH:mm") == "15:00"
+            page.nl.setText("call the bank")
+            wait_for(lambda: page.parsed.property("state") == "error" and "When should I remind you" in page.parsed.text(), "no time -> says so")
+            page.nl.setText("water the plants tomorrow at 7am")
+            wait_for(lambda: "Water the plants" in page.parsed.text(), "parse before Add")
+            page.add_btn.click()
+            wait_for(lambda: len(page.rows) == 7 and page.nl.text() == "", "the added row (and a cleared field)")
+            added = [i for i in cc.api("GET", "/schedule?scope=upcoming")["items"] if i["title"] == "Water the plants"]
+            assert added and "T07:00" in added[0]["when_local"] and added[0]["source"] == "ui", added
+            # --- Done on a row
+            rows[a["id"]].buttons["check"].click()
+            wait_for(lambda: cc.api("GET", "/schedule/%d" % a["id"])["status"] == "done", "Done through the row")
+            wait_for(lambda: page.rows.get(a["id"]) is not None and page.rows[a["id"]].property("status") == "done", "the row moved to Done")
+            spin(30)                                     # the rebuilt rows need a layout pass before they paint
+            assert all(r.isVisible() for r in page.rows.values()), "every row is laid out and visible"
+            pix = w.grab()
+            path = os.path.join(OUT, "ai-controls-schedule-%s.png" % name)
+            pix.save(path)
+            results[name] = (pix.width(), pix.height())
+            # --- inline editor on the meeting row (rendered once, dark)
+            if name == "dark":
+                page.start_edit(b["id"])
+                spin()
+                ed = page.rows[b["id"]]
+                assert isinstance(ed, cc.ScheduleEditor) and ed.before.currentData() == 10, "the editor shows the item's remind-before"
+                ed.repeat.setCurrentIndex(1)
+                ed.save_btn.click()
+                wait_for(lambda: cc.api("GET", "/schedule/%d" % b["id"])["repeat"] == "daily", "Save in the editor patches the item")
+                page.start_edit(b["id"])
+                spin()
+                w.grab().save(os.path.join(OUT, "ai-controls-schedule-edit-dark.png"))
+                page._cancel_edit()
+                spin()
+            # --- the settings row follows the daemon: 12-hour changes the display
+            page.clock_box.setCurrentIndex(1)
+            page.clock_box.activated.emit(1)
+            wait_for(lambda: "12-hour" in page.sub.text(), "the clock setting round-trips")
+            assert cc.api("GET", "/settings")["scheduler.clock"] == "12"
+            assert any(("AM" in r.time.text() or "PM" in r.time.text()) for r in page.rows.values() if isinstance(r, cc.ScheduleRow)), "12-hour times shown"
+            page.clock_box.setCurrentIndex(0)
+            page.clock_box.activated.emit(0)
+            wait_for(lambda: "24-hour" in page.sub.text(), "back to 24-hour")
+            assert not page.mail_switch.isEnabled(), "mail intake is off/disabled until a mail account is signed in"
+            # back to a chat: the composer returns
+            w.new_chat()
+            spin()
+            assert w.composer.isVisible() and w.stack.currentIndex() == 0
+            close_window(w)
+            del w
+            # undo the mutations so the light pass sees the same picture
+            cc.api("POST", "/schedule/%d/reopen" % a["id"])
+            for i in cc.api("GET", "/schedule?scope=all")["items"]:
+                if i["title"] == "Water the plants":
+                    cc.api("DELETE", "/schedule/%d" % i["id"])
+            cc.api("PATCH", "/schedule/%d" % b["id"], {"repeat": "none"})
+        for k, (wd, ht) in results.items():
+            print("ai-controls-schedule-%s %dx%d" % (k, wd, ht))
+        rc = 0
+    except Exception:
+        traceback.print_exc()
+        try:
+            print("--- daemon output ---")
+            proc.terminate()
+            print(proc.communicate(timeout=5)[0][-3000:])
+        except Exception:
+            pass
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(5)
+            except Exception:
+                proc.kill()
+        shutil.rmtree(tmp, ignore_errors=True)
+    return rc
+
+
 def main():
+    if "--schedule" in sys.argv:
+        sys.exit(schedule_pass())
     if "--settings" in sys.argv or "--welcome" in sys.argv:
         sys.exit(quick_passes())
     os.makedirs(OUT, exist_ok=True)

@@ -95,6 +95,7 @@ profile fabos-agentd /usr/lib/fabos/agent/fabos_agentd.py flags=(complain,attach
   /usr/bin/xdg-open Ux,
   /usr/bin/kdialog Ux,
   /usr/bin/notify-send ix,
+  /usr/bin/fabos-command-center ix,                # the schedule's notifications open Fab AI Controls › Schedule (scheduler.py)
   /usr/bin/wtype ix,
   /usr/bin/systemctl ix,
   /usr/bin/systemd-creds ix,

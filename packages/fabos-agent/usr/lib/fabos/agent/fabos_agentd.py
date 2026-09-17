@@ -40,6 +40,13 @@ HTTP API on 127.0.0.1:8790 (bearer token in $XDG_RUNTIME_DIR/fabos-agent/token, 
   POST /tasks/{id}/feedback {rating: good|bad}      DELETE /watches/{id}
   GET  /policy  POST /policy/reload                 the administrator policy (/etc/fabos/policy.json, also reloaded on SIGHUP)
   GET  /audit/verify                                checks the HMAC chain over the activity log; POST /audit/export {since, out_dir?} writes JSONL
+  Schedule (scheduler.py, docs/design/SCHEDULER.md): GET /schedule?scope=today|tomorrow|upcoming|done|missed|all  GET /schedule/today (the login summary text)
+       POST /schedule {text | title+when(YYYY-MM-DDTHH:MM local), repeat?, remind_before?, notes?, confirm?} -> 201 {item} | 200 {needs_confirm, parsed} | 400 {error}
+       POST /schedule/parse {text} -> the interpretation without creating anything (the Schedule tab's live preview)
+       PATCH /schedule/{id} {title?, when?, repeat?, remind_before?, notes?, status?}   POST /schedule/{id}/done|snooze|dismiss|reopen   DELETE /schedule/{id}
+       POST /schedule/login-summary {force?} -> sends the "Today: N items" notification once per login (fabos-schedule-summary.service)
+       POST /schedule/mail-intake/run -> one intake pass now; POST /schedule/tick -> one reminder-loop pass now (tests)
+       settings scheduler.timezone (IANA name; "" = system) · scheduler.clock 12|24 · scheduler.mail_intake true|false
 Security (docs/ENTERPRISE.md, SECURITY.md): root only through `pkexec rootexec` (polkit, the user's own password in every mode);
 run_shell inside bubblewrap when available; the agent's secrets, token and history are unreadable to tools; children get an
 allowlisted session environment (never the daemon's own, which holds the provider key) and tool commands no ssh/gpg agent;
@@ -63,6 +70,8 @@ import http.client, smtplib, imaplib, email, email.utils, email.header, ssl, dat
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import scheduler as SCHED    # noqa: E402  the schedule: parser, store, reminder loop, mail intake (same directory)
 
 APP = "Fab OS"
 PORT = int(os.environ.get("FABOS_AGENT_PORT", "8790"))
@@ -647,6 +656,13 @@ TOOLS = [
     {"name": "list_apps",
      "description": "List applications installed on this computer right now (system packages, Flatpaks, user apps) with their launch command, description and file types they open. Newly installed apps appear here immediately. Optional query filters by name/keyword/mime type.",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 40}}}},
+    {"name": "schedule",
+     "description": "The user's schedule and reminders (Fab AI Controls › Schedule): work, calendar, mails, the day's tasks. action=add creates an item from the user's own words in `text` (e.g. 'tomorrow 9am call the bank', 'every weekday 6:30 pm gym', 'meeting with Rohan on 20 Sep 3pm', 'pay rent on the 1st every month', 'in 45 minutes') or from title + when (YYYY-MM-DDTHH:MM in the user's zone) + repeat; the result carries `text` — repeat it to the user. If the result says needs_confirm, tell the user the interpretation and add again with confirm=true only after they agree; never invent a time the user did not give. action=list (scope today|tomorrow|upcoming|done|all) returns the items and a `text` summary; done / remove / snooze / dismiss take the item id. A reminder is shown as a desktop notification at the time (remind_before minutes earlier) and every login shows today's list.",
+     "input_schema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["add", "list", "done", "remove", "snooze", "dismiss"]}, "text": {"type": "string", "description": "the reminder in the user's words, including the time"},
+                                                       "title": {"type": "string"}, "when": {"type": "string", "description": "YYYY-MM-DDTHH:MM local time (instead of text)"}, "repeat": {"type": "string", "enum": ["none", "daily", "weekdays", "weekly", "monthly"]},
+                                                       "remind_before": {"type": "integer", "description": "minutes before the time to remind (default 0)"}, "notes": {"type": "string"}, "confirm": {"type": "boolean", "default": False},
+                                                       "id": {"type": "integer"}, "scope": {"type": "string", "enum": ["today", "tomorrow", "upcoming", "done", "missed", "all"]}, "minutes": {"type": "integer", "description": "snooze length (default 10)"}},
+                      "required": ["action"]}},
 ]
 
 APP_DIRS = ["/usr/share/applications", "/usr/local/share/applications", "/var/lib/flatpak/exports/share/applications",
@@ -830,6 +846,8 @@ def classify(tool, inp):
             return "CRITICAL", "touches credentials or the agent's own configuration (~/.ssh, ~/.gnupg, ~/.config/fabos, /etc/sudoers)"
     if tool in ("read_file", "list_dir", "notify_user", "ask_user", "list_apps"):
         return "LOW", "read-only or user-facing"
+    if tool == "schedule":
+        return "LOW", "the user's own schedule"
     if tool == "check_email":
         return "MEDIUM", "reads personal mail"
     if tool == "web_fetch":
@@ -1428,6 +1446,42 @@ class Tools:
         self.store.activity("agent", "notify", task_id, inp["message"])
         return {"notified": ok}
 
+    def t_schedule(self, task_id, inp):
+        """The schedule (scheduler.py): add from words or title+when, list, done, remove, snooze, dismiss."""
+        loop = self.agent.scheduler
+        sched = loop.sched
+        action = str(inp.get("action") or "add").lower()
+        now, clock = sched.now(), sched.clock()
+        if action == "add":
+            return SCHED.add_from_request(sched, inp, "tool" if task_id else "ui")
+        if action == "list":
+            scope = str(inp.get("scope") or "today").lower()
+            items = sched.list(scope, now, int(inp.get("limit") or 50))
+            return {"scope": scope, "count": len(items), "text": SCHED.list_text(items, scope, now, clock),
+                    "items": [{k: i[k] for k in ("id", "title", "when_local", "when_text", "repeat", "status", "source", "remind_before")} for i in items]}
+        try:
+            item_id = int(inp.get("id"))
+        except (TypeError, ValueError):
+            raise RuntimeError("the item id is required for %s (see action=list)" % action)
+        before = sched.get(item_id)
+        if not before:
+            raise RuntimeError("no schedule item #%d" % item_id)
+        if action == "done":
+            item = sched.complete(item_id, now)
+            text = "Done: %s." % before["title"] + ((" Next: %s." % item["when_text"]) if item and item["repeat"] != "none" else "")
+        elif action == "remove":
+            sched.remove(item_id)
+            item, text = None, "Removed: %s." % before["title"]
+        elif action == "snooze":
+            item = sched.snooze(item_id, int(inp.get("minutes") or SCHED.SNOOZE_MIN), now)
+            text = "Snoozed %s by %d minutes." % (before["title"], int(inp.get("minutes") or SCHED.SNOOZE_MIN))
+        elif action == "dismiss":
+            item = sched.dismiss(item_id, now)
+            text = "Dismissed: %s." % before["title"]
+        else:
+            raise RuntimeError("unknown schedule action %r" % action)
+        return {"ok": True, "action": action, "item": item, "text": text}
+
     def t_ask_user(self, task_id, inp):
         return self.agent.ask_user(task_id, inp["question"])
 
@@ -1506,6 +1560,9 @@ def _host(url):
 def narration_for(name, inp, show_raw=False):
     """What the agent says before a tool step runs."""
     inp = inp if isinstance(inp, dict) else {}
+    if name == "schedule":
+        return {"list": "Looking at your schedule.", "done": "Marking that as done.", "remove": "Removing that from your schedule.",
+                "snooze": "Snoozing that reminder.", "dismiss": "Dismissing that reminder."}.get(str(inp.get("action") or "add"), "Adding that to your schedule.")
     if name == "open_app":
         return "Opening %s for you now." % _app_name(inp)
     if name == "type_text":
@@ -1543,6 +1600,8 @@ def narration_for(name, inp, show_raw=False):
 def narration_done_for(name, inp, out, error=False):
     """What the agent says once a tool step has finished (or failed)."""
     inp = inp if isinstance(inp, dict) else {}
+    if name == "schedule" and not error and isinstance(out, dict) and out.get("text"):
+        return str(out["text"])[:220]
     if error:
         reason = (out.get("error") if isinstance(out, dict) else str(out)) or "something went wrong"
         reason = str(reason).strip().split("\n")[0]
@@ -1587,7 +1646,8 @@ def approval_narration(name, inp):
                "read_file": "read %s" % _base(inp.get("path")), "list_dir": "look inside %s" % _base(inp.get("path")), "open_app": "open %s" % _app_name(inp),
                "type_text": "type into the focused window", "send_email": "send a mail to %s" % (inp.get("to") or "someone"), "check_email": "check your mail",
                "schedule_watch": "set up a background watch", "web_fetch": "fetch %s" % _host(inp.get("url")), "notify_user": "show a notification",
-               "ask_user": "ask you a question", "list_apps": "look up installed apps", "generate_image": "generate an image and save it in Pictures"}.get(name, (name or "do something").replace("_", " "))
+               "ask_user": "ask you a question", "list_apps": "look up installed apps", "generate_image": "generate an image and save it in Pictures",
+               "schedule": "change your schedule"}.get(name, (name or "do something").replace("_", " "))
     return "This needs your permission: %s. Shall I go ahead?" % summary
 
 
@@ -2960,10 +3020,109 @@ class Agent:
         self._sandbox = None     # None = not probed yet; "bwrap" | "none"
         self._sandbox_lock = threading.Lock()
         self.sem = threading.Semaphore(int(store.setting("agent.max_parallel", "2")))
+        # the schedule: store + reminder loop (main() starts the thread; tests drive tick_once themselves)
+        self.scheduler = SCHED.SchedulerLoop(store, session_env=self.session_env, mail_factory=self.mail_intake_factory, log=LOG, enabled=self.ai_enabled)
         for r in store.all("SELECT id FROM tasks WHERE status IN ('running','waiting_approval','waiting_user')"):
             store.q("UPDATE tasks SET status='failed', error='service restarted while task was running', updated=? WHERE id=?", time.time(), r["id"])
         for r in store.all("SELECT id FROM tasks WHERE status='queued'"):
             self.start(r["id"])
+
+    def mail_intake_factory(self):
+        """MailIntake for the scheduler loop when the user's mail account is signed in (with IMAP) and scheduler.mail_intake
+        is not off; None otherwise. The search is the same IMAP code check_email uses, limited to unseen mail FROM the
+        user's own address in the last 48 h; the optional confirmation goes out through send_email's SMTP path."""
+        if str(self.store.setting("scheduler.mail_intake", "true")).lower() in ("false", "0", "off", "no"):
+            return None
+        cfg = mail_config(self.store)
+        if not mail_ready(self.store, cfg) or not cfg["imap_host"]:
+            return None
+        search = lambda: self.tools._imap_search(cfg, from_contains=cfg["address"], since_hours=48, unseen_only=True, limit=20, include_body=True)   # noqa: E731
+        send = lambda to, subject, body: self.tools.t_send_email(None, {"to": to, "subject": subject, "body": body})                                  # noqa: E731
+        return SCHED.MailIntake(self.scheduler.sched, cfg["address"], search, send, log=LOG)
+
+    def _schedule_shortcut(self, tid, task):
+        """'remind me …' / 'schedule a …' / 'what's on my schedule' are answered here, deterministically and offline
+        (scheduler.intent + parse): a tool step and a final text are recorded like any task. An ambiguous reading
+        (bare 'at 3', '5/6', a date without a time) is put to the user as a question first; the item is created only
+        after a yes (or a clearer time). Anything the parser cannot read falls through to the model, which has the
+        `schedule` tool. Returns True when the task was handled."""
+        it = SCHED.intent(user_text(task["request"]))
+        if not it:
+            return False
+        kind, arg = it
+        sched = self.scheduler.sched
+        try:
+            if kind == "list":
+                inp = {"action": "list", "scope": arg}
+                sid = self.store.step(tid, "tool_call", "schedule", json.dumps(inp), "", "LOW", "auto-approved", narration=narration_for("schedule", inp))
+                out, err = self.tools.run(tid, "schedule", inp)
+                self.store.finish_step(sid, json.dumps(out), narration_done_for("schedule", inp, out, error=err))
+                final = out.get("text") if not err else "Sorry, that did not work: %s" % out.get("error")
+            else:
+                p = SCHED.parse(arg, sched.now(), sched.tz(), sched.clock())
+                if not p["ok"] and not re.search(r"\b(?:when should i remind you|two times)\b", p["error"] or "", re.I):
+                    return False                                      # an impossible date etc.: the model explains, with the tool at hand
+                rounds = 0
+                final = "Okay, I have not added anything. You can add it in Fab AI Controls › Schedule."
+                while p["ok"] and p["needs_confirm"] and rounds < 2:
+                    rounds += 1
+                    ans = self.ask_user(tid, "I read that as %s. Shall I add it? Say yes, or give the time again." % p["interpretation"])
+                    text = (ans.get("answer") or "").strip()
+                    if not text or tid in self.cancel:
+                        final = "Okay, I have not added anything."
+                        break
+                    if SCHED.is_confirmation(text):
+                        p["needs_confirm"] = False
+                        break
+                    if SCHED.is_rejection(text):
+                        final = "Okay, I have not added anything."
+                        break
+                    p2 = SCHED.parse(text, sched.now(), sched.tz(), sched.clock())
+                    if p2["ok"]:
+                        if p2["title"] == "Reminder":
+                            p2["title"] = p["title"]
+                            p2["interpretation"] = SCHED.interpretation(p2, sched.now(), sched.clock())
+                        p = p2
+                    else:
+                        final = "I still could not read the time (%s) — nothing added. You can add it in Fab AI Controls › Schedule." % p2["error"]
+                        p["ok"] = False
+                        break
+                if not p["ok"] and rounds == 0:
+                    ans = self.ask_user(tid, p["error"])
+                    text = (ans.get("answer") or "").strip()
+                    p = SCHED.parse(text, sched.now(), sched.tz(), sched.clock()) if text else p
+                    if p["ok"]:
+                        base = SCHED.parse(arg + " tomorrow at 9am", sched.now(), sched.tz(), sched.clock())    # the title from the first message
+                        if p["title"] == "Reminder" and base["ok"] and base["title"] != "Reminder":
+                            p["title"] = base["title"]
+                            p["interpretation"] = SCHED.interpretation(p, sched.now(), sched.clock())
+                        if p["needs_confirm"]:
+                            ans = self.ask_user(tid, "I read that as %s. Shall I add it?" % p["interpretation"])
+                            if not SCHED.is_confirmation((ans.get("answer") or "")):
+                                p["ok"] = False
+                                final = "Okay, I have not added anything."
+                    else:
+                        final = "I could not read a time there — nothing added. You can add it in Fab AI Controls › Schedule."
+                if p["ok"] and not p["needs_confirm"]:
+                    inp = {"action": "add", "text": arg, "title": p["title"], "when": p["when"].isoformat(timespec="minutes"), "repeat": p["repeat"], "remind_before": p.get("remind_before") or 0}
+                    sid = self.store.step(tid, "tool_call", "schedule", json.dumps(inp), "", "LOW", "auto-approved", narration=narration_for("schedule", inp))
+                    out, err = self.tools.run(tid, "schedule", dict(inp, confirm=True))
+                    if not err and out.get("item"):
+                        self.store.q("UPDATE schedule SET source='chat' WHERE id=?", out["item"]["id"])
+                    self.store.finish_step(sid, json.dumps(out, default=str), narration_done_for("schedule", inp, out, error=err))
+                    final = out.get("text") if not err else "Sorry, that did not work: %s" % out.get("error")
+            st = "cancelled" if tid in self.cancel else "done"
+            self.store.q("UPDATE tasks SET status=?, result=?, updated=? WHERE id=?", st, final, time.time(), tid)
+            self.store.step(tid, "final", "", "", final)
+            self.store.activity("agent", "task_" + st, tid, final[:500])
+        except Exception as e:
+            msg = "%s: %s" % (type(e).__name__, e)
+            self.store.q("UPDATE tasks SET status='failed', error=?, updated=? WHERE id=?", msg, time.time(), tid)
+            self.store.step(tid, "error", "", "", msg)
+            self.store.activity("agent", "task_failed", tid, msg[:500])
+        finally:
+            self.cancel.discard(tid)
+        return True
 
     def session_env(self):
         """The environment for applications launched for the user (open_app, type_text, the OAuth browser): the desktop
@@ -3214,6 +3373,8 @@ class Agent:
             if not task or task["status"] != "queued":
                 return
             self.store.q("UPDATE tasks SET status='running', updated=? WHERE id=?", time.time(), tid)
+            if self._schedule_shortcut(tid, task):       # "remind me …": deterministic, offline, no provider needed
+                return
             try:
                 prov = self.provider()
             except Exception as e:
@@ -4793,6 +4954,90 @@ def parse_since(v):
 
 
 # ----------------------------------------------------------------------------- HTTP API
+def schedule_api(agent, method, p, qs, b):
+    """The /schedule/* endpoints (docstring above). Returns (status, object)."""
+    loop = agent.scheduler
+    sched = loop.sched
+    now, clock = sched.now(), sched.clock()
+    m = re.match(r"^/schedule/(\d+)(?:/(done|snooze|dismiss|reopen))?$", p)
+    if method == "GET":
+        if p == "/schedule":
+            scope = qs.get("scope", "all")
+            try:
+                limit = int(qs.get("limit", 200))
+            except ValueError:
+                return 400, {"error": "limit must be a number"}
+            items = sched.list(scope, now, limit)
+            return 200, {"scope": scope, "items": items, "count": len(items), "now": now.isoformat(timespec="minutes"), "today": now.date().isoformat(), "tz": SCHED.tz_name(sched.tz()),
+                         "system_timezone": SCHED.system_tz_name(), "clock": clock, "mail_intake": str(agent.store.setting("scheduler.mail_intake", "true")).lower() != "false",
+                         "mail_ready": bool(mail_ready(agent.store)), "mail_report": loop.mail_report}
+        if p == "/schedule/today":
+            title, body, items = sched.summary(now)
+            return 200, {"title": title, "body": body, "count": len(items), "items": items, "text": SCHED.list_text(items, "today", now, clock)}
+        if m and not m.group(2):
+            item = sched.get(int(m.group(1)))
+            return (200, item) if item else (404, {"error": "no such schedule item"})
+        return 404, {"error": "not found"}
+    if method == "POST":
+        if p == "/schedule/parse":
+            r = SCHED.parsed_json(SCHED.parse(b.get("text") or "", now, sched.tz(), clock))
+            return 200, r
+        if p == "/schedule":
+            src = b.get("source") if b.get("source") in SCHED.SOURCES else "ui"
+            r = SCHED.add_from_request(sched, b, src)
+            if r.get("added"):
+                return 201, r
+            return (200 if r.get("needs_confirm") else 400), r
+        if p == "/schedule/login-summary":
+            return 200, loop.send_login_summary(force=bool(b.get("force")), session=str(b.get("session") or "")[:64] or None)
+        if p == "/schedule/mail-intake/run":
+            loop.last_mail = time.time()
+            r = loop.run_mail_intake(now) or {}
+            return 200, json.loads(json.dumps(r, default=str))
+        if p == "/schedule/tick":
+            missed, rolled = loop.tick_once(now)
+            return 200, {"ok": True, "missed": missed, "rolled": rolled, "notified": len(loop.notifier.sent)}
+        if m and m.group(2):
+            item_id, act = int(m.group(1)), m.group(2)
+            if not sched.get(item_id):
+                return 404, {"error": "no such schedule item"}
+            if act == "done":
+                item = sched.complete(item_id, now)
+            elif act == "snooze":
+                try:
+                    mins = int(b.get("minutes") or SCHED.SNOOZE_MIN)
+                except (TypeError, ValueError):
+                    return 400, {"error": "minutes must be a number"}
+                item = sched.snooze(item_id, mins, now)
+            elif act == "dismiss":
+                item = sched.dismiss(item_id, now)
+            else:
+                item = sched.reopen(item_id)
+            return 200, {"ok": True, "item": item}
+        return 404, {"error": "not found"}
+    if method == "PATCH" and m and not m.group(2):
+        item_id = int(m.group(1))
+        if not sched.get(item_id):
+            return 404, {"error": "no such schedule item"}
+        fields = {}
+        for k in ("title", "notes", "repeat", "status", "remind_before"):
+            if k in b:
+                fields[k] = b[k]
+        if "when" in b and b["when"] not in (None, ""):
+            try:
+                fields["when"] = SCHED.parse_when_value(b["when"], sched.tz())
+            except ValueError as e:
+                return 400, {"error": str(e)}
+        try:
+            item = sched.update(item_id, **fields)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        return 200, {"ok": True, "item": item}
+    if method == "DELETE" and m and not m.group(2):
+        return (200, {"ok": True}) if sched.remove(int(m.group(1))) else (404, {"error": "no such schedule item"})
+    return 404, {"error": "not found"}
+
+
 def make_handler(store, agent, token):
     class H(BaseHTTPRequestHandler):
         server_version = "fabos-agentd/1.0"
@@ -4847,6 +5092,7 @@ def make_handler(store, agent, token):
                                         "voice": {k[len("voice."):]: store.setting(k, d) for k, d in VOICE_DEFAULTS.items()},
                                         "providers": {k: {"label": v["label"], "has_key": has_secret(v["secret"])} for k, v in PROVIDERS.items()},
                                         "mail_ready": mail_ready(store, mcfg), "mail_provider": mcfg["provider"], "mail_address": mcfg["address"], "mail_auth": mcfg["auth"], "tasks": counts,
+                                        "schedule": agent.scheduler.brief(),
                                         "pending_approvals": store.one("SELECT COUNT(*) n FROM approvals WHERE status='pending'")["n"],
                                         "active_watches": store.one("SELECT COUNT(*) n FROM watches WHERE status='active'")["n"],
                                         # the Research / Computer use defaults for a new chat (docs/design/MODES.md); a chat's own choice is on GET /tasks/{id}
@@ -4883,6 +5129,10 @@ def make_handler(store, agent, token):
                 s["mail_ready"] = mail_ready(store)
                 s["policy"] = POLICY.status()
                 s["mode_effective"] = agent.mode()
+                s.setdefault("scheduler.timezone", "")      # "" = the system zone (scheduler_system_timezone)
+                s.setdefault("scheduler.clock", "24")
+                s.setdefault("scheduler.mail_intake", "true")
+                s["scheduler_system_timezone"] = SCHED.system_tz_name()
                 return self._send(200, s)
             if p == "/tasks":
                 return self._send(200, store.all("SELECT id,title,status,mode,created,updated,parent_id,cost_in,cost_out,substr(result,1,200) result,error,substr(request,1,400) request FROM tasks ORDER BY id DESC LIMIT ?", int(qs.get("limit", 100))))
@@ -4930,6 +5180,8 @@ def make_handler(store, agent, token):
                 return self._send(200, store.all("SELECT * FROM watches ORDER BY id DESC LIMIT 200"))
             if p == "/activity":
                 return self._send(200, store.all("SELECT * FROM activity ORDER BY id DESC LIMIT ?", int(qs.get("limit", 200))))
+            if p == "/schedule" or p.startswith("/schedule/"):
+                return self._send(*schedule_api(agent, "GET", p, qs, {}))
             self._send(404, {"error": "not found"})
 
         def do_POST(self):
@@ -4940,6 +5192,8 @@ def make_handler(store, agent, token):
                 b = self._body()
             except ValueError as e:
                 return self._send(413 if "too large" in str(e) else 400, {"error": str(e)})
+            if p == "/schedule" or p.startswith("/schedule/"):
+                return self._send(*schedule_api(agent, "POST", p, {}, b))
             if p == "/policy/reload":
                 POLICY.load()
                 store.activity("user", "policy_reload", None, json.dumps(POLICY.status(), default=str)[:1000])
@@ -5125,6 +5379,14 @@ def make_handler(store, agent, token):
                         return self._send(400, {"error": "images.provider must be openai, gemini, local or empty (automatic)"})
                     if k == "images.local_endpoint" and str(v).strip() and not str(v).strip().startswith(("http://", "https://")):
                         return self._send(400, {"error": "images.local_endpoint must be an http(s) URL (an OpenAI-compatible /v1 base or its /images/generations)"})
+                    if k == "scheduler.timezone" and str(v).strip() and not SCHED.resolve_tz(str(v)):
+                        return self._send(400, {"error": "scheduler.timezone must be a zone name such as Asia/Kolkata or Europe/London (or empty for the system zone)"})
+                    if k == "scheduler.clock" and str(v).strip() not in ("12", "24", ""):
+                        return self._send(400, {"error": "scheduler.clock must be 12 or 24"})
+                    if k in ("scheduler_system_timezone", "schedule"):
+                        continue
+                    if k == "scheduler.mail_intake":
+                        v = "true" if str(v).lower() in ("true", "1", "on", "yes") else "false"
                     if k == "ai.enabled":
                         v = "true" if str(v).lower() in ("true", "1", "on", "yes") else "false"
                         notify(APP, "System-Wide AI is now %s" % ("ON" if v == "true" else "OFF"))
@@ -5142,6 +5404,12 @@ def make_handler(store, agent, token):
         def do_PATCH(self):
             if not self._auth():
                 return
+            if self.path.startswith("/schedule/"):
+                try:
+                    b = self._body()
+                except ValueError as e:
+                    return self._send(413 if "too large" in str(e) else 400, {"error": str(e)})
+                return self._send(*schedule_api(agent, "PATCH", self.path.split("?")[0], {}, b))
             m = re.match(r"^/tasks/(\d+)$", self.path)
             if m:
                 try:
@@ -5172,6 +5440,8 @@ def make_handler(store, agent, token):
         def do_DELETE(self):
             if not self._auth():
                 return
+            if self.path.startswith("/schedule/"):
+                return self._send(*schedule_api(agent, "DELETE", self.path.split("?")[0], {}, {}))
             m = re.match(r"^/tasks/(\d+)$", self.path)
             if m:
                 tid = int(m.group(1))
@@ -5211,6 +5481,7 @@ def main():
     store = Store(DB_PATH, audit_key=audit_key.encode())
     agent = Agent(store)
     Watcher(store, agent).start()
+    agent.scheduler.start()                       # reminders + missed-item sweep + mail intake (scheduler.py)
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), make_handler(store, agent, token))
     srv.daemon_threads = True
     LOG("fabos-agentd listening on 127.0.0.1:%d db=%s mode=%s provider=%s policy=%s" % (PORT, DB_PATH, agent.mode(),
