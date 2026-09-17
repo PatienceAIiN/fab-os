@@ -664,7 +664,7 @@ PlasmoidItem {
                 : tileId === "dnd" ? (root.dnd ? "On until turned off" : "Off")
                 : tileId === "powerprofile" ? (Status.profileLabel(st.profile) || "Unavailable")
                 : tileId === "nightlight" ? Status.nightLine(st, false)
-                : tileId === "screenshot" ? "Capture the screen" : "System Settings"
+                : tileId === "screenshot" ? "Capture the screen" : "Fab Settings"
             on: tileId === "wifi" ? st.wifiRadio === true : tileId === "bluetooth" ? (st.btPresent && st.btPowered === true) : tileId === "dnd" ? root.dnd
               : tileId === "nightlight" ? st.nightEnabled === true : false
             actionEnabled: available && (tileId === "wifi" ? st.wifiRadio !== null : tileId === "bluetooth" ? st.btPresent : tileId === "powerprofile" ? st.profile.length > 0
