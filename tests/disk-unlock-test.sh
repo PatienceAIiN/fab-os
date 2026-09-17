@@ -404,6 +404,8 @@ reset_system; rm -f "$FABOS_DU_RECORD"; chmod 000 "$STUB_INITRD"
 env -u FABOS_DU_ALLOW_NONROOT "$HELPER" diagnose > "$T/dg15.json" 2>/dev/null; rc=$?
 chk "user-level diagnose, root-only initrd, no record: exit 0, as_root=false, initrd_key unknown, expected=null, agrees=null, needs_root=true, repair says 'Check as administrator' / 'diagnose --admin'" \
     "[ $rc = 0 ] && [ \"\$(jget $T/dg15.json as_root)\" = false ] && [ \"\$(jitem $T/dg15.json initrd_key:$KERNEL)\" = unknown ] && [ \"\$(jget $T/dg15.json prompt_at_boot_expected)\" = null ] && [ \"\$(jget $T/dg15.json agrees)\" = null ] && [ \"\$(jget $T/dg15.json needs_root)\" = true ] && grep -q 'Check as administrator' $T/dg15.json && grep -q 'diagnose --admin' $T/dg15.json"
+chk "user-level diagnose: root_luks pass although lsblk lists the opened mapper's ext4 first (the device itself is read with -d; root uses cryptsetup isLuks)" \
+    "[ \"\$(jitem $T/dg15.json root_luks)\" = pass ] && grep -q '^lsblk -d -n -o FSTYPE' $STUB_LOG && [ \"\$(jitem $T/dg1.json root_luks)\" = pass ]"
 chmod 644 "$STUB_INITRD"; "$HELPER" diagnose >/dev/null 2>&1; chmod 000 "$STUB_INITRD"
 env -u FABOS_DU_ALLOW_NONROOT "$HELPER" diagnose > "$T/dg16.json" 2>/dev/null
 chk "user-level diagnose after a root run left the record: initrd_key pass 'verified as administrator at … unchanged since', expected=true, agrees=true, needs_root=false" \
