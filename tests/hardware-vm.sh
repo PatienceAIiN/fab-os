@@ -20,7 +20,7 @@ mkdir -p build/hardware-vm; OUT=build/hardware-vm.out; : > "$OUT"; exec > >(tee 
 vm() { $SSH "$@"; }
 vsudo() { $SSH "echo fabos | sudo -S -p '' bash -c $(printf %q "$1") 2>&1"; }
 usr() { $SSH "XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus bash -c $(printf %q "$1") 2>&1"; }
-shot() { [ -n "${HW_QMP:-}" ] && [ -S "$HW_QMP" ] && python3 tests/install-vm-driver.py --help >/dev/null 2>&1 && python3 - "$HW_QMP" "build/hardware-vm/$1" <<'PY'
+shot() { [ -n "${HW_QMP:-}" ] && [ -S "$HW_QMP" ] && python3 - "$HW_QMP" "$HERE/build/hardware-vm/$1" <<'PY'   # QEMU resolves the path in ITS cwd: absolute
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("ivd", "tests/install-vm-driver.py"); ivd = importlib.util.module_from_spec(spec); spec.loader.exec_module(ivd)
 from PIL import Image
