@@ -18,8 +18,8 @@ notes are all generated from it and never edited by hand.
      counts, hosts, addresses, secrets, and no third-party product name used as ours. Say "login screen", "start-up
      screen", "installer", "updates", "the assistant" rather than the names of the parts underneath. -->
 
-<!-- release: rev=8 tag=v1.0.7 kind=ota date=unreleased status=draft -->
-## 1.0-8 — not yet released (over-the-air, draft)
+<!-- release: rev=8 tag=v1.0.7 kind=ota date=2026-09-17 time=12:57 -->
+## 1.0-8 — 17 September 2026 (over-the-air)
 
 The second update delivered through Fab Updates. It answers the owner's second round of reports from a real laptop: battery
 use, slow app opening, a microphone that did nothing, new chats stuck as queued, a login screen that still showed another

@@ -69,6 +69,25 @@ a{color:inherit;text-decoration:none}button{font:inherit}.wrap{max-width:1240px;
 <main id="top">
 <section class="section changelog-hero"><div class="wrap"><div class="section-head"><span class="eyebrow">Changelog</span><h2>What changed in Fab OS.</h2><p>Follow along with the <a href="../updates.xml">RSS feed</a> or the <a href="https://github.com/PatienceAIiN/fab-os/releases" target="_blank" rel="noreferrer">releases on GitHub</a>.</p></div></div></section>
 <section class="section white-section"><div class="wrap changelog-list" data-pages="2" data-page-size="5">
+<article class="release" data-page="1" id="1.0-8">
+<div class="release-meta"><span class="release-badge ota">Over-the-air update</span><span class="release-date">17 September 2026</span><span class="release-tag">v1.0.7</span></div>
+<h3>Fab OS 1.0-8</h3>
+<p class="release-intro">The second update delivered through Fab Updates. It answers the owner's second round of reports from a real laptop: battery use, slow app opening, a microphone that did nothing, new chats stuck as queued, a login screen that still showed another desktop's name, and a start-up disk-password switch that seemed not to take.</p>
+<ul>
+<li>Performance mode in quick settings: Power saver, Balanced, Performance, Gaming (tearing and variable refresh allowed, heavy effects off) and Server (no effects, screen never blanks, no sleep). Leaving Gaming or Server puts your own settings back. The always-on "Hey Fab" listener now only wakes for real speech, can switch itself off after five idle minutes on battery, and pauses while the screen is locked — a setting lets you keep it always on or off.</li>
+<li>Microphone: pressing the mic starts recording within a second with a live level meter, and every failure now says why (no microphone, not enough memory, permission off, muted). Speech recognition needs about 210 MB free instead of 600 MB. A new switch in Fab AI Controls › Settings › Voice, "Allow Fab OS to use the microphone", must be on before anything records; existing installs that already used voice keep it on, fresh installs start with it off.</li>
+<li>Chats run side by side: a new chat no longer waits behind another chat that is waiting for your approval, and a queued reply tells you what it is waiting for.</li>
+<li>Research and Computer use switches beside the ask bar and inside Fab AI Controls, per chat: with Research off the assistant reads nothing from the web; with Computer use off it opens and types nothing — including through the shell.</li>
+<li>Reminders: "remind me tomorrow at 9am to call the bank", "every weekday 6:30 pm gym", "in 45 minutes…" — understood offline, confirmed with you when a time is unclear, shown as a desktop reminder with Done, Snooze and Open, listed in a new Schedule page, and summarised in one notification when you log in. You can also mail a reminder to yourself.</li>
+<li>Start-up disk password: the switch now shows what the computer will actually do at start-up, explains any mismatch and offers "Fix now"; a terminal command and a how-to page cover the same ground.</li>
+<li>Names: the remaining product names of the underlying desktop are replaced where you see them, including the start-up splash for people who had installed earlier images; Fab Camera; fingerprint readers work for login and unlocking (password always still accepted); microphone volume and mic/camera in-use indicators in quick settings.</li>
+<li>Login screen: hints such as "Place your finger on the reader" are shown as hints, not as errors.</li>
+<li>Installer (takes effect with the next image, not this update): full-disk encryption is offered but no longer pre-selected, and every step name in the installer's side list is readable.</li>
+</ul>
+<p class="release-limits"><b>Known limits:</b> the new dock, login and leave screens still need one log-out; there is no fingerprint reader or camera in the test machines, so those paths are verified structurally and on the software side only; the shell gating for the switches is a word-based rule, not a sandbox; reminders repeat daily, on weekdays, weekly or monthly only; the mail-reminder feature trusts the sender address in the mail header.</p>
+<p class="release-get"><b>How to get it:</b> Installed systems receive it automatically through Fab Updates.</p>
+<p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.7" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
+</article>
 <article class="release" data-page="1" id="1.0-7">
 <div class="release-meta"><span class="release-badge ota">Over-the-air update</span><span class="release-date">16 September 2026</span><span class="release-tag">v1.0.6</span></div>
 <h3>Fab OS 1.0-7</h3>
@@ -122,7 +141,7 @@ a{color:inherit;text-decoration:none}button{font:inherit}.wrap{max-width:1240px;
 <p class="release-get"><b>How to get it:</b> <a href="../#status">This image has been superseded — get the current disc image</a> instead; systems already installed receive these packages through Fab Updates.</p>
 <p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.3" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
 </article>
-<article class="release" data-page="1" id="1.0-3">
+<article class="release" data-page="2" id="1.0-3">
 <div class="release-meta"><span class="release-badge image">Image</span><span class="release-date">15 September 2026</span><span class="release-tag">v1.0.2</span></div>
 <h3>Fab OS 1.0-3</h3>
 <ul>
