@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f8d9e8">
+<title>Fab OS changelog — by Patience AI</title>
+<meta name="description" content="What changed in every Fab OS release, newest first: the images you install and the over-the-air updates installed systems receive on their own.">
+<link rel="canonical" href="https://fabos.patienceai.in/changelog/">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Fab OS">
+<meta property="og:title" content="Fab OS changelog">
+<meta property="og:description" content="What changed in every Fab OS release, newest first: the images you install and the over-the-air updates installed systems receive on their own.">
+<meta property="og:url" content="https://fabos.patienceai.in/changelog/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Fab OS changelog">
+<meta name="twitter:description" content="What changed in every Fab OS release, newest first: the images you install and the over-the-air updates installed systems receive on their own.">
+<link rel="alternate" type="application/rss+xml" title="Fab OS updates" href="../updates.xml">
+<link rel="icon" href="../fabos.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--deep:#321344;--plum:#7e3f95;--pink:#f8d9e8;--pink2:#f5c3dd;--cream:#fff9f7;--line:rgba(95,42,111,.2);--shadow:0 24px 70px rgba(91,43,112,.16);--radius:24px}
+*{box-sizing:border-box}
+img{max-width:100%;display:block}
+button,a{touch-action:manipulation}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--cream);color:#49205d;font-family:Inter,system-ui,sans-serif;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}button{font:inherit}.wrap{max-width:1240px;margin:0 auto;padding:0 34px}
+.site-header{position:absolute;inset:0 0 auto;z-index:10}.nav{height:92px;display:flex;align-items:center;gap:28px}.brand{display:inline-flex;align-items:center;gap:1px;color:var(--deep);font-family:Helvetica,Arial,sans-serif;font-size:21px;font-weight:800;letter-spacing:-.04em}.brand img{width:38px;height:38px;mix-blend-mode:multiply}.brand-text{display:block;margin-left:-1px}.nav-spacer{flex:1}.nav-links{display:flex;align-items:center;gap:27px;font-size:13px;font-weight:600;color:#714378}.nav-links a{transition:color .2s,transform .2s}.nav-links a:hover{color:var(--deep);transform:translateY(-1px)}
+.pill-button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;gap:9px;border:1.5px solid var(--plum);border-radius:999px;padding:12px 22px;font-weight:700;font-size:13px;transition:transform .2s,box-shadow .2s,background .2s}.pill-button{color:var(--plum);background:rgba(255,255,255,.22)}.pill-button:hover,.secondary-button:hover{background:#fff;transform:translateY(-2px);box-shadow:0 10px 24px rgba(103,45,123,.12)}
+.hero{min-height:735px;overflow:hidden;background:linear-gradient(112deg,#f2c4dd 0%,#f8d8e8 44%,#fcecf0 100%);position:relative}.hero:before{content:"";position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.5),transparent 35%),linear-gradient(120deg,transparent 58%,rgba(255,255,255,.26) 58%,transparent 78%);pointer-events:none}.hero-grid{min-height:735px;display:grid;grid-template-columns:1fr 1fr;align-items:center;gap:30px;padding-top:68px}.hero-copy{position:relative;z-index:2;padding:56px 0 40px 6%}.eyebrow{display:inline-flex;align-items:center;gap:10px;color:#7d438d;font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.eyebrow:before{content:"";width:28px;height:2px;background:var(--plum)}h1,h2,h3{font-family:Helvetica,Arial,sans-serif;letter-spacing:-.055em}.hero h1{max-width:620px;margin:19px 0 20px;color:var(--deep);font-size:clamp(48px,6vw,86px);line-height:.99;font-weight:800}.hero h1 em{font-style:normal;color:var(--plum)}.hero-rotate{display:block;min-height:2em;transition:opacity .35s ease,transform .35s ease}.hero-rotate.swap{opacity:0;transform:translateY(12px)}.hero-upcoming{display:inline-flex;align-items:center;gap:10px;margin:-3px 0 20px;color:#7d438d;font-size:12px;font-weight:800;letter-spacing:.18em;text-transform:uppercase}.hero-upcoming:before{content:"";width:28px;height:2px;background:var(--plum)}.hero-lede{max-width:540px;margin:0;color:#75457f;font-size:17px}.hero-actions{display:flex;flex-wrap:wrap;gap:13px;margin-top:30px}
+.visual{height:610px;position:relative;display:grid;place-items:center;perspective:900px}.visual:before{content:"";position:absolute;width:590px;height:420px;border-radius:50%;background:rgba(255,255,255,.35);filter:blur(25px);transform:rotate(-17deg)}.floor{position:absolute;width:580px;height:150px;bottom:83px;border-radius:50%;background:rgba(110,54,125,.16);filter:blur(20px);transform:rotate(-14deg)}.orbital{position:absolute;width:420px;height:420px;border:2px solid rgba(126,63,149,.34);border-radius:50%;transform:rotateX(68deg) rotateZ(-18deg);animation:float-ring 9s ease-in-out infinite}.orbital:after{content:"";position:absolute;inset:28px;border:1px solid rgba(126,63,149,.2);border-radius:50%}.core{position:absolute;width:190px;height:190px;border-radius:44% 56% 52% 48%;background:linear-gradient(135deg,#b665b7,#7a4297 51%,#4d236d);box-shadow:inset -22px -26px 40px rgba(38,10,55,.33),inset 24px 17px 28px rgba(255,255,255,.22),0 34px 42px rgba(82,35,102,.25);transform:rotate(-17deg) rotateX(14deg);animation:core-float 6s ease-in-out infinite}.core:before{content:"";position:absolute;inset:25px 38px 65px 25px;border-radius:50%;background:linear-gradient(135deg,rgba(255,255,255,.72),transparent);filter:blur(4px)}.core:after{content:"";position:absolute;inset:39px;border:2px solid rgba(255,219,96,.78);border-radius:50%;transform:rotate(28deg)}.shape{position:absolute;box-shadow:0 19px 28px rgba(89,39,104,.2);animation:shape-float 7s ease-in-out infinite}.shape-a{width:130px;height:60px;top:118px;left:8%;border-radius:50%;background:linear-gradient(135deg,#f78db4,#bc63ad);transform:rotate(36deg) skewX(-18deg)}.shape-b{width:128px;height:76px;right:2%;top:177px;border-radius:20px;background:linear-gradient(140deg,#ffe56c,#f4ab4d);transform:rotate(-24deg);animation-delay:-2s}.shape-c{width:95px;height:95px;left:12%;bottom:118px;border-radius:50%;background:linear-gradient(135deg,#fff,#f2b2d2 54%,#d881bb);animation-delay:-4s}.shape-d{width:74px;height:74px;right:12%;bottom:136px;border-radius:50%;background:linear-gradient(135deg,#ffd94f,#eb9b35);animation-delay:-1s}.shape-e{width:180px;height:38px;top:265px;left:3%;border-radius:50%;background:repeating-linear-gradient(90deg,#c98bd0 0 12px,#edc1e7 12px 23px);transform:rotate(19deg);animation-delay:-3s}.shape-f{width:40px;height:40px;right:22%;top:91px;border-radius:50%;background:#fff4eb;animation-delay:-5s}.visual-label{position:absolute;z-index:2;color:#8b4c95;font-size:11px;font-weight:800;letter-spacing:.12em}.visual-label.top{right:0;top:64px}.visual-label.bottom{left:12%;bottom:49px}.visual-label.bottom:before{content:"";display:inline-block;width:30px;height:1px;background:#8b4c95;vertical-align:middle;margin-right:9px}.scroll-dots{position:absolute;right:0;bottom:95px;display:grid;gap:12px}.scroll-dots i{width:7px;height:7px;border-radius:50%;background:#9c59a6;opacity:.27}.scroll-dots i:first-child{opacity:1}
+@keyframes core-float{0%,100%{transform:translate3d(0,0,0) rotate(-17deg) rotateX(14deg)}50%{transform:translate3d(0,-18px,15px) rotate(-10deg) rotateX(14deg)}}@keyframes shape-float{0%,100%{margin-top:0}50%{margin-top:-20px}}@keyframes float-ring{0%,100%{transform:rotateX(68deg) rotateZ(-18deg)}50%{transform:rotateX(68deg) rotateZ(-10deg) translateY(-13px)}}
+.section{padding:100px 0}.section-head{max-width:650px;margin-bottom:38px}.section-head h2{font-size:clamp(34px,4vw,58px);line-height:1.03;margin:12px 0;color:var(--deep)}.section-head p{margin:0;color:#7c5a81;font-size:16px}.white-section{background:#fffaf9}.feature-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.feature{min-height:245px;padding:28px;border:1px solid #e8d7e6;border-radius:var(--radius);background:#fff;box-shadow:0 10px 36px rgba(101,52,116,.06);transition:transform .25s,box-shadow .25s}.feature:hover{transform:translateY(-7px) rotate(-.4deg);box-shadow:var(--shadow)}.feature-icon{width:50px;height:50px;border-radius:17px;display:grid;place-items:center;background:var(--pink);color:var(--plum);font-size:22px}.feature:nth-child(2) .feature-icon{background:#e7d8f0}.feature:nth-child(3) .feature-icon{background:#fff0ba}.feature h3{font-size:22px;margin:22px 0 9px;color:var(--deep)}.feature p{margin:0;color:#806587;font-size:14px}.principles{background:#f4e1ec}.principle-layout{display:grid;grid-template-columns:.9fr 1.1fr;align-items:start;gap:80px}.principle-layout h2{font-size:clamp(38px,4.8vw,68px);line-height:1.02;margin:12px 0;color:var(--deep)}.principle-list{display:grid}.principle{display:grid;grid-template-columns:53px 1fr;gap:20px;padding:20px 0;border-bottom:1px solid var(--line)}.principle:first-child{border-top:1px solid var(--line)}.principle-num{font-size:12px;font-weight:800;color:#a568aa}.principle h3{font-size:21px;margin:0 0 5px;color:var(--deep)}.principle p{margin:0;color:#805a84;font-size:14px}.status-section{padding:86px 0;background:linear-gradient(120deg,#d7bee4,#f7d5e4)}.status-card{display:flex;align-items:center;justify-content:space-between;gap:30px;padding:36px 42px;border-radius:30px;background:rgba(255,255,255,.46);border:1px solid rgba(126,63,149,.22);box-shadow:var(--shadow)}.status-card h2{margin:8px 0;font-size:clamp(31px,4vw,52px);color:var(--deep)}.status-card p{max-width:650px;margin:0;color:#754c7d}.status-card .secondary-button{white-space:nowrap}.docs-section{background:var(--cream)}.docs-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:22px}.doc-card{border-radius:28px;padding:34px;background:var(--deep);color:#fff;position:relative;overflow:hidden}.doc-card:after{content:"";position:absolute;width:230px;height:230px;border:1px solid rgba(255,255,255,.2);border-radius:50%;right:-72px;bottom:-95px}.doc-card h2{font-size:38px;margin:10px 0;color:#fff}.doc-card p{max-width:520px;color:#ddcbe2}.doc-card .secondary-button{color:#fff;border-color:#dec9e7;margin-top:15px}.contact-card{padding:34px;border-radius:28px;background:var(--pink2);color:var(--deep)}.contact-card h3{font-size:28px;margin:8px 0}.contact-card p{color:#754978}.contact-card a{text-decoration:underline;font-weight:700}.footer{padding:32px 0 44px;background:#fff;color:#76517c;border-top:1px solid #eadbe8}.footer-row{display:flex;align-items:center;justify-content:space-between;gap:24px}.footer-copy{font-size:12px}.footer-links{display:flex;gap:20px;font-size:12px;font-weight:700}.footer-links a:hover{text-decoration:underline}.consent{position:fixed;z-index:30;left:22px;bottom:22px;max-width:360px;padding:18px 20px;background:#fff;border:1px solid #ead7e7;border-radius:20px;box-shadow:var(--shadow);font-size:12px;color:#714978}.consent strong{display:block;color:var(--deep);font-size:14px;margin-bottom:4px}.consent p{margin:0 0 12px}.consent button{border:0;background:var(--plum);color:#fff;border-radius:999px;padding:9px 15px;font-size:12px;font-weight:700;cursor:pointer}.reveal{opacity:0;transform:translateY(20px);transition:opacity .7s ease,transform .7s cubic-bezier(.2,.7,.2,1)}.reveal.in{opacity:1;transform:none}
+@media(max-width:900px){.wrap{padding:0 22px}.nav{height:76px}.nav-links{display:none}.hero-grid{grid-template-columns:1fr;min-height:auto;padding-top:92px}.hero-copy{padding:45px 0 0}.hero h1{font-size:clamp(46px,12vw,72px)}.visual{height:470px}.visual:before{width:430px}.feature-grid,.principle-layout,.docs-grid{grid-template-columns:1fr}.principle-layout{gap:34px}.status-card{align-items:flex-start;flex-direction:column;padding:29px}.scroll-dots{display:none}}
+@media(min-width:600px) and (max-width:900px){.feature-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.feature:last-child{grid-column:1/-1}.docs-grid{grid-template-columns:1.1fr .9fr}.doc-card,.contact-card{padding:28px}.hero-copy{max-width:720px;margin:0 auto}.visual{height:430px}}
+@media(max-width:560px){.wrap{padding:0 18px}.site-header .wrap{padding:0 16px}.nav{height:70px;gap:12px}.brand{font-size:19px;gap:0}.brand img{width:34px;height:34px}.pill-button,.secondary-button{min-height:48px;padding:12px 18px;font-size:14px}.nav .pill-button{min-height:44px;padding:10px 14px;font-size:12px;white-space:nowrap}.hero-grid{padding-top:116px}.hero-copy{padding-top:24px}.hero-lede{font-size:15px}.hero-upcoming{font-size:10px;letter-spacing:.14em;margin-bottom:18px}.hero-actions{align-items:stretch;flex-direction:column}.hero-actions a{width:100%}.visual{height:370px;margin-top:-8px}.orbital{width:275px;height:275px}.core{width:135px;height:135px}.shape-a{left:2%;top:74px;width:94px;height:43px}.shape-b{right:0;top:120px;width:92px;height:55px}.shape-e{left:-1%;top:200px;width:125px}.shape-c{left:6%;bottom:66px;width:66px;height:66px}.shape-d{right:5%;bottom:81px;width:54px;height:54px}.visual-label.top{top:25px}.visual-label.bottom{left:2%;bottom:18px}.section{padding:70px 0}.section-head h2{font-size:39px}.feature{min-height:0}.principle{grid-template-columns:38px 1fr;gap:12px;padding:18px 0}.principle h3{font-size:19px}.status-section{padding:64px 0}.status-card{padding:24px;border-radius:24px}.status-card .secondary-button{width:100%}.doc-card,.contact-card{padding:26px;border-radius:24px}.doc-card h2{font-size:34px}.footer-row{align-items:flex-start;flex-direction:column}.footer-links{flex-wrap:wrap;gap:14px 18px}.consent{left:14px;right:14px;bottom:14px;max-width:none;padding:16px}.consent button{min-height:44px;padding:10px 17px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+.newsletter-section{background:linear-gradient(120deg,#f3deeb,#fffaf9)}.newsletter-card{display:grid;grid-template-columns:1fr .9fr;gap:38px;padding:42px;border:1px solid #ead7e7;border-radius:30px;background:rgba(255,255,255,.7);box-shadow:var(--shadow)}.newsletter-card h2{max-width:560px;margin:10px 0 12px;color:var(--deep);font-size:clamp(36px,4vw,56px);line-height:1}.newsletter-card p{max-width:540px;color:#76517c}.newsletter-form{display:grid;gap:12px;align-content:center}.newsletter-form input[type=email]{width:100%;min-height:50px;padding:13px 15px;border:1px solid #dbc5df;border-radius:15px;background:#fff;color:var(--deep);font:inherit}.newsletter-checks{display:grid;gap:8px;color:#76517c;font-size:13px}.newsletter-checks label{display:flex;gap:9px;align-items:center}.newsletter-checks input{accent-color:var(--plum)}.newsletter-form button{justify-self:start;border:0}.newsletter-note,.newsletter-message{font-size:12px!important;color:#806587!important}.newsletter-message{min-height:18px;margin:0!important}@media(max-width:900px){.newsletter-card{grid-template-columns:1fr;gap:10px;padding:30px}}@media(max-width:560px){.newsletter-card{padding:24px;border-radius:24px}.newsletter-card h2{font-size:36px}.newsletter-form button{width:100%}}
+.install-steps{margin:16px 0 0;padding-left:22px;line-height:1.8;display:grid;gap:6px}.install-steps li{padding-left:4px}.download-actions{display:flex;flex-direction:column;gap:8px;align-items:flex-start}.download-primary{font-size:17px;padding:14px 22px}</style>
+<style>
+.changelog-hero{padding:172px 0 58px;background:linear-gradient(112deg,#f2c4dd 0%,#f8d8e8 44%,#fcecf0 100%)}
+.changelog-hero .section-head{margin-bottom:0;max-width:720px}.changelog-hero .section-head p{color:#75457f}
+.changelog-hero .section-head p+p{margin-top:10px}.changelog-hero a{color:var(--plum);font-weight:700;text-decoration:underline}
+.changelog-list{display:grid;gap:22px}
+.release{padding:30px 34px;border:1px solid #e8d7e6;border-radius:var(--radius);background:#fff;box-shadow:0 10px 36px rgba(101,52,116,.06)}
+.release-meta{display:flex;flex-wrap:wrap;align-items:center;gap:12px;font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#8b4c95}
+.release-badge{display:inline-flex;align-items:center;padding:5px 11px;border-radius:999px;background:var(--pink);color:var(--plum)}
+.release-badge.ota{background:#e7d8f0}.release-badge.withheld{background:#f1ece4;color:#7a6650}
+.release-tag{color:#a568aa}
+.release h3{font-size:30px;margin:12px 0 8px;color:var(--deep)}
+.release p{margin:8px 0 0;color:#7c5a81;font-size:15px}
+.release ul{margin:14px 0 0;padding-left:22px;display:grid;gap:8px;color:#5f3d68;font-size:15px}
+.release-limits{margin-top:16px!important;padding:14px 16px;border-radius:14px;background:#fbf3f7;font-size:14px!important}
+.release-get{margin-top:14px!important;font-size:14px!important}.release-links{margin-top:6px!important;font-size:13px!important}
+.release-get a,.release-links a{color:var(--plum);font-weight:700;text-decoration:underline}
+@media(max-width:560px){.changelog-hero{padding:132px 0 40px}.release{padding:22px 20px;border-radius:20px}.release h3{font-size:26px}}
+</style>
+</head>
+<body>
+<header class="site-header"><div class="wrap"><nav class="nav"><a class="brand" href="../#top"><img src="../fabos.svg" alt="Fab OS mark"><span class="brand-text">Fab OS<sup style="font-size:.5em;vertical-align:super">™</sup></span></a><span class="nav-spacer"></span><div class="nav-links"><a href="../#overview">Overview</a><a href="../#principles">Principles</a><a href="../docs/">Docs</a><a href="../#contact">Contact</a></div><a class="pill-button" href="../#status">Download</a></nav></div></header>
+<main id="top">
+<section class="section changelog-hero"><div class="wrap"><div class="section-head"><span class="eyebrow">Changelog</span><h2>What changed in Fab OS.</h2><p>Every release, newest first, in plain language. An <b>image</b> is a disc image you write to a USB stick and install from; an <b>over-the-air update</b> reaches installed systems on its own through Fab Updates, with nothing to reinstall. Version numbers read 1.0-N, where N counts the package revision.</p><p>Follow along with the <a href="../updates.xml">RSS feed</a> or the <a href="https://github.com/PatienceAIiN/fab-os/releases" target="_blank" rel="noreferrer">releases on GitHub</a>.</p></div></div></section>
+<section class="section white-section"><div class="wrap changelog-list">
+<article class="release" id="1.0-7">
+<div class="release-meta"><span class="release-badge ota">Over-the-air update</span><span class="release-date">16 September 2026</span><span class="release-tag">v1.0.6</span></div>
+<h3>Fab OS 1.0-7</h3>
+<p class="release-intro">The first update delivered entirely through Fab Updates, with nothing to reinstall. It answers the first reports from Fab OS running on a real laptop.</p>
+<ul>
+<li>Dock: clicking an app that is already open brings it to the front (or minimises it) instead of opening a second copy; the running marker stays while a window is minimised or on another desktop; middle-click opens a new window on purpose.</li>
+<li>Login screen: a new look with the clock and date, your user tile, a password field with a show/hide eye, "Not listed?", a session chooser and a power menu; a wrong password shakes the field and says so. This also replaces the red error screen some laptops showed instead of the login screen.</li>
+<li>Start-up: the maker's logo stays on screen while Fab OS starts, with a spinner and the Fab OS wordmark; on an encrypted disk the password box is now a real box with bullets, a label and a Caps Lock warning; shutting down shows "Shutting down safely…".</li>
+<li>Leave screen: shutting down, restarting or logging out first lists your open windows and flags the ones that look unsaved; the countdown pauses while work looks unsaved, and Cancel is the default.</li>
+<li>Start-up setting: Fab AI Controls › Settings › General gains "Ask for the disk password when the computer starts". Turning it off explains in plain words what it means before it acts, and it can be turned back on at any time.</li>
+<li>Updates: after an update Fab Updates tells you exactly one thing — nothing to do, log out and back in, or restart — and one desktop notification per version carries an "Open Fab Updates" button that works.</li>
+</ul>
+<p class="release-limits"><b>Known limits:</b> the new dock, login screen and leave screen appear after the next log-in. The disk-password box cannot show what you type (the login screen has the eye, the start-up screen cannot). Turning the start-up password off keeps your files encrypted at rest but lets anyone who starts the computer use it — the setting says so before it acts.</p>
+<p class="release-get"><b>How to get it:</b> Installed systems receive it automatically through Fab Updates.</p>
+<p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.6" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
+</article>
+<article class="release" id="1.0-6">
+<div class="release-meta"><span class="release-badge image">Image</span><span class="release-date">16 September 2026</span><span class="release-tag">v1.0.5</span></div>
+<h3>Fab OS 1.0-6</h3>
+<p class="release-intro">The disc image whose installer was proven by an automated installation before it was published. It replaces 1.0-4, whose installer failed on a real device.</p>
+<ul>
+<li>Installer: the "Package Manager error" at the end of an install is fixed; installing with and without full-disk encryption was completed end to end in a virtual machine, and the installed system started on its own, before this image went out.</li>
+<li>Firefox is back as the browser (Mozilla's own build) and replaces Brave; it opens quietly, without first-run prompts.</li>
+<li>Quick settings: a wider, animated pane with tiles you can rearrange; connection speed is always shown.</li>
+<li>Dock: even spacing, clear running and active indicators, and a gentle magnify on hover. Windows have rounded corners and a single soft shadow everywhere.</li>
+<li>Ask bar: "Do it" stays off until you type; a hint suggests a cloud model for the best answers; pictures appear inline — ask for an image, logo or wallpaper, then tap it to enlarge, save, copy, open, set as wallpaper or regenerate.</li>
+<li>Image generation through a cloud provider with your own key, or through a local image server.</li>
+<li>Ollama as a provider: pick any model you have pulled, in Fab AI Controls. The built-in offline model and Ollama can now carry out multi-step tasks and fetch web pages.</li>
+<li>Security baseline for organisations: actions as administrator ask for your password, shell steps run in a sandbox, administrators can clamp the product with one policy file, the activity log is tamper-evident, and every component is listed for audit.</li>
+</ul>
+<p class="release-limits"><b>Known limits:</b> the built-in offline model varies from run to run on multi-step tasks — use a cloud provider or a larger Ollama model for reliable results. Offline speech-to-text needs about 600 MB of free memory. Google sign-in for mail works for listed testers only while the consent screen is in testing. A global menu bar was added to the top panel without being asked for; it can be removed.</p>
+<p class="release-get"><b>How to get it:</b> <a href="../download/fabos-1.0-desktop-amd64.iso">Get the disc image</a> and install it; systems already installed receive these packages through Fab Updates.</p>
+<p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.5" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
+</article>
+<article class="release" id="1.0-5">
+<div class="release-meta"><span class="release-badge withheld">Not published</span><span class="release-date">15 September 2026</span></div>
+<h3>Fab OS 1.0-5</h3>
+<p class="release-intro">A disc image was built for this revision and held back when the installer of the previous image failed on a real device. Its changes — Firefox returning in place of Brave, rounded corners on every window, a stronger step-by-step mode for the built-in offline model, and a second pass on the top bar and dock — shipped in 1.0-6.</p>
+</article>
+<article class="release" id="1.0-4">
+<div class="release-meta"><span class="release-badge image">Image</span><span class="release-date">15 September 2026</span><span class="release-tag">v1.0.3</span></div>
+<h3>Fab OS 1.0-4</h3>
+<ul>
+<li>Smoother on small machines: the quick settings pane opens faster, animations are shorter, the background blur is off on computers with less than 3.5 GB of memory, and Fab AI Controls no longer pauses while saving settings.</li>
+<li>Administrator actions by the agent ask for your password in the normal system dialog instead of relying on a passwordless rule.</li>
+<li>Shell steps run by the agent are sandboxed away from your keys and credentials, and cannot see provider keys.</li>
+<li>Administrators can set limits for the whole product in one policy file; the agent's activity log is tamper-evident and can be verified.</li>
+<li>The system is hardened (kernel settings, application confinement), and a list of every component is generated for audit.</li>
+<li>The image's checksum list is signed with the Fab OS Archive key, so it can be verified before writing a USB stick.</li>
+</ul>
+<p class="release-limits"><b>Known limits:</b> the installer of this image failed on a real device with "Package Manager error" — install 1.0-6 or later instead. In a live session (before installing), administrator actions prompt for a password the live user does not have.</p>
+<p class="release-get"><b>How to get it:</b> <a href="../#status">This image has been superseded — get the current disc image</a> instead; systems already installed receive these packages through Fab Updates.</p>
+<p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.3" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
+</article>
+<article class="release" id="1.0-3">
+<div class="release-meta"><span class="release-badge image">Image</span><span class="release-date">15 September 2026</span><span class="release-tag">v1.0.2</span></div>
+<h3>Fab OS 1.0-3</h3>
+<ul>
+<li>Ask bar: the answer panel now lives on the home screen right under the bar (no floating window), shows what the agent is doing as it happens, and remembers the conversation between sessions.</li>
+<li>Voice: the microphone path works on real hardware, the assistant never repeats a sentence, the offline voice is audible, and a voice check-up tells you what is wrong when something is.</li>
+<li>New quick settings pane in the top bar (Wi-Fi, Bluetooth, volume, brightness, battery, Do Not Disturb, night light, screenshot) and a new dock that magnifies on hover.</li>
+<li>Mail through your own account (Gmail, Outlook, Yahoo, Zoho or iCloud with an app password): the agent can read and send from it, and asks you to sign in when it is not set up.</li>
+<li>Windows have rounded top corners and a softer shadow.</li>
+<li>The password wallet is gone: nothing asks you to create or unlock a wallet.</li>
+<li>Brave Browser replaced Firefox in this image (Firefox returned in 1.0-6).</li>
+</ul>
+<p class="release-limits"><b>Known limits:</b> the built-in offline model handles one step at a time; use a cloud provider for multi-step tasks.</p>
+<p class="release-get"><b>How to get it:</b> <a href="../#status">This image has been superseded — get the current disc image</a> instead; systems already installed receive these packages through Fab Updates.</p>
+<p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.2" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
+</article>
+<article class="release" id="1.0-2">
+<div class="release-meta"><span class="release-badge image">Image</span><span class="release-date">14 September 2026</span><span class="release-tag">v1.0.1</span></div>
+<h3>Fab OS 1.0-2</h3>
+<p class="release-intro">The first public Fab OS 1.0 disc image, published the same day as the first build, with these changes on top of it:</p>
+<ul>
+<li>"Hey Fab": say it to talk to the agent; offline speech-to-text and a spoken Indian-English voice narrate what it does.</li>
+<li>A built-in offline model ships with the image, so a computer with no account and no network can still ask for one thing at a time (needs about 4 GB of memory).</li>
+<li>Fab AI Controls (previously Fab Command Center): one provider selector with a real connection check, DeepSeek added, a live timeline of the agent's actions, and persona and narration settings.</li>
+<li>Ask bar: answers appear inline with a live feed of actions, an animated Fab mark and voice input.</li>
+<li>Window snapping with Snap Assist; the firewall is on by default.</li>
+<li>Low-memory defaults for 2 GB machines; full-disk encryption is pre-selected in the installer.</li>
+<li>By voice, every permission question is asked once, and the assistant never reads raw command text aloud unless you ask it to.</li>
+</ul>
+<p class="release-limits"><b>Known limits:</b> the built-in offline model is a single-step assistant; it is not available on machines with less than about 3 GB of memory, and says so.</p>
+<p class="release-get"><b>How to get it:</b> <a href="../#status">This image has been superseded — get the current disc image</a> instead; systems already installed receive these packages through Fab Updates.</p>
+<p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.1" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
+</article>
+<article class="release" id="1.0-1">
+<div class="release-meta"><span class="release-badge image">Image</span><span class="release-date">14 September 2026</span><span class="release-tag">v1.0.0</span></div>
+<h3>Fab OS 1.0-1</h3>
+<p class="release-intro">The first Fab OS 1.0 build made public, replaced later the same day by 1.0-2.</p>
+<ul>
+<li>A calm KDE Plasma desktop on Ubuntu 26.04 with the Fab OS look: its own window frame, monochrome status icons, the Inter typeface and an 11 pt interface.</li>
+<li>The Fab OS agent, built in: ask it to do things on the desktop from the ask bar; it shows a plan and asks before risky steps. Sign in with your own cloud provider key (Anthropic Claude, Google Gemini and others) or run a local model.</li>
+<li>Three permission modes — ask, auto and bypass — and a System-Wide AI switch that pauses assistance everywhere.</li>
+<li>Fab AI Controls, Fab Updates, Fab Feedback, Fab Terminal, Fab Files, Fab Editor, Fab Software, Fab Photos and Fab Documents, with Firefox, LibreOffice, VLC and a weather app.</li>
+<li>Signed update channel: installed systems get Fab OS updates from Patience AI and Ubuntu updates from Ubuntu.</li>
+<li>Live session first, then a guided installer from the desktop.</li>
+</ul>
+<p class="release-get"><b>How to get it:</b> <a href="../#status">This image has been superseded — get the current disc image</a> instead; systems already installed receive these packages through Fab Updates.</p>
+<p class="release-links"><a href="https://github.com/PatienceAIiN/fab-os/releases/tag/v1.0.0" target="_blank" rel="noreferrer">Release notes on GitHub</a></p>
+</article>
+</div></section>
+</main>
+<footer class="footer"><div class="wrap footer-row"><div class="footer-copy"><b>Fab OS™</b> by Patience AI<br>Copyright 2026 Patience AI. Fab OS is a trademark of Patience AI.</div><div class="footer-links"><a href="../docs/">Documentation</a><a href="../updates/">Updates</a><a href="./">Changelog</a><a href="../community/">Community</a><a href="mailto:info@patienceai.in">Contact</a><a href="https://github.com/PatienceAIiN/fab-os" target="_blank" rel="noreferrer">Source</a></div></div></footer>
+</body>
+</html>
