@@ -845,6 +845,17 @@ cmd_diagnose() {
 # (nothing needed), then update-grub when GRUB's default entry does not boot a maintained start-up file, then diagnose again. The
 # result JSON embeds the new diagnosis. Nothing to repair = ok with the diagnosis, no root step run.
 FORCE=0
+merge_steps() {   # the sub-path ran in a subshell: bring its steps (its JSON's "steps") into this run's list so the caller sees every step
+  local s
+  while IFS= read -r s; do [ -n "$s" ] && STEPS+=("$s"); done <<EOF
+$(printf '%s\n' "$1" | tail -1 | python3 -c 'import json, sys
+try:
+    [print(s) for s in json.load(sys.stdin).get("steps") or []]
+except Exception:
+    pass' 2>/dev/null)
+EOF
+  return 0
+}
 cmd_repair() {
   [ $# -eq 0 ] || die 2 null "the passphrase is read from standard input, never from an argument"
   [ "$IS_ROOT" = 1 ] || die 4 null "must run as root (through pkexec rootexec)"
@@ -870,11 +881,11 @@ cmd_repair() {
     # the 'off' path in a subshell: on failure it has rolled back and printed its own JSON (passed through, its exit code kept)
     sub=$(printf '%s\n' "$pass" | cmd_off); rc=$?
     if [ "$rc" != 0 ]; then printf '%s\n' "$sub" | tail -1; exit "$rc"; fi
-    log "repair: the 'off' path completed (key stored, start-up files rebuilt and proven)"
+    merge_steps "$sub"; log "repair: the 'off' path completed (key stored, start-up files rebuilt and proven)"
   else
     sub=$(cmd_on); rc=$?
     if [ "$rc" != 0 ]; then printf '%s\n' "$sub" | tail -1; exit "$rc"; fi
-    log "repair: the 'on' path completed"
+    merge_steps "$sub"; log "repair: the 'on' path completed"
   fi
   if [ "$DIAG_GRUB_FAIL" = 1 ]; then
     if command -v update-grub >/dev/null 2>&1; then
