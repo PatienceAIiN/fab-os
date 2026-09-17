@@ -57,3 +57,32 @@ Extracted 2026-09-14 via the Figma REST API. Reference renders are kept OUTSIDE 
 3. Messages per the web client: user pill right, assistant plain text left with the action row (copy, good, bad, speak, edit, retry) — Fab OS adds **Stop** while running and the live action timeline under the assistant turn.
 4. Composer per the web client: two-row rounded card at the bottom, "Ask me to do anything…" placeholder, "+" attach and a mode chip left, **mic** and **voice** buttons right; Enter sends, Shift+Enter newline; follow-ups attach to the same conversation.
 5. Palette-driven colours (system light/dark), accent #3B6EF5, Inter, Material Symbols icons. Nothing from the kit's or its vendor's branding (no logo, no product name) — layout only; the kit is CC BY 4.0 and we reuse structure and measurements, never its assets.
+
+## 1.0-8 notes: concurrency states, microphone states, the microphone permission
+
+Owner's report on 1.0-7 (real Lenovo laptop): the mic in the home ask bar "did nothing useful"; a new chat opened while another
+chat was active stayed **Queued**. Root causes and what the UIs now show:
+
+- **Queued has a reason.** The daemon held one slot per *task* for its whole life, so a chat waiting for the user's approval kept
+  a slot and two such chats left every new chat in `queued`. Slots are now held only while a step executes (a model call or a tool
+  call) and given back for the whole wait; follow-ups within one chat still run in order; different chats run side by side up to
+  `agent.max_parallel` (default 3, one slot per GiB of RAM). A queued task carries `queue.text`, and both UIs print it after the
+  status: **Queued — waiting for the previous step in this chat** · **Queued — another chat is running: N of M slots busy**.
+  Plain "Queued…" / "Getting ready…" appears only for the instant before the daemon has looked.
+- **The mic has visible states** (the Plasma executable engine returns a command's output only at its end, so the CLI writes a
+  progress file the bar polls every 150 ms): tap → **Starting the microphone…** (ring, red) → **Listening… speak now** the moment
+  audio flows (five-bar level meter in the status line, the ring breathes with the level; both turn accent #3B6EF5 once words
+  were heard, and the text drops "speak now") → **Understanding what you said…** while whisper runs → the transcript is typed into
+  the field and sent. Compact form: the placeholder and the mic tooltip carry the same words, the ring carries the level.
+- **Every failure names its reason inline** (12 s, or until the field is focused) — never a silent no-op: *No microphone found —
+  plug one in or check Fab Settings › Sound* · *Speech recognition needs N MB free — close some apps* (N is the CLI's measured
+  figure) · *Microphone is silent / muted / volume at zero — …* · *No audio session — PipeWire is not running for this login* ·
+  *I did not catch that — tap the mic and speak after the chime* · *Voice service not running — restarting…* (a dead "Hey Fab"
+  user unit is restarted once a minute, on the repair path after a failed listen only). Fab AI Controls' composer mic uses the
+  same table (toast) and the same placeholder phases; its rings breathe with the level.
+- **Microphone permission — permissions only enable.** Settings › Voice, first row: a Material switch **Allow Fab OS to use the
+  microphone** with a small indicator (● / ○, the PipeWire device description, "allowed" / "off — nothing records"). OFF on a fresh
+  install; an install already in use with voice on is migrated ON once (its mic keeps working). While OFF: the ask-bar mic and the
+  composer mic are dimmed with a struck glyph and the tooltip **Microphone is off in Settings**, a tap/click opens that row instead
+  of recording, the "Hey Fab" spotter does not capture, `fabos-voice listen-once` exits 4 with the reason, and the daemon's
+  `/speech/transcribe` answers 403 with the reason. Stored as the daemon setting `voice.mic_allowed`.
