@@ -53,7 +53,7 @@ fi
 
 # ---------- 1. packages
 echo; echo "=== packages"
-CHK='for p in fprintd libpam-fprintd libfprint-2-2 libfprint-2-tod1 v4l-utils libspa-0.2-libcamera gstreamer1.0-pipewire gstreamer1.0-libcamera plasma-camera pipewire wireplumber fabos-hardware; do dpkg-query -W -f "${db:Status-Status}" $p 2>/dev/null | grep -q installed || echo -n "$p "; done'
+CHK='for p in fprintd libpam-fprintd libfprint-2-2 libfprint-2-tod1 v4l-utils libspa-0.2-libcamera gstreamer1.0-pipewire gstreamer1.0-libcamera plasma-camera pipewire wireplumber fabos-hardware; do dpkg-query -W -f \${db:Status-Status} $p 2>/dev/null | grep -q installed || echo -n "$p "; done'
 missing=$(vm "$CHK")
 [ -z "$missing" ] && verdict PASS "fingerprint + camera stack installed (fprintd, libpam-fprintd, libfprint TOD, v4l-utils, PipeWire libcamera, Plasma Camera, fabos-hardware)" || verdict FAIL "packages missing: $missing"
 vm "dpkg-query -W fprintd libpam-fprintd libfprint-2-2 v4l-utils libspa-0.2-libcamera plasma-camera fabos-hardware 2>/dev/null" | sed 's/^/    /'
@@ -64,7 +64,7 @@ ca=$(vm 'cat /etc/pam.d/common-auth'); echo "$ca" | grep -E 'pam_(fprintd|unix|d
 fp=$(echo "$ca" | grep -n pam_fprintd | head -1 | cut -d: -f1); ux=$(echo "$ca" | grep -n 'pam_unix.so' | head -1 | cut -d: -f1)
 [ -n "$fp" ] && [ -n "$ux" ] && [ "$fp" -lt "$ux" ] && verdict PASS "common-auth: pam_fprintd (line $fp) before pam_unix (line $ux) — fingerprint accepted, password always still accepted" || verdict FAIL "common-auth does not have pam_fprintd before pam_unix (fprintd=$fp unix=$ux)"
 echo "$ca" | grep -q 'pam_fprintd.so.*max-tries=1' && echo "$ca" | grep -q 'timeout=' && verdict PASS "pam_fprintd bounded: max-tries + timeout (the password prompt follows within the timeout when the finger is not offered)" || verdict FAIL "pam_fprintd line has no max-tries/timeout bound"
-vm 'grep -q pam_fprintd /usr/lib/pam.d/kde-fingerprint && grep -q common-auth /usr/lib/pam.d/kde && grep -q common-auth /etc/pam.d/sddm && grep -q common-auth /etc/pam.d/sudo && grep -q common-auth /etc/pam.d/polkit-1' && verdict PASS "lock screen (kde + kde-fingerprint), login (sddm), sudo and polkit all reach the fingerprint/password stack" || verdict FAIL "a PAM service does not include common-auth / kde-fingerprint missing"
+vm 'grep -q pam_fprintd /usr/lib/pam.d/kde-fingerprint && grep -q common-auth /usr/lib/pam.d/kde && grep -q common-auth /etc/pam.d/sddm && grep -q common-auth /etc/pam.d/sudo && cat /etc/pam.d/polkit-1 /usr/lib/pam.d/polkit-1 2>/dev/null | grep -q common-auth' && verdict PASS "lock screen (kde + kde-fingerprint), login (sddm), sudo and polkit all reach the fingerprint/password stack" || verdict FAIL "a PAM service does not include common-auth / kde-fingerprint missing"
 vm 'test -f /usr/share/pam-configs/fprintd && test -f /usr/share/pam-configs/unix' && verdict PASS "pam-auth-update profiles fprintd + unix present" || verdict FAIL "pam-configs profile missing"
 
 # ---------- 3. fprintd: starts, lists zero devices, no error
@@ -79,20 +79,24 @@ vm 'ls /usr/lib/udev/rules.d/*fprint* /usr/lib/udev/hwdb.d/*fprint* 2>/dev/null 
 # ---------- 4. Users settings page with fprintd present: starts and stays up
 echo; echo "=== Users settings page"
 st=$(app_up r8users "kcmshell6 kcm_users" 14 kcm-users); echo "    $st"
-echo "$st" | grep -q '^active' && echo "$st" | grep -q ' 0$' && verdict PASS "Fab Settings > Users opens with fprintd installed and stays up (no crash)" || verdict FAIL "Users page: $st"
+echo "$st" | grep -q '^active' && echo "$st" | grep -qE ' 0 ?$' && verdict PASS "Fab Settings > Users opens with fprintd installed and stays up (no crash)" || verdict FAIL "Users page: $st"
 
 # ---------- 5. camera: Fab Camera entry, the app starts without a device, v4l2 tools, virtual camera if the kernel has one
 echo; echo "=== camera"
 CAM='for d in $(systemctl --user show-environment | sed -n "s/^XDG_DATA_DIRS=//p" | tr : " ") /usr/local/share /usr/share; do f=$d/applications/org.kde.plasma.camera.desktop; if [ -f "$f" ]; then echo "$f"; grep -E "^(Name|GenericName|Exec)=" "$f"; break; fi; done; systemctl --user show-environment | grep ^XDG_DATA_DIRS'
 o=$(usr "$CAM")
 echo "$o" | sed 's/^/    /'
-echo "$o" | grep -q '^Name=Fab Camera' && verdict PASS "the session resolves the camera app to its Fab OS name (Fab Camera)" || verdict FAIL "camera entry not renamed in the session's XDG_DATA_DIRS order"
+if echo "$o" | grep -q '^XDG_DATA_DIRS=/usr/share/fabos:'; then
+  echo "$o" | grep -q '^Name=Fab Camera' && verdict PASS "the session resolves the camera app to its Fab OS name (Fab Camera)" || verdict FAIL "camera entry not renamed in the session's XDG_DATA_DIRS order"
+else
+  echo "    note: this session started before fabos-branding 1.0-8 (no /usr/share/fabos in XDG_DATA_DIRS yet) — the Fab Camera name is checked after the re-login by tests/rebrand-sweep-vm.sh --relogin"
+fi
 vm 'test -f /usr/share/fabos/applications/org.kde.plasma.camera.desktop && grep -q ^Name=Fab\ Camera /usr/share/fabos/applications/org.kde.plasma.camera.desktop' && verdict PASS "/usr/share/fabos/applications/org.kde.plasma.camera.desktop written by rebrand-overrides" || verdict FAIL "override copy missing"
 o=$(vsudo "ls -la /dev/video* 2>&1 | head -3; v4l2-ctl --list-devices 2>&1 | head -5; echo rc=\$?; (modprobe vivid n_devs=1 node_types=0x1 2>&1 && sleep 2 && echo vivid-loaded && v4l2-ctl --list-devices 2>&1 | head -4) || echo no-vivid-module")
 echo "$o" | sed 's/^/    /'
 echo "$o" | grep -q 'v4l2-ctl' || echo "$o" | grep -qE 'rc=|Cannot open|Failed' && verdict PASS "v4l-utils present (v4l2-ctl runs; no camera device in QEMU$(echo "$o" | grep -q vivid-loaded && echo ', vivid virtual camera loaded'))" || verdict FAIL "v4l2-ctl missing"
 st=$(app_up r8camera "plasma-camera" 16 fab-camera); echo "    $st"
-echo "$st" | grep -q '^active' && echo "$st" | grep -q ' 0$' && verdict PASS "Fab Camera (plasma-camera) starts and stays up $(echo "$o" | grep -q vivid-loaded && echo 'with the vivid virtual camera' || echo 'without a camera device') — no crash" || verdict FAIL "Fab Camera: $st"
+echo "$st" | grep -q '^active' && echo "$st" | grep -qE ' 0 ?$' && verdict PASS "Fab Camera (plasma-camera) starts and stays up $(echo "$o" | grep -q vivid-loaded && echo 'with the vivid virtual camera' || echo 'without a camera device') — no crash" || verdict FAIL "Fab Camera: $st"
 vm 'test -f /usr/lib/x86_64-linux-gnu/spa-0.2/libcamera/libspa-libcamera.so && test -f /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstpipewire.so' && verdict PASS "PipeWire camera plugins (libspa-libcamera, gstpipewire) in place for portal / Flatpak camera access" || verdict FAIL "PipeWire camera plugins missing"
 
 # ---------- 6. microphone: the quick-settings probe and the tile's exact wpctl commands move the real default source
@@ -109,12 +113,15 @@ echo "$p" | grep -q 'Volume: 0.30' && verdict PASS "probe reports the new input 
 usr "$setm" >/dev/null; sleep 0.5; p=$(probe); echo "    after set-mute toggle: $p"
 echo "$p" | grep -q 'MUTED' && verdict PASS "probe reports the muted default source" || verdict FAIL "probe did not follow set-mute: $p"
 usr "$setm; wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 1.00" >/dev/null
-# recording app -> mic in use (a PipeWire capture stream in state running)
+# recording app -> mic in use (a PipeWire capture stream in state running). Fab Voice's wake-word listener records all the
+# time through pw-record, so the count is compared relative to the baseline, not to zero.
+used() { echo "$1" | sed -n 's/.*"mic_used": *\([0-9]*\).*/\1/p'; }
+p0=$(probe); n0=$(used "$p0"); echo "    baseline: $p0"
 usr "systemd-run --user --collect -q -u r8rec -- pw-record --target 0 /tmp/r8rec.wav" >/dev/null; sleep 3
-p=$(probe); echo "    while pw-record runs: $p"; usr "systemctl --user stop r8rec; rm -f /tmp/r8rec.wav" >/dev/null 2>&1
-echo "$p" | grep -qE '"mic_used": *[1-9]' && verdict PASS "a recording app shows as microphone-in-use (privacy glyph data)" || verdict FAIL "mic_used stayed 0 while pw-record ran: $p"
-sleep 1; p=$(probe); echo "    after it stopped: $p"
-echo "$p" | grep -qE '"mic_used": *0' && verdict PASS "microphone-in-use clears when the recording stops" || verdict FAIL "mic_used did not clear: $p"
+p=$(probe); n1=$(used "$p"); echo "    while a second pw-record runs: $p"; usr "systemctl --user stop r8rec; rm -f /tmp/r8rec.wav" >/dev/null 2>&1
+[ "${n1:-0}" -gt "${n0:-0}" ] && echo "$p" | grep -q pw-record && verdict PASS "a recording app shows as microphone-in-use: mic_used $n0 -> $n1, named in mic_apps (privacy glyph data)" || verdict FAIL "mic_used did not rise while pw-record ran: $p0 -> $p"
+sleep 1; p=$(probe); n2=$(used "$p"); echo "    after it stopped: $p"
+[ "${n2:-9}" -eq "${n0:-0}" ] && verdict PASS "microphone-in-use falls back to the baseline ($n0: Fab Voice's listener when it is on) when the recording stops" || verdict FAIL "mic_used did not fall back to $n0: $p"
 
 echo; echo "### result: $pass PASS, $fail FAIL"
 [ $fail = 0 ]

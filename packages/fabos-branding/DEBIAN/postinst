@@ -23,6 +23,11 @@ case "$1" in configure)
   for f in /usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/systemsettings/kcm_feedback.so /usr/share/applications/kcm_feedback.desktop \
            /usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/kded/donationmessage.so /usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/krunner/krunner_kwin.so; do
     if [ -e "$f" ] && ! dpkg-divert --list "$f" | grep -q fabos-branding; then dpkg-divert --package fabos-branding --add --rename --divert "$f.disabled-by-fabos" "$f"; fi
+    # a plugin /usr/lib/fabos/rebrand-binaries had already patched keeps a pristine copy as <file>.fabos-orig; its sweep puts
+    # that copy back whenever the file is not among its targets — which a diverted (absent) file is not. Park the pristine
+    # copy in the diverted slot instead, so nothing restores the plugin and `dpkg-divert --remove` (prerm) yields the original.
+    if [ -f "$f.fabos-orig" ]; then mv -f "$f.fabos-orig" "$f.disabled-by-fabos"; fi
+    rm -f "$f" 2>/dev/null || true     # in case the sweep already restored it before this ran
   done
   # /etc/os-release must stay a symlink into /usr/lib
   [ -L /etc/os-release ] || ln -sfn ../usr/lib/os-release /etc/os-release

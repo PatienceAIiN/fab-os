@@ -291,9 +291,13 @@ for p in ("/etc/issue", "/etc/issue.net", "/etc/xdg/kcm-about-distrorc"):
 
 # ---------------------------------------------------------------- 7. the session user's own config pins (what an upgraded install keeps)
 CFG = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-PINS = [("ksplashrc", "KSplash", "Theme"), ("kdeglobals", "KDE", "LookAndFeelPackage"), ("kdeglobals", "General", "ColorScheme"),
-        ("kdeglobals", "Icons", "Theme"), ("plasmarc", "Theme", "name"), ("kwinrc", "org.kde.kdecoration2", "theme"),
-        ("kwinrc", "org.kde.kdecoration2", "library"), ("kcminputrc", "Mouse", "cursorTheme"), ("kscreenlockerrc", "Greeter", "Theme")]
+# (file, group, key, regex of the KDE-default values that pin the KDE look): the Fab OS defaults themselves use KDE
+# component ids (org.kde.kwin.aurorae.v2 is the frame engine, breeze_cursors the cursor set) and must not be flagged
+PINS = [("ksplashrc", "KSplash", "Theme", r"^org\.kde\.breeze"), ("kdeglobals", "KDE", "LookAndFeelPackage", r"^org\.kde\.breeze"),
+        ("kdeglobals", "General", "ColorScheme", r"^Breeze"), ("kdeglobals", "Icons", "Theme", r"^breeze"),
+        ("plasmarc", "Theme", "name", r"^(breeze|breeze-dark|breeze-light|default|oxygen)$"),
+        ("kwinrc", "org.kde.kdecoration2", "theme", r"^(Breeze|Oxygen|kwin4_decoration_qml_plastik)$"),
+        ("kwinrc", "org.kde.kdecoration2", "library", r"^org\.kde\.(breeze|oxygen)$"), ("kscreenlockerrc", "Greeter", "Theme", r"^org\.kde\.breeze")]
 
 
 def kread(path, group, key):
