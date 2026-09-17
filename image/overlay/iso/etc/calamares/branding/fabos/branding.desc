@@ -26,8 +26,15 @@ images:
     productWelcome:      "wordmark.png"
 slideshow:               "show.qml"
 slideshowAPI: 2
+# Sidebar colours. Calamares 3.3 looks these keys up by the NAME of its Branding::StyleEntry enum (QMetaEnum::valueToKey in
+# Branding::styleString), so they must be spelled exactly SidebarBackground / SidebarText / SidebarTextCurrent /
+# SidebarBackgroundCurrent (see /usr/share/calamares/branding/default/branding.desc in the image). The 3.2 spellings
+# (sidebarText, sidebarTextSelect, sidebarTextHighlight) are rejected with 'Unknown branding *style* entry' and every colour
+# then falls back to an invalid QColor = black: black sidebar, black step names (the owner's report, 2026-09-17), only the
+# current step readable because its background alone falls back to the window palette. tests/calamares-jobs-test.sh
+# checks the key names against the image's libcalamaresui; tests/installer-ui-vm.sh proves the sidebar on a live VM.
 style:
-   sidebarBackground:    "#0E1116"
-   sidebarText:          "#E6EAF0"
-   sidebarTextSelect:    "#0E1116"
-   sidebarTextHighlight: "#6E9BFF"
+   SidebarBackground:        "#0E1116"
+   SidebarText:              "#E6EAF0"
+   SidebarTextCurrent:       "#0E1116"
+   SidebarBackgroundCurrent: "#6E9BFF"
