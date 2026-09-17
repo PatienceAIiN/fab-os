@@ -9,8 +9,9 @@ A two-column chat app on top of fabos-agentd's local HTTP API (PyQt6), laid out 
     bad, speak, edit, retry), and a LIVE action timeline per turn (one row per tool step: app icon / keyboard / terminal /
     file / globe / mail / bell / question / eye, a spinner while it runs, a check or cross when it finishes, the agent's
     spoken narration in italics underneath; type_text is revealed with a typewriter effect)
-  * composer: a two-row rounded card — the text row, then the permission-mode chip, the microphone (fabos-voice
-    listen-once) and the filled Send / Stop button
+  * composer: a two-row rounded card — the text row, then the permission-mode chip, the Research · Computer use switches
+    (docs/design/MODES.md; the same strip sits in the chat header and in the home bar, geometry from the bar's modes.js),
+    the microphone (fabos-voice listen-once) and the filled Send / Stop button
 Everything follows the system colour scheme through QPalette; radii/spacing from the Fab OS design tokens; Inter.
 Responsiveness: every daemon call of the window runs on ONE worker thread (ApiQueue; Settings > Save and the connection
 checks on their own short-lived workers) and its result is applied in place by
@@ -25,7 +26,7 @@ from PyQt6.QtGui import (QFont, QIcon, QImage, QImageReader, QPixmap, QPainter, 
                          QTextCharFormat, QTextFormat, QGuiApplication, QAction, QFontMetrics, QPainterPath, QKeyEvent)
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QPushButton, QListWidget, QListWidgetItem,
                              QTextBrowser, QPlainTextEdit, QLabel, QComboBox, QTabWidget, QDialog, QFormLayout, QFrame, QScrollArea, QSizePolicy, QToolButton,
-                             QCheckBox, QStackedWidget, QMenu, QGraphicsOpacityEffect, QStyle, QFileDialog)
+                             QCheckBox, QStackedWidget, QMenu, QGraphicsOpacityEffect, QStyle, QFileDialog, QAbstractButton)
 
 APP_NAME = "Fab AI Controls"
 DESKTOP_ID = "fabos-command-center"           # executable / desktop-file / icon id: unchanged so shortcuts and docks keep working
@@ -42,6 +43,96 @@ POLL_LIST_HIDDEN_MS, POLL_THREAD_HIDDEN_MS = 12000, 6000   # while the window is
 API_TIMEOUT = 5                  # s — the daemon is local. Every call of the window runs on ApiQueue (one worker thread); the GUI thread never waits on a socket
 TYPEWRITER_MS = 25               # ms per character when a typed text is revealed in the action timeline
 KEY_ROLE = int(Qt.ItemDataRole.UserRole) + 1     # sidebar list items: their reconcile key ("h:Today" / "c:<root id>")
+
+# ---- Research · Computer use (docs/design/MODES.md). The strip's geometry, motion and wording come from the ask bar's
+# contents/code/modes.js — the strict-JSON block between its MODES-TOKENS markers — so the two strips (home bar, this window)
+# are the same control by construction. The path is the same relative walk installed (/usr/lib/fabos/agent -> /usr/share/...)
+# and in the repository (packages/fabos-agent/usr/lib/... -> packages/fabos-agent/usr/share/...). The fallback below is a copy
+# for a broken install; tests/ai-controls-render.py fails if it ever differs from the file.
+MODES_JS = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "share", "plasma", "plasmoids",
+                                         "in.patienceai.fabos.askbar", "contents", "code", "modes.js"))
+MODE_TOKENS_FALLBACK = {
+    "switch": {"width": 40, "height": 22, "knob": 16, "pad": 3, "track_radius": 11, "off_alpha": 0.28, "focus_ring": 1.5, "hover_lift": 0.08},
+    "motion": {"knob_ms": 200, "colour_ms": 200, "reveal_ms": 180, "easing": "OutCubic"},
+    "strip": {"height": 30, "radius": 12, "gap": 16, "label_gap": 8, "icon": 14, "font_px": 12, "confirm_ms": 2400},
+    "modes": [
+        {"key": "research", "setting": "agent.research", "label": "Research", "icon": "globe", "glyph": "globe", "default": True,
+         "tip_on": "Research is on: the agent may read web pages to answer and lists its sources",
+         "tip_off": "Research is off: no web pages are read in this chat"},
+        {"key": "computer_use", "setting": "agent.computer_use", "label": "Computer use", "icon": "input-keyboard", "glyph": "keyboard", "default": True,
+         "tip_on": "Computer use is on: the agent may open apps and type into them",
+         "tip_off": "Computer use is off: nothing is opened or typed in this chat — files and commands only"}]}
+
+
+def load_mode_tokens(path=MODES_JS):
+    """(tokens, source): the JSON block of modes.js, or the fallback copy when the file is missing or unreadable."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            m = re.search(r"/\* MODES-TOKENS \*/\s*(\{.*?\})\s*/\* /MODES-TOKENS \*/", f.read(), re.S)
+        if m:
+            return json.loads(m.group(1)), "file"
+    except (OSError, ValueError):
+        pass
+    return json.loads(json.dumps(MODE_TOKENS_FALLBACK)), "fallback"
+
+
+MODE_TOKENS, MODE_TOKENS_SOURCE = load_mode_tokens()
+MODES = MODE_TOKENS["modes"]
+
+
+def mode_by_key(key):
+    return next((m for m in MODES if m["key"] == key), None)
+
+
+def modes_defaults():
+    return {m["key"]: bool(m.get("default", True)) for m in MODES}
+
+
+def mode_bool(v, default):
+    if isinstance(v, bool):
+        return v
+    t = str("" if v is None else v).strip().lower()
+    return True if t in ("true", "1", "on", "yes") else False if t in ("false", "0", "off", "no") else default
+
+
+def modes_from_status(st):
+    """GET /status -> the defaults for new chats (under `capabilities`); an older daemon without the field = all on."""
+    caps = (st or {}).get("capabilities") or {}
+    return {m["key"]: mode_bool(caps.get(m["key"]), bool(m.get("default", True))) for m in MODES}
+
+
+def modes_from_task(t, fallback=None):
+    """GET /tasks/{id} (or a PATCH reply) -> the chat's effective values; keys the reply lacks keep `fallback`."""
+    base = dict(fallback or modes_defaults())
+    for m in MODES:
+        if isinstance(t, dict) and t.get(m["key"]) is not None:
+            base[m["key"]] = mode_bool(t[m["key"]], base[m["key"]])
+    return base
+
+
+def mode_toggle(state, key, on, thread_id=0):
+    """One toggle -> (new state, (method, path, body), confirmation) — the same rule as modes.js toggle(): PATCH the open chat's root,
+    PUT the default when no chat is open; "Research off for this chat" / "Research off for new chats"."""
+    m = mode_by_key(key)
+    new = dict(state)
+    new[key] = bool(on)
+    if thread_id:
+        req = ("PATCH", "/tasks/%d" % thread_id, {key: bool(on)})
+    else:
+        req = ("PUT", "/settings", {m["setting"]: "true" if on else "false"})
+    return new, req, "%s %s %s" % (m["label"], "on" if on else "off", "for this chat" if thread_id else "for new chats")
+
+
+def mode_tooltip(key, on, thread_id=0):
+    m = mode_by_key(key)
+    return (m["tip_on"] if on else m["tip_off"]) + (". Remembered for this chat" if thread_id else ". The default for new chats") + " (Space toggles)"
+
+
+def mode_task_fields(state):
+    """The POST /tasks fields a NEW chat starts with (a follow-up inherits its chat's)."""
+    return {m["key"]: bool(state.get(m["key"], m.get("default", True))) for m in MODES}
+
+
 # provider ids -> short labels (the daemon's PROVIDERS table is the source of truth for the long labels)
 PROVIDER_LABELS = {"claude": "Claude", "gemini": "Gemini", "openai": "OpenAI", "deepseek": "DeepSeek", "local": "Local model", "ollama": "Ollama", "fake": "Test provider"}
 PROVIDER_ORDER = ["claude", "gemini", "openai", "deepseek", "local", "ollama"]
@@ -413,6 +504,8 @@ QLabel#emptyTitle { font-size: 32px; font-weight: 600; }
 QLabel#colTitle { font-size: 18px; font-weight: 600; }
 QLabel#hint { color: %(muted)s; font-size: 13px; }
 QLabel#chipText { color: %(muted)s; font-size: 12.5px; }
+QLabel#modeLabel { color: %(muted)s; font-size: %(modefont)dpx; font-weight: 500; }
+QLabel#modeLabel[on="true"] { color: %(text)s; }
 QLabel#offline { background: %(warnbg)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 8px 12px; }
 QLabel#toast { background: %(alt)s; color: %(text)s; border: 1px solid %(line)s; border-radius: %(rctl)dpx; padding: 9px 16px; font-size: 13.5px; }
 QLabel#emptyCard, QPushButton#emptyCard { background: %(tint4)s; border: none; border-radius: %(rsmall)dpx; padding: 12px 16px; font-size: 14px; text-align: left; color: %(text)s; }
@@ -521,7 +614,8 @@ QToolButton#viewerIcon:hover { background: rgba(255, 255, 255, 0.14); }
 """ % dict(text=text.name(), win=win.name(), card=card, alt=alt.name(), hi=hi.name(), hit=hit.name(), line=line, hover=hover, muted=muted, tint4=tint4, tint8=tint8,
            press=rgba(text, 0.12), hisoft=rgba(hi, 0.16 if dark else 0.14), hihover=hi.lighter(112).name() if dark else hi.darker(108).name(),
            hidim=rgba(hi, 0.35), senddim=rgba(hi, 0.40), scroll=rgba(text, 0.18), scrollh=rgba(text, 0.30), errbg=rgba(QColor(RED), 0.14), warnbg=rgba(QColor("#E0A64B"), 0.16),
-           codebg=rgba(text, 0.08), mutedline=rgba(text, 0.35), rctl=R_CONTROL, rfield=R_FIELD, rcard=R_CARD, rpopup=R_POPUP, rsmall=R_SMALL)
+           codebg=rgba(text, 0.08), mutedline=rgba(text, 0.35), rctl=R_CONTROL, rfield=R_FIELD, rcard=R_CARD, rpopup=R_POPUP, rsmall=R_SMALL,
+           modefont=MODE_TOKENS["strip"]["font_px"])
 
 
 def fade_in(widget, ms=200):
@@ -741,6 +835,188 @@ class Switch(QCheckBox):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(QRectF(0.75, 0.75, 44.5, 24.5), 12.5, 12.5)
         p.end()
+
+
+class ModeSwitch(QAbstractButton):
+    """The Research / Computer use switch, painted from MODE_TOKENS — the numbers the ask bar's ModeSwitch.qml reads from the same
+    file: a 40x22 pill track that recolours from text @ 28 % to the accent while a 16 px knob slides 18 px, both in 200 ms OutCubic,
+    with a 3 px transparent margin for the keyboard focus ring (accent, 1.5 px, outside the track). The window owns `on`: a click or
+    Space/Enter only emits requested(want); set_on() is what moves the knob, so both strips move together."""
+    requested = pyqtSignal(bool)
+
+    def __init__(self, tooltip="", parent=None):
+        super().__init__(parent)
+        self.T = MODE_TOKENS["switch"]
+        self.MARGIN = 3
+        self._pos = 0.0
+        self._on = False
+        self._hovered = False
+        self.setCheckable(False)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(tooltip)
+        self.setAccessibleName(tooltip)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setFixedSize(self.T["width"] + 2 * self.MARGIN, self.T["height"] + 2 * self.MARGIN)
+        self.anim = QVariantAnimation(self)
+        self.anim.setDuration(MODE_TOKENS["motion"]["knob_ms"])
+        self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.anim.valueChanged.connect(self._set_pos)
+        self.clicked.connect(lambda: self.requested.emit(not self._on))
+
+    def _set_pos(self, v):
+        self._pos = float(v)
+        self.update()
+
+    def is_on(self):
+        return self._on
+
+    def set_on(self, on, animate=True):
+        on = bool(on)
+        target = 1.0 if on else 0.0
+        self._on = on
+        self.anim.stop()
+        if animate and self.isVisible() and abs(self._pos - target) > 0.001:
+            self.anim.setStartValue(self._pos)
+            self.anim.setEndValue(target)
+            self.anim.start()
+        else:
+            self._set_pos(target)
+
+    def knob_x(self, pos=None):
+        """The knob's x for a progress in [0, 1] (modes.js knobX), inside the track."""
+        p = self._pos if pos is None else pos
+        return self.T["pad"] + p * (self.T["width"] - self.T["knob"] - 2 * self.T["pad"])
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.requested.emit(not self._on)
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def enterEvent(self, e):
+        self._hovered = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, e):
+        T, M, p = self.T, self.MARGIN, self._pos
+        pal = self.palette()
+        on = pal.color(QPalette.ColorRole.Highlight)
+        off = QColor(pal.color(QPalette.ColorRole.Text))
+        off.setAlphaF(T["off_alpha"])
+        track = QColor(round(off.red() + (on.red() - off.red()) * p), round(off.green() + (on.green() - off.green()) * p),
+                       round(off.blue() + (on.blue() - off.blue()) * p), round(off.alpha() + (255 - off.alpha()) * p))
+        if self._hovered and self.isEnabled():
+            track = track.lighter(round(100 + T["hover_lift"] * 100))
+        if not self.isEnabled():
+            track.setAlphaF(track.alphaF() * 0.5)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(track)
+        painter.drawRoundedRect(QRectF(M, M, T["width"], T["height"]), T["track_radius"], T["track_radius"])
+        knob = pal.color(QPalette.ColorRole.HighlightedText) if p > 0.5 else pal.color(QPalette.ColorRole.Base)
+        painter.setBrush(knob)
+        painter.drawEllipse(QRectF(M + self.knob_x(), M + (T["height"] - T["knob"]) / 2.0, T["knob"], T["knob"]))
+        if self.hasFocus():
+            pen = QPen(on)
+            pen.setWidthF(T["focus_ring"])
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRectF(0.75, 0.75, self.width() - 1.5, self.height() - 1.5), T["track_radius"] + M, T["track_radius"] + M)
+        painter.end()
+
+
+class ClickLabel(QLabel):
+    """A label that is part of a control: clicking the word toggles the switch beside it."""
+    clicked = pyqtSignal()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(e)
+
+
+class ModeStrip(QWidget):
+    """[globe] Research (switch) · [keyboard] Computer use (switch) — the ask bar's ModeStrip.qml, in Qt widgets, from the same
+    MODE_TOKENS. The window keeps two (chat header, composer row) and drives both through set_state(); a switch or its label
+    emits toggled(key, on) and nothing else — the window persists the choice and writes the state back."""
+    toggled = pyqtSignal(str, bool)
+
+    def __init__(self, parent=None, dense=False):
+        super().__init__(parent)
+        S = MODE_TOKENS["strip"]
+        self.S = S
+        self.state = modes_defaults()
+        self.thread_id = 0
+        self.icons, self.labels, self.switches = {}, {}, {}
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(S["gap"])
+        for m in MODES:
+            key = m["key"]
+            row = QHBoxLayout()
+            row.setSpacing(S["label_gap"])
+            ic = QLabel()
+            ic.setFixedSize(S["icon"], S["icon"])
+            ic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lab = ClickLabel(m["label"])
+            lab.setObjectName("modeLabel")
+            lab.setProperty("on", True)
+            lab.setCursor(Qt.CursorShape.PointingHandCursor)
+            lab.setVisible(not dense)
+            sw = ModeSwitch(mode_tooltip(key, True, 0))
+            sw.requested.connect(lambda on, k=key: self.toggled.emit(k, on))
+            lab.clicked.connect(lambda k=key: self.toggled.emit(k, not self.state.get(k, True)))
+            row.addWidget(ic, 0, Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(lab, 0, Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(sw, 0, Qt.AlignmentFlag.AlignVCenter)
+            lay.addLayout(row)
+            self.icons[key], self.labels[key], self.switches[key] = ic, lab, sw
+        self.setFixedHeight(S["height"])
+        self.setAccessibleName("Research and Computer use for this chat")
+        self.refresh_icons()
+
+    def set_state(self, state, thread_id=None, animate=True):
+        if thread_id is not None:
+            self.thread_id = thread_id
+        self.state = dict(state)
+        for m in MODES:
+            key = m["key"]
+            on = bool(self.state.get(key, True))
+            self.switches[key].set_on(on, animate)
+            tip = mode_tooltip(key, on, self.thread_id)
+            self.switches[key].setToolTip(tip)
+            self.switches[key].setAccessibleName(tip)
+            self.labels[key].setToolTip(tip)
+            if self.labels[key].property("on") != on:
+                self.labels[key].setProperty("on", on)
+                polish(self.labels[key])
+        self.refresh_icons()
+
+    def set_active(self, on):
+        for sw in self.switches.values():
+            sw.setEnabled(on)
+
+    def refresh_icons(self):
+        pal = self.palette()
+        for m in MODES:
+            on = bool(self.state.get(m["key"], True))
+            col = QColor(pal.color(QPalette.ColorRole.Highlight)) if on else QColor(pal.color(QPalette.ColorRole.Text))
+            if not on:
+                col.setAlphaF(0.55)
+            self.icons[m["key"]].setPixmap(glyph_pixmap(m["glyph"], col, self.S["icon"]))
+
+    def changeEvent(self, e):
+        if e.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange):
+            self.refresh_icons()
+        super().changeEvent(e)
 
 
 class TypingIndicator(QWidget):
@@ -4107,6 +4383,8 @@ class AIControls(QMainWindow):
         self.pending_task = task_id     # --task ID: open the app on that conversation once the list is loaded
         self.speaking_message = None
         self._closing = False
+        self.modes = modes_defaults()   # Research / Computer use: the open chat's own choice, else the defaults (docs/design/MODES.md)
+        self._mode_inflight = 0         # toggles being persisted: no poll may write an older value back over them meanwhile
         self.api_q = ApiQueue()         # every daemon call of this window runs there (never on the GUI thread)
         self.api_q.done.connect(self._on_api_done)
         self.voice = Voice(self)
@@ -4159,6 +4437,11 @@ class AIControls(QMainWindow):
         tcol.addWidget(self.subtitle)
         hl.addLayout(tcol)
         hl.addStretch(1)
+        # Research · Computer use for the open chat (docs/design/MODES.md) — the same strip as the home bar's; mirrored in the composer row
+        self.header_modes = ModeStrip()
+        self.header_modes.toggled.connect(self.toggle_mode)
+        hl.addWidget(self.header_modes)
+        hl.addSpacing(6)
         self.provider_chip = QToolButton()
         self.provider_chip.setObjectName("providerChip")
         self.provider_chip.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -4319,6 +4602,9 @@ class AIControls(QMainWindow):
             self.mode_actions[m] = act
         self.mode_btn.clicked.connect(lambda: self.mode_menu.exec(self.mode_btn.mapToGlobal(self.mode_btn.rect().topLeft()) - QPointF(0, self.mode_menu.sizeHint().height() + 6).toPoint()))
         row2.addWidget(self.mode_btn, 0)
+        self.composer_modes = ModeStrip()          # the header strip's mirror: identical geometry and motion, one state
+        self.composer_modes.toggled.connect(self.toggle_mode)
+        row2.addWidget(self.composer_modes, 0)
         self.hint_label = QLabel("Enter to send · Shift+Enter for a new line")
         self.hint_label.setObjectName("chipText")
         row2.addWidget(self.hint_label, 0)
@@ -4469,6 +4755,12 @@ class AIControls(QMainWindow):
         super().resizeEvent(e)
         if self.toast.isVisible():
             self.toast.move((self.main.width() - self.toast.width()) // 2, self.main.height() - self.toast.height() - 96)
+        # a narrow window keeps ONE strip (the composer's) and drops the keyboard hint before anything overlaps
+        wide = self.width() >= 1060
+        if self.header_modes.isVisibleTo(self) != wide:
+            self.header_modes.setVisible(wide)
+        if self.hint_label.isVisibleTo(self) != (self.width() >= 900):
+            self.hint_label.setVisible(self.width() >= 900)
 
     def _ask_focus(self, on):
         self.composer.setProperty("focused", on)
@@ -4566,6 +4858,9 @@ class AIControls(QMainWindow):
             return
         details = [self.details[t["id"]] for t in conv["tasks"] if t["id"] in self.details]
         self.view.set_thread(details, self.show_raw)
+        head = self.details.get(root)
+        if head is not None and "research" in head and self._mode_inflight == 0:   # the chat's own Research / Computer use (effective values)
+            self.set_modes(modes_from_task(head, self.modes), thread_id=root)
         self.update_composer()
 
     def set_offline(self, off, why=""):
@@ -4614,6 +4909,10 @@ class AIControls(QMainWindow):
             self._apply_show_raw(str(st.get("ui_show_raw", "")) == "true")
         else:                                              # older daemon without the field: ask once per list poll, off the GUI thread
             self.api_async("GET", "/settings", cb=lambda s: self._apply_show_raw(isinstance(s, dict) and str(s.get("ui.show_raw", "false")) == "true"), key="settings-raw")
+        if self.current_root is None and self._mode_inflight == 0:    # no chat open: the strips show the defaults for new chats
+            self.set_modes(modes_from_status(st))
+        for strip in (self.header_modes, self.composer_modes):
+            strip.set_active(ai_on and not self.offline)
         voice_on = str((st.get("voice") or {}).get("enabled", "true")) == "true"
         if voice_on != getattr(self, "_voice_on", True):
             self._voice_on = voice_on
@@ -4718,6 +5017,8 @@ class AIControls(QMainWindow):
         body = {"request": text}
         if self.current_root is not None:
             body["parent_id"] = self.current_root
+        else:
+            body.update(mode_task_fields(self.modes))           # a new chat starts with the strip's Research / Computer use
         parent = self.current_root
         self.api_async("POST", "/tasks", body, cb=lambda r, parent=parent: self._after_create(r, parent), err=restore)
 
@@ -4754,8 +5055,44 @@ class AIControls(QMainWindow):
         self.view.clear()
         self.sidebar.select(None)
         self.stack.setCurrentIndex(0)
+        if self._mode_inflight == 0:
+            self.set_modes(modes_from_status(self.status), thread_id=0)   # back to the defaults for new chats
         self.update_composer()
         self.ask.setFocus()
+
+    # ---- Research · Computer use (docs/design/MODES.md): both strips are one state; a toggle is applied at once, persisted with ONE
+    # request (PATCH the open chat's root, PUT the default otherwise) and confirmed in a toast; a failure says so and re-fetches
+    def set_modes(self, state, thread_id=None, animate=True):
+        self.modes = dict(state)
+        if thread_id is None:
+            thread_id = self.current_root or 0
+        for strip in (self.header_modes, self.composer_modes):
+            strip.set_state(self.modes, thread_id, animate)
+
+    def toggle_mode(self, key, on):
+        thread = self.current_root or 0
+        new_state, (method, path, body), message = mode_toggle(self.modes, key, on, thread)
+        self.set_modes(new_state, thread_id=thread)
+        self._mode_inflight += 1
+        self.toast.show_message(message, MODE_TOKENS["strip"]["confirm_ms"])
+
+        def done(r):
+            self._mode_inflight = max(0, self._mode_inflight - 1)
+            if isinstance(r, dict) and r.get("error"):
+                failed(r["error"])
+                return
+            if isinstance(r, dict) and any(m["key"] in r for m in MODES):
+                self.set_modes(modes_from_task(r, self.modes), thread_id=thread)
+            if thread:
+                self.refresh_thread(force=True)
+
+        def failed(why=""):
+            self._mode_inflight = max(0, self._mode_inflight - 1)
+            self.toast.show_message("Could not turn %s %s%s" % (mode_by_key(key)["label"], "on" if on else "off", (": " + str(why)[:120]) if why else ""))
+            self.refresh_list()
+            if thread:
+                self.refresh_thread(force=True)
+        self.api_async(method, path, body, cb=done, err=failed)
 
     def start_edit(self, task_id, text=""):
         """Edit a request in place: the turn shows the edit card (Cancel / Send). Only one turn is edited at a time."""
