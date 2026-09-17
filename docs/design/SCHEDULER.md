@@ -79,8 +79,10 @@ remembers processed Message-IDs. Every change is an `activity` row (`item_added`
   Reminder popups carry timeout 0 (they stay until answered); the summary 20 s. `FABOS_SCHED_NOTIFY=notify-send` forces
   the button-less fallback (tests shim the binary; nothing under test ever reaches the developer's session bus).
 * `fabos-schedule-summary.service` (`WantedBy=graphical-session.target`, enabled `--global` in postinst) runs
-  `scheduler.py --login-summary`: waits for the agent (≤ 90 s) and for a notification server on the bus (≤ 60 s, plus
-  5 s for its popups), then `POST /schedule/login-summary {session}` with the graphical session's id from `loginctl`
+  `scheduler.py --login-summary`: waits for the agent (≤ 90 s), for the notification server to be up and not inhibited
+  (its `Inhibited` property; ≤ 90 s) and then 15 s more for the desktop to settle — plasmashell owns the bus name while
+  its panel is still loading, and a notification sent then lands in the history without a popup (VM proof, run 2) —
+  then `POST /schedule/login-summary {session}` with the graphical session's id from `loginctl`
   (the user manager's own environment keeps the FIRST session's id all day). The daemon de-duplicates per
   date + boot + session, so a unit restart never shows it twice, a second login the same day does; `{force: true}` always.
 
