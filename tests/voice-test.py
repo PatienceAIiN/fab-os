@@ -871,10 +871,113 @@ class DaemonUnit(unittest.TestCase):
         with V.lock("speaking"):
             d._pump(types.SimpleNamespace(stdout=io.BytesIO(pcm)), types.SimpleNamespace(stdin=quiet))
         self.assertEqual(quiet.data, b"", "audio must not reach pocketsphinx while speech plays")
+        self.assertEqual(len(d.ring), 0, "audio dropped while speech plays does not enter the ring either")
         loud = Sink()
+        d.gate_enabled = False
         d._pump(types.SimpleNamespace(stdout=io.BytesIO(pcm)), types.SimpleNamespace(stdin=loud))
         self.assertEqual(loud.data, pcm)
         self.assertEqual(b"".join(d.ring), pcm)
+
+    def test_voice_activity_gate_feeds_the_decoder_only_around_speech(self):
+        """The recorder's whole stream enters the ring, but pocketsphinx gets nothing for silence or steady room noise
+        (RMS ~17 here, below GATE_MIN_FLOOR): a loud burst opens the gate with GATE_PREROLL_CHUNKS of context first and
+        keeps it open GATE_HANGOVER_CHUNKS after the last loud chunk, so the decoder sees the trailing silence that
+        ends the utterance. 5 quiet + 4 loud + 15 quiet chunks -> 3 + 4 + 12 = 19 chunks fed, 5 held back."""
+        import io
+        import fabos_voiced as D
+
+        class Sink:
+            def __init__(self):
+                self.data = b""
+
+            def write(self, b):
+                self.data += b
+
+            def flush(self):
+                pass
+
+            def close(self):
+                pass
+
+        quiet1, burst, quiet2 = pcm_noise(0.5, seed=3), pcm_noise(0.4, amp=3000, seed=4), pcm_noise(1.5, seed=5)
+        self.assertLess(V.rms(quiet1[:V.CHUNK_BYTES]), D.GATE_MIN_FLOOR)
+        self.assertGreater(V.rms(burst[:V.CHUNK_BYTES]), D.GATE_MIN_FLOOR * D.GATE_RATIO)
+        d = D.Voiced()
+        sink = Sink()
+        d._pump(types.SimpleNamespace(stdout=io.BytesIO(quiet1 + burst + quiet2)), types.SimpleNamespace(stdin=sink))
+        self.assertEqual(b"".join(d.ring), quiet1 + burst + quiet2, "everything enters the ring")
+        self.assertEqual(len(sink.data), (D.GATE_PREROLL_CHUNKS + 4 + D.GATE_HANGOVER_CHUNKS) * V.CHUNK_BYTES, "preroll + burst + hangover reach the decoder")
+        self.assertEqual(sink.data[:D.GATE_PREROLL_CHUNKS * V.CHUNK_BYTES], quiet1[-D.GATE_PREROLL_CHUNKS * V.CHUNK_BYTES:], "the 300 ms before the onset go first")
+        self.assertIn(burst, sink.data)
+        self.assertEqual(d.gate_stats, [D.GATE_PREROLL_CHUNKS + 4 + D.GATE_HANGOVER_CHUNKS, 5])
+        # digital silence (a muted or emulated microphone) costs the decoder nothing at all
+        d = D.Voiced()
+        sink = Sink()
+        d._pump(types.SimpleNamespace(stdout=io.BytesIO(silence(3.0))), types.SimpleNamespace(stdin=sink))
+        self.assertEqual(sink.data, b"")
+        self.assertEqual(d.gate_stats, [0, 30])
+
+    def test_spotter_policy_from_setting_and_performance_mode(self):
+        """voice.spotter on | battery-off | off, tightened by the performance mode: Server -> off, Power saver -> an "on"
+        listener rests on battery; an unknown value reads as on. on_battery() from a scripted sysfs tree."""
+        import fabos_voiced as D
+        self.assertEqual(V.spotter_policy({"voice.spotter": "on"}, mode="balanced"), "on")
+        self.assertEqual(V.spotter_policy({"voice.spotter": "battery-off"}, mode="gaming"), "battery-off")
+        self.assertEqual(V.spotter_policy({"voice.spotter": "off"}, mode="performance"), "off")
+        self.assertEqual(V.spotter_policy({}, mode=""), "on")
+        self.assertEqual(V.spotter_policy({"voice.spotter": "sometimes"}, mode=""), "on")
+        self.assertEqual(V.spotter_policy({"voice.spotter": "on"}, mode="server"), "off")
+        self.assertEqual(V.spotter_policy({"voice.spotter": "battery-off"}, mode="server"), "off")
+        self.assertEqual(V.spotter_policy({"voice.spotter": "on"}, mode="power-saver"), "battery-off")
+        self.assertEqual(V.spotter_policy({"voice.spotter": "off"}, mode="power-saver"), "off")
+        modefile = os.path.join(TMP, "performance-mode")
+        with open(modefile, "w") as f:
+            f.write("gaming\n")
+        self.assertEqual(V.performance_mode(modefile), "gaming")
+        with open(modefile, "w") as f:
+            f.write("turbo\n")
+        self.assertEqual(V.performance_mode(modefile), "")
+        self.assertEqual(V.performance_mode(os.path.join(TMP, "no-such-file")), "")
+        ps = os.path.join(TMP, "power_supply")
+        for name, kv in (("AC", {"type": "Mains", "online": "0"}), ("BAT0", {"type": "Battery", "status": "Discharging"})):
+            os.makedirs(os.path.join(ps, name), exist_ok=True)
+            for k, v in kv.items():
+                with open(os.path.join(ps, name, k), "w") as f:
+                    f.write(v + "\n")
+        self.assertTrue(V.on_battery(ps))
+        with open(os.path.join(ps, "AC", "online"), "w") as f:
+            f.write("1\n")
+        self.assertFalse(V.on_battery(ps), "mains online: not on battery even while the battery says Discharging for a moment")
+        with open(os.path.join(ps, "AC", "online"), "w") as f:
+            f.write("0\n")
+        with open(os.path.join(ps, "BAT0", "status"), "w") as f:
+            f.write("Charging\n")
+        self.assertFalse(V.on_battery(ps))
+        self.assertFalse(V.on_battery(os.path.join(TMP, "no-power-supply")), "no power supply at all (desktop, VM): never on battery")
+        # the daemon: an "off" policy is a hold; with the locker and the power source unreadable, "on" is never held
+        d = D.Voiced()
+        d.settings["voice.spotter"] = "off"
+        saved = (V.performance_mode, V.screen_locked, V.on_battery)
+        V.performance_mode = lambda path=None: ""
+        V.screen_locked = lambda: None
+        V.on_battery = lambda base=None: False
+        try:
+            self.assertEqual(d.spotter_hold(), "off")
+            d.settings["voice.spotter"] = "on"
+            self.assertIsNone(d.spotter_hold())
+            V.screen_locked = lambda: True
+            self.assertEqual(d.spotter_hold(), "locked")
+            V.screen_locked = lambda: False
+            d.settings["voice.spotter"] = "battery-off"
+            V.on_battery = lambda base=None: True
+            V.session_idle_s_saved = V.session_idle_s
+            V.session_idle_s = lambda: D.IDLE_ON_BATTERY_S + 1
+            self.assertEqual(d.spotter_hold(), "battery-idle")
+            V.session_idle_s = lambda: 5
+            self.assertIsNone(d.spotter_hold(), "the user is back: the microphone reopens")
+            V.session_idle_s = V.session_idle_s_saved
+        finally:
+            V.performance_mode, V.screen_locked, V.on_battery = saved
 
     def test_sleep_wakes_on_interrupt_and_on_stop(self):
         import threading

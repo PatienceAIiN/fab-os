@@ -54,6 +54,27 @@ RING_SECONDS = 6           # audio kept in memory (192 KB) for the second look a
                            # plus up to ~4.5 s of request (measured in the Ubuntu 26.04 container: a 5 s "hey fab, write a note
                            # that says…" fell off a 5 s ring and was rejected, 6 s kept it); never written to disk unless verifying
 REPEAT_WINDOW_S = 30       # the same narration text is not spoken twice within this window
+# Voice-activity gate in front of pocketsphinx (docs/PERFORMANCE.md). The recorder keeps running (its stream is what
+# the ring buffer and the wake verification need), but the decoder is fed only around speech-like audio: a 100 ms
+# chunk whose RMS is GATE_RATIO times the running noise floor (and above GATE_MIN_FLOOR: digital silence is 0). Then
+# the GATE_PREROLL_CHUNKS before it go in first, and feeding continues GATE_HANGOVER_CHUNKS past the last loud chunk so
+# pocketsphinx's own endpointer sees the trailing silence that closes the utterance and prints its line. In a quiet room
+# — or on the silent microphone of the test VM — the decoder therefore receives nothing and costs nothing; measured in
+# the image: pocketsphinx decoding a continuous 16 kHz stream is ~1.5 % of a core (60 s of audio = 0.9 s CPU) plus a
+# wake-up every 100 ms; gated, it sleeps in read().
+GATE_RATIO = V.SPEECH_RATIO          # 3.0, the same ratio the recorder's Segmenter uses to call a chunk speech
+GATE_MIN_FLOOR = V.MIN_FLOOR         # 40
+GATE_PREROLL_CHUNKS = 3              # 300 ms before the onset
+GATE_HANGOVER_CHUNKS = 12            # 1.2 s after the last loud chunk
+GATE_FLOOR_RISE = 1.02               # the floor follows a rising room level 2 % per chunk, a falling one at once
+# Spotter policy (voicelib.spotter_policy: voice.spotter on | battery-off | off, tightened by the performance mode):
+# battery-off releases the microphone after IDLE_ON_BATTERY_S without input while discharging and reopens it when the
+# user is back; any policy pauses while the screen is locked (nobody should drive a locked machine by voice, and the
+# codec can power down). Lock / power / idle state is re-read every POLICY_POLL_S while listening (2 busctl calls) and
+# every POLICY_PAUSED_POLL_S while paused, so the listener is back within ten seconds of the user's return.
+POLICY_POLL_S = 30
+POLICY_PAUSED_POLL_S = 10
+IDLE_ON_BATTERY_S = 300
 NO_DEDUPE_KINDS = ("approval", "question", "prompt", "ack")   # things the user must answer, or answers to what they said
 SPOKEN_LOG_MAX = 256 * 1024
 FIRST_RUN_MARKER = os.path.join(V.STATE_DIR, "first-run-done")
@@ -87,6 +108,10 @@ class Voiced:
         self.bg = None
         self.recent = {}                # text -> when we last spoke it (REPEAT_WINDOW_S)
         self.capture_attempt = 0        # 0 = the plain default recorder; after a recorder failure, the explicit candidates in turn
+        self.gate_enabled = True        # feed pocketsphinx only around speech-like audio (GATE_* above); tests may switch it off
+        self.gate_stats = [0, 0]        # chunks fed to the decoder, chunks dropped by the gate (since the spotter started)
+        self.policy_ts = 0.0            # when lock / power / idle state was last read
+        self.hold = None                # why the spotter is paused right now ("locked", "battery-idle"), or None
 
     # ------------------------------------------------------------------ settings
     def refresh_settings(self, force=False):
@@ -267,10 +292,16 @@ class Voiced:
         return True
 
     def _pump(self, rec, spot):
-        """recorder -> ring buffer -> pocketsphinx. While anything speaks (our own 'speaking' lock or Fab AI Controls'
-        `fabos-voice say`) the audio is dropped instead of fed, so the spotter never hears the loudspeaker; that stretch
-        does not enter the ring either."""
+        """recorder -> ring buffer -> (voice-activity gate) -> pocketsphinx. While anything speaks (our own 'speaking' lock
+        or Fab AI Controls' `fabos-voice say`) the audio is dropped instead of fed, so the spotter never hears the
+        loudspeaker; that stretch does not enter the ring either. Every other chunk enters the ring (the wake
+        verification and a run-on request need the whole clip), but the decoder is fed only around speech-like audio
+        (GATE_*): silence and steady room noise never wake it."""
         paused = False
+        floor = None
+        hang = 0
+        pre = collections.deque(maxlen=GATE_PREROLL_CHUNKS)
+        self.gate_stats = [0, 0]
         try:
             while True:
                 chunk = rec.stdout.read(V.CHUNK_BYTES)
@@ -285,8 +316,29 @@ class Voiced:
                     paused = False
                     log("speech over; spotter resumed")
                 self.ring.append(chunk)
+                if self.gate_enabled:
+                    level = V.rms(chunk)
+                    if floor is None or level < floor:
+                        floor = max(level, 1.0)
+                    else:
+                        floor = min(level, floor * GATE_FLOOR_RISE)
+                    speech = level >= GATE_MIN_FLOOR and level >= floor * GATE_RATIO
+                    if speech:
+                        hang = GATE_HANGOVER_CHUNKS
+                    elif hang > 0:
+                        hang -= 1
+                    else:
+                        pre.append(chunk)
+                        self.gate_stats[1] += 1
+                        continue
+                    for c in pre:                      # the 300 ms before the onset were "held back" until now
+                        spot.stdin.write(c)
+                        self.gate_stats[0] += 1
+                        self.gate_stats[1] -= 1
+                    pre.clear()
                 spot.stdin.write(chunk)
                 spot.stdin.flush()
+                self.gate_stats[0] += 1
         except (OSError, ValueError):
             pass
         finally:
@@ -307,6 +359,11 @@ class Voiced:
         self.spot = self.rec = None
         with contextlib.suppress(Exception):
             self.spot_err.close()
+        fed, dropped = self.gate_stats
+        if fed or dropped:
+            log("spotter closed: decoder fed %.1f s, gate held back %.1f s (%d %% of the audio)" % (
+                fed * V.CHUNK_MS / 1000.0, dropped * V.CHUNK_MS / 1000.0, 100 * dropped // max(1, fed + dropped)))
+        self.gate_stats = [0, 0]
         V.write_state(wake=False)
 
     def spotter_died(self):
@@ -345,6 +402,12 @@ class Voiced:
                     log("settings changed; restarting the listener")
                     self.stop_spotter()
                     return
+            if time.time() - self.policy_ts > POLICY_POLL_S:
+                hold = self.spotter_hold()
+                if hold:
+                    self.stop_spotter()
+                    V.write_state(spotter="paused:" + hold if hold != "off" else "off")
+                    return
             if not ready:
                 continue
             line = self.spot.stdout.readline()
@@ -362,6 +425,31 @@ class Voiced:
                 except Exception as e:
                     log("wake handling failed:", e)
                 return
+
+    # ------------------------------------------------------------------ spotter policy
+    def spotter_policy(self):
+        """on | battery-off | off — voicelib.spotter_policy over the current settings and performance mode."""
+        return V.spotter_policy(self.settings)
+
+    def spotter_hold(self, policy=None):
+        """Why the microphone must stay closed right now: "off" (policy), "locked" (screen locker active),
+        "battery-idle" (battery-off policy, discharging, no input for IDLE_ON_BATTERY_S), or None. Reads sysfs and, at
+        most, two busctl calls; remembers the time so spot_loop re-checks only every POLICY_POLL_S."""
+        self.policy_ts = time.time()
+        policy = policy or self.spotter_policy()
+        hold = None
+        if policy == "off":
+            hold = "off"
+        elif V.screen_locked() is True:
+            hold = "locked"
+        elif policy == "battery-off" and V.on_battery():
+            idle = V.session_idle_s()
+            if idle is not None and idle >= IDLE_ON_BATTERY_S:
+                hold = "battery-idle"
+        if hold != self.hold:
+            log("spotter %s" % ("paused: %s" % hold if hold else "may listen again (%s over)" % self.hold))
+        self.hold = hold
+        return hold
 
     # ------------------------------------------------------------------ after "Hey Fab"
     def on_wake(self, clip=b""):
@@ -634,10 +722,20 @@ class Voiced:
                 V.write_state(wake=False, mic=False)
                 self._sleep(MIC_RECHECK_S)
                 continue
+            policy = self.spotter_policy()
+            hold = self.spotter_hold(policy)
+            if hold:
+                if hold == "off":
+                    self.warn_once("wake-word listener off by policy (voice.spotter=%s, performance mode %s); say-and-listen still work from the UI"
+                                   % (self.settings.get("voice.spotter") or "on", V.performance_mode() or "unset"))
+                V.write_state(wake=False, spotter="paused:" + hold if hold != "off" else "off", spotter_policy=policy)
+                self._sleep(POLICY_PAUSED_POLL_S if hold != "off" else SETTINGS_REFRESH_S)
+                continue
             self.first_run()
             if not self.start_spotter():
                 self._sleep(10)
                 continue
+            V.write_state(spotter="listening", spotter_policy=policy)
             self.spot_loop()
         self.stop_spotter()
         V.write_state(wake=False, listening=False, speaking=False)
