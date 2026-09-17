@@ -3092,8 +3092,9 @@ class DiskUnlockDialog(RoundedDialog):
     TEXT = ("Your files stay encrypted on the drive, but anyone who starts this computer can use it without a password, because the "
             "unlock key is stored in the start-up files on the unencrypted /⁠boot partition. Use this only where the computer itself is secure.")
 
-    FIX_TEXT = ("Fix now stores a fresh unlock key, rebuilds the start-up files of every installed kernel, proves the key is inside and "
-                "opens the disk, refreshes the start menu if needed, and checks again. If anything fails half-way it rolls back, so the "
+    FIX_TEXT = ("Fix now keeps the unlock key if it still opens the disk (otherwise it stores a new one), rebuilds the start-up files of "
+                "every installed kernel, proves the key is inside and opens the disk, refreshes the start menu if needed, and checks again. "
+                "Nothing is removed from the disk before the rebuilt files are proven, and if anything fails half-way it rolls back, so the "
                 "computer keeps starting. The same trade-off applies: anyone who starts this computer can use it without a password.")
 
     def __init__(self, parent, title=None, text=None, confirm=None):
@@ -3668,7 +3669,7 @@ class SettingsDialog(RoundedDialog):
         DiskUnlockHowTo(self).exec()
 
     def _boot_fix(self):
-        """Fix now: the passphrase when the switch is off (a fresh key slot is stored), a plain confirmation when it is on."""
+        """Fix now: the passphrase when the switch is off (it must open the disk first; a new key slot only when the old key no longer opens it), a plain confirmation when it is on."""
         if self.boot_worker is not None:
             return
         on = bool((self.boot_state or {}).get("prompt_at_boot", True))

@@ -100,10 +100,11 @@ Open Settings → General → Start-up and read the line under the switch. The u
 - the unlock method inside the file is the one Fab OS configures (cryptsetup-initramfs);
 - other encrypted devices in `/etc/crypttab` and whether they would prompt.
 
-It then stores a fresh key, rebuilds every start-up file, proves the key is inside and opens the disk, refreshes
-the GRUB menu when needed, and checks again. If anything fails half-way it rolls back, so the computer keeps
-starting either way. You are asked for the **disk passphrase** (a fresh key is registered with it) and for your
-**login password** (the permission dialog).
+It then keeps the unlock key if it still opens the disk (otherwise it stores a new one), rebuilds every start-up
+file, proves the key is inside and opens the disk, refreshes the GRUB menu when needed, and checks again. Nothing is
+removed from the disk before the rebuilt files are proven, and if anything fails half-way it rolls back, so the
+computer keeps starting either way. You are asked for the **disk passphrase** (it must open the disk before anything
+is changed) and for your **login password** (the permission dialog).
 
 ## How to turn it back on
 

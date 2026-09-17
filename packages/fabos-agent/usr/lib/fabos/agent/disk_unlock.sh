@@ -8,7 +8,9 @@
 #                                {switch, prompt_at_boot_expected, agrees, boot_risk, reason, repair, items[]} — works as the user
 #                                (root-only items read "unknown", or come from the record the last root run left) or as root (complete)
 #   disk_unlock.sh repair < pass make the start-up files match the switch again: diagnose, re-run 'off' (passphrase on STDIN) or 'on'
-#                                idempotently, update-grub when the menu is stale, diagnose again (embedded as "diagnosis")
+#                                idempotently, update-grub when the menu is stale, diagnose again (embedded as "diagnosis"). Refuses when
+#                                the verdict is unknown (no blind changes). A key file that still opens the volume is KEPT with its
+#                                slot: no key slot is ever removed before the rebuilt start-up files are proven (see 'off').
 #
 # Layout (ADR-0021 installer boot layout): ESP + unencrypted /boot (ext4) + LUKS2 root. The initramfs on /boot unlocks the
 # root; cryptsetup-initramfs asks for the passphrase through Plymouth. "off" makes the initramfs carry a key instead:
@@ -82,6 +84,7 @@ emit() {   # emit <ok true|false> <prompt_at_boot true|false|null> <error-or-emp
 die() {   # die <exit code> <prompt_at_boot> <message> [detail]
   log "FAILED: $3"
   emit false "$2" "$3" "${4:-}"
+  cleanup_backup 2>/dev/null
   exit "$1"
 }
 
@@ -273,15 +276,17 @@ cmd_off() {
     log "already off: the initramfs carries $KEYFILE"
     emit true false "" "already starts without asking"; return 0
   fi
-  [ "$FORCE" = 1 ] && log "repair: re-applying 'off' from the start (a fresh key, every start-up file rebuilt and proven)"
+  [ "$FORCE" = 1 ] && log "repair: re-applying 'off' from the start (the key is kept when it still opens the disk, else a new one; every start-up file rebuilt and proven)"
   # the passphrase must open the volume before anything is touched (a wrong one changes nothing)
   if ! printf '%s\n' "$pass" | cryptsetup open --test-passphrase "$dev" >/dev/null 2>&1; then
     die 3 true "the passphrase was not accepted for $CT_NAME" "nothing was changed"
   fi
   log "passphrase verified against $dev"
   backup_configs true
-  local slot_added=0 initramfs_touched=0
+  local slot_added=0 initramfs_touched=0 reuse=0
   # rollback <why>: 0 = fully reversed, 1 = an initrd on $BOOT still carries the key, so the slot and the keyfile were KEPT.
+  # With reuse=1 (an existing key that opens the volume was kept) nothing was added to the LUKS header and nothing is removed:
+  # the key file and its slot stay exactly as they were, whatever the start-up files carry.
   # Before the initramfs was touched the initrd on disk still asks for the passphrase and the slot can go at once. Once it was
   # rebuilt it may name the key: configuration restored -> initramfs rebuilt -> EVERY initrd proven free of the key -> only then
   # the slot removed and the keyfile deleted (a boot in between, or a failed rebuild, must never meet a key without its slot).
@@ -289,13 +294,15 @@ cmd_off() {
     log "rolling back: $1"
     restore_configs
     if [ "$initramfs_touched" = 1 ]; then
-      if update-initramfs -u -k all >/dev/null 2>&1; then log "initramfs rebuilt without the key"; else log "WARNING: update-initramfs failed during the rollback"; fi
+      if update-initramfs -u -k all >/dev/null 2>&1; then log "initramfs rebuilt with the previous configuration"; else log "WARNING: update-initramfs failed during the rollback"; fi
+      if [ "$reuse" = 1 ]; then log "the existing keyfile and its key slot are kept, as they were before"; return 0; fi
       if any_initrd_has_key; then
         log "WARNING: an initrd on $BOOT still carries the key: the key slot and $KEYFILE are kept so the computer still starts; 'on' finishes the reversal"
         return 1
       fi
       log "verified: no initrd on $BOOT carries the key"
     fi
+    if [ "$reuse" = 1 ]; then log "the existing keyfile and its key slot are kept, as they were before"; return 0; fi
     if [ "$slot_added" = 1 ] && [ -f "$KEYFILE" ]; then
       if cryptsetup -q luksRemoveKey "$dev" "$KEYFILE" >/dev/null 2>&1; then log "key slot removed again"; else log "WARNING: could not remove the key slot; the keyfile is deleted so the slot is unusable"; fi
     fi
@@ -303,27 +310,35 @@ cmd_off() {
     return 0
   }
   fail_off() {   # fail_off <why> <message> [detail]: roll back, then exit 7 (fully reversed) or 8 (the key is still in use)
-    if rollback "$1"; then die 7 true "$2" "${3:-}"; fi
+    if rollback "$1"; then die 7 "$(cur_prompt)" "$2" "${3:-}"; fi
     local p; case "$(keyfile_in_initramfs; echo $?)" in 0) p=false;; 1) p=true;; *) p=null;; esac
     die 8 "$p" "$2" "the change could not be fully reversed: the start-up files on $BOOT still carry the unlock key, so the key slot and $KEYFILE were kept; turn the setting on to finish${3:+ — $3}"
   }
-  # 1. keyfile (4096 random bytes, 0400 root) — on the encrypted root. A leftover keyfile from an earlier run gives its slot
-  #    back first (luksRemoveKey with that file removes exactly the slot it opens), so slots are not orphaned.
+  # 1. keyfile (4096 random bytes, 0400 root) — on the encrypted root. An existing keyfile that still OPENS the volume is kept
+  #    together with its slot: a start-up file on $BOOT may be unlocking the disk with exactly that key right now, and no key slot
+  #    is ever removed before the rebuilt start-up files are proven (a power cut or a failed step in between must leave a disk
+  #    that starts). A keyfile that opens nothing has no slot to give back and no start-up file can start from it: it is replaced.
   mkdir -p "$(dirname "$KEYFILE")" && chmod 0755 "$(dirname "$KEYFILE")" 2>/dev/null
   if [ -f "$KEYFILE" ]; then
-    if cryptsetup -q luksRemoveKey "$dev" "$KEYFILE" >/dev/null 2>&1; then log "leftover keyfile: its key slot removed"; else log "leftover keyfile: no key slot of its own"; fi
-    rm -f "$KEYFILE"
+    if cryptsetup open --test-passphrase --key-file "$KEYFILE" "$dev" >/dev/null 2>&1; then
+      reuse=1; chmod 0400 "$KEYFILE"; chown root:root "$KEYFILE" 2>/dev/null || true
+      log "existing keyfile $KEYFILE opens $dev: kept, with its key slot (nothing is removed before the start-up files are rebuilt and proven)"
+    else
+      rm -f "$KEYFILE"; log "leftover keyfile does not open $dev (no key slot of its own): replaced"
+    fi
   fi
-  if ! ( umask 077; head -c 4096 /dev/urandom > "$KEYFILE" ) || [ "$(stat -c %s "$KEYFILE" 2>/dev/null)" != 4096 ]; then
-    fail_off "could not write the keyfile" "could not create $KEYFILE"
+  if [ "$reuse" != 1 ]; then
+    if ! ( umask 077; head -c 4096 /dev/urandom > "$KEYFILE" ) || [ "$(stat -c %s "$KEYFILE" 2>/dev/null)" != 4096 ]; then
+      fail_off "could not write the keyfile" "could not create $KEYFILE"
+    fi
+    chmod 0400 "$KEYFILE"; chown root:root "$KEYFILE" 2>/dev/null || true
+    log "keyfile created: $KEYFILE (4096 bytes, 0400)"
+    # 2. the key slot (the passphrase authorises it — on cryptsetup's stdin, not its command line)
+    if ! printf '%s\n' "$pass" | cryptsetup -q luksAddKey "$dev" "$KEYFILE" >/dev/null 2>&1; then
+      fail_off "luksAddKey failed" "cryptsetup could not add the key to $CT_NAME"
+    fi
+    slot_added=1; log "key slot added on $dev"
   fi
-  chmod 0400 "$KEYFILE"; chown root:root "$KEYFILE" 2>/dev/null || true
-  log "keyfile created: $KEYFILE (4096 bytes, 0400)"
-  # 2. the key slot (the passphrase authorises it — on cryptsetup's stdin, not its command line)
-  if ! printf '%s\n' "$pass" | cryptsetup -q luksAddKey "$dev" "$KEYFILE" >/dev/null 2>&1; then
-    fail_off "luksAddKey failed" "cryptsetup could not add the key to $CT_NAME"
-  fi
-  slot_added=1; log "key slot added on $dev"
   # 3-5. crypttab / conf-hook / initramfs.conf
   write_crypttab "$KEYFILE" "$(add_opt "$CT_OPTS" initramfs)" || fail_off "crypttab write failed" "could not write $CRYPTTAB"
   log "crypttab: $CT_NAME key -> $KEYFILE, options $(add_opt "$CT_OPTS" initramfs)"
@@ -348,7 +363,7 @@ cmd_off() {
   fi
   log "verified: the keyfile opens $dev"
   log "DONE: the computer will start without asking for the disk password"
-  write_record false
+  cleanup_backup; write_record false
   emit true false "" "the unlock key is stored in the start-up files on $BOOT; anyone who starts this computer can use it"
 }
 
@@ -390,7 +405,7 @@ cmd_on() {
   # not proven = not done: an initrd that cannot be listed, or none found where the firmware boots from, keeps its slot
   if [ "$kin" != 1 ] || any_initrd_has_key; then
     log "WARNING: cannot prove every initrd on $BOOT is free of the key; the key slot and $KEYFILE are kept"
-    emit false null "the start-up files on $BOOT could not be checked after the rebuild; the unlock key was kept so the computer still starts — run 'on' again" "keyfile kept at $KEYFILE"
+    cleanup_backup; emit false null "the start-up files on $BOOT could not be checked after the rebuild; the unlock key was kept so the computer still starts — run 'on' again" "keyfile kept at $KEYFILE"
     exit 8
   fi
   log "verified: no initrd on $BOOT contains cryptroot/keyfiles/$CT_NAME.key"
@@ -400,7 +415,7 @@ cmd_on() {
       log "key slot removed from $dev"
     else
       log "WARNING: luksRemoveKey failed; the keyfile is kept so a retry can remove the slot"
-      emit false true "the start-up prompt is back, but the key slot could not be removed from $CT_NAME; run 'on' again" "keyfile kept at $KEYFILE"
+      cleanup_backup; emit false true "the start-up prompt is back, but the key slot could not be removed from $CT_NAME; run 'on' again" "keyfile kept at $KEYFILE"
       exit 8
     fi
     rm -f "$KEYFILE"; log "keyfile deleted"
@@ -408,7 +423,7 @@ cmd_on() {
     log "no keyfile present; the slot (if any) cannot be identified and is left alone"
   fi
   log "DONE: the computer asks for the disk password at start-up"
-  write_record true
+  cleanup_backup; write_record true
   emit true true "" "asks for the disk password at start-up"
 }
 
@@ -437,8 +452,9 @@ item() {   # item <id> <pass|fail|unknown|info> <label> <detail>   (NEEDS_ROOT i
 }
 diag_tmp() { [ -n "$DIAG_TMP" ] || DIAG_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fabos-du-diag.XXXXXX"); }
 cleanup_diag() { [ -n "$DIAG_TMP" ] && rm -rf "$DIAG_TMP"; return 0; }
-listing_of() {   # listing_of <initrd>: the file list inside it (cached per run); 1 = cannot be read (root-only file, or not an initrd)
-  local f="$1" c; diag_tmp; c=$DIAG_TMP/listing.$(printf '%s' "$f" | tr '/' '_')
+listing_of() {   # listing_of <initrd>: the file list inside it (cached per run, keyed by path + size + mtime so a rebuilt file is listed
+                 # again); 1 = cannot be read (root-only file, or not an initrd)
+  local f="$1" c; diag_tmp; c=$DIAG_TMP/listing.$(printf '%s|%s' "$f" "$(stat -c '%s_%Y' "$f" 2>/dev/null)" | tr '/|' '__')
   if [ ! -f "$c" ]; then
     [ -r "$f" ] || return 1
     lsinitramfs "$f" > "$c" 2>/dev/null || { rm -f "$c"; return 1; }
@@ -448,7 +464,7 @@ listing_of() {   # listing_of <initrd>: the file list inside it (cached per run)
 listing_has_key() { listing_of "$1" 2>/dev/null | grep -q -x -E "/?cryptroot/keyfiles/${CT_NAME}\.key"; }
 initrd_crypttab() {   # initrd_crypttab <initrd>: the crypttab INSIDE it (unmkinitramfs; root); 1 = cannot
   local f="$1" d; command -v unmkinitramfs >/dev/null 2>&1 || return 1; [ -r "$f" ] || return 1
-  diag_tmp; d=$DIAG_TMP/x.$(printf '%s' "$f" | tr '/' '_')
+  diag_tmp; d=$DIAG_TMP/x.$(printf '%s|%s' "$f" "$(stat -c '%s_%Y' "$f" 2>/dev/null)" | tr '/|' '__')
   if [ ! -d "$d" ]; then mkdir -p "$d"; unmkinitramfs -- "$f" "$d" >/dev/null 2>&1 || { rm -rf "$d"; return 1; }; fi
   local c found=0
   for c in "$d/cryptroot/crypttab" "$d/main/cryptroot/crypttab"; do [ -f "$c" ] && { cat "$c"; found=1; }; done
@@ -465,7 +481,7 @@ write_record() {   # write_record <prompt_at_boot_expected true|false|null>
   done <<EOF
 $(initrd_list)
 EOF
-  mkdir -p "$(dirname "$RECORD")" 2>/dev/null
+  mkdir -p "$(dirname "$RECORD")" 2>/dev/null; chmod 0755 "$(dirname "$RECORD")" 2>/dev/null
   printf '%s' "$lines" | python3 -c '
 import json, os, sys, time
 out, expected, key, action = sys.argv[1:5]
@@ -645,8 +661,8 @@ run_diagnose() {   # fills ITEMS and DIAG_*; prints nothing (cmd_diagnose prints
     else item crypttab_initramfs_opt fail "'initramfs' option on the root entry" "missing — this setting adds it; cryptsetup-initramfs still includes the root device on its own, so this alone does not bring the prompt back, but 'repair' restores it"; fi
     if [ -e "$KEYFILE" ]; then
       local mode size; mode=$(stat -c %a "$KEYFILE" 2>/dev/null); size=$(stat -c %s "$KEYFILE" 2>/dev/null)
-      if [ "$mode" = 400 ] && [ "$size" = 4096 ]; then item keyfile pass "Unlock key file $KEYFILE" "present, $size bytes, mode 0$mode"
-      else item keyfile fail "Unlock key file $KEYFILE" "present but mode 0$mode / $size bytes (expected 0400, 4096); 'repair' recreates it"; fi
+      if [ "$mode" = 400 ] && [ -n "$size" ] && [ "$size" -gt 0 ] 2>/dev/null; then item keyfile pass "Unlock key file $KEYFILE" "present, $size bytes, mode 0$mode$( [ "$size" = 4096 ] || echo " (not the 4096 bytes this setting writes; kept as long as it opens the disk)" )"
+      else item keyfile fail "Unlock key file $KEYFILE" "present but mode 0$mode / ${size:-?} bytes (expected 0400, non-empty); 'repair' puts it right"; fi
     else item keyfile fail "Unlock key file $KEYFILE" "missing although crypttab names it: the start-up files cannot carry it; 'repair' recreates it (needs the disk passphrase)"; fi
   else
     if [ -e "$KEYFILE" ]; then item keyfile fail "Leftover unlock key file" "$KEYFILE exists while crypttab asks for the passphrase; 'repair' removes it and its key slot"
@@ -733,8 +749,10 @@ EOF
       if [ "$hk" = "$want_key" ]; then item "initrd_key:$v" pass "Start-up file for kernel $v carries the unlock key: $( [ $hk = true ] && echo yes || echo no )" "verified as administrator at $at; the file is unchanged since$tag"
       else bad_initrds="$bad_initrds $v"; item "initrd_key:$v" fail "Start-up file for kernel $v carries the unlock key: $( [ $hk = true ] && echo yes || echo no )" "verified as administrator at $at (unchanged since) — does not match the setting$tag"; fi
     else
-      hk=null; [ "$i" = "$booted" ] && NEEDS_ROOT=1
-      item "initrd_key:$v" unknown "Start-up file for kernel $v carries the unlock key: ?" "the file is root-only and has changed since it was last verified (or never was): needs administrator rights$tag"
+      hk=null
+      if [ "$IS_ROOT" = 1 ]; then item "initrd_key:$v" unknown "Start-up file for kernel $v carries the unlock key: ?" "the file could not be read as a start-up file (lsinitramfs failed: damaged, or not an initrd)$tag"
+      else [ "$i" = "$booted" ] && NEEDS_ROOT=1
+        item "initrd_key:$v" unknown "Start-up file for kernel $v carries the unlock key: ?" "the file is root-only and has changed since it was last verified (or never was): needs administrator rights$tag"; fi
     fi
     [ "$i" = "$booted" ] && booted_hk=$hk
     if [ "$i" = "$booted" ]; then
@@ -754,11 +772,14 @@ EOF
           fi
         else
           if [ "$switch" = on ]; then root_expected=true; root_why="${i##*/} has no unlock key inside"
+          elif [ "$IS_ROOT" = 1 ]; then root_expected=null; root_why="${i##*/} has no unlock key inside; whether it asks for the passphrase or fails to start depends on its own crypttab, which could not be read (unmkinitramfs)"
+            item "initrd_crypttab:$v" unknown "Root device inside start-up file $v" "could not be read (unmkinitramfs missing or failed)"
           else root_expected=null; NEEDS_ROOT=1; root_why="${i##*/} has no unlock key inside; whether it asks for the passphrase or fails to start depends on its own crypttab, which needs administrator rights to read"
             item "initrd_crypttab:$v" unknown "Root device inside start-up file $v" "needs administrator rights (unmkinitramfs) to read"; fi
         fi
       else
-        root_expected=null; root_why="${i##*/} is root-only and unverified"
+        root_expected=null
+        if [ "$IS_ROOT" = 1 ]; then root_why="${i##*/} could not be read as a start-up file (lsinitramfs failed)"; else root_why="${i##*/} is root-only and unverified"; fi
       fi
     fi
   done <<EOF
@@ -770,7 +791,7 @@ EOF
     if listing_of "$booted" | grep -q -E '^/?scripts/local-top/cryptroot$'; then item initrd_unlocker pass "Unlock method inside the start-up file" "cryptsetup-initramfs (scripts/local-top/cryptroot) — the method this setting configures"
     elif listing_of "$booted" | grep -q -E 'systemd-cryptsetup'; then item initrd_unlocker fail "Unlock method inside the start-up file" "systemd-cryptsetup (dracut-style) — this setting configures cryptsetup-initramfs; the key file would not be used"
     else item initrd_unlocker fail "Unlock method inside the start-up file" "neither cryptroot nor systemd-cryptsetup found in ${booted##*/}: is cryptsetup-initramfs installed?"; fi
-  elif [ -n "$booted" ]; then item initrd_unlocker unknown "Unlock method inside the start-up file" "needs administrator rights to read ${booted##*/}"; fi
+  elif [ -n "$booted" ]; then item initrd_unlocker unknown "Unlock method inside the start-up file" "$( [ "$IS_ROOT" = 1 ] && echo "${booted##*/} could not be read (lsinitramfs failed)" || echo "needs administrator rights to read ${booted##*/}" )"; fi
   # other encrypted devices in crypttab (swap, data): a 'none' key asks for ITS password at start-up — looks exactly like the disk prompt
   local oname osrc okey oopts others=0 others_prompt=""
   while read -r oname osrc okey oopts; do
@@ -818,6 +839,9 @@ EOF
       fi
     elif [ "$agrees" = null ]; then
       if [ "$switch" = keyscript ] || [ "$switch" = other ]; then reason="the root device is unlocked by ${CT_KEY}${CT_OPTS:+ ($CT_OPTS)}, which this setting did not set up"
+      elif [ -n "$bad_initrds" ]; then agrees=false
+        reason="the start-up file for kernel$bad_initrds does not match the setting (it $( [ "$switch" = off ] && echo "carries no unlock key" || echo "carries an unlock key" ))${root_why:+ — $root_why}"
+        repair="run 'repair' (Fix now / fabos disk-unlock repair): it rebuilds the start-up files of every kernel (update-initramfs -k all)"
       elif [ "$NEEDS_ROOT" = 1 ]; then reason="cannot tell without administrator rights: $root_why"; repair="check as administrator (Fab AI Controls › Start-up › Check as administrator, or: fabos disk-unlock diagnose --admin)"
       else reason="$root_why"; fi
     else
@@ -844,13 +868,15 @@ cmd_diagnose() {
 
 # ---------------------------------------------------------------------------- repair: make the start-up files match the switch
 # Runs diagnose, then re-applies the configured direction idempotently: switch off -> the whole 'off' path again (the passphrase on
-# STDIN authorises a fresh key slot; every step proven and rolled back on failure exactly as in 'off'), switch on -> the 'on' path
+# STDIN must open the volume first; a key file that still opens it is kept with its slot, else a new one is stored; every step proven
+# and rolled back on failure exactly as in 'off'), switch on -> the 'on' path
 # (nothing needed), then update-grub when GRUB's default entry does not boot a maintained start-up file, then diagnose again. The
 # result JSON embeds the new diagnosis. Nothing to repair = ok with the diagnosis, no root step run.
 FORCE=0
-merge_steps() {   # the sub-path ran in a subshell: bring its steps (its JSON's "steps") into this run's list so the caller sees every step
-  local s
-  while IFS= read -r s; do [ -n "$s" ] && STEPS+=("$s"); done <<EOF
+merge_steps() {   # merge_steps <json> <n>: the sub-path ran in a subshell that inherited this run's first <n> steps; bring in its OWN steps
+                  # (its JSON's "steps" after those) so the caller sees every step once
+  local s k=0
+  while IFS= read -r s; do k=$((k+1)); [ "$k" -le "${2:-0}" ] && continue; [ -n "$s" ] && STEPS+=("$s"); done <<EOF
 $(printf '%s\n' "$1" | tail -1 | python3 -c 'import json, sys
 try:
     [print(s) for s in json.load(sys.stdin).get("steps") or []]
@@ -875,7 +901,12 @@ cmd_repair() {
     EXTRA_JSON="\"diagnosis\": $DIAG_JSON"; log "nothing to repair: the start-up files match the setting"
     emit true "$DIAG_EXPECTED" "" "nothing to repair: the start-up files already match the setting"; return 0
   fi
-  local pass="" sub rc
+  if [ "$DIAG_AGREES" = null ] && [ "$DIAG_BOOT_RISK" = false ]; then   # no verdict = no blind changes
+    EXTRA_JSON="\"diagnosis\": $DIAG_JSON"
+    die 7 "$(cur_prompt)" "cannot tell what the start-up files do, so nothing was changed: $(printf '%s' "$DIAG_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("reason") or "")' 2>/dev/null)" \
+      "turn the switch off (or on) again to re-apply the setting explicitly — it proves every step — or rebuild the start-up files with update-initramfs -u -k all and check again"
+  fi
+  local pass="" sub rc n0=${#STEPS[@]}
   if [ "$switch" = off ]; then
     [ -t 0 ] && die 2 false "the passphrase must be piped on standard input (one line)"
     IFS= read -r pass || true
@@ -884,11 +915,11 @@ cmd_repair() {
     # the 'off' path in a subshell: on failure it has rolled back and printed its own JSON (passed through, its exit code kept)
     sub=$(printf '%s\n' "$pass" | cmd_off); rc=$?
     if [ "$rc" != 0 ]; then printf '%s\n' "$sub" | tail -1; exit "$rc"; fi
-    merge_steps "$sub"; log "repair: the 'off' path completed (key stored, start-up files rebuilt and proven)"
+    merge_steps "$sub" "$n0"; log "repair: the 'off' path completed (key in place, start-up files rebuilt and proven)"
   else
     sub=$(cmd_on); rc=$?
     if [ "$rc" != 0 ]; then printf '%s\n' "$sub" | tail -1; exit "$rc"; fi
-    merge_steps "$sub"; log "repair: the 'on' path completed"
+    merge_steps "$sub" "$n0"; log "repair: the 'on' path completed"
   fi
   if [ "$DIAG_GRUB_FAIL" = 1 ]; then
     if command -v update-grub >/dev/null 2>&1; then

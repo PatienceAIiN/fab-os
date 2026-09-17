@@ -6,7 +6,10 @@
 #   passphrase on cryptsetup's STDIN only, luksAddKey, update-initramfs -u -k all, lsinitramfs proof) · off with a wrong
 #   passphrase changes nothing · rollback when update-initramfs fails / when the key is not in the initrd (files byte-identical,
 #   slot removed, keyfile gone, initramfs rebuilt) · on (key -> none, initramfs option dropped, pattern dropped, safe order:
-#   rebuild + prove BEFORE luksRemoveKey, keyfile deleted) · on is idempotent · the passphrase on argv is refused · non-root refused.
+#   rebuild + prove BEFORE luksRemoveKey, keyfile deleted) · on is idempotent · the passphrase on argv is refused · non-root refused ·
+#   diagnose/repair (13.): repair KEEPS a key that still opens the volume together with its slot (no luksRemoveKey / luksAddKey at all —
+#   nothing is removed before a proven rebuild, also when update-initramfs fails half-way), replaces a key that opens nothing, and
+#   REFUSES an unknown verdict (an unlistable start-up file) without touching anything.
 # Runs on the host (bash, coreutils, awk, python3) or inside the image:
 #   podman run --rm -v $PWD:/work:Z localhost/fabos:vm bash /work/tests/disk-unlock-test.sh
 # Exit 0 only when every check passed.
@@ -26,7 +29,7 @@ export FABOS_DU_CRYPTTAB=$T/etc/crypttab FABOS_DU_KEYFILE=$T/etc/fabos/luks-unlo
        FABOS_DU_FSTAB=$T/etc/fstab FABOS_DU_LOCK=$T/disk-unlock.lock FABOS_DU_IT_STATE=$T/var/lib/initramfs-tools \
        FABOS_DU_GRUB_CFG=$T/boot/grub/grub.cfg FABOS_DU_GRUBENV=$T/boot/grub/grubenv FABOS_DU_EFI_DIR=$T/boot/efi/EFI FABOS_DU_RECORD=$T/var/lib/fabos/disk-unlock-check.json
 export STUB_LOG=$T/calls.log STUB_STDIN=$T/stdin.log STUB_PASS=$PASS STUB_INITRD=$T/boot/initrd.img-$KERNEL STUB_KEYFILE=$FABOS_DU_KEYFILE STUB_NAME=$NAME STUB_UUID=$UUID
-export STUB_ROOT_SRC=/dev/mapper/$NAME STUB_FAIL_UPDATE=0 STUB_HIDE_KEY=0 STUB_FAIL_REMOVE=0 STUB_FAIL_UPDATE_FROM=0 STUB_FAIL_KEYTEST=0 STUB_BOOT_UNMOUNTED=0 STUB_UI_COUNT=$T/ui.count STUB_REBUILD_ALL=0
+export STUB_ROOT_SRC=/dev/mapper/$NAME STUB_FAIL_UPDATE=0 STUB_HIDE_KEY=0 STUB_FAIL_REMOVE=0 STUB_FAIL_UPDATE_FROM=0 STUB_FAIL_KEYTEST=0 STUB_BOOT_UNMOUNTED=0 STUB_UI_COUNT=$T/ui.count STUB_REBUILD_ALL=0 STUB_FAIL_LS=0
 # the installed layout (ADR-0021): /boot is its own partition, listed in fstab — the helper must see it mounted; one kernel version
 # registered with initramfs-tools (what `update-initramfs -k all` rebuilds and GRUB boots)
 printf 'UUID=root / ext4 defaults 0 1\nUUID=boot %s ext4 defaults 0 2\nUUID=esp /boot/efi vfat umask=0077 0 1\n' "$FABOS_DU_BOOT" > "$FABOS_DU_FSTAB"
@@ -102,7 +105,7 @@ exit 0
 EOF
 cat > "$T/bin/lsinitramfs" <<'EOF'
 #!/bin/sh
-echo "lsinitramfs $*" >> "$STUB_LOG"; cat "$1"
+echo "lsinitramfs $*" >> "$STUB_LOG"; [ "${STUB_FAIL_LS:-0}" = 1 ] && exit 1; cat "$1"
 EOF
 chmod 755 "$T"/bin/*
 export PATH=$T/bin:$PATH
@@ -112,7 +115,7 @@ reset_system() {   # a freshly installed Fab OS (ADR-0021): crypttab from Calama
   printf '# Configuration options for the cryptroot initramfs hook.\n#KEYFILE_PATTERN=\n' > "$FABOS_DU_CONF_HOOK"
   printf '# initramfs.conf\nMODULES=most\nBUSYBOX=auto\nCOMPRESS=zstd\n' > "$FABOS_DU_INITRAMFS_CONF"
   rm -f "$FABOS_DU_KEYFILE" "$FABOS_DU_KEYFILE.slot" "$STUB_LOG" "$STUB_STDIN" "$FABOS_DU_RECORD"; : > "$STUB_LOG"; : > "$STUB_STDIN"
-  STUB_FAIL_UPDATE=0 STUB_HIDE_KEY=0 STUB_FAIL_REMOVE=0 STUB_FAIL_UPDATE_FROM=0 STUB_FAIL_KEYTEST=0 STUB_BOOT_UNMOUNTED=0 STUB_REBUILD_ALL=0
+  STUB_FAIL_UPDATE=0 STUB_HIDE_KEY=0 STUB_FAIL_REMOVE=0 STUB_FAIL_UPDATE_FROM=0 STUB_FAIL_KEYTEST=0 STUB_BOOT_UNMOUNTED=0 STUB_REBUILD_ALL=0 STUB_FAIL_LS=0
   rm -f "$T"/boot/initrd.img-*; : > "$FABOS_DU_IT_STATE/$KERNEL"; for v in "$FABOS_DU_IT_STATE"/*; do [ "${v##*/}" = "$KERNEL" ] || rm -f "$v"; done
   # GRUB as grub-mkconfig writes it (a separate /boot: paths relative to it) + the EFI stub chain-loading it from the /boot filesystem
   mkdir -p "$T/boot/grub" "$T/boot/efi/EFI/fabos"; rm -f "$FABOS_DU_GRUBENV"
@@ -279,12 +282,14 @@ chk "a second run while the lock is held: exit 7, 'another change', nothing run"
 wait $LOCKER 2>/dev/null
 "$HELPER" on > "$T/lock2.json" 2>/dev/null; rc=$?
 chk "after the lock is released the same run succeeds" "[ $rc = 0 ]"
-# 12f. off over a leftover keyfile (crypttab names it, the initrd lacks it): its old slot is given back before the new key is added
+# 12f. off over a leftover keyfile that still opens the volume (crypttab names it, the initrd lacks it): the key and its slot are KEPT —
+#      no slot is removed or added (a start-up file may be using that key; nothing goes before a proven rebuild) — and the rebuilt initrd
+#      carries it; a leftover that opens nothing is replaced (13d')
 reset_system; printf '%s\n' "$PASS" | "$HELPER" off >/dev/null 2>&1
 STUB_HIDE_KEY=1 update-initramfs -u -k all >/dev/null; : > "$STUB_LOG"
 printf '%s\n' "$PASS" | "$HELPER" off > "$T/left.json" 2>/dev/null; rc=$?
-chk "off over a leftover keyfile: exit 0, luksRemoveKey (old slot) BEFORE luksAddKey (new slot), the slot holds the new key" \
-    "[ $rc = 0 ] && [ \"\$(grep -E '^cryptsetup -q luks(RemoveKey|AddKey)' $STUB_LOG | awk '{print \$3}' | tr '\\n' '|')\" = 'luksRemoveKey|luksAddKey|' ] && cmp -s $FABOS_DU_KEYFILE $FABOS_DU_KEYFILE.slot"
+chk "off over a leftover keyfile that opens the volume: exit 0, no luksRemoveKey / luksAddKey, the key still matches its slot, the initrd carries it, the steps say 'kept'" \
+    "[ $rc = 0 ] && ! grep -q -E 'luks(RemoveKey|AddKey)' $STUB_LOG && cmp -s $FABOS_DU_KEYFILE $FABOS_DU_KEYFILE.slot && grep -q keyfiles $STUB_INITRD && grep -q 'kept, with its key slot' $T/left.json"
 # 12g. copies nothing boots (dkms' .old-dkms, dpkg's .dpkg-bak, a .new) that still carry the key must not block `on`, with the version list
 #      (/var/lib/initramfs-tools) and with the glob fallback alike; a second REGISTERED kernel whose initrd still has the key (a partial
 #      `-k all`) must block the slot removal (exit 8) until that initrd is rebuilt or gone
@@ -318,7 +323,7 @@ chk "diagnose (fresh): items root_luks/crypttab_entry/boot_mounted/kernels/grub_
 chk "diagnose (fresh): GRUB's default entry resolved to the running kernel's initrd ('Fab OS', default=0); the booted initrd is named; every item has a detail" \
     "grep -q \"'Fab OS' -> initrd.img-$KERNEL (default=0)\" $T/dg1.json && [ \"\$(jget $T/dg1.json booted_initrd)\" = $STUB_INITRD ] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"items\"] and all(i[\"detail\"] and i[\"label\"] and i[\"result\"] in (\"pass\",\"fail\",\"unknown\",\"info\") for i in d[\"items\"])' $T/dg1.json"
 chk "diagnose (fresh): the record is written (initrd size/mtime/has_key=false, crypttab_key=none, verdict true)" \
-    "[ -f $FABOS_DU_RECORD ] && python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); e=r[\"initrds\"][sys.argv[2]]; assert e[\"has_key\"] is False and e[\"size\"]>0 and r[\"crypttab_key\"]==\"none\" and r[\"prompt_at_boot_expected\"] is True' $FABOS_DU_RECORD $STUB_INITRD"
+    "[ -f $FABOS_DU_RECORD ] && [ \"\$(stat -c %a \$(dirname $FABOS_DU_RECORD))\" = 755 ] && python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); e=r[\"initrds\"][sys.argv[2]]; assert e[\"has_key\"] is False and e[\"size\"]>0 and r[\"crypttab_key\"]==\"none\" and r[\"prompt_at_boot_expected\"] is True' $FABOS_DU_RECORD $STUB_INITRD"
 # 13b. after off: agrees (expected=false); the key items pass; the record says has_key=true
 printf '%s\n' "$PASS" | "$HELPER" off >/dev/null 2>&1; "$HELPER" diagnose > "$T/dg2.json" 2>/dev/null; rc=$?
 chk "diagnose after off: switch=off, expected=false, agrees=true; keyfile/key_slots(2)/keyfile_opens/conf_hook_pattern/initramfs_umask/crypttab_initramfs_opt/initrd_key pass" \
@@ -331,6 +336,14 @@ chk "missing 'initramfs' option: item crypttab_initramfs_opt fail (detail says '
 : > "$STUB_LOG"; printf '%s\n' "$PASS" | "$HELPER" repair > "$T/rp1.json" 2>/dev/null; rc=$?
 chk "repair (option missing, verdict agreeing): exit 0 (agrees but an item failed -> the 'off' path re-applied), crypttab has 'initramfs' again, the embedded diagnosis agrees with every key item pass" \
     "[ $rc = 0 ] && [ \"\$(jget $T/rp1.json ok)\" = true ] && grep -q \"$FABOS_DU_KEYFILE luks,discard,initramfs\" $FABOS_DU_CRYPTTAB && [ \"\$(jdiag $T/rp1.json agrees)\" = true ] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))[\"diagnosis\"]; assert next(i[\"result\"] for i in d[\"items\"] if i[\"id\"]==\"crypttab_initramfs_opt\")==\"pass\"' $T/rp1.json"
+chk "repair (option missing): the key the start-up file is using is KEPT with its slot — no luksRemoveKey, no luksAddKey, the keyfile still matches its slot, the steps say so, 'diagnose before repair' listed once" \
+    "! grep -q luksRemoveKey $STUB_LOG && ! grep -q luksAddKey $STUB_LOG && cmp -s $FABOS_DU_KEYFILE $FABOS_DU_KEYFILE.slot && grep -q 'kept, with its key slot' $T/rp1.json && [ \"\$(python3 -c 'import json,sys; print(sum(1 for s in json.load(open(sys.argv[1]))[\"steps\"] if s.startswith(\"diagnose before repair\")))' $T/rp1.json)\" = 1 ]"
+# 13c'. the same state, but update-initramfs fails during the repair: exit 7, the key file and its slot untouched (nothing was ever removed,
+#       so the start-up file on /boot still opens the disk), the configuration back to what it was, prompt_at_boot=false = the configured state
+sed -i "s/,initramfs\$//" "$FABOS_DU_CRYPTTAB"; cp "$FABOS_DU_CRYPTTAB" "$T/crypttab.pre"; : > "$STUB_LOG"
+export STUB_FAIL_UPDATE=1; printf '%s\n' "$PASS" | "$HELPER" repair > "$T/rp1b.json" 2>/dev/null; rc=$?; export STUB_FAIL_UPDATE=0
+chk "repair (off) with update-initramfs failing half-way: exit 7, ok=false, prompt_at_boot=false, keyfile + slot kept and still matching, crypttab restored byte-identical, no luksRemoveKey / luksAddKey" \
+    "[ $rc = 7 ] && [ \"\$(jget $T/rp1b.json ok)\" = false ] && [ \"\$(jget $T/rp1b.json prompt_at_boot)\" = false ] && [ -f $FABOS_DU_KEYFILE ] && cmp -s $FABOS_DU_KEYFILE $FABOS_DU_KEYFILE.slot && cmp -s $FABOS_DU_CRYPTTAB $T/crypttab.pre && ! grep -q -E 'luks(RemoveKey|AddKey)' $STUB_LOG && grep -q 'kept, as they were before' $T/rp1b.json"
 # 13d. KEYFILE_PATTERN lost (a conf-hook overwritten by an upgrade) and the files rebuilt: cryptsetup-initramfs SKIPS the root target -> the
 #      start-up file cannot start the computer: boot_risk, expected=null, agrees=false, the reason says so; repair puts everything back
 reset_system; printf '%s\n' "$PASS" | "$HELPER" off >/dev/null 2>&1
@@ -340,11 +353,19 @@ chk "pattern lost + rebuilt: boot_risk=true, expected=null, agrees=false, reason
     "[ $rc = 0 ] && [ \"\$(jget $T/dg4.json boot_risk)\" = true ] && [ \"\$(jget $T/dg4.json prompt_at_boot_expected)\" = null ] && [ \"\$(jget $T/dg4.json agrees)\" = false ] && grep -q 'may not start' $T/dg4.json && [ \"\$(jitem $T/dg4.json conf_hook_pattern)\" = fail ] && [ \"\$(jitem $T/dg4.json initrd_key:$KERNEL)\" = fail ] && [ \"\$(jitem $T/dg4.json initrd_crypttab:$KERNEL)\" = fail ] && grep -q 'no entry for' $T/dg4.json"
 chk "pattern lost: the suggested repair names Fix now / fabos disk-unlock repair" "grep -q 'Fix now' $T/dg4.json && grep -q 'fabos disk-unlock repair' $T/dg4.json"
 : > "$STUB_LOG"; printf '%s\n' "$PASS" | "$HELPER" repair > "$T/rp2.json" 2> "$T/rp2.err"; rc=$?
-chk "repair (pattern lost): exit 0 ok, KEYFILE_PATTERN back, key inside the initrd, initrd crypttab names the key, diagnosis agrees, no boot risk; the old slot given back before the new one (luksRemoveKey then luksAddKey), update-initramfs ran, steps logged" \
-    "[ $rc = 0 ] && [ \"\$(jget $T/rp2.json ok)\" = true ] && [ \"\$(jget $T/rp2.json prompt_at_boot)\" = false ] && grep -q \"^KEYFILE_PATTERN=\\\"$FABOS_DU_KEYFILE\\\"\" $FABOS_DU_CONF_HOOK && grep -q keyfiles $STUB_INITRD && grep -q '/cryptroot/keyfiles/' $STUB_INITRD.ct && [ \"\$(jdiag $T/rp2.json agrees)\" = true ] && [ \"\$(jdiag $T/rp2.json boot_risk)\" = false ] && [ \"\$(grep -E '^cryptsetup -q luks(RemoveKey|AddKey)' $STUB_LOG | awk '{print \$3}' | tr '\\n' '|')\" = 'luksRemoveKey|luksAddKey|' ] && grep -q '^update-initramfs -u -k all' $STUB_LOG && grep -q 'diagnose before repair' $FABOS_DU_LOG && grep -q 'DONE: the start-up files match the setting again' $FABOS_DU_LOG"
+chk "repair (pattern lost): exit 0 ok, KEYFILE_PATTERN back, key inside the initrd, initrd crypttab names the key, diagnosis agrees, no boot risk; the working key KEPT with its slot (no luksRemoveKey, no luksAddKey), update-initramfs ran, steps logged" \
+    "[ $rc = 0 ] && [ \"\$(jget $T/rp2.json ok)\" = true ] && [ \"\$(jget $T/rp2.json prompt_at_boot)\" = false ] && grep -q \"^KEYFILE_PATTERN=\\\"$FABOS_DU_KEYFILE\\\"\" $FABOS_DU_CONF_HOOK && grep -q keyfiles $STUB_INITRD && grep -q '/cryptroot/keyfiles/' $STUB_INITRD.ct && [ \"\$(jdiag $T/rp2.json agrees)\" = true ] && [ \"\$(jdiag $T/rp2.json boot_risk)\" = false ] && ! grep -q -E 'luks(RemoveKey|AddKey)' $STUB_LOG && cmp -s $FABOS_DU_KEYFILE $FABOS_DU_KEYFILE.slot && grep -q '^update-initramfs -u -k all' $STUB_LOG && grep -q 'diagnose before repair' $FABOS_DU_LOG && grep -q 'DONE: the start-up files match the setting again' $FABOS_DU_LOG"
 chk "repair: the passphrase reached cryptsetup on STDIN only and is in no log / JSON / stderr" "! grep -q 'PASSPHRASE ON ARGV' $STUB_LOG && ! grep -q -- $PASS $T/rp2.json $T/rp2.err $FABOS_DU_LOG $STUB_LOG"
-chk "repair: the reply's steps carry the 'off' path's own steps (keyfile created, key slot added, verified) plus the repair's (diagnose before/after, DONE)" \
-    "python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))[\"steps\"]; j=\"\\n\".join(s); assert \"keyfile created\" in j and \"key slot added\" in j and \"verified:\" in j and \"diagnose before repair\" in j and \"diagnose after repair\" in j and j.rstrip().endswith(\"again\"), s' $T/rp2.json"
+chk "repair: the reply's steps carry the 'off' path's own steps (existing keyfile kept with its slot, verified) plus the repair's (diagnose before/after, DONE)" \
+    "python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))[\"steps\"]; j=\"\\n\".join(s); assert \"existing keyfile\" in j and \"kept, with its key slot\" in j and \"verified:\" in j and \"diagnose before repair\" in j and \"diagnose after repair\" in j and j.rstrip().endswith(\"again\"), s' $T/rp2.json"
+# 13d'. the key file no longer opens the volume (its slot is gone): a start-up file carrying it cannot start the computer (boot_risk);
+#       repair stores a NEW key (created + luksAddKey) — still without any luksRemoveKey — and the new key is inside and opens the volume
+reset_system; printf '%s\n' "$PASS" | "$HELPER" off >/dev/null 2>&1; rm -f "$FABOS_DU_KEYFILE.slot"; "$HELPER" diagnose > "$T/dg4b.json" 2>/dev/null
+chk "key file opens nothing: keyfile_opens fail, key_slots fail (1 slot), boot_risk=true (the booted file carries a key that opens nothing)" \
+    "[ \"\$(jitem $T/dg4b.json keyfile_opens)\" = fail ] && [ \"\$(jitem $T/dg4b.json key_slots)\" = fail ] && [ \"\$(jget $T/dg4b.json boot_risk)\" = true ]"
+: > "$STUB_LOG"; printf '%s\n' "$PASS" | "$HELPER" repair > "$T/rp2b.json" 2>/dev/null; rc=$?
+chk "repair (key opens nothing): exit 0, the key replaced (created + luksAddKey), no luksRemoveKey, the new key opens (slot matches), diagnosis agrees, no boot risk" \
+    "[ $rc = 0 ] && grep -q luksAddKey $STUB_LOG && ! grep -q luksRemoveKey $STUB_LOG && grep -q 'replaced' $T/rp2b.json && grep -q 'keyfile created' $T/rp2b.json && cmp -s $FABOS_DU_KEYFILE $FABOS_DU_KEYFILE.slot && [ \"\$(jdiag $T/rp2b.json agrees)\" = true ] && [ \"\$(jdiag $T/rp2b.json boot_risk)\" = false ]"
 # 13e. a stale start-up file: crypttab names the key but the file was built when it still asked (the switch flipped, the rebuild never happened) —
 #      the owner's exact symptom: "disabled, still sees it"
 reset_system; cp "$STUB_INITRD" "$T/initrd.asks"; cp "$STUB_INITRD.ct" "$T/initrd.asks.ct"; printf '%s\n' "$PASS" | "$HELPER" off >/dev/null 2>&1
@@ -425,6 +446,14 @@ printf '\n' | "$HELPER" repair > "$T/rp8.json" 2>/dev/null; rc=$?
 chk "repair while off without the passphrase: exit 3 'passphrase is needed', nothing changed, diagnosis embedded" "[ $rc = 3 ] && grep -q 'passphrase is needed' $T/rp8.json && ! grep -q '^cryptsetup -q' $STUB_LOG && ! grep -q '^update-initramfs' $STUB_LOG && grep -q '\"diagnosis\"' $T/rp8.json"
 export STUB_BOOT_UNMOUNTED=1; "$HELPER" diagnose > "$T/dg18.json" 2>/dev/null; export STUB_BOOT_UNMOUNTED=0
 chk "diagnose with /boot unmounted: boot_mounted fail ('NOT mounted')" "[ \"\$(jitem $T/dg18.json boot_mounted)\" = fail ] && grep -q 'NOT mounted' $T/dg18.json"
+# 13n. an unknown verdict (as root: the booted start-up file cannot be listed) — repair REFUSES: no blind changes; the item does not
+#      claim "needs administrator rights" to root
+reset_system; export STUB_FAIL_LS=1; "$HELPER" diagnose > "$T/dg19.json" 2>/dev/null; : > "$STUB_LOG"
+"$HELPER" repair > "$T/rp9.json" 2>/dev/null < /dev/null; rc=$?; export STUB_FAIL_LS=0
+chk "diagnose as root with an unlistable start-up file: initrd_key unknown ('could not be read'), agrees=null, needs_root=false (root cannot be asked for more)" \
+    "[ \"\$(jitem $T/dg19.json initrd_key:$KERNEL)\" = unknown ] && grep -q 'could not be read' $T/dg19.json && [ \"\$(jget $T/dg19.json agrees)\" = null ] && [ \"\$(jget $T/dg19.json needs_root)\" = false ] && ! grep -q 'needs administrator rights' $T/dg19.json"
+chk "repair on an unknown verdict: exit 7 'cannot tell … nothing was changed', no cryptsetup -q / update-initramfs / update-grub call, diagnosis embedded" \
+    "[ $rc = 7 ] && grep -q 'cannot tell' $T/rp9.json && grep -q 'nothing was changed' $T/rp9.json && ! grep -q '^cryptsetup -q\\|^update-initramfs\\|^update-grub' $STUB_LOG && grep -q '\"diagnosis\"' $T/rp9.json"
 # 13m. the user-facing HOWTO ships inside the package identical to the repository copy; wording rules hold for it and the helper
 chk "docs/HOWTO-disk-password.md is shipped as usr/share/doc/fabos-agent/HOWTO-disk-password.md (identical)" "cmp -s $ROOT/docs/HOWTO-disk-password.md $ROOT/packages/fabos-agent/usr/share/doc/fabos-agent/HOWTO-disk-password.md"
 chk "HOWTO wording: names the switch location, 1.0-7, Fix now, the login screen; no ChatGPT/OpenAI/GPT/SnowUI/download" \

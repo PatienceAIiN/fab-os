@@ -389,7 +389,9 @@ verdict(rc == 0 and rp and rp.get("ok") is True and rp.get("prompt_at_boot") is 
 arp = section(out, "state-after-repair"); ct_rp = part(arp, "crypttab")
 verdict("/etc/fabos/luks-unlock.key" in ct_rp and "initramfs" in ct_rp and 'KEYFILE_PATTERN="/etc/fabos/luks-unlock.key"' in part(arp, "conf-hook") and "cryptroot/keyfiles/" in part(arp, "lsinitramfs") and "/cryptroot/keyfiles/" in part(arp, "initrd-crypttab"),
         "boot 2: after repair — 'initramfs' option, KEYFILE_PATTERN, the key inside the initrd and the initrd's crypttab naming it are all back")
-verdict(num(part(arp, "slots")) == slots_before + 1, "boot 2: after repair still exactly one extra LUKS slot (%s -> %s: the old key's slot was given back before the new one)" % (slots_before, num(part(arp, "slots"))))
+verdict(num(part(arp, "slots")) == slots_before + 1, "boot 2: after repair still exactly one extra LUKS slot (%s -> %s: the working key was kept with its slot)" % (slots_before, num(part(arp, "slots"))))
+verdict("existing keyfile /etc/fabos/luks-unlock.key opens" in part(arp, "log") and not any("repair uid=0" in l and ("slot removed" in l or "slot added" in l) for l in part(arp, "log").splitlines()),
+        "boot 2: the repair removed no key slot and added none (the key the start-up files use was kept; nothing is removed before a proven rebuild)")
 verdict("diagnose before repair" in part(arp, "log") and "repair: re-applying 'off' from the start" in part(arp, "log") and "DONE: the start-up files match the setting again" in part(arp, "log"), "boot 2: disk-unlock.log records the repair (diagnose before, 'off' re-applied, DONE)")
 verdict(num(part(arp, "passphrase-in-log")) == 0, "boot 2: the passphrase is not in the log after the repair either")
 rc, _, d5 = jline(out, "diag5")

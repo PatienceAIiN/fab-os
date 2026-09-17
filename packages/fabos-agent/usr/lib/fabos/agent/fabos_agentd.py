@@ -4720,7 +4720,7 @@ def make_handler(store, agent, token):
                 # CRITICAL: root through the polkit path (the user's password in the system dialog) and audited before and after.
                 # Not an agent step, so no approval row — the person clicking the switch is the approver, like the Ollama installer.
                 # {action: "repair"|"diagnose"} takes the same root path: repair re-applies the configured direction (the passphrase is
-                # needed when the switch is off, since a fresh key slot is added) and comes back with the new diagnosis; diagnose as
+                # needed when the switch is off: it must open the volume before anything changes, and a new key slot needs it) and comes back with the new diagnosis; diagnose as
                 # root reads what the user-level check cannot (the root-only initrds).
                 action = b.get("action")
                 want = b.get("prompt_at_boot")
@@ -4740,7 +4740,7 @@ def make_handler(store, agent, token):
                     return self._send(409, {"ok": False, "risk": DISK_UNLOCK_RISK, "status": status,
                                             "error": status.get("error") or "this computer's disk is not encrypted, so there is no disk password to ask for"})
                 if action == "repair" and status.get("prompt_at_boot") is False and not pw:
-                    return self._send(400, {"ok": False, "error": "the current disk passphrase is required to fix the start-up files while the switch is off (a fresh unlock key is stored)", "risk": DISK_UNLOCK_RISK})
+                    return self._send(400, {"ok": False, "error": "the current disk passphrase is required to fix the start-up files while the switch is off (it must open the disk before anything is changed; a new unlock key is stored only if the old one no longer opens it)", "risk": DISK_UNLOCK_RISK})
                 if action == "diagnose":
                     pw = None
                 store.activity("user", "disk_unlock_requested", None, "risk=%s action=%s prompt_at_boot=%s device=%s via %s" % (DISK_UNLOCK_RISK, action or ("on" if want else "off"), want, status.get("device"), root_argv("x")[0]))

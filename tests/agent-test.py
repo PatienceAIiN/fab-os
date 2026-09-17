@@ -1691,7 +1691,7 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         st, s4 = call("GET", "/system/disk-unlock?refresh=1"); self.assertEqual(text().count("argv=diagnose"), n + 1)
         self.assertEqual((s4["prompt_at_boot"], s4["diagnosis"]["switch"], s4["diagnosis"]["prompt_at_boot_expected"], s4["diagnosis"]["agrees"]), (False, "off", True, False), s4["diagnosis"])
         self.assertIn("still ask for the password", s4["diagnosis"]["reason"]); self.assertEqual([i["result"] for i in s4["diagnosis"]["items"]], ["pass", "fail"])
-        # repair while the switch is off needs the passphrase (a fresh key slot is stored); with it: root through pkexec, stdin from the private file
+        # repair while the switch is off needs the passphrase (it must open the disk first); with it: root through pkexec, stdin from the private file
         st, r = call("POST", "/system/disk-unlock", {"action": "repair"}); self.assertEqual(st, 400, r); self.assertIn("passphrase is required", r["error"]); self.assertEqual(r["risk"], "CRITICAL")
         st, r = call("POST", "/system/disk-unlock", {"action": "bogus"}); self.assertEqual(st, 400, r); self.assertIn("repair", r["error"])
         n_pk = text().count("pkexec argv=")
@@ -1711,6 +1711,13 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         # nothing to repair: still goes through the root path (the helper decides), no passphrase needed while the switch is on
         st, r = call("POST", "/system/disk-unlock", {"action": "repair"}); self.assertEqual(st, 200, r); self.assertTrue(r["ok"]); self.assertEqual(pw_files(), [])
         self.assertTrue([l for l in text().splitlines() if l.startswith("pkexec ") and l.endswith(" repair")], "repair without a passphrase: no stdin redirection")
+        # bypass mode changes nothing about this either: repair still reaches root only through pkexec (the endpoint never consults the mode)
+        self.cli("mode", "bypass"); self.addCleanup(lambda: self.cli("mode", "auto")); self.assertEqual(self.cli("settings")["mode"], "bypass")
+        n_pk = text().count("pkexec argv=")
+        st, r = call("POST", "/system/disk-unlock", {"action": "repair"}); self.assertEqual(st, 200, r); self.assertTrue(r["ok"], r)
+        self.assertEqual(text().count("pkexec argv="), n_pk + 1, "bypass mode must still go through pkexec for repair")
+        req = [e for e in self.cli("log", "--limit", "10") if e["kind"] == "disk_unlock_requested"][0]["detail"]; self.assertIn("action=repair", req); self.assertIn("via pkexec", req)
+        self.cli("mode", "auto"); self.assertEqual(self.cli("settings")["mode"], "auto")
         # the complete check as root: the bare diagnosis comes back wrapped
         st, r = call("POST", "/system/disk-unlock", {"action": "diagnose", "passphrase": "ignored"}); self.assertEqual(st, 200, r)
         self.assertEqual((r["ok"], r["action"]), (True, "diagnose"), r); self.assertTrue(r["diagnosis"]["items"]); self.assertEqual(pw_files(), [])
