@@ -24,6 +24,11 @@
   fabos audit export [--since 24h|7d|ISO] [--out DIR]   write the activity log as JSON Lines (default dir: the policy's
                                      audit_export_dir, else ~/.local/share/fabos/audit); the first line carries the chain head
   fabos policy [--reload]            the administrator's policy (/etc/fabos/policy.json) as the daemon applies it
+  fabos disk-unlock status|diagnose|off|on|repair [--admin] [--refresh]   the Start-up setting "Ask for the disk password when the
+                                     computer starts" (Fab AI Controls › Settings › General › Start-up): status = the switch AND the real
+                                     start-up state; diagnose = every check with its reason (--admin: the complete check as administrator —
+                                     the system asks for your password); off = stop asking (you are asked for the disk passphrase, never
+                                     echoed); on = ask again; repair = make the start-up files match the switch again (what "Fix now" does)
 """
 import argparse, getpass, json, os, sys, time, urllib.request, urllib.error
 
@@ -79,6 +84,9 @@ def main():
     p = sub.add_parser("status"); p.add_argument("--brief", action="store_true")
     p = sub.add_parser("audit"); p.add_argument("action", choices=["verify", "export"]); p.add_argument("--since", metavar="24h|7d|ISO"); p.add_argument("--out", metavar="DIR")
     p = sub.add_parser("policy"); p.add_argument("--reload", action="store_true", help="re-read /etc/fabos/policy.json now (the daemon also reloads on SIGHUP)")
+    p = sub.add_parser("disk-unlock"); p.add_argument("action", choices=["status", "diagnose", "off", "on", "repair"])
+    p.add_argument("--admin", action="store_true", help="diagnose: the complete check as administrator (the system asks for your password)")
+    p.add_argument("--refresh", action="store_true", help="status: look again instead of using the check made in the last 30 s")
     a = ap.parse_args()
     if not a.cmd:
         ap.print_help(); return
@@ -250,6 +258,65 @@ def main():
             if out.get("error"): print("  error: " + out["error"])
             if out.get("unknown_keys"): print("  unknown keys: " + ", ".join(out["unknown_keys"]))
             return
+    elif a.cmd == "disk-unlock":
+        # the Start-up setting. status/diagnose read GET /system/disk-unlock (the daemon's user-level check, cached 30 s); --admin, off,
+        # on and repair POST and go through the polkit root path (the system asks for your password). The disk passphrase is read with
+        # getpass (never echoed, never an argument) and travels only in the request body to the local daemon.
+        def du_real(d):
+            exp = d.get("prompt_at_boot_expected")
+            if d.get("boot_risk"): return "the computer may NOT START (see below)"
+            return {True: "yes", False: "no"}.get(exp, "cannot tell without administrator rights")
+        def du_print_diag(d):
+            marks = {"pass": "ok  ", "fail": "FAIL", "unknown": " ?  ", "info": "info"}
+            for it in d.get("items") or []:
+                print("  [%s] %s\n         %s" % (marks.get(it.get("result"), "    "), it.get("label"), it.get("detail")))
+            print("Start-up asks for the disk password: %s%s" % (du_real(d), " (checked as administrator)" if d.get("as_root") else ""))
+            if d.get("reason"): print("  " + str(d["reason"]))
+            if d.get("repair"): print("  What to do: " + str(d["repair"]))
+        def du_exit(d):
+            sys.exit(0 if d.get("agrees") is not False and not d.get("boot_risk") else 1)
+        if a.action in ("status", "diagnose") and not a.admin:
+            out = api("GET", "/system/disk-unlock" + ("?refresh=1" if (a.refresh or a.action == "diagnose") else ""))
+            if not a.json and "encrypted" in out:
+                d = out.get("diagnosis") or {}
+                if not out.get("encrypted"):
+                    print("This computer's disk is not encrypted: there is no disk password at start-up. (A password asked at start-up is the login screen's — a different thing.)")
+                    if out.get("error"): print("  " + str(out["error"]))
+                    return
+                print("Switch (Fab AI Controls › Settings › General › Start-up): %s — %s" % ("ON, ask for the disk password" if out.get("prompt_at_boot") else "OFF, start without asking", out.get("detail") or ""))
+                if a.action == "status":
+                    print("Start-up asks for the disk password: %s (checked %s%s)" % (du_real(d), d.get("checked_at") or "now", ", as administrator" if d.get("as_root") else ""))
+                    if d.get("agrees") is False: print("  MISMATCH: %s\n  Fix: fabos disk-unlock repair" % d.get("reason"))
+                    elif d.get("agrees") is None and d.get("needs_root"): print("  %s\n  Complete check: fabos disk-unlock diagnose --admin" % d.get("reason"))
+                    lr = out.get("last_request") or {}
+                    if lr.get("ok") is False: print("  The last change asked for (%s, turn %s) did NOT complete: %s" % (ts(lr.get("at")), "off" if lr.get("prompt_at_boot") is False else ("on" if lr.get("prompt_at_boot") else lr.get("action")), lr.get("error")))
+                    if d.get("error"): print("  " + str(d["error"]))
+                else:
+                    du_print_diag(d)
+                du_exit(d)
+        elif a.action == "diagnose":
+            if not a.json: print("Checking as administrator — the system will ask for your password.")
+            out = api("POST", "/system/disk-unlock", {"action": "diagnose"}, timeout=700)
+            if not a.json and "ok" in out:
+                if not out["ok"]: sys.exit("The check did not run: %s" % (out.get("error") or "unknown error"))
+                d = out.get("diagnosis") or {}; du_print_diag(d); du_exit(d)
+        else:
+            body = {"prompt_at_boot": True} if a.action == "on" else ({"action": "repair"} if a.action == "repair" else {"prompt_at_boot": False})
+            if a.action in ("off", "repair"):
+                st = api("GET", "/system/disk-unlock")
+                if not st.get("encrypted"): sys.exit("this computer's disk is not encrypted: there is no disk password to ask for")
+                if a.action == "off" or st.get("prompt_at_boot") is False:
+                    if a.action == "off" and not a.json:
+                        print("Your files stay encrypted on the drive, but anyone who starts this computer can use it without a password:\nthe unlock key is stored in the start-up files on the unencrypted /boot partition. Use this only where the computer itself is secure.")
+                    body["passphrase"] = getpass.getpass("Current disk passphrase (not shown): ")
+                    if not body["passphrase"]: sys.exit("no passphrase given; nothing was changed")
+            if not a.json: print("Running as administrator — the system will ask for your password. This takes a minute or two…")
+            out = api("POST", "/system/disk-unlock", body, timeout=1300)
+            if not a.json and "ok" in out:
+                for s_ in out.get("steps") or []: print("  " + str(s_))
+                print(("Done: %s" % (out.get("detail") or "")) if out["ok"] else ("NOT changed: %s" % (out.get("error") or "unknown error")))
+                if isinstance(out.get("diagnosis"), dict): du_print_diag(out["diagnosis"])
+                sys.exit(0 if out["ok"] else 1)
     elif a.cmd == "status":
         out = api("GET", "/status")
         if a.brief and "mode" in out:

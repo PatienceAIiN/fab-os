@@ -28,11 +28,15 @@ HTTP API on 127.0.0.1:8790 (bearer token in $XDG_RUNTIME_DIR/fabos-agent/token, 
   GET  /providers/ollama/models -> [{name,size,parameter_size,quantization,...}] (from Ollama's /api/tags; 503 when it is down)
   GET  /providers/ollama/status -> {installed, running, models, model, model_source, ram_gib, max_parameters_b, install_command}
   POST /providers/ollama/install {confirm: true} -> runs the official installer as root through the polkit path (ADR-0022)
-  GET  /system/disk-unlock -> {encrypted, device, prompt_at_boot, keyfile_present, keyfile_in_initramfs, consistent, detail, available}
+  GET  /system/disk-unlock[?refresh=1] -> {encrypted, device, prompt_at_boot, keyfile_present, keyfile_in_initramfs, consistent, detail,
+       available, diagnosis: {switch, prompt_at_boot_expected, agrees, boot_risk, needs_root, reason, repair, items[]} (disk_unlock.sh
+       diagnose as the user, cached 30 s), last_request: {action, prompt_at_boot, at, ok, error} (the last change asked for here)}
   POST /system/disk-unlock {prompt_at_boot: bool, passphrase?} -> the Start-up setting "Ask for the disk password when the computer
        starts" (ADR-0021 layout: unencrypted /boot + LUKS2 root). false stores a LUKS key in the initramfs on /boot (anyone who starts
        the computer can use it), true removes it again; disk_unlock.sh runs as root through the polkit path, CRITICAL in the
        activity log; the passphrase reaches the helper on its stdin from a private tmpfs file, never a command line or a log.
+  POST /system/disk-unlock {action: "repair", passphrase?} -> make the start-up files match the switch again (disk_unlock.sh repair as
+       root, same path; the reply embeds the fresh "diagnosis"); {action: "diagnose"} -> the complete diagnosis as root (pkexec dialog).
   POST /speech/transcribe {audio_b64, format} -> {ok, text, backend}     POST /speech/say {text} -> {ok, audio_b64, format, backend}
        cloud speech through the configured provider (OpenAI or Gemini); other providers answer ok=false so the caller
        falls back to the offline engine (fabos-voice).
@@ -966,16 +970,63 @@ def disk_unlock_status(helper=None):
     return out
 
 
-def disk_unlock_apply(agent, prompt_at_boot, passphrase=None, helper=None):
-    """Runs `disk_unlock.sh on|off` as root through Tools.run_as_root — pkexec rootexec with a one-time record, the user's own
-    password in the polkit dialog, the same path as every as_root step. For `off` the passphrase is written to a private file in
-    the agent's runtime directory (tmpfs, 0600 inside the 0700 directory that protected_path hides from every tool) and handed to
-    the helper as its STDIN by a shell redirection: it is on no command line, in no authorization record, in no log (the record and
-    the activity rows carry only the file's path). The file is overwritten and removed the moment the helper returns."""
+DISK_UNLOCK_DIAG_TTL = 30        # s: GET /system/disk-unlock serves the last `diagnose` this long (it lists initrds: a second or two)
+_du_diag_cache = {"at": 0.0, "diag": None}
+_du_diag_lock = threading.Lock()
+DISK_UNLOCK_LAST_REQUEST = "disk_unlock.last_request"    # settings key: the last change asked for here and how it ended (the UI shows a
+                                                          # failed one in red — a dismissed polkit dialog used to be easy to miss)
+
+
+def disk_unlock_diagnose(helper=None):
+    """`disk_unlock.sh diagnose` as the user: the real boot-time state item by item (see the helper's header). Root-only items read
+    "unknown" unless the record the last root run left still matches the file. Never raises."""
     helper = helper or DISK_UNLOCK_HELPER
-    cmd = shlex.quote(helper) + (" on" if prompt_at_boot else " off")
+    if not os.path.isfile(helper):
+        return {"encrypted": False, "available": False, "items": [], "prompt_at_boot_expected": None, "agrees": None, "needs_root": False,
+                "error": "the disk unlock helper is not installed (%s)" % helper}
+    try:
+        r = subprocess.run(["bash", helper, "diagnose"], capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        if not isinstance(out, dict) or "items" not in out:
+            raise ValueError("not a diagnosis")
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError) as e:
+        return {"encrypted": False, "available": True, "items": [], "prompt_at_boot_expected": None, "agrees": None, "needs_root": False,
+                "error": "disk unlock diagnose failed: %s" % e}
+    out.setdefault("available", True)
+    return out
+
+
+def disk_unlock_diagnosis(force=False, fresh=None):
+    """The cached diagnosis (DISK_UNLOCK_DIAG_TTL); force re-runs it; fresh=<dict> stores what a root run just returned."""
+    with _du_diag_lock:
+        if fresh is not None:
+            _du_diag_cache.update(at=time.time(), diag=fresh)
+            return fresh
+        if not force and _du_diag_cache["diag"] is not None and time.time() - _du_diag_cache["at"] < DISK_UNLOCK_DIAG_TTL:
+            return _du_diag_cache["diag"]
+    d = disk_unlock_diagnose()
+    with _du_diag_lock:
+        _du_diag_cache.update(at=time.time(), diag=d)
+    return d
+
+
+def disk_unlock_forget():
+    with _du_diag_lock:
+        _du_diag_cache.update(at=0.0, diag=None)
+
+
+def disk_unlock_apply(agent, prompt_at_boot, passphrase=None, helper=None, action=None):
+    """Runs `disk_unlock.sh on|off|repair|diagnose` as root through Tools.run_as_root — pkexec rootexec with a one-time record, the
+    user's own password in the polkit dialog, the same path as every as_root step. For `off` (and `repair`, which re-runs it) the
+    passphrase is written to a private file in the agent's runtime directory (tmpfs, 0600 inside the 0700 directory that
+    protected_path hides from every tool) and handed to the helper as its STDIN by a shell redirection: it is on no command line, in
+    no authorization record, in no log (the record and the activity rows carry only the file's path). The file is overwritten and
+    removed the moment the helper returns. A `diagnose` reply (the bare diagnosis object) is wrapped as {ok, action, diagnosis}."""
+    helper = helper or DISK_UNLOCK_HELPER
+    action = action or ("on" if prompt_at_boot else "off")
+    cmd = shlex.quote(helper) + " " + action
     pw_path = None
-    if not prompt_at_boot:
+    if action in ("off", "repair") and passphrase:
         os.makedirs(RUN_DIR, mode=0o700, exist_ok=True)
         os.chmod(RUN_DIR, 0o700)
         pw_path = os.path.join(RUN_DIR, "disk-unlock-" + uuid.uuid4().hex)
@@ -1011,10 +1062,14 @@ def disk_unlock_apply(agent, prompt_at_boot, passphrase=None, helper=None):
     if not isinstance(out, dict):
         err = ((r.get("stderr") or "").strip().splitlines() or ["the helper gave no result"])[-1]
         out = {"ok": r.get("exit_code") == 0, "prompt_at_boot": None, "error": None if r.get("exit_code") == 0 else err[:300]}
+    if action == "diagnose" and "items" in out:          # the bare diagnosis: wrap it
+        out = {"ok": True, "action": "diagnose", "prompt_at_boot": out.get("prompt_at_boot"), "error": None, "diagnosis": out}
     out["exit_code"] = r.get("exit_code")
     out["risk"] = DISK_UNLOCK_RISK
     if out.get("ok") is not True and not out.get("error"):
         out["error"] = "the helper failed (exit %s)" % r.get("exit_code")
+    if isinstance(out.get("diagnosis"), dict):
+        out["diagnosis"].setdefault("available", True)
     return out
 
 
@@ -5388,7 +5443,13 @@ def make_handler(store, agent, token):
             if p == "/providers/ollama/status":
                 return self._send(200, ollama_status(store))
             if p == "/system/disk-unlock":
-                return self._send(200, disk_unlock_status())
+                st = disk_unlock_status()
+                st["diagnosis"] = disk_unlock_diagnosis(force=qs.get("refresh") == "1") if st.get("available", True) else None
+                try:
+                    st["last_request"] = json.loads(store.setting(DISK_UNLOCK_LAST_REQUEST) or "null")
+                except ValueError:
+                    st["last_request"] = None
+                return self._send(200, st)
             if p == "/audit/verify":
                 return self._send(200, store.audit_verify())
             if p == "/watches":
@@ -5456,24 +5517,42 @@ def make_handler(store, agent, token):
                 # see disk_unlock_apply) and stores the unlock key in the initramfs on the unencrypted /boot; true removes it again.
                 # CRITICAL: root through the polkit path (the user's password in the system dialog) and audited before and after.
                 # Not an agent step, so no approval row — the person clicking the switch is the approver, like the Ollama installer.
+                # {action: "repair"|"diagnose"} takes the same root path: repair re-applies the configured direction (the passphrase is
+                # needed when the switch is off: it must open the volume before anything changes, and a new key slot needs it) and comes back with the new diagnosis; diagnose as
+                # root reads what the user-level check cannot (the root-only initrds).
+                action = b.get("action")
                 want = b.get("prompt_at_boot")
-                if not isinstance(want, bool):
+                if action is not None:
+                    if action not in ("repair", "diagnose"):
+                        return self._send(400, {"ok": False, "error": "action must be 'repair' or 'diagnose'", "risk": DISK_UNLOCK_RISK})
+                    want = None
+                elif not isinstance(want, bool):
                     return self._send(400, {"ok": False, "error": "prompt_at_boot must be true or false", "risk": DISK_UNLOCK_RISK})
                 pw = b.get("passphrase")
-                if not want:
-                    if not isinstance(pw, str) or not pw:
-                        return self._send(400, {"ok": False, "error": "the current disk passphrase is required to stop asking for it", "risk": DISK_UNLOCK_RISK})
-                    if "\n" in pw or "\r" in pw or "\0" in pw or len(pw) > DISK_UNLOCK_MAX_PASSPHRASE:
-                        return self._send(400, {"ok": False, "error": "the passphrase must be one line of at most %d characters" % DISK_UNLOCK_MAX_PASSPHRASE, "risk": DISK_UNLOCK_RISK})
+                if pw is not None and (not isinstance(pw, str) or "\n" in pw or "\r" in pw or "\0" in pw or len(pw) > DISK_UNLOCK_MAX_PASSPHRASE):
+                    return self._send(400, {"ok": False, "error": "the passphrase must be one line of at most %d characters" % DISK_UNLOCK_MAX_PASSPHRASE, "risk": DISK_UNLOCK_RISK})
+                if want is False and not pw:
+                    return self._send(400, {"ok": False, "error": "the current disk passphrase is required to stop asking for it", "risk": DISK_UNLOCK_RISK})
                 status = disk_unlock_status()
                 if not status.get("encrypted"):
                     return self._send(409, {"ok": False, "risk": DISK_UNLOCK_RISK, "status": status,
                                             "error": status.get("error") or "this computer's disk is not encrypted, so there is no disk password to ask for"})
-                store.activity("user", "disk_unlock_requested", None, "risk=%s prompt_at_boot=%s device=%s via %s" % (DISK_UNLOCK_RISK, want, status.get("device"), root_argv("x")[0]))
-                out = disk_unlock_apply(agent, want, pw)
+                if action == "repair" and status.get("prompt_at_boot") is False and not pw:
+                    return self._send(400, {"ok": False, "error": "the current disk passphrase is required to fix the start-up files while the switch is off (it must open the disk before anything is changed; a new unlock key is stored only if the old one no longer opens it)", "risk": DISK_UNLOCK_RISK})
+                if action == "diagnose":
+                    pw = None
+                store.activity("user", "disk_unlock_requested", None, "risk=%s action=%s prompt_at_boot=%s device=%s via %s" % (DISK_UNLOCK_RISK, action or ("on" if want else "off"), want, status.get("device"), root_argv("x")[0]))
+                out = disk_unlock_apply(agent, want, pw, action=action)
                 ok = out.get("ok") is True
                 store.activity("user", "disk_unlock_" + ("done" if ok else "failed"), None,
-                               "risk=%s prompt_at_boot=%s %s" % (DISK_UNLOCK_RISK, out.get("prompt_at_boot"), (out.get("error") or out.get("detail") or "")[:300]))
+                               "risk=%s action=%s prompt_at_boot=%s %s" % (DISK_UNLOCK_RISK, action or ("on" if want else "off"), out.get("prompt_at_boot"), (out.get("error") or out.get("detail") or "")[:300]))
+                if action != "diagnose":
+                    store.set_setting(DISK_UNLOCK_LAST_REQUEST, json.dumps({"action": action or ("on" if want else "off"), "prompt_at_boot": want, "at": time.time(), "ok": ok,
+                                                                          "error": None if ok else (out.get("error") or "")[:300], "exit_code": out.get("exit_code")}))
+                if isinstance(out.get("diagnosis"), dict) and out["diagnosis"].get("items") is not None:
+                    disk_unlock_diagnosis(fresh=out["diagnosis"])          # the root run's view is the freshest there is
+                else:
+                    disk_unlock_forget()                                    # the state changed (or may have): the next GET looks again
                 return self._send(200, out)
             if p == "/providers/test":
                 kind = b.get("provider") or store.setting("provider", "claude")

@@ -3554,8 +3554,13 @@ class DiskUnlockDialog(RoundedDialog):
     TEXT = ("Your files stay encrypted on the drive, but anyone who starts this computer can use it without a password, because the "
             "unlock key is stored in the start-up files on the unencrypted /⁠boot partition. Use this only where the computer itself is secure.")
 
-    def __init__(self, parent):
-        super().__init__(parent, "Stop asking for the disk password?", self.TEXT, "Stop asking", "Cancel", width=460)
+    FIX_TEXT = ("Fix now keeps the unlock key if it still opens the disk (otherwise it stores a new one), rebuilds the start-up files of "
+                "every installed kernel, proves the key is inside and opens the disk, refreshes the start menu if needed, and checks again. "
+                "Nothing is removed from the disk before the rebuilt files are proven, and if anything fails half-way it rolls back, so the "
+                "computer keeps starting. The same trade-off applies: anyone who starts this computer can use it without a password.")
+
+    def __init__(self, parent, title=None, text=None, confirm=None):
+        super().__init__(parent, title or "Stop asking for the disk password?", text or self.TEXT, confirm or "Stop asking", "Cancel", width=460)
         lab = QLabel("Current disk passphrase")
         lab.setObjectName("muted")
         self.body.addWidget(lab)
@@ -3584,6 +3589,42 @@ class DiskUnlockDialog(RoundedDialog):
 
     def passphrase(self):
         return self.pw.text()
+
+
+class DiskUnlockHowTo(RoundedDialog):
+    """The 'How do I…?' page of the Start-up row: docs/HOWTO-disk-password.md (shipped as
+    /usr/share/doc/fabos-agent/HOWTO-disk-password.md) rendered in a scrolling view. Read-only, one OK button."""
+    PATHS = ("/usr/share/doc/fabos-agent/HOWTO-disk-password.md",
+             os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "share", "doc", "fabos-agent", "HOWTO-disk-password.md"),
+             os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "..", "..", "docs", "HOWTO-disk-password.md"))
+    FALLBACK = ("# How do I stop the disk password prompt at start-up?\n\nFab AI Controls → Settings → General → **Start-up**: the switch "
+                "\"Ask for the disk password when the computer starts\". Off stores an unlock key in the start-up files on the unencrypted "
+                "/boot partition, so anyone who starts the computer can use it without a password; On asks again. The line under the "
+                "switch shows the real start-up state; **Fix now** repairs a mismatch. The switch exists from update 1.0-7 (Fab Updates → "
+                "Install). The login screen asks for your *user* password — that is a different thing.\n\n"
+                "Terminal: `fabos disk-unlock status | diagnose | off | on | repair`.")
+
+    @classmethod
+    def text(cls):
+        for p in cls.PATHS:
+            try:
+                with open(p, encoding="utf-8") as f:
+                    return f.read()
+            except OSError:
+                continue
+        return cls.FALLBACK
+
+    def __init__(self, parent):
+        super().__init__(parent, "How do I stop the disk password prompt?", "", "OK", "Cancel", width=680)
+        self.cancel_btn.hide()
+        self.view = QTextBrowser()
+        self.view.setObjectName("md")
+        self.view.setOpenExternalLinks(True)
+        self.view.setFrameShape(QFrame.Shape.NoFrame)
+        self.view.viewport().setAutoFillBackground(False)
+        self.view.document().setMarkdown(self.text())
+        self.view.setMinimumHeight(420)
+        self.body.addWidget(self.view)
 
 
 class SettingsDialog(RoundedDialog):
@@ -3668,7 +3709,55 @@ class SettingsDialog(RoundedDialog):
         self.boot_state = None
         self.boot_worker = None
         self.boot_prompt.toggled.connect(self._boot_prompt_toggled)
-        f.addRow("Start-up", row(self.boot_prompt, self.boot_note, stretch_last=True))
+        # under the switch: the REAL state ("Start-up asks for the disk password: yes/no — checked just now") + the How do I…? link,
+        # an amber/red notice when the start-up files disagree with the switch or the last change did not complete, Fix now /
+        # Check as administrator, and a Details expander with every diagnose item. All fed by GET /system/disk-unlock's "diagnosis".
+        self.boot_real = wrap(QLabel("", objectName="muted"))
+        self.boot_real.setTextFormat(Qt.TextFormat.RichText)
+        self.boot_real.setOpenExternalLinks(False)
+        self.boot_real.linkActivated.connect(self._boot_howto)
+        self.boot_notice = wrap(QLabel("", objectName="checkResult"))
+        self.boot_notice.setVisible(False)
+        self.boot_fix = QPushButton("Fix now")
+        self.boot_fix.setObjectName("primary")
+        self.boot_fix.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.boot_fix.clicked.connect(self._boot_fix)
+        self.boot_fix.setVisible(False)
+        self.boot_check = QPushButton("Check as administrator")
+        self.boot_check.setObjectName("ghost")
+        self.boot_check.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.boot_check.clicked.connect(self._boot_check)
+        self.boot_check.setVisible(False)
+        self.boot_actions = row(self.boot_fix, self.boot_check)
+        self.boot_actions.setVisible(False)
+        self.boot_details = Disclosure("Details")
+        self.boot_details.setVisible(False)
+        # the items live in a capped scroll area, so an open Details keeps the dialog inside its 560 px height budget
+        self.boot_items = QWidget()
+        self.boot_items_form = QFormLayout(self.boot_items)
+        self.boot_items_form.setContentsMargins(0, 0, 0, 0)
+        self.boot_items_form.setSpacing(6)
+        self.boot_items_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        self.boot_items_area = QScrollArea()
+        self.boot_items_area.setWidgetResizable(True)
+        self.boot_items_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.boot_items_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.boot_items_area.setMaximumHeight(80)
+        self.boot_items_area.setSizeAdjustPolicy(QScrollArea.SizeAdjustPolicy.AdjustToContents)
+        self.boot_items_area.viewport().setAutoFillBackground(False)
+        self.boot_items_area.setWidget(self.boot_items)
+        self.boot_details.addRow(self.boot_items_area)
+        self.boot_last_error = None
+        boot_box = QWidget()
+        bv = QVBoxLayout(boot_box)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.setSpacing(4)
+        bv.addWidget(row(self.boot_prompt, self.boot_note, stretch_last=True))
+        bv.addWidget(self.boot_real)
+        bv.addWidget(self.boot_notice)
+        bv.addWidget(self.boot_actions)
+        bv.addWidget(self.boot_details)
+        f.addRow("Start-up", boot_box)
         self._load_boot_prompt()
         adv = Disclosure()
         self.general_adv = adv
@@ -3915,14 +4004,210 @@ class SettingsDialog(RoundedDialog):
     BOOT_NOT_ENCRYPTED = "Ask for the disk password when the computer starts — not available: this computer's disk is not encrypted, so there is no disk password to ask for."
     BOOT_BUSY_OFF = "Storing the unlock key and rebuilding the start-up files… this takes a minute or two; the system may ask for your password."
     BOOT_BUSY_ON = "Removing the unlock key and rebuilding the start-up files… this takes a minute or two; the system may ask for your password."
+    BOOT_BUSY_FIX = "Fixing the start-up files… storing the key again and rebuilding every start-up file; this takes a minute or two; the system may ask for your password."
+    BOOT_BUSY_CHECK = "Checking the start-up files as administrator… the system may ask for your password."
+    BOOT_MISMATCH_OFF = "The switch is off but the start-up files still ask for the password"
+    BOOT_MISMATCH_ON = "The switch is on but the start-up files do not ask for the password"
+    BOOT_RISK = "The start-up files may not start the computer"
+    BOOT_HOWTO_LINK = ' · <a href="howto" style="color: inherit;">How do I…?</a>'
 
-    def _load_boot_prompt(self):
-        w = ApiWorker("GET", "/system/disk-unlock", None, timeout=30)
-        w.done.connect(self._boot_prompt_loaded)
+    def _load_boot_prompt(self, diag_only=False):
+        """GET /system/disk-unlock: the switch + note (unless diag_only: after a change, the note keeps the outcome) and the diagnosis."""
+        w = ApiWorker("GET", "/system/disk-unlock", None, timeout=150)
+        w.done.connect(self._boot_diag_loaded if diag_only else self._boot_prompt_loaded)
         w.finished.connect(w.deleteLater)
         self._workers.append(w)
         self.boot_worker = w
         w.start()
+
+    # ---- the real state under the switch
+    @staticmethod
+    def _boot_when(iso):
+        """'just now' within 90 s of the helper's checked_at (UTC ISO), else the local clock time."""
+        try:
+            t = datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+        except (TypeError, ValueError):
+            return "just now"
+        return "just now" if time.time() - t < 90 else "at " + time.strftime("%H:%M", time.localtime(t))
+
+    @staticmethod
+    def _esc(s):
+        return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def _boot_diag_loaded(self, st):
+        self.boot_worker = None
+        if isinstance(st, dict) and not st.get("offline"):
+            self.boot_state = st
+            self._boot_show_diagnosis(st)
+
+    def _boot_set_busy(self, busy):
+        self.boot_fix.setEnabled(not busy)
+        self.boot_check.setEnabled(not busy)
+
+    def _boot_show_diagnosis(self, st):
+        """The line under the switch, the notice, the buttons and the Details rows — from GET's diagnosis + last_request."""
+        d = st.get("diagnosis") if isinstance(st.get("diagnosis"), dict) else {}
+        lr = st.get("last_request") if isinstance(st.get("last_request"), dict) else None
+        on = bool(st.get("prompt_at_boot", True))
+        if not st.get("encrypted"):
+            self.boot_real.setText("This computer's disk is not encrypted, so there is no disk password at start-up. A password asked at start-up is the "
+                                   "<b>login screen's</b>, which is a different thing." + self.BOOT_HOWTO_LINK)
+            self.boot_notice.setVisible(False)
+            self.boot_actions.setVisible(False)
+            self.boot_details.setVisible(False)
+            QTimer.singleShot(0, self.refit)
+            return
+        exp = d.get("prompt_at_boot_expected")
+        if d.get("boot_risk"):
+            real = "the computer may NOT start"
+        elif exp is True:
+            real = "yes"
+        elif exp is False:
+            real = "no"
+        elif d.get("error"):
+            real = "could not be checked"
+        else:
+            real = "cannot tell without administrator rights"
+        self.boot_real.setText("Start-up asks for the disk password: <b>%s</b> — checked %s%s%s" % (
+            self._esc(real), self._boot_when(d.get("checked_at")), " as administrator" if d.get("as_root") else "", self.BOOT_HOWTO_LINK))
+        lines, colour, fix, check = [], None, False, False
+        reason = str(d.get("reason") or "")
+        if d.get("boot_risk"):
+            lines.append(self.BOOT_RISK + (": " + reason if reason else "")); colour = RED; fix = True
+        elif d.get("agrees") is False:
+            head = self.BOOT_MISMATCH_OFF if not on else self.BOOT_MISMATCH_ON
+            # the helper's reason usually opens with the same sentence: say it once
+            lines.append((reason[0].upper() + reason[1:]) if reason.lower().startswith(head.lower()[:40]) else head + (" — " + reason if reason else "")); colour = AMBER
+            fix = d.get("switch") in ("on", "off")
+        elif d.get("agrees") is None and d.get("needs_root"):
+            lines.append("The start-up files are protected: the check needs administrator rights to be complete."); check = True
+        elif d.get("agrees") is True and d.get("fails"):
+            lines.append("Start-up works as set, but %s failed — see Details%s" % ("one check" if d["fails"] == 1 else "%d checks" % d["fails"], (": " + reason.split(" — but ", 1)[-1]) if " — but " in reason else "."))
+            colour = AMBER; fix = d.get("switch") in ("on", "off")
+        elif d.get("error"):
+            lines.append(str(d["error"])); colour = AMBER
+        if d.get("needs_root"):
+            check = True
+        # the last change asked for here that did NOT complete and is still not the state (a dismissed password dialog was easy to miss)
+        err = None
+        if self.boot_last_error:
+            err = self.boot_last_error
+        elif lr and lr.get("ok") is False and (lr.get("prompt_at_boot") is None or lr.get("prompt_at_boot") != on):
+            when = time.strftime("%d %b %H:%M", time.localtime(lr["at"])) if isinstance(lr.get("at"), (int, float)) else "earlier"
+            what = {"off": "turn the prompt off", "on": "turn the prompt on", "repair": "fix the start-up files"}.get(lr.get("action"), "change the setting")
+            err = "The last attempt to %s (%s) did not complete: %s Nothing was changed." % (what, when, str(lr.get("error") or "unknown error").rstrip(".") + ".")
+        if err:
+            if "dismissed" in err or "not authorised" in err:
+                err += " Enter your login password in the system dialog when it appears."
+            lines.append(err); colour = RED
+        self.boot_notice.setText("\n".join(lines))
+        self.boot_notice.setStyleSheet("color: %s;" % colour if colour else "")
+        self.boot_notice.setVisible(bool(lines))
+        self.boot_fix.setVisible(bool(fix))
+        self.boot_check.setVisible(bool(check))
+        self.boot_actions.setVisible(bool(fix or check))
+        items = d.get("items") if isinstance(d.get("items"), list) else []
+        while self.boot_items_form.rowCount():
+            self.boot_items_form.removeRow(0)
+        marks = {"pass": "✓", "fail": "✗", "unknown": "?", "info": "·"}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            lab = QLabel("%s %s" % (marks.get(it.get("result"), "·"), it.get("label") or it.get("id")))
+            lab.setWordWrap(True)
+            if it.get("result") == "fail":
+                lab.setStyleSheet("color: %s;" % (RED if d.get("boot_risk") else AMBER))
+            det = WrapLabel(str(it.get("detail") or ""))
+            det.setObjectName("muted")
+            self.boot_items_form.addRow(self._boot_item_block(lab, det))
+        self.boot_details.setVisible(bool(items))
+        QTimer.singleShot(0, self.refit)
+
+    @staticmethod
+    def _boot_item_block(*widgets):
+        """One Details entry: the label line and the detail line at full width (a two-column form squeezed the detail)."""
+        blk = QWidget()
+        v = QVBoxLayout(blk)
+        v.setContentsMargins(0, 0, 0, 4)
+        v.setSpacing(1)
+        for wd in widgets:
+            v.addWidget(wd)
+        return blk
+
+    def _boot_howto(self, _href=None):
+        DiskUnlockHowTo(self).exec()
+
+    def _boot_fix(self):
+        """Fix now: the passphrase when the switch is off (it must open the disk first; a new key slot only when the old key no longer opens it), a plain confirmation when it is on."""
+        if self.boot_worker is not None:
+            return
+        on = bool((self.boot_state or {}).get("prompt_at_boot", True))
+        body = {"action": "repair"}
+        if not on:
+            dlg = DiskUnlockDialog(self, "Fix the start-up files?", DiskUnlockDialog.FIX_TEXT, "Fix now")
+            if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.passphrase():
+                return
+            body["passphrase"] = dlg.passphrase()
+        elif not RoundedDialog.confirm(self, "Fix the start-up files?", "The start-up files still carry an unlock key although the switch is on. Fix now rebuilds them "
+                                       "without the key, proves it is gone and removes the key from the disk. The system may ask for your password.", "Fix now"):
+            return
+        self.boot_last_error = None
+        self._apply_boot_action(body, self.BOOT_BUSY_FIX, self._boot_fixed)
+
+    def _boot_check(self):
+        if self.boot_worker is not None:
+            return
+        self._apply_boot_action({"action": "diagnose"}, self.BOOT_BUSY_CHECK, self._boot_checked)
+
+    def _apply_boot_action(self, body, busy_text, done):
+        self.boot_prompt.setEnabled(False)
+        self._boot_set_busy(True)
+        self.boot_note.setText(busy_text)
+        w = ApiWorker("POST", "/system/disk-unlock", body, timeout=1260)
+        w.done.connect(done)
+        w.finished.connect(w.deleteLater)
+        self._workers.append(w)
+        self.boot_worker = w
+        w.start()
+
+    def _boot_fixed(self, r):
+        self.boot_worker = None
+        self.boot_prompt.setEnabled(True)
+        self._boot_set_busy(False)
+        ok = isinstance(r, dict) and r.get("ok") is True
+        steps = r.get("steps") if isinstance(r, dict) and isinstance(r.get("steps"), list) else []
+        if ok:
+            state = r.get("prompt_at_boot") if isinstance(r.get("prompt_at_boot"), bool) else bool((self.boot_state or {}).get("prompt_at_boot", True))
+            self._set_boot_switch(state)
+            self.boot_note.setText((self.BOOT_PROMPT_ON if state else self.BOOT_PROMPT_OFF) + " — fixed: " + str(r.get("detail") or "the start-up files match the setting again."))
+        else:
+            err = str((r.get("error") or r.get("offline") or "unknown error") if isinstance(r, dict) else r)
+            self.boot_last_error = "Fix now did not complete: " + err[:300].rstrip(".") + "."
+            self.boot_note.setText((self.BOOT_PROMPT_ON if self.boot_prompt.isChecked() else self.BOOT_PROMPT_OFF) + " — not fixed: " + err[:200])
+        if steps:                                  # the helper's steps as they completed, in the Details expander
+            while self.boot_items_form.rowCount():
+                self.boot_items_form.removeRow(0)
+            for s in steps:
+                self.boot_items_form.addRow(self._boot_item_block(WrapLabel("→ " + str(s))))
+            self.boot_details.setVisible(True)
+            self.boot_details.set_open(True)
+        self._load_boot_prompt(diag_only=True)
+
+    def _boot_checked(self, r):
+        self.boot_worker = None
+        self.boot_prompt.setEnabled(True)
+        self._boot_set_busy(False)
+        st = self.boot_state or {}
+        self.boot_note.setText(self.BOOT_PROMPT_ON if bool(st.get("prompt_at_boot", True)) else self.BOOT_PROMPT_OFF)
+        if isinstance(r, dict) and r.get("ok") is True and isinstance(r.get("diagnosis"), dict):
+            self.boot_last_error = None
+            st = dict(st, diagnosis=r["diagnosis"])
+            self.boot_state = st
+            self._boot_show_diagnosis(st)
+            return
+        err = str((r.get("error") or r.get("offline") or "unknown error") if isinstance(r, dict) else r)
+        self.boot_last_error = "The check as administrator did not run: " + err[:300].rstrip(".") + "."
+        self._boot_show_diagnosis(st)
 
     def _set_boot_switch(self, on):
         """The switch follows the system state without running the toggle handler."""
@@ -3943,6 +4228,7 @@ class SettingsDialog(RoundedDialog):
             self._set_boot_switch(False)
             self.boot_prompt.setEnabled(False)
             self.boot_note.setText(self.BOOT_NOT_ENCRYPTED)
+            self._boot_show_diagnosis(st)
             return
         on = bool(st.get("prompt_at_boot", True))
         self._set_boot_switch(on)
@@ -3951,6 +4237,7 @@ class SettingsDialog(RoundedDialog):
         if st.get("consistent") is False and st.get("detail"):
             text += " — " + str(st["detail"])[:160]
         self.boot_note.setText(text)
+        self._boot_show_diagnosis(st)
 
     def _boot_prompt_toggled(self, on):
         if on:                                   # asking again needs nothing
@@ -3965,33 +4252,35 @@ class SettingsDialog(RoundedDialog):
     def _apply_boot_prompt(self, on, passphrase):
         if self.boot_worker is not None:
             return
-        self.boot_prompt.setEnabled(False)
-        self.boot_note.setText(self.BOOT_BUSY_ON if on else self.BOOT_BUSY_OFF)
         body = {"prompt_at_boot": on}
         if not on:
             body["passphrase"] = passphrase
+        self.boot_last_error = None
         # up to two update-initramfs runs on a slow disk plus the polkit dialog: a long timeout; the dialog keeps painting
-        w = ApiWorker("POST", "/system/disk-unlock", body, timeout=1260)
-        w.done.connect(lambda r, on=on: self._boot_prompt_applied(on, r))
-        w.finished.connect(w.deleteLater)
-        self._workers.append(w)
-        self.boot_worker = w
-        w.start()
+        self._apply_boot_action(body, self.BOOT_BUSY_ON if on else self.BOOT_BUSY_OFF, lambda r, on=on: self._boot_prompt_applied(on, r))
 
     def _boot_prompt_applied(self, wanted, r):
         self.boot_worker = None
         self.boot_prompt.setEnabled(True)
+        self._boot_set_busy(False)
         ok = isinstance(r, dict) and r.get("ok") is True
         if ok:
             self._set_boot_switch(wanted)
             self.boot_note.setText((self.BOOT_PROMPT_ON + " — done: the computer asks for the disk password again.") if wanted
                                    else (self.BOOT_PROMPT_OFF + " — done."))
+            if self.boot_state is not None:
+                self.boot_state["prompt_at_boot"] = wanted
+            self._load_boot_prompt(diag_only=True)             # the real state under the switch follows
             return
         err = str((r.get("error") or r.get("offline") or "unknown error") if isinstance(r, dict) else r)
         # the helper reports the state it left behind (a rollback keeps the old one); without a verdict assume nothing changed
         state = r.get("prompt_at_boot") if isinstance(r, dict) and isinstance(r.get("prompt_at_boot"), bool) else (not wanted)
         self._set_boot_switch(state)
         self.boot_note.setText((self.BOOT_PROMPT_ON if state else self.BOOT_PROMPT_OFF) + " — not changed: " + err[:200])
+        # in red under the row too, so a dismissed password dialog is not missed once the info box is gone
+        self.boot_last_error = "Turning the prompt %s did not complete: %s Nothing was changed." % ("off" if not wanted else "on", err[:300].rstrip(".") + ".")
+        if self.boot_state is not None:
+            self._boot_show_diagnosis(self.boot_state)
         RoundedDialog.info(self, "Couldn't change the start-up setting",
                            err[:600] + ("\n\nNothing was changed: the computer still asks for the disk password." if state and not wanted else ""))
 

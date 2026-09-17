@@ -1540,7 +1540,17 @@ printf 'argv=%%s uid=%%s\n' "$*" "$(id -u)" >> "$LOG"
 case "$1" in
   status)
     if [ -e %(flag_unenc)s ]; then echo '{"encrypted": false, "device": null, "prompt_at_boot": false, "detail": "the root filesystem is not on an encrypted volume"}'
+    elif [ -e %(flag_mismatch)s ]; then echo '{"encrypted": true, "device": "luks-test", "source": "UUID=1c2d", "prompt_at_boot": false, "keyfile_present": true, "keyfile_in_initramfs": false, "consistent": false, "detail": "the key is not inside the initramfs"}'
     else echo '{"encrypted": true, "device": "luks-test", "source": "UUID=1c2d", "prompt_at_boot": true, "keyfile_present": false, "keyfile_in_initramfs": false, "consistent": true, "detail": "asks for the disk password at start-up"}'; fi;;
+  diagnose)
+    # the shape disk_unlock.sh diagnose prints (tests/disk-unlock-test.sh proves the real one); a mismatch flag = "switch off, files still ask"
+    if [ -e %(flag_unenc)s ]; then echo '{"encrypted": false, "device": null, "switch": "none", "prompt_at_boot": false, "prompt_at_boot_expected": false, "agrees": null, "boot_risk": false, "needs_root": false, "as_root": false, "reason": null, "repair": null, "checked_at": "2026-09-17T00:00:00Z", "booted_initrd": null, "items": [{"id": "root_luks", "result": "info", "label": "Root filesystem on an encrypted volume", "detail": "not encrypted"}]}'
+    elif [ -e %(flag_mismatch)s ]; then echo '{"encrypted": true, "device": "luks-test", "switch": "off", "prompt_at_boot": false, "prompt_at_boot_expected": true, "agrees": false, "boot_risk": false, "needs_root": false, "as_root": false, "reason": "the switch is off but the start-up files still ask for the password: initrd.img-test does not carry the unlock key", "repair": "run repair", "checked_at": "2026-09-17T00:00:00Z", "booted_initrd": "/boot/initrd.img-test", "items": [{"id": "root_luks", "result": "pass", "label": "Root filesystem on an encrypted volume", "detail": "root is /dev/mapper/luks-test"}, {"id": "initrd_key:test", "result": "fail", "label": "Start-up file for kernel test carries the unlock key: no", "detail": "but the setting is off"}]}'
+    else echo '{"encrypted": true, "device": "luks-test", "switch": "on", "prompt_at_boot": true, "prompt_at_boot_expected": true, "agrees": true, "boot_risk": false, "needs_root": false, "as_root": false, "reason": "the start-up files match the setting: initrd.img-test has no unlock key inside", "repair": null, "checked_at": "2026-09-17T00:00:00Z", "booted_initrd": "/boot/initrd.img-test", "items": [{"id": "root_luks", "result": "pass", "label": "Root filesystem on an encrypted volume", "detail": "root is /dev/mapper/luks-test"}, {"id": "initrd_key:test", "result": "pass", "label": "Start-up file for kernel test carries the unlock key: no", "detail": "as the setting expects"}]}'; fi;;
+  repair)
+    [ -t 0 ] || { IFS= read -r p; [ -n "$p" ] && printf 'stdin=%%s\n' "$p" >> "$LOG"; }
+    rm -f %(flag_mismatch)s
+    echo '{"ok": true, "action": "repair", "prompt_at_boot": true, "error": null, "detail": "asks for the disk password at start-up", "steps": ["diagnose before repair", "repair: the on path completed", "DONE: the start-up files match the setting again"], "diagnosis": {"encrypted": true, "device": "luks-test", "switch": "on", "prompt_at_boot": true, "prompt_at_boot_expected": true, "agrees": true, "boot_risk": false, "needs_root": false, "as_root": true, "reason": "the start-up files match the setting", "repair": null, "checked_at": "2026-09-17T00:00:01Z", "booted_initrd": "/boot/initrd.img-test", "items": [{"id": "root_luks", "result": "pass", "label": "Root filesystem on an encrypted volume", "detail": "root is /dev/mapper/luks-test"}]}}';;
   off)
     IFS= read -r p; printf 'stdin=%%s\n' "$p" >> "$LOG"
     echo "disk_unlock: passphrase verified" >&2
@@ -1585,7 +1595,7 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         log = os.path.join(self.tmp, "disk-unlock-stub.log"); flag_unenc = os.path.join(self.tmp, "du-unencrypted"); flag_fail = os.path.join(self.tmp, "du-fail"); flag_dismiss = os.path.join(self.tmp, "du-dismiss")
         stub = self.env["FABOS_DISK_UNLOCK_HELPER"]; fake_pkexec = os.path.join(self.tmp, "bin", "pkexec")
         with open(stub, "w") as f:
-            f.write(self.DISK_UNLOCK_STUB % {"log": log, "flag_unenc": flag_unenc, "flag_fail": flag_fail})
+            f.write(self.DISK_UNLOCK_STUB % {"log": log, "flag_unenc": flag_unenc, "flag_fail": flag_fail, "flag_mismatch": os.path.join(self.tmp, "du-mismatch")})
         with open(fake_pkexec, "w") as f:
             f.write(self.FAKE_PKEXEC % {"log": log, "flag_dismiss": flag_dismiss})
         os.chmod(stub, 0o755); os.chmod(fake_pkexec, 0o755)
@@ -2135,6 +2145,101 @@ class MicPermissionAndSlots(unittest.TestCase):
         st.set_setting("agent.max_parallel", "8"); self.assertEqual(a.max_parallel(), min(8, fa.parallel_cap()))
         st.set_setting("agent.max_parallel", "0"); self.assertEqual(a.max_parallel(), 1)
         st.set_setting("agent.max_parallel", "x"); self.assertEqual(a.max_parallel(), min(3, fa.parallel_cap()))
+    def test_37b_disk_unlock_diagnosis_is_served_cached_and_repair_goes_through_the_root_path(self):
+        """1.0-8: GET /system/disk-unlock carries the helper's `diagnose` (the REAL start-up state: items + verdict), cached 30 s
+        (?refresh=1 looks again), and `last_request` (the last change asked for here and how it ended). POST {action: "repair"} runs
+        `disk_unlock.sh repair` as root through the same fake pkexec — the passphrase (required while the switch is off) on the helper's
+        STDIN from the private file, never on a command line — and the reply's embedded diagnosis becomes the cached one; {action:
+        "diagnose"} runs the complete check as root; a dismissed dialog is a clear ok=false and is remembered in last_request. The CLI
+        `fabos disk-unlock status|diagnose` prints the real state and exits 1 on a mismatch."""
+        tok = open(os.path.join(self.tmp, "fabos-agent/token")).read()
+
+        def call(method, path, body=None):
+            req = urllib.request.Request("http://127.0.0.1:18790" + path, data=json.dumps(body).encode() if body is not None else None, method=method,
+                                         headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=90) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read() or b"{}")
+        log = os.path.join(self.tmp, "disk-unlock-stub.log"); flag_unenc = os.path.join(self.tmp, "du-unencrypted"); flag_fail = os.path.join(self.tmp, "du-fail")
+        flag_dismiss = os.path.join(self.tmp, "du-dismiss"); flag_mismatch = os.path.join(self.tmp, "du-mismatch")
+        stub = self.env["FABOS_DISK_UNLOCK_HELPER"]; fake_pkexec = os.path.join(self.tmp, "bin", "pkexec")
+        with open(stub, "w") as f:
+            f.write(self.DISK_UNLOCK_STUB % {"log": log, "flag_unenc": flag_unenc, "flag_fail": flag_fail, "flag_mismatch": flag_mismatch})
+        with open(fake_pkexec, "w") as f:
+            f.write(self.FAKE_PKEXEC % {"log": log, "flag_dismiss": flag_dismiss})
+        os.chmod(stub, 0o755); os.chmod(fake_pkexec, 0o755)
+        self.addCleanup(lambda: [os.remove(p) for p in (fake_pkexec, stub, flag_unenc, flag_fail, flag_dismiss, flag_mismatch) if os.path.exists(p)])
+        run_dir = os.path.join(self.tmp, "fabos-agent"); pw_files = lambda: [f for f in os.listdir(run_dir) if f.startswith("disk-unlock-")]
+        text = lambda: open(log).read() if os.path.exists(log) else ""
+        PASS = "fabos-test-passphrase-37b"
+        # the GET payload: status + diagnosis (items, verdict) + last_request
+        st, s = call("GET", "/system/disk-unlock?refresh=1"); self.assertEqual(st, 200, s)
+        d = s["diagnosis"]; self.assertIsInstance(d["items"], list); self.assertTrue(d["items"]); self.assertEqual((d["switch"], d["prompt_at_boot_expected"], d["agrees"], d["boot_risk"], d["needs_root"]), ("on", True, True, False, False), d)
+        for it in d["items"]:
+            self.assertEqual(set(it) >= {"id", "result", "label", "detail"}, True, it); self.assertIn(it["result"], ("pass", "fail", "unknown", "info"))
+        self.assertIn("last_request", s)
+        if s["last_request"] is not None:                                  # test_37 asked for changes before this (its last one: a dismissed dialog)
+            self.assertEqual(set(s["last_request"]) >= {"action", "prompt_at_boot", "at", "ok", "error"}, True, s["last_request"])
+        # cached 30 s: a second GET does not run the helper again; the mismatch appears only with ?refresh=1
+        n = text().count("argv=diagnose")
+        st, s2 = call("GET", "/system/disk-unlock"); self.assertEqual(text().count("argv=diagnose"), n, "the diagnosis must be served from the cache")
+        open(flag_mismatch, "w").close()
+        st, s3 = call("GET", "/system/disk-unlock"); self.assertTrue(s3["diagnosis"]["agrees"], "still the cached verdict")
+        st, s4 = call("GET", "/system/disk-unlock?refresh=1"); self.assertEqual(text().count("argv=diagnose"), n + 1)
+        self.assertEqual((s4["prompt_at_boot"], s4["diagnosis"]["switch"], s4["diagnosis"]["prompt_at_boot_expected"], s4["diagnosis"]["agrees"]), (False, "off", True, False), s4["diagnosis"])
+        self.assertIn("still ask for the password", s4["diagnosis"]["reason"]); self.assertEqual([i["result"] for i in s4["diagnosis"]["items"]], ["pass", "fail"])
+        # repair while the switch is off needs the passphrase (it must open the disk first); with it: root through pkexec, stdin from the private file
+        st, r = call("POST", "/system/disk-unlock", {"action": "repair"}); self.assertEqual(st, 400, r); self.assertIn("passphrase is required", r["error"]); self.assertEqual(r["risk"], "CRITICAL")
+        st, r = call("POST", "/system/disk-unlock", {"action": "bogus"}); self.assertEqual(st, 400, r); self.assertIn("repair", r["error"])
+        n_pk = text().count("pkexec argv=")
+        st, r = call("POST", "/system/disk-unlock", {"action": "repair", "passphrase": PASS}); self.assertEqual(st, 200, r)
+        self.assertEqual((r["ok"], r["action"], r["risk"], r["exit_code"]), (True, "repair", "CRITICAL", 0), r); self.assertTrue(r["steps"]); self.assertTrue(r["diagnosis"]["agrees"]); self.assertTrue(r["diagnosis"]["as_root"])
+        t = text(); self.assertIn("argv=repair uid=%d" % os.getuid(), t); self.assertIn("stdin=" + PASS, t); self.assertNotIn("argv=repair " + PASS, t)
+        pk = [l for l in t.splitlines() if l.startswith("pkexec ")]; self.assertEqual(len(pk), n_pk + 1, pk)
+        self.assertIn("command=%s repair < %s" % (fa.shlex.quote(stub), fa.shlex.quote(run_dir + "/disk-unlock-")[:-1]), pk[-1]); self.assertNotIn(PASS, pk[-1])
+        self.assertEqual(pw_files(), []); self.assertFalse(os.path.exists(flag_mismatch), "the stub's repair cleared the mismatch")
+        rows = self.cli("log", "--limit", "20"); kinds = [e["kind"] for e in rows]
+        self.assertIn("disk_unlock_requested", kinds); self.assertIn("disk_unlock_done", kinds)
+        self.assertIn("action=repair", [e for e in rows if e["kind"] == "disk_unlock_requested"][0]["detail"]); self.assertFalse([e for e in rows if PASS in json.dumps(e)])
+        # the root run's diagnosis is now the cached one (no user-level diagnose ran), and last_request records the repair
+        n = text().count("argv=diagnose")
+        st, s5 = call("GET", "/system/disk-unlock"); self.assertEqual(text().count("argv=diagnose"), n); self.assertTrue(s5["diagnosis"]["as_root"]); self.assertTrue(s5["diagnosis"]["agrees"])
+        self.assertEqual((s5["last_request"]["action"], s5["last_request"]["ok"], s5["last_request"]["error"]), ("repair", True, None), s5["last_request"])
+        # nothing to repair: still goes through the root path (the helper decides), no passphrase needed while the switch is on
+        st, r = call("POST", "/system/disk-unlock", {"action": "repair"}); self.assertEqual(st, 200, r); self.assertTrue(r["ok"]); self.assertEqual(pw_files(), [])
+        self.assertTrue([l for l in text().splitlines() if l.startswith("pkexec ") and l.endswith(" repair")], "repair without a passphrase: no stdin redirection")
+        # bypass mode changes nothing about this either: repair still reaches root only through pkexec (the endpoint never consults the mode)
+        self.cli("mode", "bypass"); self.addCleanup(lambda: self.cli("mode", "auto")); self.assertEqual(self.cli("settings")["mode"], "bypass")
+        n_pk = text().count("pkexec argv=")
+        st, r = call("POST", "/system/disk-unlock", {"action": "repair"}); self.assertEqual(st, 200, r); self.assertTrue(r["ok"], r)
+        self.assertEqual(text().count("pkexec argv="), n_pk + 1, "bypass mode must still go through pkexec for repair")
+        req = [e for e in self.cli("log", "--limit", "10") if e["kind"] == "disk_unlock_requested"][0]["detail"]; self.assertIn("action=repair", req); self.assertIn("via pkexec", req)
+        self.cli("mode", "auto"); self.assertEqual(self.cli("settings")["mode"], "auto")
+        # the complete check as root: the bare diagnosis comes back wrapped
+        st, r = call("POST", "/system/disk-unlock", {"action": "diagnose", "passphrase": "ignored"}); self.assertEqual(st, 200, r)
+        self.assertEqual((r["ok"], r["action"]), (True, "diagnose"), r); self.assertTrue(r["diagnosis"]["items"]); self.assertEqual(pw_files(), [])
+        self.assertTrue([l for l in text().splitlines() if l.startswith("pkexec ") and l.endswith(" diagnose")])
+        st, s6 = call("GET", "/system/disk-unlock"); self.assertEqual(s6["last_request"]["action"], "repair", "a check is not a change")
+        # a dismissed password dialog: ok=false with the reason, nothing ran, remembered as the last request
+        open(flag_dismiss, "w").close(); n_rep = text().count("argv=repair")
+        st, r = call("POST", "/system/disk-unlock", {"action": "repair"}); os.remove(flag_dismiss)
+        self.assertEqual(st, 200); self.assertFalse(r["ok"]); self.assertIn("dismissed the password dialog", r["error"]); self.assertEqual(text().count("argv=repair"), n_rep)
+        st, s7 = call("GET", "/system/disk-unlock"); self.assertEqual((s7["last_request"]["action"], s7["last_request"]["ok"]), ("repair", False)); self.assertIn("dismissed", s7["last_request"]["error"])
+        # the CLI: the real state in words, exit 1 on a mismatch, --json = the GET payload
+        r1 = subprocess.run([sys.executable, CLI, "disk-unlock", "status"], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr); self.assertIn("Start-up asks for the disk password: yes", r1.stdout); self.assertIn("Switch (Fab AI Controls", r1.stdout); self.assertIn("did NOT complete", r1.stdout)
+        out = self.cli("disk-unlock", "diagnose"); self.assertIn("diagnosis", out); self.assertTrue(out["diagnosis"]["items"])
+        open(flag_mismatch, "w").close()
+        r2 = subprocess.run([sys.executable, CLI, "disk-unlock", "status", "--refresh"], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r2.returncode, 1, r2.stdout + r2.stderr); self.assertIn("MISMATCH", r2.stdout); self.assertIn("fabos disk-unlock repair", r2.stdout); self.assertIn("Start-up asks for the disk password: yes", r2.stdout)
+        r3 = subprocess.run([sys.executable, CLI, "disk-unlock", "diagnose"], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r3.returncode, 1); self.assertIn("[FAIL]", r3.stdout); self.assertIn("What to do:", r3.stdout)
+        os.remove(flag_mismatch); call("GET", "/system/disk-unlock?refresh=1")
+        cli_block = open(CLI).read().split('elif a.cmd == "disk-unlock":')[1].split('elif a.cmd == "status":')[0].lower()   # this subcommand's wording only
+        for name_, low in (("cli disk-unlock block", cli_block), ("stub", open(stub).read().lower())):
+            self.assertFalse([w for w in ("chatgpt", "openai", "gpt", "snowui", "download") if w in low], name_)
 
 
 class StepwiseUnits(unittest.TestCase):

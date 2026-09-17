@@ -232,13 +232,27 @@ def quick_passes():
                 from PyQt6.QtCore import QTimer
                 du_state = {"encrypted": True, "device": "luks-abc", "prompt_at_boot": True, "consistent": True, "keyfile_present": False, "available": True, "risk": "CRITICAL"}
                 du_calls = []
+                du_extra = {}            # 1.0-8: GET also carries "diagnosis" + "last_request" (filled in the diagnosis scenarios below)
+                du_fail = {}             # {"dismiss": True} makes every POST fail like a dismissed polkit dialog
 
                 def du_api(method, path, body=None, timeout=5):
-                    if path != "/system/disk-unlock":
+                    if path.split("?")[0] != "/system/disk-unlock":
                         return real_api(method, path, body)
                     if method == "GET":
-                        return dict(du_state)
+                        return dict(du_state, **du_extra)
                     du_calls.append(dict(body))
+                    if du_fail.get("dismiss"):
+                        return {"ok": False, "prompt_at_boot": None, "error": "root execution refused: you dismissed the password dialog", "risk": "CRITICAL"}
+                    if body.get("action") == "diagnose":
+                        return {"ok": True, "action": "diagnose", "prompt_at_boot": du_state["prompt_at_boot"], "error": None, "risk": "CRITICAL", "exit_code": 0,
+                                "diagnosis": dict(du_extra.get("diagnosis") or {}, as_root=True, prompt_at_boot_expected=du_state["prompt_at_boot"], agrees=True, needs_root=False, reason="checked as administrator", repair=None)}
+                    if body.get("action") == "repair":
+                        d = du_extra.get("diagnosis") or {}
+                        d.update(prompt_at_boot_expected=du_state["prompt_at_boot"], agrees=True, as_root=True, boot_risk=False, reason="the start-up files match the setting again", repair=None)
+                        if d.get("items"):
+                            d["items"] = [dict(i, result="pass", detail="as the setting expects") if i["result"] == "fail" else i for i in d["items"]]
+                        return {"ok": True, "action": "repair", "prompt_at_boot": du_state["prompt_at_boot"], "error": None, "risk": "CRITICAL", "exit_code": 0,
+                                "detail": "the unlock key is stored in the start-up files on /boot again", "steps": ["repair: re-applying 'off' from the start", "update-initramfs -u -k all: ok", "DONE: the start-up files match the setting again"], "diagnosis": d}
                     if body.get("prompt_at_boot") is False and body.get("passphrase") != "fabos-test":
                         return {"ok": False, "prompt_at_boot": True, "error": "the passphrase was not accepted for luks-abc", "risk": "CRITICAL", "exit_code": 3}
                     du_state["prompt_at_boot"] = body["prompt_at_boot"]
@@ -298,7 +312,91 @@ def quick_passes():
                     sd4 = cc.SettingsDialog(w, settings, w.voice); sd4.show(); spin()
                     wait_for(lambda: sd4.boot_worker is None, "disk-unlock status (unencrypted)")
                     assert not sd4.boot_prompt.isEnabled() and not sd4.boot_prompt.isChecked() and sd4.boot_note.text() == cc.SettingsDialog.BOOT_NOT_ENCRYPTED, sd4.boot_note.text()
+                    assert "not encrypted" in sd4.boot_real.text() and "login screen" in sd4.boot_real.text() and 'href="howto"' in sd4.boot_real.text(), sd4.boot_real.text()
+                    assert not sd4.boot_details.isVisible() and not sd4.boot_notice.isVisible()
                     sd4.reject(); spin()
+                    # --- 1.0-8: the REAL state under the switch. agree: "yes — checked just now", no notice, Details collapsed with the items
+                    du_state.update(encrypted=True, prompt_at_boot=True)
+                    du_diag = {"encrypted": True, "device": "luks-abc", "switch": "on", "prompt_at_boot": True, "prompt_at_boot_expected": True, "agrees": True, "boot_risk": False,
+                               "needs_root": False, "as_root": False, "reason": "the start-up files match the setting: initrd.img-test has no unlock key inside", "repair": None,
+                               "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "booted_initrd": "/boot/initrd.img-test",
+                               "items": [{"id": "root_luks", "result": "pass", "label": "Root filesystem on an encrypted volume", "detail": "root is /dev/mapper/luks-abc, unlocked from UUID=abc"},
+                                         {"id": "initrd_key:test", "result": "pass", "label": "Start-up file for kernel test carries the unlock key: no", "detail": "as the setting expects — this is the one GRUB starts"}]}
+                    du_extra.update(diagnosis=du_diag, last_request=None)
+                    sd5 = cc.SettingsDialog(w, settings, w.voice); sd5.show(); spin()
+                    wait_for(lambda: sd5.boot_worker is None, "disk-unlock status (agree)")
+                    assert "Start-up asks for the disk password: <b>yes</b>" in sd5.boot_real.text() and "checked just now" in sd5.boot_real.text() and 'href="howto"' in sd5.boot_real.text(), sd5.boot_real.text()
+                    assert not sd5.boot_notice.isVisible() and not sd5.boot_fix.isVisible() and not sd5.boot_check.isVisible(), "no notice when the start-up files agree with the switch"
+                    assert sd5.boot_details.isVisible() and sd5.boot_items_form.rowCount() == 2 and not sd5.boot_details.is_open(), sd5.boot_details.form.rowCount()
+                    sd5.refit(); spin(); assert sd5.height() <= 560, "General tab with the real-state line: %d px" % sd5.height()
+                    pm = sd5.grab(); assert pm.save(os.path.join(OUT, "settings-startup-agree-%s.png" % name))
+                    # How do I…? opens the HOWTO (docs/HOWTO-disk-password.md) in a dialog
+                    seen_howto = {}
+
+                    def close_howto():
+                        for d in app.topLevelWidgets():
+                            if isinstance(d, cc.DiskUnlockHowTo) and d.isVisible():
+                                seen_howto["title"] = d.title.text(); seen_howto["text"] = d.view.toPlainText()
+                                pm_ = d.grab(); pm_.save(os.path.join(OUT, "settings-startup-howto-%s.png" % name)); seen_howto["size"] = (pm_.width(), pm_.height()); d.confirm_btn.click()
+                    QTimer.singleShot(300, close_howto)
+                    sd5.boot_real.linkActivated.emit("howto")
+                    assert seen_howto.get("title") == "How do I stop the disk password prompt?", seen_howto
+                    for must in ("Fab AI Controls", "Start-up", "1.0-7", "login", "Fix now"):
+                        assert must in seen_howto.get("text", ""), "HOWTO text lacks %r" % must
+                    print("[%s] Start-up HOWTO dialog rendered %dx%d (settings-startup-howto-%s.png)" % (name, seen_howto["size"][0], seen_howto["size"][1], name))
+                    sd5.reject(); spin()
+                    # disagree: the switch is off but the files still ask -> amber notice + Fix now; Fix now asks the passphrase, POSTs repair, shows the steps, clears the notice
+                    du_state["prompt_at_boot"] = False
+                    du_diag.update(switch="off", prompt_at_boot=False, prompt_at_boot_expected=True, agrees=False, reason="the switch is off but the start-up files still ask for the password: initrd.img-test does not carry the unlock key", repair="run 'repair' (Fix now)")
+                    du_diag["items"][1] = dict(du_diag["items"][1], result="fail", detail="but the setting is off: this file was built before the key was configured; 'repair' rebuilds it — this is the one GRUB starts")
+                    sd6 = cc.SettingsDialog(w, settings, w.voice); sd6.show(); spin()
+                    wait_for(lambda: sd6.boot_worker is None, "disk-unlock status (disagree)")
+                    assert not sd6.boot_prompt.isChecked() and sd6.boot_notice.isVisible() and sd6.boot_notice.text().startswith(cc.SettingsDialog.BOOT_MISMATCH_OFF), sd6.boot_notice.text()
+                    assert "does not carry the unlock key" in sd6.boot_notice.text() and sd6.boot_notice.styleSheet() == "color: %s;" % cc.AMBER, (sd6.boot_notice.text(), sd6.boot_notice.styleSheet())
+                    assert sd6.boot_fix.isVisible() and not sd6.boot_check.isVisible() and "Start-up asks for the disk password: <b>yes</b>" in sd6.boot_real.text(), sd6.boot_real.text()
+                    sd6.refit(); spin(); assert sd6.height() <= 560, "General tab with the mismatch notice: %d px" % sd6.height()
+                    pm = sd6.grab(); assert pm.save(os.path.join(OUT, "settings-startup-mismatch-%s.png" % name))
+                    sd6.boot_details.set_open(True); spin(); sd6.refit(); spin()
+                    assert sd6.boot_items_form.rowCount() == 2 and sd6.height() <= 560, "General tab with Details open: %d px" % sd6.height()
+                    pm = sd6.grab(); assert pm.save(os.path.join(OUT, "settings-startup-details-%s.png" % name))
+                    seen["act"] = "confirm"; seen["typed"] = "fabos-test"; seen.pop("title", None); n = len(du_calls)
+                    sd6.boot_fix.click()                        # -> the modal "Fix the start-up files?" (passphrase); drive() fills and confirms it
+                    wait_for(lambda: sd6.boot_worker is None and len(du_calls) > n, "disk-unlock repair")
+                    assert seen.get("title") == "Fix the start-up files?" and du_calls[-1] == {"action": "repair", "passphrase": "fabos-test"}, (seen.get("title"), du_calls[-1:])
+                    assert "fixed" in sd6.boot_note.text() and not sd6.boot_notice.isVisible() and not sd6.boot_fix.isVisible(), (sd6.boot_note.text(), sd6.boot_notice.text())
+                    assert sd6.boot_details.is_open() and sd6.boot_items_form.rowCount() >= 1 and "Start-up asks for the disk password: <b>no</b>" in sd6.boot_real.text(), sd6.boot_real.text()
+                    sd6.reject(); spin()
+                    # failed: a dismissed password dialog is said in RED under the row (not only in the info box) — and a fresh dialog shows the daemon's last_request in red
+                    du_state["prompt_at_boot"] = True
+                    du_diag.update(switch="on", prompt_at_boot=True, prompt_at_boot_expected=True, agrees=True, reason="the start-up files match the setting", repair=None)
+                    du_diag["items"][1] = dict(du_diag["items"][1], result="pass", detail="as the setting expects")
+                    du_fail["dismiss"] = True; seen.pop("info", None); n = len(du_calls)
+                    sd7 = cc.SettingsDialog(w, settings, w.voice); sd7.show(); spin()
+                    wait_for(lambda: sd7.boot_worker is None, "disk-unlock status (before the dismissed dialog)")
+                    sd7.boot_prompt.click()
+                    wait_for(lambda: sd7.boot_worker is None and len(du_calls) > n and "info" in seen, "disk-unlock off dismissed")
+                    assert sd7.boot_prompt.isChecked() and sd7.boot_notice.isVisible() and "dismissed the password dialog" in sd7.boot_notice.text() and "Enter your login password" in sd7.boot_notice.text(), sd7.boot_notice.text()
+                    assert sd7.boot_notice.styleSheet() == "color: %s;" % cc.RED and "not changed" in sd7.boot_note.text(), (sd7.boot_notice.styleSheet(), sd7.boot_note.text())
+                    pm = sd7.grab(); assert pm.save(os.path.join(OUT, "settings-startup-failed-%s.png" % name))
+                    sd7.reject(); spin(); du_fail.clear()
+                    du_extra["last_request"] = {"action": "off", "prompt_at_boot": False, "at": time.time() - 3600, "ok": False, "error": "root execution refused: you dismissed the password dialog", "exit_code": None}
+                    sd8 = cc.SettingsDialog(w, settings, w.voice); sd8.show(); spin()
+                    wait_for(lambda: sd8.boot_worker is None, "disk-unlock status (last_request failed)")
+                    assert sd8.boot_notice.isVisible() and "did not complete" in sd8.boot_notice.text() and "dismissed" in sd8.boot_notice.text() and "Nothing was changed" in sd8.boot_notice.text(), sd8.boot_notice.text()
+                    assert sd8.boot_notice.styleSheet() == "color: %s;" % cc.RED and not sd8.boot_fix.isVisible()
+                    sd8.reject(); spin(); du_extra["last_request"] = None
+                    # needs administrator rights: the line says so, "Check as administrator" POSTs {action: diagnose} and the complete verdict replaces it
+                    du_diag.update(prompt_at_boot_expected=None, agrees=None, needs_root=True, reason="cannot tell without administrator rights: initrd.img-test is root-only and unverified", repair="check as administrator")
+                    du_diag["items"][1] = dict(du_diag["items"][1], result="unknown", detail="the file is root-only and has changed since it was last verified: needs administrator rights")
+                    sd9 = cc.SettingsDialog(w, settings, w.voice); sd9.show(); spin()
+                    wait_for(lambda: sd9.boot_worker is None, "disk-unlock status (needs root)")
+                    assert "cannot tell without administrator rights" in sd9.boot_real.text() and sd9.boot_check.isVisible() and not sd9.boot_fix.isVisible() and sd9.boot_notice.isVisible(), (sd9.boot_real.text(), sd9.boot_notice.text())
+                    n = len(du_calls); sd9.boot_check.click()
+                    wait_for(lambda: sd9.boot_worker is None and len(du_calls) > n, "disk-unlock diagnose as root")
+                    assert du_calls[-1] == {"action": "diagnose"} and "checked just now as administrator" in sd9.boot_real.text() and "<b>yes</b>" in sd9.boot_real.text(), (du_calls[-1], sd9.boot_real.text())
+                    assert not sd9.boot_notice.isVisible() and not sd9.boot_check.isVisible(), sd9.boot_notice.text()
+                    sd9.reject(); spin()
+                    du_diag.update(prompt_at_boot_expected=True, agrees=True, needs_root=False, reason="the start-up files match the setting", repair=None)
                 finally:
                     poll.stop(); cc.api = real_api
                 # --- AI provider: dropdown, key, Check connection on the first level; model / endpoint / requirement under Advanced
