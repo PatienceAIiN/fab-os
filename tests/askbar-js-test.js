@@ -98,7 +98,7 @@ t("modes.js: tooltips, confirmations, failure lines and the strip's visibility r
   assert.ok(M.stripVisible(true, false, false, false, false) && M.stripVisible(false, true, false, false, false) && M.stripVisible(false, false, true, false, false));
   assert.ok(!M.stripVisible(false, false, false, false, false), "an idle, unfocused, closed bar hides the strip");
   assert.ok(!M.stripVisible(true, true, true, true, false), "compact form: never in the card");
-  assert.ok(!M.stripVisible(true, true, true, false, true), "service down / AI off / no provider: the notice takes the row, the strip waits");
+  assert.ok(!M.stripVisible(true, true, true, false, true), "service down: the notice takes the row, the strip waits (no provider / AI off only dim it)");
 });
 t("modes.js: the knob travels pad -> width - knob - pad (the same formula the Python switch paints with)", () => {
   const s = M.TOKENS.switch;

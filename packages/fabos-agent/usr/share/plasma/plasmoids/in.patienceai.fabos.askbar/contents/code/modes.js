@@ -99,7 +99,7 @@ function tooltip(key, on, threadId) {
 }
 // the strip is part of the bar's awake state: shown while the bar is awake (interacted with in the last 30 s), the field has
 // focus or a conversation is open; never in the compact (panel) card, where the popup's header carries it instead; and it yields
-// to a problem notice (`problem`: the agent service is down, System-Wide AI is off, no provider) — a switch could not be kept then
+// to the one notice that makes it pointless (`problem`: the agent service is down — a switch could not be kept then)
 function stripVisible(awake, focused, panelOpen, compact, problem) { return !compact && !problem && (awake || focused || panelOpen) }
 // knob x for an animation progress p in [0, 1] (the same formula the Python switch paints with)
 function knobX(p) { var s = TOKENS["switch"]; return s.pad + p * (s.width - s.knob - 2 * s.pad) }

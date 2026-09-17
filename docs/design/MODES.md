@@ -56,8 +56,8 @@ be identical. The two strips therefore cannot drift.
 **Home bar** (`contents/ui/ModeSwitch.qml`, `ModeStrip.qml`, wired in `main.qml`): the strip is part of the bar's *awake* state — it
 unfolds under the field (180 ms, the card grows with it) while the bar is awake (interacted with in the last 30 s), the field has focus
 or a conversation is open, and folds away otherwise; it sits in its own row aligned with the field's left edge, so it never overlaps the
-microphone or **Do it**. It yields to a problem notice (agent service down, System-Wide AI off, no provider): the status line carries
-the notice and the strip waits — a switch could not be kept then anyway. In the compact (panel) form the 36 px card has no room: the strip
+microphone or **Do it**. It yields to the one notice that makes it pointless — the agent service is down (a switch could not be kept
+then); with no provider or System-Wide AI off the strip stays, dimmed. In the compact (panel) form the 36 px card has no room: the strip
 is the popup's first header row. The strips are Loaders that exist only while shown, so a folded bar has no pointer area under the field. A toggle is
 applied at once (both knobs slide), persisted with ONE request — `PATCH /tasks/{root}` while a chat is open, `PUT /settings` otherwise —
 and confirmed in the status line; while the request is in flight no snapshot may write an older value back (`modeInflight`); a failure is

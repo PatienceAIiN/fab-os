@@ -32,7 +32,8 @@ pid = subprocess.check_output(["pgrep", "-x", "plasmashell"]).split()[0].decode(
 env = dict(l.split("=", 1) for l in open("/proc/%s/environ" % pid).read().split("\\0") if "=" in l)
 os.execvpe(sys.argv[1], sys.argv[1:], env)
 '''
-ACCENT = (59, 110, 245)          # #3B6EF5; a switch that is ON is a 40x22 pill of it (modes.js TOKENS.switch)
+ACCENT = (59, 110, 245)          # #3B6EF5; a switch that is ON is a 40x22 pill of it (modes.js TOKENS.switch). QEMU's screendump
+                                 # renders it darker (measured (48, 84, 184) on the first run), so accent_pills() matches "blue-dominant", not one value
 failures = 0; T0 = time.time()
 LOG = open(os.path.join(OUT, "vm-modes.log"), "a")
 def log(msg):
@@ -121,7 +122,8 @@ def accent_pills(im, region=None, wmin=37, wmax=43, hmin=20, hmax=24):
     for y in range(y0, y1):
         for x in range(x0, x1):
             r, g, b = px[x, y]
-            if abs(r - ACCENT[0]) <= 34 and abs(g - ACCENT[1]) <= 34 and abs(b - ACCENT[2]) <= 30:
+            # the accent as the screendump shows it: strongly blue, little red — (59,110,245) live, (48,84,184) through QEMU, hover-lifted too
+            if b >= 140 and b - r >= 70 and b - g >= 40 and r <= 130 and g <= 170:
                 mask.add((x, y))
     seen, boxes = set(), []
     for p in mask:
@@ -137,8 +139,11 @@ def accent_pills(im, region=None, wmin=37, wmax=43, hmin=20, hmax=24):
             boxes.append((min(xs), min(ys), bw, bh))
     return sorted(boxes, key=lambda b: (b[1], b[0]))
 def centre(b): return (b[0] + b[2] // 2, b[1] + b[3] // 2)
+def fabos(args):
+    """The fabos CLI inside the session's environment (it reads $XDG_RUNTIME_DIR/fabos-agent/token; a plain ssh command has no XDG_RUNTIME_DIR)."""
+    return vms("fabos " + args + " 2>&1")
 def settings():
-    try: return json.loads(vm("fabos settings --json"))
+    try: return json.loads(fabos("settings --json"))
     except ValueError: return {}
 def research_default():
     return str(settings().get("agent.research", "?"))
@@ -174,8 +179,8 @@ if not a.no_install:
     vms("systemctl --user daemon-reload; systemctl --user restart fabos-agent; sleep 2; kbuildsycoca6 --noincremental >/dev/null 2>&1; systemctl --user restart plasma-plasmashell; sleep 6")
     check(wait_for(lambda: "1" in vm("pgrep -x plasmashell >/dev/null && echo 1"), 60, 2) is not None, "plasmashell restarted with the new ask bar")
     time.sleep(4)
-st = wait_for(lambda: (lambda o: o if "capabilities" in o else None)(vm("fabos status --json")), 60, 2)
-check(st is not None, "fabos-agentd is the 1.0-8 daemon: /status carries `capabilities` " + (json.dumps(json.loads(st).get("capabilities")) if st else "(missing)"))
+st = wait_for(lambda: (lambda o: o if "capabilities" in o else None)(fabos("status --json")), 60, 2)
+check(st is not None, "fabos-agentd is the 1.0-8 daemon: /status carries `capabilities` " + (json.dumps(json.loads(st).get("capabilities")) if st else "(missing: %s)" % fabos("status --json").strip()[:160]))
 check(research_default() == "true", "fabos settings agent.research is true to begin with (got %s)" % research_default())
 
 # ---------------------------------------------------------------- the home bar
@@ -206,7 +211,8 @@ if len(pills) >= 2:
     check(v == "false", "fabos settings agent.research after the click: %s (no chat open -> the default for new chats)" % v)
     p2 = accent_pills(im2, bar_region)
     check(len(p2) == 1 and abs(p2[0][0] - computer[0]) <= 2, "one accent pill left (Computer use); Research's track is grey: %s" % p2)
-    caps = json.loads(vm("fabos status --json")).get("capabilities")
+    try: caps = json.loads(fabos("status --json")).get("capabilities")
+    except ValueError: caps = None
     check(caps == {"research": False, "computer_use": True}, "/status.capabilities follows: %s" % json.dumps(caps))
     q.click(rx, ry, W, H); time.sleep(0.6)                # and back on
     q.move(W - 2, 2, W, H); time.sleep(0.3)
@@ -225,17 +231,26 @@ if len(pills) >= 2:
 
 # ---------------------------------------------------------------- Fab AI Controls
 log("== Fab AI Controls: the same strip in the chat header and the composer; click the composer's Research switch")
-vms("pkill -f command_center.py; sleep 1; setsid -f fabos-command-center >/dev/null 2>&1")
+vms("pkill -f command_center.py; sleep 1; rm -f /tmp/r8-controls.log; setsid -f fabos-command-center > /tmp/r8-controls.log 2>&1")
 check(wait_for(lambda: "1" in vm("pgrep -f 'command_center.py' >/dev/null && echo 1"), 30, 1) is not None, "Fab AI Controls process is up")
-time.sleep(8)
-q.move(W - 2, 2, W, H); time.sleep(0.3)
+# the window takes its time on a 2-vCPU guest with a cold cache: poll the screen for the composer strip (up to 60 s), then read the log
+def controls_pills():
+    q.move(W - 2, 2, W, H); time.sleep(0.3)
+    im, _ = shot("controls-poll")
+    found = [p for p in accent_pills(im) if p[1] > H * 0.55]
+    return (im, found) if len(found) >= 2 else None
+got = wait_for(controls_pills, 60, 4)
+alive = "1" in vm("pgrep -f 'command_center.py' >/dev/null && echo 1")
+clog = vm("tail -n 12 /tmp/r8-controls.log 2>/dev/null").strip()
+open(os.path.join(OUT, "controls-stderr.log"), "w").write(vm("cat /tmp/r8-controls.log 2>/dev/null"))
+check(alive, "Fab AI Controls still running once its window is up" + ("" if alive else " — its log: " + clog[:400].replace("\n", " | ")))
 im5, _ = shot("controls-both-on")
 spectacle("controls-both-on")
 pills5 = accent_pills(im5)
 log("  accent pills on screen: %s" % pills5)
 lower = [p for p in pills5 if p[1] > H * 0.55]
 upper = [p for p in pills5 if p[1] <= H * 0.55]
-check(len(lower) >= 2, "the composer row shows two switches ON: %s" % lower)
+check(len(lower) >= 2, "the composer row shows two switches ON: %s%s" % (lower, "" if lower else " (log: " + clog[:300].replace("\n", " | ") + ")"))
 if upper:
     log("  header strip pills too (window wide enough): %s" % upper)
 if len(lower) >= 2:
@@ -267,8 +282,8 @@ agent_log = vm("journalctl --user -b --no-pager -o cat -u fabos-agent 2>/dev/nul
 check("Traceback" not in agent_log, "no Python traceback in the fabos-agent journal")
 open(os.path.join(OUT, "fabos-agent-journal.log"), "w").write(agent_log)
 open(os.path.join(OUT, "plasmashell-journal.log"), "w").write(vm("journalctl --user -b --no-pager -o short-iso _COMM=plasmashell 2>/dev/null | tail -150", timeout=120))
-open(os.path.join(OUT, "fabos-settings.json"), "w").write(vm("fabos settings --json"))
-open(os.path.join(OUT, "fabos-status.json"), "w").write(vm("fabos status --json"))
-open(os.path.join(OUT, "fabos-log.json"), "w").write(vm("fabos log --json --limit 40"))
+open(os.path.join(OUT, "fabos-settings.json"), "w").write(fabos("settings --json"))
+open(os.path.join(OUT, "fabos-status.json"), "w").write(fabos("status --json"))
+open(os.path.join(OUT, "fabos-log.json"), "w").write(fabos("log --json --limit 40"))
 log("VM MODES DONE failures=%d" % failures)
 sys.exit(1 if failures else 0)

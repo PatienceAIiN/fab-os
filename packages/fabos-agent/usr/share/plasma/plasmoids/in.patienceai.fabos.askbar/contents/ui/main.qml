@@ -699,7 +699,7 @@ PlasmoidItem {
                                // own row (never over the mic or Do it); the compact card has no room, so there it is the popup's header row
                 Layout.fillWidth: true
                 Layout.leftMargin: (root.compact ? 22 : 32) + Kirigami.Units.smallSpacing * 2
-                readonly property bool problem: !(root.configured && root.aiEnabled && root.daemonUp)   // the status line carries a notice instead; a switch could not be kept
+                readonly property bool problem: !root.daemonUp   // the service is down: its notice takes the row and a switch could not be kept anyway (no provider / AI off only dim the strip)
                 readonly property bool shown: Modes.stripVisible(root.markAwake, field.activeFocus, root.panelMode !== "closed", root.compact, problem)
                 implicitHeight: shown ? Modes.TOKENS.strip.height : 0
                 visible: root.onDesktop && implicitHeight > 0.5
