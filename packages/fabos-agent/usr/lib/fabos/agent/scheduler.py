@@ -788,11 +788,12 @@ class ScheduleStore:
         return True
 
     def roll_forward(self, item, after=None):
-        """Move a repeating item to its next occurrence after `after` (default now). Returns the updated item."""
+        """Move a repeating item to its next occurrence after `after` (default now) — and always past its current time, so Done on
+        this week's review (still ahead) means next week's. Returns the updated item."""
         tz = self.tz()
         after = after or dt.datetime.now(tz)
         when = dt.datetime.fromtimestamp(item["when_utc"], tz)
-        nxt = next_occurrence(when, item["repeat"], after, weekday=item.get("rep_weekday"), dom=item.get("rep_dom"))
+        nxt = next_occurrence(when, item["repeat"], max(after, when), weekday=item.get("rep_weekday"), dom=item.get("rep_dom"))
         self.s.q("UPDATE schedule SET when_utc=?, fired=NULL, snoozed_until=NULL, status='pending', updated=? WHERE id=?", nxt.timestamp(), time.time(), item["id"])
         return self.get(item["id"])
 

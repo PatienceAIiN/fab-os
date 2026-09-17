@@ -4143,22 +4143,30 @@ class ScheduleRow(QFrame):
         h = QHBoxLayout(self)
         h.setContentsMargins(12, 6, 6, 6)
         h.setSpacing(10)
-        self.time = QLabel(item["time_text"] if section == "today" else item["when_text"])
+        same_day = section == "today" and item.get("day_text") == "Today"          # an overdue item from another day keeps its day
+        self.time = QLabel(item["time_text"] if same_day else item["when_text"])
         self.time.setObjectName("schedTime")
-        self.time.setMinimumWidth(64 if section == "today" else 150)
+        self.time.setMinimumWidth(64 if same_day else 150)
         h.addWidget(self.time, 0)
         self.title = QLabel(item["title"])
         self.title.setObjectName("rowTitle")
         self.title.setWordWrap(True)
         self.title.setToolTip((item.get("notes") or "") + (("\n" + item["when_text"]) if section == "today" else ""))
         h.addWidget(self.title, 1)
-        for kind, text in ((("missed", "missed") if item["status"] == "missed" else None), (("repeat", item["repeat_text"]) if item.get("repeat_text") else None),
-                           (("mail", "from mail") if item.get("source") == "mail" else None), (("dismissed", "dismissed") if item["status"] == "dismissed" else None)):
-            if kind:
-                b = QLabel(text)
-                b.setObjectName("schedBadge")
-                b.setProperty("kind", kind)
-                h.addWidget(b, 0)
+        badges = []
+        if item["status"] == "missed":
+            badges.append(("missed", "missed"))
+        if item.get("repeat_text"):
+            badges.append(("repeat", item["repeat_text"]))
+        if item.get("source") == "mail":
+            badges.append(("mail", "from mail"))
+        if item["status"] == "dismissed":
+            badges.append(("dismissed", "dismissed"))
+        for kind, text in badges:
+            b = QLabel(text)
+            b.setObjectName("schedBadge")
+            b.setProperty("kind", kind)
+            h.addWidget(b, 0)
         self.buttons = {}
         if item["status"] in ("pending", "missed"):
             specs = (("check", "Done", lambda: self.done.emit(item["id"])), ("edit", "Edit time or repeat", lambda: self.edit.emit(item["id"])), ("delete", "Remove", lambda: self.remove.emit(item["id"])))
@@ -4230,6 +4238,7 @@ class SchedulePage(QWidget):
         super().__init__(parent)
         self.win = win
         self.items = []
+        self.rows = {}                  # item id -> ScheduleRow | ScheduleEditor (rebuilt on every load)
         self.meta = {}
         self.clock = "24"
         self.editing = None

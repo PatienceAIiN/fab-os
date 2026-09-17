@@ -274,7 +274,9 @@ class StoreAndLoop(unittest.TestCase):
         loop.tick_once(NOW + dt.timedelta(minutes=1))
         self.assertEqual(len(self.notifier.sent), 2, "a fired reminder does not fire again")
         # the buttons: Done completes (the repeating Gym rolls to Friday 10:00), Snooze re-arms 10 minutes later, Open opens the tab
-        loop.on_action(("item", g["id"]), "done"); self.assertEqual(s.get(g["id"])["when_local"][:16], "2026-09-18T10:00")
+        loop.on_action(("item", g["id"]), "done")                                  # the button uses the real clock: rolled past its time, a done copy left
+        self.assertGreater(s.get(g["id"])["when_utc"], g["when_utc"]); self.assertEqual([i["title"] for i in s.list("done")], ["Gym"])
+        self.assertEqual(s.complete(s.add("Gym 2", L(2026, 9, 17, 10), repeat="weekdays")["id"], NOW)["when_local"][:16], "2026-09-18T10:00")
         loop.on_action(("item", a["id"]), "snooze")
         self.assertIsNone(s.get(a["id"])["fired"]); self.assertGreater(s.get(a["id"])["snoozed_until"], time.time() + 9 * 60)
         loop.on_action(("item", a["id"]), "open"); self.assertEqual(len(self.opened), 1)
