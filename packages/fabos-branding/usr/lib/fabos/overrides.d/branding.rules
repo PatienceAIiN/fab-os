@@ -1,0 +1,44 @@
+# @DISTRO_NAME@ names for XDG data files the generic rebrand pass leaves alone (read by /usr/lib/fabos/rebrand-overrides).
+# <subdir>|<basename>|<Name>|<GenericName>|<Comment>      or      <subdir>|<basename>|HIDE
+# Hidden desktop entries (NoDisplay=true) whose Name is still what notifications, the task switcher and the window
+# title bar show for that app.
+applications|org.kde.kcolorschemeeditor.desktop|Colour Scheme Editor||
+applications|ktelnetservice6.desktop|Telnet Handler||
+applications|org.kde.kfontinst.desktop|Font Installer||
+applications|org.kde.knetattach.desktop|Network Folder Wizard||
+applications|org.kde.plasma.settings.open.desktop|Open Fab Settings||
+applications|org.kde.plasmashell.desktop|@DISTRO_NAME@ Desktop||
+applications|org.kde.plasma.emojier.desktop|Emoji Picker||
+applications|org.kde.plasma.browser_integration.host.desktop|Browser Integration||
+applications|org.kde.kscreen.desktop|Display Configuration||
+applications|org.kde.kwin.desktop|Window Manager||
+applications|org.kde.polkit-kde-authentication-agent-1.desktop|@DISTRO_NAME@ Authentication||
+applications|org.kde.kglobalacceld.desktop|Global Shortcuts Service||
+applications|org.kde.xembedsniproxy.desktop|Status Icon Proxy||
+applications|org.kde.kaccess.desktop|Accessibility Service||
+applications|org.kde.plasma-fallback-session-restore.desktop|Session Restore||
+applications|org.kde.plasma-discover.notifier.desktop|Fab Software Updater||
+applications|org.kde.kmenuedit.desktop|Fab Menu Editor|Menu Editor|
+applications|org.kde.kwalletd6.desktop|Fab Wallet Service||
+applications|org.kde.ksecretd.desktop|Fab Wallet Service||
+applications|kcm_kwin_scripts.desktop|Window Scripts||
+applications|kcm_kwinsupportinfo.desktop|Window Manager Support Information||
+applications|kcm_kamera.desktop|Digital Camera||Set up a digital camera connected over USB (gPhoto)
+# Global-shortcut components (Fab Settings > Shortcuts): generic descriptors stay generic
+kglobalaccel|systemsettings.desktop|Fab Settings|Settings|
+kglobalaccel|org.kde.plasma-systemmonitor.desktop|Fab Monitor|Resource Monitor|
+# KDE developer web shortcuts (Fab Settings > Web Search Keywords; "kde:", "bug:", "invent:" ...): not part of the product
+kf6/searchproviders|bug.desktop|HIDE
+kf6/searchproviders|invent.desktop|HIDE
+kf6/searchproviders|invent_issues.desktop|HIDE
+kf6/searchproviders|invent_mr.desktop|HIDE
+kf6/searchproviders|invent_repo.desktop|HIDE
+kf6/searchproviders|kde.desktop|HIDE
+kf6/searchproviders|kde_apps.desktop|HIDE
+kf6/searchproviders|kde_forums.desktop|HIDE
+kf6/searchproviders|kde_store.desktop|HIDE
+kf6/searchproviders|kde_techbase.desktop|HIDE
+kf6/searchproviders|kde_userbase.desktop|HIDE
+kf6/searchproviders|kreddit.desktop|HIDE
+kf6/searchproviders|kubuntu.desktop|HIDE
+kf6/searchproviders|ubuntu.desktop|HIDE

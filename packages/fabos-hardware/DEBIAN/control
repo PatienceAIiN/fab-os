@@ -1,0 +1,18 @@
+Package: fabos-hardware
+Version: @DISTRO_VERSION@-@PKG_REVISION@
+Section: misc
+Priority: optional
+Architecture: all
+Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Homepage: @HOME_URL@
+Depends: fabos-branding, fprintd, libpam-fprintd, libfprint-2-2, libfprint-2-tod1, libpam-runtime, v4l-utils, pipewire, wireplumber, libspa-0.2-libcamera, gstreamer1.0-pipewire, gstreamer1.0-libcamera, plasma-camera, xdg-desktop-portal, xdg-desktop-portal-kde, bluez, polkitd
+Recommends: fwupd, libcamera-tools
+Description: @DISTRO_NAME@ laptop hardware: fingerprint sign-in, camera and microphone
+ Fingerprint readers (libfprint + fprintd, Synaptics/Goodix TOD drivers): enrol
+ in Fab Settings > Users; sign in, unlock, sudo and authorisation prompts take a
+ fingerprint OR the password, never the fingerprint alone (pam-auth-update
+ profile "fprintd" on top of "unix"). Cameras: the PipeWire/libcamera stack,
+ v4l-utils, and Fab Camera (the Plasma Camera app under its Fab OS name) for
+ built-in and USB webcams on Wayland. Microphone and camera: input-volume /
+ mute row and privacy glyphs in the top-bar quick settings (fabos-desktop).
+ Details and limits: docs/HARDWARE.md.

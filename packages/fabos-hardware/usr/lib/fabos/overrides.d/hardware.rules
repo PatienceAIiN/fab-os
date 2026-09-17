@@ -1,0 +1,4 @@
+# fabos-hardware: Fab OS names for the hardware apps (read by /usr/lib/fabos/rebrand-overrides, fabos-branding).
+# <subdir>|<basename>|<Name>|<GenericName>|<Comment>
+applications|org.kde.plasma.camera.desktop|Fab Camera|Camera|Take photos and record video with the built-in or a USB camera
+applications|org.kde.kamoso.desktop|Fab Camera|Camera|Take photos and record video with the built-in or a USB camera

@@ -1,0 +1,2 @@
+# Any install/upgrade of this package activates fabos-updates' post-upgrade step (records what changed, advises the user).
+activate-noawait fabos-postupgrade

@@ -35,7 +35,11 @@ Facts and obligations:
   permitted; the licences are unchanged and the copyright notices in `/usr/share/doc/*/copyright` are untouched.
 - Every patched file keeps its original next to it as `<file>.fabos-orig`; patching always restarts from the
   original, so a changed rule set converges, and files that leave the target list are restored automatically.
-  `dpkg --verify` reports patched files as modified, which is expected.
+  `dpkg --verify` reports patched files as modified, which is expected. When apt upgrades the owning package, the
+  kept copy is the old build: the script recognises that through dpkg's own md5sums for the file, drops the stale
+  copy and patches the new build afresh (1.0-8; before that the old build's patched copy was written back over the
+  new file — `tests/rebrand-binaries-upgrade-test.sh`). A file whose installed copy and kept copy both differ from
+  dpkg's record is left alone with a warning; `apt-get install --reinstall <package>` is the clean way back.
 - Corresponding source for the unmodified packages is offered under `legal/SOURCE-OFFER.md`; the modification
   itself is this script.
 - Only display strings are changed. No functional identifiers are touched: UTF-8 rules must contain a space or be a

@@ -9,6 +9,7 @@ function empty() {
     return { wifiRadio: null, wifiSsid: "", wifiSignal: -1, wifiLocked: false, wifiActive: null, connType: "", connName: "", connDev: "",
              iface: "", ip4: "", btPresent: false, btPowered: null, btConnected: 0,
              volume: -1, muted: false, hasAudio: false,
+             micVolume: -1, micMuted: false, hasMic: false, micUsed: 0, camUsed: 0, camPresent: false, micApps: "", camApps: "",
              batPct: -1, batStatus: "", batTime: "", hasBattery: false, profile: "",
              blCur: -1, blMax: 0, hasBacklight: false,
              nightEnabled: null, nightRunning: false,
@@ -119,6 +120,14 @@ function fromJson(j) {
     s.btConnected = typeof bt.connected === "number" ? bt.connected : 0
     var m = /Volume:\s*([0-9.]+)/.exec(String(j.volume || ""))
     if (m) { s.volume = Math.round(parseFloat(m[1]) * 100); s.hasAudio = true; s.muted = String(j.volume).indexOf("MUTED") >= 0 }
+    var mm = /Volume:\s*([0-9.]+)/.exec(String(j.mic || ""))
+    if (mm) { s.micVolume = Math.round(parseFloat(mm[1]) * 100); s.hasMic = true; s.micMuted = String(j.mic).indexOf("MUTED") >= 0 }
+    var pr = j.privacy || {}
+    s.micUsed = typeof pr.mic_used === "number" ? pr.mic_used : 0
+    s.camUsed = typeof pr.cam_used === "number" ? pr.cam_used : 0
+    s.camPresent = pr.cam_present === 1 || pr.cam_present === true
+    s.micApps = String(pr.mic_apps || "")
+    s.camApps = String(pr.cam_apps || "")
     s.profile = String(j.profile || "")
     var n = j.night
     if (n && typeof n.enabled === "boolean") { s.nightEnabled = n.enabled; s.nightRunning = n.running === true }
@@ -184,6 +193,11 @@ function parseKeyValues(text) {
         case "volume": {   // "Volume: 0.45" or "Volume: 0.45 [MUTED]"
             var m = /Volume:\s*([0-9.]+)/.exec(v)
             if (m) { s.volume = Math.round(parseFloat(m[1]) * 100); s.hasAudio = true; s.muted = v.indexOf("MUTED") >= 0 }
+            break
+        }
+        case "mic": {      // the default source, same form
+            var mm = /Volume:\s*([0-9.]+)/.exec(v)
+            if (mm) { s.micVolume = Math.round(parseFloat(mm[1]) * 100); s.hasMic = true; s.micMuted = v.indexOf("MUTED") >= 0 }
             break
         }
         case "bat_pct": s.batPct = parseInt(v, 10); s.hasBattery = !isNaN(s.batPct); if (!s.hasBattery) s.batPct = -1; break
@@ -271,6 +285,30 @@ function volumeIcon(vol, muted) {
     return "audio-volume-high"
 }
 
+// microphone glyphs (status/ names: microphone-sensitivity-*): muted, low, medium, high
+function micIcon(vol, muted) {
+    if (muted || vol === 0) return "microphone-sensitivity-muted"
+    if (vol < 34) return "microphone-sensitivity-low"
+    if (vol < 67) return "microphone-sensitivity-medium"
+    return "microphone-sensitivity-high"
+}
+
+// Privacy line of the microphone row / bar tooltip: what is recording or filming right now.
+// "1 app is using the microphone (Firefox)" — the names come from PipeWire (application.name; Fab Voice's wake-word
+// listener records through pw-record and shows as "pw-record"), so the user can tell the always-on listener from a call.
+function privacyLine(s) {
+    var parts = []
+    if (s.micUsed > 0) parts.push((s.micUsed === 1 ? "1 app is using the microphone" : s.micUsed + " apps are using the microphone") + (s.micApps ? " (" + s.micApps + ")" : ""))
+    if (s.camUsed > 0) parts.push((s.camUsed === 1 ? "1 app is using the camera" : s.camUsed + " apps are using the camera") + (s.camApps ? " (" + s.camApps + ")" : ""))
+    return parts.join(" · ")
+}
+function micLine(s) {
+    if (!s.hasMic) return "No microphone"
+    var t = s.micMuted ? "Muted" : s.micVolume + "%"
+    if (s.micUsed > 0) t += " · in use"
+    return t
+}
+
 // status/ names only: "preferences-system-bluetooth*" also exists as a colourful app tile in the FabOS theme and the
 // icon loader would pick that over the monochrome glyph.
 function bluetoothIcon(s) {
@@ -325,13 +363,15 @@ function nightLine(s, inhibited) {
 // in the pane's footer and the power profile in the battery card, so those two tiles and Notifications are optional
 // extras: "+ tile" chips in edit mode / the Tiles page). Persisted as a JSON array of {id, size, enabled}; unknown ids
 // are dropped, tiles added in a later version are appended with their defaults, so an old saved layout never loses a
-// new tile.
+// new tile (the Microphone row, added in 1.0-8, lands at the end of a layout saved by 1.0-7 and in its default slot
+// under Volume on a fresh one).
 var COLUMNS = 3
 var SIZES = ["small", "medium", "wide"]
 var TILES = [
     { id: "wifi",          title: "Wi-Fi",          size: "medium", height: 76, enabled: true },
     { id: "bluetooth",     title: "Bluetooth",      size: "small",  height: 76, enabled: true },
     { id: "volume",        title: "Volume",         size: "wide",   height: 64, enabled: true },
+    { id: "mic",           title: "Microphone",     size: "wide",   height: 64, enabled: true },
     { id: "brightness",    title: "Brightness",     size: "wide",   height: 64, enabled: true },
     { id: "battery",       title: "Battery",        size: "medium", height: 96, enabled: true },
     { id: "dnd",           title: "Do Not Disturb", size: "small",  height: 76, enabled: true },

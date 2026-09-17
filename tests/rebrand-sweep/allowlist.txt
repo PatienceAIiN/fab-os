@@ -1,0 +1,16 @@
+# Allowlist of tests/rebrand-sweep-vm.sh — every line the guest-side sweep (tests/rebrand-sweep/inner.py) may still
+# report. Format: <extended regex matched against the whole TSV line "surface<TAB>file<TAB>key<TAB>text">  # reason.
+# Only two kinds of entry belong here: (a) credits / component names we must not or do not rename — legal attribution
+# (KDE e.V. trademarks stay credited: legal/TRADEMARKS.md, ATTRIBUTIONS.md), theme and library names that are the name
+# of the thing, not a brand on our product; (b) third-party apps we do not rename. Anything else the sweep finds FAILS.
+#
+# (a) Breeze is the name of KDE's theme family; the Fab OS theme derives from it (ATTRIBUTIONS.md) and the stock Breeze
+#     entries stay selectable in Fab Settings > Appearance as what they are. "by the KDE VDG" is the authorship credit
+#     of those theme packages.
+^lnf	.*/(breeze|breeze-dark|breeze-light|default|org\.kde\.breeze[a-z]*\.desktop)/metadata\.json	KPlugin\.(Name|Description)	Breeze.*	# Breeze theme packages: component names + their KDE VDG authorship credit
+^kwin	.*/org\.kde\.breeze\.so	KPlugin\.(Name|Description)	.*Breeze.*	# the Breeze window decoration plugin: the name of the decoration, credited upstream
+^kwin	.*/kcm_breezedecoration\.so	KPlugin\.Name	Breeze Window Decoration	# its settings module carries the decoration's name
+^notifier	.*/(breezestyleconfig|kcm_breezedecoration)\.desktop	Name	Breeze .*	# hidden settings launchers of the Breeze style / decoration (never shown as an app name)
+^lnf	.*/plasma/desktoptheme/FabOS/metadata\.json	KPlugin\.Description	Fab OS rounded, translucent Plasma surfaces	# OUR OWN wording, not a credit: reworded to "desktop surfaces" in brand/gen/plasma_theme.py; this entry only covers disks whose assets were generated before that and goes when the regenerated fabos-desktop ships
+^launcher	.*/(systemsettings|kdesystemsettings)\.desktop	GenericName	System Settings	# generic descriptor under the visible name "Fab Settings" (what the launcher reads aloud, not a brand)
+^launcher	.*/org\.kde\.plasma-systemmonitor\.desktop	GenericName	System Monitor	# generic descriptor under the visible name "Fab Monitor"

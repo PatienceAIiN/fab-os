@@ -1,0 +1,47 @@
+#!/bin/sh
+# @DISTRO_NAME@: Fab names for the XDG data files the generic rebrand pass (/usr/lib/fabos/rebrand-desktop-entries,
+# fabos-desktop) does not reach — hidden desktop entries whose Name still shows in notifications and the task switcher,
+# shortcut components, KDE developer web shortcuts, and the entries other Fab OS packages bring (fabos-hardware: the
+# camera app). Rules live in /usr/lib/fabos/overrides.d/*.rules, one per line:
+#
+#   <subdir>|<basename>|<Name>|<GenericName>|<Comment>     rewrite those keys of the main group (empty field = keep;
+#                                                          every localised Name[xx]= variant follows the new Name)
+#   <subdir>|<basename>|HIDE                               Hidden=true stub: the entry disappears (web shortcuts, ...)
+#
+# The copy is written to /usr/share/fabos/<subdir>/<basename>, taken from the first existing source along
+# /usr/local/share (the generic pass's output) then /usr/share — so a rule always starts from the current upstream
+# file, and an upstream update is picked up at the next run (apt Post-Invoke hook 91fabos-rebrand-overrides). The
+# session puts /usr/share/fabos first in XDG_DATA_DIRS (plasma-workspace/env/30-fabos-data-dirs.sh), which is what
+# makes these copies win. Files written by an earlier run whose rule is gone are removed (manifest in /var/lib/fabos).
+# Safe: no upstream file is touched; delete /usr/share/fabos/<subdir> to revert. Idempotent. Never fails an upgrade.
+set -u
+OUT=/usr/share/fabos; MANIFEST=/var/lib/fabos/overrides.list; NEW="$MANIFEST.new"
+mkdir -p "$OUT" /var/lib/fabos; : > "$NEW"
+rules=$(cat /usr/lib/fabos/overrides.d/*.rules 2>/dev/null | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$')
+[ -n "$rules" ] || { mv -f "$NEW" "$MANIFEST"; exit 0; }
+printf '%s\n' "$rules" | while IFS='|' read -r sub base name generic comment; do
+  [ -n "$sub" ] && [ -n "$base" ] || continue
+  dst="$OUT/$sub/$base"; mkdir -p "$OUT/$sub"
+  if [ "$name" = HIDE ]; then
+    printf '[Desktop Entry]\nType=Service\nHidden=true\n' > "$dst.tmp" && mv -f "$dst.tmp" "$dst" && echo "$dst" >> "$NEW"
+    continue
+  fi
+  src=""
+  for d in /usr/local/share /usr/share; do [ -f "$d/$sub/$base" ] && { src="$d/$sub/$base"; break; }; done
+  [ -n "$src" ] || continue     # the upstream package is not installed: nothing to override
+  awk -v name="$name" -v generic="$generic" -v comment="$comment" '
+    /^\[/ { main = ($0 == "[Desktop Entry]") }
+    main && name != ""    && /^Name(\[[^]]+\])?=/        { sub(/=.*/, "=" name) }
+    main && generic != "" && /^GenericName(\[[^]]+\])?=/ { sub(/=.*/, "=" generic) }
+    main && comment != "" && /^Comment(\[[^]]+\])?=/     { sub(/=.*/, "=" comment) }
+    { print }' "$src" > "$dst.tmp" && mv -f "$dst.tmp" "$dst" && echo "$dst" >> "$NEW"
+done
+# stale copies from an earlier rule set
+if [ -f "$MANIFEST" ]; then
+  while IFS= read -r old; do
+    [ -n "$old" ] && ! grep -qxF "$old" "$NEW" && rm -f "$old"
+  done < "$MANIFEST"
+fi
+mv -f "$NEW" "$MANIFEST"
+command -v update-desktop-database >/dev/null 2>&1 && [ -d "$OUT/applications" ] && update-desktop-database -q "$OUT/applications" 2>/dev/null
+exit 0

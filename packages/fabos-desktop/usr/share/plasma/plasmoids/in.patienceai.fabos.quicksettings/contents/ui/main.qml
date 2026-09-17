@@ -17,8 +17,8 @@ import "status.js" as Status
 // The pane (v3): a dropdown card 36 gridUnits wide at the Medium bar size (32 / 40 at Small / Large), top edge flush
 // with the bar, radius 24 at the bottom corners, aligned to the bar's right edge with a 12 px margin (the transparent
 // dialog window is clamped to the screen edge; the card sits `edge` px inside it). Padding 20, a THREE-column tile grid
-// with 12 px gaps (status.js layoutTiles): Wi-Fi (2 cols) + Bluetooth · volume slider (full width) · brightness slider ·
-// Battery card (2 cols: percentage 28/700, state, time, power-profile segmented control) + Do Not Disturb · Night light ·
+// with 12 px gaps (status.js layoutTiles): Wi-Fi (2 cols) + Bluetooth · volume slider (full width) · microphone slider
+// (full width; its glyph mutes the default source, hidden without a microphone) · brightness slider · Battery card (2 cols: percentage 28/700, state, time, power-profile segmented control) + Do Not Disturb · Night light ·
 // Screenshot · Settings; footer: the network row (interface · IP · live ↓ ↑) and Edit (pencil) + All settings. Inter:
 // titles 15/600, detail 13, big numbers 28/700. Tiles radius 16, 4 % tint, accent when on, 120 ms hover lift; every
 // colour from Kirigami.Theme. The notification history is the same width with 64 px rows and 14 px body text.
@@ -42,8 +42,12 @@ import "status.js" as Status
 // every `pollSeconds` (default 5 s) and the full probe (NetworkManager, BlueZ, volume, power profile, night light)
 // every `fullSeconds` (30 s) plus once whenever a light probe sees the link change; while the pane is open the full
 // probe runs every 2 s; after each action the full probe runs once, 400 ms later. Budget: docs/LOW-RAM.md "Idle budget".
-// Actions: nmcli radio wifi, bluetoothctl power, wpctl set-volume/set-mute, powerprofilesctl set, kwriteconfig6
-// (night light), powerdevil's ScreenBrightness D-Bus (BrightnessBridge.qml). Notifications + Do Not Disturb:
+// Actions: nmcli radio wifi, bluetoothctl power, wpctl set-volume/set-mute (@DEFAULT_AUDIO_SINK@ for the volume row,
+// @DEFAULT_AUDIO_SOURCE@ for the microphone row), powerprofilesctl set, kwriteconfig6 (night light), powerdevil's
+// ScreenBrightness D-Bus (BrightnessBridge.qml). Privacy (1.0-8): the full probe counts PipeWire capture streams that are
+// running (Stream/Input/Audio = something records the microphone, Stream/Input/Video = something films through PipeWire)
+// and this user's processes holding /dev/video*; the bar then shows a microphone glyph (also while the microphone is
+// muted, like the speaker glyph) and a camera glyph, each with a tooltip saying how many apps are using the device. Notifications + Do Not Disturb:
 // org.kde.notificationmanager (the model the stock history uses; same process, same server). The stock applets stay
 // reachable: a tile's chevron opens `plasmawindowed <applet>`.
 PlasmoidItem {
@@ -81,6 +85,7 @@ PlasmoidItem {
     property real netPrevAt: 0
     readonly property bool speedVisible: Plasmoid.configuration.showSpeed && st.iface !== ""   // always while a link is up, 0 kB/s included
     property bool volumeFlash: false
+    property bool micFlash: false
     property string paneMode: "closed"       // closed | settings | notifications
     property string paneContent: "settings"  // what the card holds: set when a pane opens, KEPT while it closes and after (the window must not resize while the card slides up)
     property bool closing: false
@@ -128,7 +133,10 @@ PlasmoidItem {
             s = Status.mergeLight(root.st, s)
             if (linkChanged && root.autoRefresh && !root.paneOpen) refreshTimer.restart()   // joined / left a network elsewhere: one full probe now
         }
-        else if (root.st.hasAudio && s.hasAudio && (s.volume !== root.st.volume || s.muted !== root.st.muted)) root.flashVolume()
+        else {
+            if (root.st.hasAudio && s.hasAudio && (s.volume !== root.st.volume || s.muted !== root.st.muted)) root.flashVolume()
+            if (root.st.hasMic && s.hasMic && (s.micVolume !== root.st.micVolume || s.micMuted !== root.st.micMuted)) root.flashMic()
+        }
         root.st = s
         root.applyNet(Status.counters(s), Date.now())
         if (!s.light) root.refreshDnd()
@@ -148,6 +156,13 @@ PlasmoidItem {
     function setVolume(pct) { root.pendingVolume = Math.max(0, Math.min(100, Math.round(pct))); volumeFlush.restart() }
     Timer { id: volumeFlush; interval: 120; onTriggered: { if (root.pendingVolume >= 0) { root.run("wpctl set-volume @DEFAULT_AUDIO_SINK@ " + (root.pendingVolume / 100).toFixed(2)); var s = Object.assign({}, root.st); s.volume = root.pendingVolume; root.st = s; root.flashVolume() } root.pendingVolume = -1 } }
     function toggleMute() { root.run("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"); var s = Object.assign({}, root.st); s.muted = !s.muted; root.st = s; root.flashVolume() }
+    // microphone (the default PipeWire source): the same coalescing, the same wpctl verbs on @DEFAULT_AUDIO_SOURCE@
+    function flashMic() { root.micFlash = true; micTimer.restart() }
+    Timer { id: micTimer; interval: 3000; onTriggered: root.micFlash = false }
+    property int pendingMic: -1
+    function setMicVolume(pct) { root.pendingMic = Math.max(0, Math.min(100, Math.round(pct))); micFlush.restart() }
+    Timer { id: micFlush; interval: 120; onTriggered: { if (root.pendingMic >= 0) { root.run("wpctl set-volume @DEFAULT_AUDIO_SOURCE@ " + (root.pendingMic / 100).toFixed(2)); var s = Object.assign({}, root.st); s.micVolume = root.pendingMic; root.st = s; root.flashMic() } root.pendingMic = -1 } }
+    function toggleMicMute() { root.run("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"); var s = Object.assign({}, root.st); s.micMuted = !s.micMuted; root.st = s; root.flashMic() }
     function toggleWifi() { root.run("nmcli radio wifi " + (root.st.wifiRadio === false ? "on" : "off")) }
     function toggleBluetooth() { root.run("bluetoothctl power " + (root.st.btPowered === false ? "on" : "off")) }
     function setProfile(p) { root.run("powerprofilesctl set " + p); var s = Object.assign({}, root.st); s.profile = p; root.st = s }
@@ -202,6 +217,7 @@ PlasmoidItem {
     function tileAvailable(id) {              // tiles that need hardware or a daemon hide while it is absent (edit mode shows them all)
         var st = root.st
         if (id === "brightness") return root.brightnessPct >= 0
+        if (id === "mic") return st.hasMic
         if (id === "battery") return st.hasBattery || st.profile.length > 0     // a desktop with power profiles keeps the card as "Power"
         if (id === "powerprofile") return st.profile.length > 0
         if (id === "nightlight") return st.nightEnabled !== null
@@ -265,6 +281,7 @@ PlasmoidItem {
         anchors.fill: parent
         mainText: "Quick settings"
         subText: Status.wifiLine(root.st) + "\n" + Status.batteryLine(root.st) + (root.st.hasAudio ? "\nVolume " + root.st.volume + "%" + (root.st.muted ? " (muted)" : "") : "")
+                 + (root.st.hasMic ? "\nMicrophone " + Status.micLine(root.st) : "") + (Status.privacyLine(root.st) ? "\n" + Status.privacyLine(root.st) : "")
         active: root.paneMode === "closed"
     }
     Row {
@@ -297,6 +314,23 @@ PlasmoidItem {
             tip: root.st.muted ? "Muted" : "Volume " + root.st.volume + "%"
             onClicked: root.togglePane("settings")
             onWheel: (delta) => root.setVolume(root.st.volume + (delta > 0 ? 5 : -5))
+        }
+        Indicator {   // microphone: privacy — while an app records, while muted, or for 3 s after a change; wheel adjusts
+            id: micInd
+            visible: root.st.hasMic && (root.st.micUsed > 0 || root.st.micMuted || root.micFlash)
+            icon: root.st.micUsed > 0 && !root.st.micMuted ? "microphone-sensitivity-high" : Status.micIcon(root.st.micVolume, root.st.micMuted)
+            glyphSize: root.glyph; magnify: root.magnify
+            tip: (root.st.micMuted ? "Microphone muted" : "Microphone " + root.st.micVolume + "%") + (root.st.micUsed > 0 ? "\n" + Status.privacyLine(root.st) : "")
+            onClicked: root.togglePane("settings")
+            onWheel: (delta) => root.setMicVolume(root.st.micVolume + (delta > 0 ? 5 : -5))
+        }
+        Indicator {   // camera: privacy — only while an app films (a PipeWire video capture stream or an open /dev/video*)
+            id: camInd
+            visible: root.st.camUsed > 0
+            icon: "camera-web"
+            glyphSize: root.glyph; magnify: root.magnify
+            tip: Status.privacyLine(root.st)
+            onClicked: root.togglePane("settings")
         }
         Indicator {   // battery glyph + percentage in the clock's Inter size
             id: batInd
@@ -446,7 +480,7 @@ PlasmoidItem {
                                     id: contentLoader
                                     anchors.fill: parent
                                     enabled: !root.editing                 // edit mode: the tile's own controls are inert, the drag and the overlay act
-                                    sourceComponent: tw.tileId === "volume" ? volumeRow : tw.tileId === "brightness" ? brightnessRow : tw.tileId === "battery" ? batteryRow : tw.tileId === "netspeed" ? netRow : toggleTile
+                                    sourceComponent: tw.tileId === "volume" ? volumeRow : tw.tileId === "mic" ? micRow : tw.tileId === "brightness" ? brightnessRow : tw.tileId === "battery" ? batteryRow : tw.tileId === "netspeed" ? netRow : toggleTile
                                     onLoaded: { item.tileId = tw.tileId; item.span = Qt.binding(function () { return tw.span }); item.available = Qt.binding(function () { return tw.available }) }
                                 }
                                 Rectangle {   // edit-mode frame
@@ -630,7 +664,7 @@ PlasmoidItem {
                 : tileId === "dnd" ? (root.dnd ? "On until turned off" : "Off")
                 : tileId === "powerprofile" ? (Status.profileLabel(st.profile) || "Unavailable")
                 : tileId === "nightlight" ? Status.nightLine(st, false)
-                : tileId === "screenshot" ? "Capture the screen" : "System Settings"
+                : tileId === "screenshot" ? "Capture the screen" : "Fab Settings"
             on: tileId === "wifi" ? st.wifiRadio === true : tileId === "bluetooth" ? (st.btPresent && st.btPowered === true) : tileId === "dnd" ? root.dnd
               : tileId === "nightlight" ? st.nightEnabled === true : false
             actionEnabled: available && (tileId === "wifi" ? st.wifiRadio !== null : tileId === "bluetooth" ? st.btPresent : tileId === "powerprofile" ? st.profile.length > 0
@@ -670,6 +704,25 @@ PlasmoidItem {
             expandable: span > 1
             onMoved: (v) => root.setVolume(v)
             onGlyphClicked: root.toggleMute()
+            onExpand: root.launch("plasmawindowed org.kde.plasma.volume")
+        }
+    }
+    Component {   // microphone (only with a default source): mute glyph · input-volume slider · percent · chevron (Audio devices)
+        id: micRow
+        SliderTile {
+            property string tileId: ""
+            property int span: 3
+            property bool available: true
+            icon: Status.micIcon(root.st.micVolume, root.st.micMuted)
+            glyphClickable: true
+            glyphTip: (root.st.micMuted ? "Unmute the microphone" : "Mute the microphone") + (root.st.micUsed > 0 ? " — " + Status.privacyLine(root.st) : "")
+            sliderEnabled: root.st.hasMic
+            value: root.st.micVolume < 0 ? 0 : root.st.micVolume
+            valueText: root.st.hasMic ? Math.round(sliderItem.value) + "%" : "—"
+            chevronTip: "Audio devices"
+            expandable: span > 1
+            onMoved: (v) => root.setMicVolume(v)
+            onGlyphClicked: root.toggleMicMute()
             onExpand: root.launch("plasmawindowed org.kde.plasma.volume")
         }
     }

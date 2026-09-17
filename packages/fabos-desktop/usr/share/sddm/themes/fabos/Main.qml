@@ -74,11 +74,13 @@ Item {
         target: sddm
         function onLoginFailed() {
             busy = false
-            errorText.text = qsTr("Wrong password. Try again.")
+            errorText.info = false; errorText.text = qsTr("Wrong password. Try again.")
             password.text = ""; shake.restart(); password.forceActiveFocus()
         }
         function onLoginSucceeded() { busy = false; errorText.text = "" }
-        function onInformationMessage(message) { errorText.text = message }
+        // PAM information (PAM_TEXT_INFO), e.g. pam_fprintd's "Place your finger on the fingerprint reader" while a
+        // reader with an enrolled finger is asked first (fabos-hardware, 1.0-8): a neutral hint, not a failure
+        function onInformationMessage(message) { errorText.info = true; errorText.text = message }
     }
 
     Component.onCompleted: {
@@ -366,12 +368,14 @@ Item {
                 }
             }
 
-            // ---- error / info line ----
+            // ---- error / info line: red for a failed login, the secondary text colour for a PAM information message ----
             Text {
                 id: errorText
+                property bool info: false          // set by onInformationMessage; a failed login or a cleared line resets it
                 width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
-                color: root.danger; font { family: root.uiFont; pixelSize: 13; weight: Font.Medium }
+                color: info ? root.textSecondary : root.danger; font { family: root.uiFont; pixelSize: 13; weight: info ? Font.Normal : Font.Medium }
                 visible: text.length > 0
+                onTextChanged: if (text.length === 0) info = false
             }
 
             // ---- links: "Not listed?" / back to the tiles ----
