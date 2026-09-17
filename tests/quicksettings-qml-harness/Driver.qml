@@ -162,10 +162,10 @@ Item {
         check(pane.visible === false && root.paneMode === "closed", "pane hidden at start (imperative visibility, no dead binding)")
         // the tile model before the pane opens: three-column defaults
         check(root.tiles.length === 13 && root.tiles[0].id === "wifi" && root.tiles[0].size === "medium" && root.tiles[1].id === "bluetooth" && root.tiles[1].size === "small" && root.tiles[2].id === "volume" && root.tiles[2].size === "wide" && root.tiles[3].id === "mic" && root.tiles[3].size === "wide" && root.tiles[5].id === "battery" && root.tiles[5].size === "medium", "13 tiles in the default order from tilesJson: Wi-Fi medium (2 cols), Bluetooth small, volume wide, microphone wide, battery medium")
-        check(root.tiles.filter(function (t) { return t.enabled }).length === 9 && root.tiles.filter(function (t) { return !t.enabled }).map(function (t) { return t.id }).join(",") === "notifications,powerprofile,netspeed", "9 tiles on by default; Notifications, Power profile and Network speed are optional extras")
+        check(root.tiles.filter(function (t) { return t.enabled }).length === 10 && root.tiles.filter(function (t) { return !t.enabled }).map(function (t) { return t.id }).join(",") === "notifications,powerprofile,netspeed", "10 tiles on by default (the Microphone row included); Notifications, Power profile and Network speed are optional extras")
         check(root.shownTiles.length === 10 && root.tileRect("mic") !== null && root.tileRect("nightlight") !== null && root.tileRect("brightness") !== null && root.tileRect("battery") !== null, "night light (KWin reports it), brightness (backlight fed) and battery (fed) shown: " + root.shownTiles.length + " tiles")
         check(root.paneUnits === 36 && root.settingsWidth === Kirigami.Units.gridUnit * 36 && root.cardPad === 20 && root.tileGap === 12, "pane geometry at Medium: 36 gridUnits = " + root.settingsWidth + " px, padding 20, 12 px gaps")
-        check(root.tileLayout.items.length === 9 && root.tileLayout.height === 76 + 12 + 64 + 12 + 64 + 12 + 96 + 12 + 76 && root.settingsHeight === 2 * root.cardPad + root.tileLayout.height + root.footerGap + root.footerH, "settings card height is arithmetic on the tile layout (grid " + root.tileLayout.height + " px, card " + root.settingsHeight + " px)")
+        check(root.tileLayout.items.length === 10 && root.tileLayout.height === 76 + 12 + 64 + 12 + 64 + 12 + 64 + 12 + 96 + 12 + 76 && root.settingsHeight === 2 * root.cardPad + root.tileLayout.height + root.footerGap + root.footerH, "settings card height is arithmetic on the tile layout (grid " + root.tileLayout.height + " px, card " + root.settingsHeight + " px)")
         stage1b.start()
     }
     Timer { id: stage1b; interval: 300; onTriggered: {
@@ -196,9 +196,9 @@ Item {
         check(wifi && wifi.visible && wifi.x === 0 && wifi.y === 0 && wifi.width === 2 * col + 12 && wifi.height === 76 && wifi.span === 2, "row 1: Wi-Fi spans two columns (" + wifi.width + " x " + wifi.height + ")")
         check(bt && bt.x === 2 * (col + 12) && bt.y === 0 && bt.width === cw - bt.x && bt.span === 1, "row 1: Bluetooth in the third column, flush with the right edge (" + bt.width + ")")
         check(vol && vol.x === 0 && vol.y === 88 && vol.width === cw && vol.height === 64, "row 2: volume slider full width at y 88 (64 px)")
-        check(bri && bri.x === 0 && bri.y === 164 && bri.width === cw && bri.height === 64, "row 3: brightness slider full width at y 164")
-        check(bat && bat.x === 0 && bat.y === 240 && bat.width === 2 * col + 12 && bat.height === 96 && dnd && dnd.x === 2 * (col + 12) && dnd.y === 240 && dnd.height === 96, "row 4: battery card two columns (96 px) + Do Not Disturb stretched to the row height")
-        check(night && night.visible && night.x === 0 && night.y === 348 && night.width === col && shot && shot.x === col + 12 && shot.y === 348 && shot.width === col && set && set.x === 2 * (col + 12) && set.y === 348 && set.width === cw - set.x, "row 5: Night light, Screenshot, Settings one column each (the last flush with the right edge)")
+        check(bri && bri.x === 0 && bri.y === 240 && bri.width === cw && bri.height === 64, "row 4: brightness slider full width at y 240 (under the microphone row at 164)")
+        check(bat && bat.x === 0 && bat.y === 316 && bat.width === 2 * col + 12 && bat.height === 96 && dnd && dnd.x === 2 * (col + 12) && dnd.y === 316 && dnd.height === 96, "row 5: battery card two columns (96 px) + Do Not Disturb stretched to the row height")
+        check(night && night.visible && night.x === 0 && night.y === 424 && night.width === col && shot && shot.x === col + 12 && shot.y === 424 && shot.width === col && set && set.x === 2 * (col + 12) && set.y === 348 && set.width === cw - set.x, "row 6: Night light, Screenshot, Settings one column each (the last flush with the right edge)")
         check(night.content && night.content.on === false && night.content.detail === "Off" && night.content.actionEnabled === true, "night light tile reads KWin's state: off, toggleable")
         check(tilesArea.height === root.tileLayout.height, "tiles area = layout height " + tilesArea.height)
         check(wifi.content && wifi.content.enabled === true && wifi.frame.visible === false && wifi.editBar.visible === false, "tiles are live outside edit mode (no frame, no handles)")
@@ -216,7 +216,7 @@ Item {
     } }
     Timer { id: stage2b; interval: 400; onTriggered: {
         root.applyStatus(h.status)   // the legacy line again: night light unknown -> its tile leaves the grid (8 tiles) and edit mode must still show it, dimmed
-        check(root.shownTiles.length === 8 && root.tileRect("nightlight") === null, "a state without KWin's night light hides the tile (8 tiles)")
+        check(root.shownTiles.length === 9 && root.tileRect("nightlight") === null, "a state without KWin's night light hides the tile (9 tiles)")
         root.editing = true
         var wifi = tileItem("wifi"), bt = tileItem("bluetooth")
         check(wifi.frame.visible && wifi.editBar.visible && wifi.content.enabled === false, "edit mode: accent frame + size/remove controls, the tile's own controls inert")
