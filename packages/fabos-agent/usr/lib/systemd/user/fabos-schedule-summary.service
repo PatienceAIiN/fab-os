@@ -1,0 +1,19 @@
+[Unit]
+Description=@DISTRO_NAME@ schedule: today's reminders at login
+Documentation=@DOCS_URL@
+# Once per login, after the desktop is up: asks the agent service (fabos-agent.service) to show ONE notification with
+# today's schedule ("Today: 3 items — 09:00 Call the bank …"; clicking opens Fab AI Controls › Schedule). The daemon
+# de-duplicates per login, so a restart of this unit never shows it twice. scheduler.py waits for the agent and for the
+# notification server (plasmashell) before asking, and exits 0 when there is nothing to do.
+After=graphical-session.target fabos-agent.service
+Wants=fabos-agent.service
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/lib/fabos/agent/scheduler.py --login-summary
+TimeoutStartSec=4min
+Nice=10
+
+[Install]
+WantedBy=graphical-session.target

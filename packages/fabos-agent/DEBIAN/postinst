@@ -3,6 +3,9 @@ set -e
 case "$1" in configure)
   # Start the agent for every user's session (System-Wide AI stays opt-in per provider key; this only runs the local service)
   systemctl --global enable fabos-agent.service 2>/dev/null || true
+  # 1.0-8: today's schedule as one notification at login (scheduler.py --login-summary; the daemon de-duplicates per login)
+  systemctl --global enable fabos-schedule-summary.service 2>/dev/null || true
+  chmod 0755 /usr/lib/fabos/agent/scheduler.py 2>/dev/null || true
   # 1.0-3 and earlier shipped /etc/sudoers.d/fabos-agent (%sudo NOPASSWD rootexec). Root now goes through pkexec + polkit
   # (in.patienceai.fabos.rootexec, the user's own password); the old rule must not survive an upgrade (ADR-0017).
   rm -f /etc/sudoers.d/fabos-agent
