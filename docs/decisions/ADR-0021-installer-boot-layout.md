@@ -74,3 +74,39 @@ lines are now the paths of shipped scripts, `/usr/lib/fabos/install-finish.sh` a
 shellprocess line, requires every line to be one of those executable scripts, stages the working-tree copies into the
 replay container and replays them there. The `packages` job — the real-device failure this ADR was opened for — completed
 in that same run (48 s, apt removal of casper and calamares only).
+
+## Amendment 2026-09-17 — encryption is opt-in; sidebar style keys are the 3.3 names (users get this with the next ISO)
+
+Owner's report from the first installs on real hardware (Lenovo laptop): (a) disk encryption must be the user's choice,
+not pre-selected; (b) the installer's left sidebar was black with no words — only the current step ("Partitions") was
+readable. Both live in installer files of the ISO's live system, so this amendment changes the tree and the tests; users
+see it with the **next ISO build**, not through the over-the-air packages of this round.
+
+1. **Encryption opt-in** (`partition.conf`): `preCheckEncryption: false`. `enableLuksAutomatedPartitioning: true` stays, so
+   the *Encrypt system* box and its passphrase fields are still offered in every automated choice; `luksGeneration: luks2`
+   and the ESP + `/boot` + `/` layout of this ADR are unchanged. Ticking the box gives exactly the encrypted system of
+   before — passphrase at every boot through the Plymouth prompt, with the round-7 Start-up setting to turn that prompt
+   off. Decision 1's "*Encrypt system* is preselected" is withdrawn.
+2. **Sidebar colours** (`branding.desc`): Calamares 3.3 resolves the keys of the `style:` map by the **name of its
+   `Branding::StyleEntry` enum** (`QMetaEnum::valueToKey` in `Branding::styleString`; `validateStyleEntries` warns about
+   anything else). The file had the 3.2 spellings `sidebarBackground`, `sidebarText`, `sidebarTextSelect`,
+   `sidebarTextHighlight`; every install session log of 2026-09-16 carries `WARNING: Unknown branding *style* entry` for
+   all four, and the effect is what the owner photographed: `QColor("")` is invalid and paints black, so the sidebar
+   background and the pen of every non-current step were black (`ProgressTreeDelegate::paint` uses `SidebarText`), while
+   the current step's background alone falls back to the window palette (`SidebarBackgroundCurrent` empty ->
+   `mainWindow()->palette().window()`) and shows its black text. The keys are now `SidebarBackground`, `SidebarText`,
+   `SidebarTextCurrent`, `SidebarBackgroundCurrent` — the spelling of the image's own
+   `/usr/share/calamares/branding/default/branding.desc`. No `stylesheet.qss` is needed: the step list is painted by the
+   delegate from these values, not from CSS (the default stylesheet says so too).
+3. **Tests.** `tests/calamares-jobs-test.sh` asserts `preCheckEncryption: false`, requires exactly the four style keys and
+   checks each against the strings of the image's `libcalamaresui` (the enum names), that the 3.2 names are *not* among
+   them and that the `Unknown branding *style* entry` warning is, and replays the install driver's checkbox detector on
+   fixture crops of real partition-page screendumps (`tests/fixtures/installer/`). `tests/install-vm-driver.py` is
+   **state-aware** on the partition page: it reads whether *Encrypt system* is ticked from the screendump (OCR of the
+   passphrase placeholders, else the pixels of the line-edit row against the window background 45 px above it and the
+   indicator's ink), then the `luks` variant ticks and the `plain` variant unticks only when needed — the same driver
+   installs from the 1.0 ISO (pre-ticked) and from the next one. New `tests/installer-ui-vm.sh` boots the frozen ISO, logs
+   in on the live serial getty, starts the shipped Calamares (baseline: reproduces the black sidebar and the pre-ticked
+   box), injects the working tree's `branding.desc` + `partition.conf` through fw_cfg, restarts Calamares and proves by OCR
+   that every step name is readable on the welcome, partition and users pages, that the box starts unticked and that one
+   click opts in (the passphrase fields appear).

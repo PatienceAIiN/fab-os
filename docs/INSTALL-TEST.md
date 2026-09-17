@@ -1,11 +1,14 @@
 # Installer testing — how the automated installation works and how to read a failure
 
-Two tests cover the Fab OS installer (Calamares 3.3.14 on the live ISO). Neither needs a human at the keyboard.
+Three tests cover the Fab OS installer (Calamares 3.3.14 on the live ISO). None needs a human at the keyboard. The
+installer is part of the ISO's **live system**: a change under `image/overlay/iso/etc/calamares/` reaches users with the
+next ISO build only — never over the air — which is why the third test injects the working tree's files into a booted ISO.
 
 | Test | What it proves | Needs | Time |
 |---|---|---|---|
 | `tests/calamares-jobs-test.sh [IMAGE]` | every configuration file is valid for **this** Calamares (schemas from the image, key lists from the 3.3.14 sources) and every job of the exec sequence can run **offline** in the target: apt removal + autoremove, every shellprocess line, every systemctl action, locale-gen, update-initramfs, GRUB/shim/efibootmgr and the effective GRUB defaults, cryptsetup-initramfs, sddm + theme + session, the users.conf groups; plus the live helper's log classifier and serial log transport, tied to the strings in the image's Calamares binaries | podman, `localhost/fabos:iso` | ~3 min |
-| `tests/install-vm.sh [luks\|plain\|both]` | the ISO boots, Calamares is driven through all six pages on a blank 24 GB disk, finishes its whole job sequence and reaches its finished page, and the **installed disk boots on its own** (encrypted variant: passphrase typed at the Plymouth prompt) up to `fabos-firstboot` | qemu-system-x86_64 + KVM, OVMF, podman (OCR), python3, >= 14 GB free under `build/` | ~20 min per variant on 2 vCPUs |
+| `tests/install-vm.sh [luks\|plain\|both]` | the ISO boots, Calamares is driven through all six pages on a blank 24 GB disk, finishes its whole job sequence and reaches its finished page, and the **installed disk boots on its own** (encrypted variant: the driver ticks *Encrypt system* and later types the passphrase at the Plymouth prompt; plain: it makes sure the box is unticked — both read the box's state from the screen first) up to `fabos-firstboot` | qemu-system-x86_64 + KVM, OVMF, podman (OCR), python3, >= 14 GB free under `build/` | ~20 min per variant on 2 vCPUs |
+| `tests/installer-ui-vm.sh` | the **working tree's** Calamares configuration on the frozen ISO: boots the ISO, logs in on the live serial getty, screenshots the shipped installer (baseline), injects `branding.desc` + `partition.conf` through fw_cfg, restarts Calamares and proves by OCR that every sidebar step name is readable (welcome, partition, users pages), that *Encrypt system* starts unticked and that one click opts in; both session logs are checked for `Unknown branding *style* entry` | qemu + KVM, OVMF, podman (OCR), python3 + Pillow | ~8 min |
 
 ## 1. The offline job audit (`tests/calamares-jobs-test.sh`)
 
@@ -48,8 +51,19 @@ review round — helper classifier, autoremove, effective GRUB values, marker st
   system GRUB cannot open. The layout is now ESP + `/boot` (2 GiB ext4, `noEncrypt: true`) + `/` (LUKS2 when encryption
   is ticked). Calamares then skips the boot keyfile (`luksbootkeyfile`: "/boot partition is not encrypted"), installs
   `encrypt_hook_nokey`, writes `none` as the crypttab key and leaves `GRUB_ENABLE_CRYPTODISK` unset (all from the 3.3.14
-  sources). `initialPartitioningChoice: erase`, `preCheckEncryption: true`; `xfs` removed from the offered filesystems
-  (no `mkfs.xfs` in the image). See ADR-0021.
+  sources). `initialPartitioningChoice: erase`; `preCheckEncryption: false` since 2026-09-17 (owner's decision: encryption
+  is the user's choice — the box and its passphrase fields are offered, `enableLuksAutomatedPartitioning: true`, but start
+  unticked); `xfs` removed from the offered filesystems (no `mkfs.xfs` in the image). See ADR-0021 and its 2026-09-17
+  amendment.
+- **branding** (owner's report, 2026-09-17: black sidebar, no step names): Calamares 3.3 resolves the `style:` keys of
+  `branding.desc` by the name of its `Branding::StyleEntry` enum, so only `SidebarBackground`, `SidebarText`,
+  `SidebarTextCurrent` and `SidebarBackgroundCurrent` exist. Ours had the 3.2 spellings (`sidebarText`,
+  `sidebarTextSelect`, `sidebarTextHighlight`, `sidebarBackground`), and every 2026-09-16 session log says
+  `WARNING: Unknown branding *style* entry` for all four; the colours then fell back to an invalid `QColor` = black — only
+  the current step's background falls back to the window palette, which is why that one name was readable. Renamed. The
+  audit checks the four names against the strings of the image's `libcalamaresui`, that the old names are unknown to it
+  (and the warning text is in it), and that the image's default `branding.desc` spells them the same way;
+  `tests/installer-ui-vm.sh` (section 3) proves the result on a live VM.
 - **welcome**: `requiredRam: 4` contradicted the README's 2 GB minimum (a 2 GB machine would have been refused); now
   1.5 GiB. The internet check URL still pointed at the old `fabricos.` host; it is informative only and now the apt archive.
 - **shellprocess**: every line guarded (`...; true`) and logging; the live-only `serial-getty@ttyS0` and
@@ -127,7 +141,7 @@ support the virtual keyboard protocol"). `tests/install-vm-driver.py install` th
   | Welcome | `Welcome to the Fab OS ... installer` | `Alt+N` (`&Next`) |
   | Location | `Region:` / `Zone:` | `Alt+N` |
   | Keyboard | `Keyboard Model` | `Alt+N` |
-  | Partitions | `Select storage device:` (+ `Erase disk` / `Encrypt system`) | luks: click the **Passphrase** field (OCR word box of the `EncryptWidget.ui` placeholder, excluding the `Confirm passphrase` one), type `fabos-test`, `Tab`, type again; plain: click **Encrypt system** to untick it, verify the passphrase boxes disappeared; then `Alt+N` |
+  | Partitions | `Select storage device:` (+ `Erase disk` / `Encrypt system`) | first **read the state** of *Encrypt system* from the screendump (`encrypt_state()`: the `Passphrase` placeholder seen by OCR = ticked; else the pixels of the line-edit row ~210 px right of the label differ from the window background 45 px above it = ticked, identical = unticked; the indicator's dark check mark as a third signal); luks: click the label if unticked, then click the **Passphrase** field (OCR word box of the `EncryptWidget.ui` placeholder, excluding the `Confirm passphrase` one, else the row geometry), type `fabos-test`, `Tab`, type again; plain: click the label if ticked; re-read the state after each click (at most two); then `Alt+N`. This is what lets one driver install from the 1.0 ISO (box pre-ticked) and from the next one (opt-in) |
   | Users | `What is your name?` | focus is already in the full-name field (`UsersPage::onActivate` calls `textBoxFullName->setFocus()`); type `Fab Tester`, `Tab`, `fabtest`, `Tab` (hostname, auto-filled, kept), `Tab`, `fabos-test`, `Tab`, `fabos-test`; `Alt+N` |
   | Summary | `This is an overview of what will happen` | `Alt+I` (`&Install`) |
   | prompt | `Continue with Installation?` | `Alt+I` (`&Install Now`) |
@@ -183,7 +197,39 @@ Apache-2.0) that are in the image as dependencies of `kde-spectacle` (its screen
 addition and nothing the user downloads; the test merely runs them inside the image with `podman exec`. The preflight
 fails early if the image lacks them.
 
-## 3. What the tests deliberately do not cover
+## 3. The installer UI proof (`tests/installer-ui-vm.sh`)
+
+```
+tests/installer-ui-vm.sh [--out DIR] [--image localhost/fabos:iso] [--mem MB] [--cpus N]     ISO=path/to/x.iso overrides the ISO
+```
+
+The ISO is frozen, so a change to `image/overlay/iso/etc/calamares/` cannot be seen by simply booting it — this test injects
+the working tree's files into a running live session. One QEMU on the VM lock (`flock /tmp/fabos-vm.lock`), headless, with
+a blank sparse 24 GB target disk (so the partition page has a device; deleted at the end) and **no** `--autoinstall`, so
+nothing in the guest starts Calamares by itself:
+
+1. waits for `FABOS_LIVE_OK` on the serial console, then logs in on the live ISO's **serial getty** (`console=ttyS0` is on
+   the ISO's kernel line, so `serial-getty@ttyS0` runs there; the live user `fabos` has an empty password — `pam_unix
+   nullok` — and NOPASSWD sudo). The serial port is a unix socket on the host side, so commands are typed and their output
+   read there; the emulated keyboard and tablet only ever touch Calamares' own pages;
+2. installs a guest script delivered through fw_cfg (`opt/fabos/ui.sh`) and runs its `baseline` phase: Calamares **as
+   shipped in the ISO** is launched exactly as `live-autoinstall.sh` does it (root, on the live user's Wayland display,
+   `-D6`). The host drives to the welcome and partition pages (`Alt+N`), screenshots them and OCRs the **sidebar region**
+   (left ~15 % of the frame, upscaled 3x, in both polarities) for the eight step names — on the 1.0 ISO at most two are
+   readable (the current step; the rest is black on black) and the *Encrypt system* box is ticked: the owner's report,
+   reproduced. One click on the label must untick it (what the plain install driver does on that ISO);
+3. `inject`: kills Calamares, copies the working tree's `branding.desc` and `partition.conf` (fw_cfg; sha256 compared with
+   the local files) over `/etc/calamares` in the live overlay and starts Calamares again. Now every step name must be
+   readable on the welcome, partition and users pages; *Encrypt system* must start unticked; one click must tick it and
+   show the *Passphrase* / *Confirm passphrase* fields (row OCR); a second click must hide them again — and the install
+   driver's `encrypt_state()` must agree with what OCR sees at each of these steps;
+4. `stop`: the baseline session log must contain `Unknown branding *style* entry` lines, the fixed one none.
+
+Evidence in `<out>/`: `NNN-baseline-*.png` and `NNN-fixed-*.png` (+ `.txt` OCR), `region-*-sidebar-*.png` (the sidebar crops
+as OCR saw them, normal and inverted), `region-*-row-*.png` (the checkbox row), `guest.txt` (the guest script's output with
+the warning lines), `serial.log`, `driver.log`. One `PASS`/`FAIL` line per check; exit 0 only when all passed.
+
+## 4. What the tests deliberately do not cover
 
 - Real hardware quirks (firmware that ignores NVRAM boot entries, NVMe namespaces, Optane RST): the layout follows
   Ubuntu's, the shim fallback is written, and `INSTALL_RESULT` + the ESP listing are the evidence to compare against.
