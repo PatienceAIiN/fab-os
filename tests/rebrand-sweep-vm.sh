@@ -57,7 +57,10 @@ for i in $(seq 1 60); do vm "pgrep -x plasmashell >/dev/null" 2>/dev/null && bre
 say "### Fab OS rebrand sweep — $(date -u +%FT%TZ) — guest: $(vm 'dpkg-query -W -f "\${Package} \${Version}, " fabos-branding fabos-desktop 2>/dev/null')"
 
 $SCP tests/rebrand-sweep/inner.py fabos@127.0.0.1:/tmp/inner.py >/dev/null
-sweep() { usr "python3 /tmp/inner.py 2>/tmp/inner.err" | grep -v '^#' > "$1"; usr "cat /tmp/inner.err" | sed 's/^/    /'; }
+sweep() {   # the enumerator must run to completion: a crash (Traceback) is a FAIL, never a vacuous "0 hits"
+  usr "python3 /tmp/inner.py 2>/tmp/inner.err" | grep -v '^#' > "$1"; err=$(usr "cat /tmp/inner.err"); echo "$err" | sed 's/^/    /'
+  echo "$err" | grep -q '# hits=' && ! echo "$err" | grep -q Traceback && verdict PASS "sweep enumerator ran to completion ($(echo "$err" | sed -n 's/.*# hits=//p') hits)" || verdict FAIL "sweep enumerator did not finish: $(echo "$err" | tail -1)"
+}
 apply_allowlist() { # apply_allowlist <sweep.tsv> <remaining.tsv>
   : > "$2"
   while IFS= read -r line; do
@@ -106,7 +109,7 @@ if [ $RELOGIN = 1 ]; then
   since=$(vm 'date -u +%FT%TZ')
   vsudo "systemctl restart sddm" >/dev/null
   if [ $FRAMES = 1 ] && [ -S "$QMP" ]; then
-    python3 - "$QMP" "$OUT/frames" <<'PY'
+    python3 - "$QMP" "$HERE/$OUT/frames" <<'PY'   # QEMU writes the screendump relative to ITS cwd: pass an absolute path
 import importlib.util, os, sys, time
 spec = importlib.util.spec_from_file_location("ivd", "tests/install-vm-driver.py"); ivd = importlib.util.module_from_spec(spec); spec.loader.exec_module(ivd)
 from PIL import Image

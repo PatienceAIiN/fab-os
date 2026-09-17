@@ -119,7 +119,7 @@ usr "$setm; wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 1.00" >/dev/null
 # time through pw-record, so the count is compared relative to the baseline, not to zero.
 used() { echo "$1" | sed -n 's/.*"mic_used": *\([0-9]*\).*/\1/p'; }
 p0=$(probe); n0=$(used "$p0"); echo "    baseline: $p0"
-usr "systemd-run --user --collect -q -u r8rec -- pw-record --target 0 /tmp/r8rec.wav" >/dev/null; sleep 3
+usr "systemd-run --user --collect -q -u r8rec -- pw-record /tmp/r8rec.wav" >/dev/null; sleep 3   # automatic target (with --target 0 the stream never reaches "running")
 p=$(probe); n1=$(used "$p"); echo "    while a second pw-record runs: $p"; usr "systemctl --user stop r8rec; rm -f /tmp/r8rec.wav" >/dev/null 2>&1
 [ "${n1:-0}" -gt "${n0:-0}" ] && echo "$p" | grep -q pw-record && verdict PASS "a recording app shows as microphone-in-use: mic_used $n0 -> $n1, named in mic_apps (privacy glyph data)" || verdict FAIL "mic_used did not rise while pw-record ran: $p0 -> $p"
 sleep 1; p=$(probe); n2=$(used "$p"); echo "    after it stopped: $p"

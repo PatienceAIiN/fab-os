@@ -315,9 +315,9 @@ def kread(path, group, key):
 
 
 for base in (CFG, os.path.join(CFG, "kdedefaults")):   # kdedefaults = Plasma's copy of the pinned global theme's defaults, ahead of /etc/xdg
-    for f, g, k in PINS:
+    for f, g, k, bad in PINS:
         v = kread(os.path.join(base, f), g, k)
-        if v is not None and re.search(r"breeze|kde|plasma|oxygen", v, re.I):
+        if v is not None and re.search(bad, v.strip()):
             out.add(("user-config", os.path.join(base, f), "[%s] %s" % (g, k), v))
 try:
     pkg = open(os.path.join(CFG, "kdedefaults", "package")).read().strip()
