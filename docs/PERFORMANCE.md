@@ -118,11 +118,57 @@ memory pressure is the owner's lag; they are documented in docs/LOW-RAM.md), `La
 The same run, with the 1.0-7 pool installed first and then the 1.0-8 packages on top (the upgrade a user's machine
 makes), rebooted into the new session.
 
-«AFTER_IDLE_TABLE»
+Both installs exit 0 (`install-1.log`, `install-2.log`): every 1.0-8 postinst ran as an upgrade over 1.0-7 without a
+dpkg error, fabos-tuning's postinst enabled its units and re-ran the udev rule on the present disks.
 
-«AFTER_LAUNCH_TABLE»
+**Idle, 1.0-8 (60 s after 180 s alone)**
 
-«AFTER_MODES»
+| | 1.0-7 | 1.0-8 |
+|---|---|---|
+| system CPU busy (one core) | 2.3 % | 3.2 %¹ |
+| voice pipeline (daemon + pw-record + pocketsphinx) | 0.67 %, 105 wake-ups/s | 0.77 %, 105 wake-ups/s² |
+| plasmashell / kwin_wayland | 0.33 % / 0.27 % | 0.15 % / 0.05 % |
+| any other process ≥ 5 % | none | none |
+| task creations (system-wide) | 1.53/s | see ¹ |
+| MemAvailable | 817 MB | 805 MB |
+| `/sys/block/vda/queue/scheduler` (rotational=1) | `[none]` | `[bfq]` |
+| `systemctl --user show -p DefaultTimeoutStopUSec` | 1 min 30 s | 15 s |
+| `fabos-llama.service` Nice | 5 | 10 |
+| kwinrc translucency key | `kwin4_effect_translucencyEnabled` (dead) | `translucencyEnabled=false` |
+
+¹ the first 1.0-8 run counted 6.5 task creations/s in its 60 s window against 1.53/s before; the sampler could not say
+who forked (it recorded PIDs only at the ends), no Fab OS process restarted (the voice daemon's journal shows one start),
+and the system CPU stayed at 3 %. `tests/perf/sample.py` now attributes every new process to "command (parent)"; the
+re-run's figure and attribution are in `build/r8-perf/after/idle.json`.
+² in the VM the microphone is near-silent, so the gate changes little on the CPU side (pocketsphinx already sat at
+0.05 %; the daemon's RMS pass adds ~0.1 %). What the gate buys is decoder time on a real microphone in a room with
+noise; what the *policy* buys is measured below — the whole capture chain gone.
+
+**Launch latency, 1.0-8** (cold / warm median, ms): konsole 426 / 212 (1.0-7: 373 / 209), dolphin 334 / 241 (274 / 198),
+kate 362 / 262 (317 / 214), firefox 2870 / 730 (1840 / 794). Within the run-to-run jitter of a shared host; every warm
+value is under its budget and within 1.5× + 300 ms of the baseline. Nothing in 1.0-8 runs at launch time.
+
+**Performance modes, read back after `set` through `systemd-run --user`** (`modes.jsonl`):
+
+| set | ppd | tearing | blur / translucency / magic lamp / dim | spotter policy | display off / autosuspend (AC) | root side |
+|---|---|---|---|---|---|---|
+| power-saver | power-saver | false | user's | battery-off | user's | governor unavailable (no cpufreq in QEMU) |
+| performance | balanced³ | false | user's | on | user's | — |
+| gaming | balanced³ | **true** | false / false / false / false | on | user's | `split_lock_mitigate=0`, `/var/lib/fabos/perf-mode=gaming` |
+| server | balanced | false | all false (+ slide, fade, scale, corners) | off | false / 0, lid 0 | — |
+| balanced | balanced | false | user's (snapshot restored, keys removed) | on | user's | — |
+
+³ QEMU's power-profiles-daemon runs the placeholder platform driver and offers only `balanced` and `power-saver`;
+`performance` cannot be set there (the first run's `set performance` simply left the previous profile in place — the
+reason `fabos-perf-mode` now falls back to `balanced` where `performance` is not offered and reports `ppd_profiles`).
+On a laptop with intel_pstate / amd-pstate the profile exists and is set.
+Persistence: Gaming set, guest rebooted → `mode=gaming, tearing=true, effects light, root_mode=gaming,
+split_lock_mitigate=0` read back; `fabos-perf-mode-restore.service` re-applied the root side at boot.
+
+**Listener policy**: `fabos settings voice.spotter off` → pw-record and pocketsphinx gone within 6 s (the daemon reads
+its settings every 30 s; `fabos-voice status` shows `wake: false`); `on` → back within 30 s. Off means the whole capture
+chain — 105 wake-ups/s and ~1 % of a core in the table above, plus the codec — stops; this is what Power saver on
+battery and Server do by themselves.
 
 ## 4. Expected effect on a real laptop
 
