@@ -1,0 +1,29 @@
+[Unit]
+Description=@DISTRO_NAME@ performance mode — re-apply the saved mode's CPU settings at boot
+Documentation=@DOCS_URL@
+# Only when a mode was ever chosen (fabos-perf-mode set writes /var/lib/fabos/perf-mode through the root helper).
+# power-profiles-daemon restores its own profile by itself; KWin and PowerDevil keep theirs in the user's files.
+ConditionPathExists=/var/lib/fabos/perf-mode
+After=systemd-modules-load.service
+Before=power-profiles-daemon.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'exec /usr/lib/fabos/perf-mode-root.sh "$(cat /var/lib/fabos/perf-mode)"'
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/fabos
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

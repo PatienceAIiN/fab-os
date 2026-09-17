@@ -5,7 +5,7 @@ Priority: optional
 Architecture: all
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
 Homepage: @HOME_URL@
-Depends: fabos-branding, fabos-desktop, fabos-hardware, fabos-ai, fabos-agent, fabos-voice, fabos-feedback, fabos-updates, fabos-firstboot, fabos-welcome, plasma-desktop, plasma-workspace, kwin-wayland, sddm, plasma-nm, plasma-pa, pipewire, wireplumber, pipewire-pulse, network-manager, konsole, dolphin, kate, ark, kde-spectacle, plasma-systemmonitor, kinfocenter, plasma-discover, plasma-discover-backend-flatpak, flatpak, xdg-desktop-portal-kde, kscreen, powerdevil, bluedevil, breeze-gtk-theme, kde-config-gtk-style, fonts-inter, fonts-jetbrains-mono, fonts-noto-core, apparmor, cryptsetup, plymouth, plymouth-label, sudo, locales, tzdata, kbd, console-setup
+Depends: fabos-branding, fabos-desktop, fabos-hardware, fabos-tuning, fabos-ai, fabos-agent, fabos-voice, fabos-feedback, fabos-updates, fabos-firstboot, fabos-welcome, plasma-desktop, plasma-workspace, kwin-wayland, sddm, plasma-nm, plasma-pa, pipewire, wireplumber, pipewire-pulse, network-manager, konsole, dolphin, kate, ark, kde-spectacle, plasma-systemmonitor, kinfocenter, plasma-discover, plasma-discover-backend-flatpak, flatpak, xdg-desktop-portal-kde, kscreen, powerdevil, bluedevil, breeze-gtk-theme, kde-config-gtk-style, fonts-inter, fonts-jetbrains-mono, fonts-noto-core, apparmor, cryptsetup, plymouth, plymouth-label, sudo, locales, tzdata, kbd, console-setup
 Recommends: llama.cpp, print-manager, cups, okular, gwenview, elisa, haruna, kcalc, partitionmanager, firefox
 Description: @DISTRO_NAME@ complete desktop (install this on Ubuntu 26.04 to get @DISTRO_NAME@)
  Pulls the whole @DISTRO_NAME@ experience onto an Ubuntu 26.04 LTS system:

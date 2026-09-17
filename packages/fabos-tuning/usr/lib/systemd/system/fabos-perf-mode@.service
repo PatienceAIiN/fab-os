@@ -1,0 +1,26 @@
+[Unit]
+Description=@DISTRO_NAME@ performance mode "%i" — CPU governor and kernel knobs (root side of fabos-perf-mode)
+Documentation=@DOCS_URL@
+# Started by `fabos-perf-mode set %i` as the logged-in user: the polkit rule
+# /usr/share/polkit-1/rules.d/49-fabos-perf-mode.rules lets an active local session start exactly this template (verb
+# "start") without a password. The helper writes the cpufreq governor, kernel.split_lock_mitigate and the saved mode
+# in /var/lib/fabos/perf-mode, which fabos-perf-mode-restore.service re-applies at boot.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/fabos/perf-mode-root.sh %i
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/fabos
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# /sys/devices/system/cpu/cpufreq and /proc/sys/kernel are written: ProtectKernelTunables stays off on purpose.

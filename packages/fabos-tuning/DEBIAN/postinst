@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+case "$1" in configure)
+  # Idempotent; nothing here may fail an upgrade (docs/UPDATES.md): every step is best effort.
+  install -d -m 0755 /var/lib/fabos 2>/dev/null || true
+  chmod 0755 /usr/bin/fabos-perf-mode /usr/lib/fabos/perf-mode-root.sh 2>/dev/null || true
+  # Root side of the mode (CPU governor at boot) and the per-user re-apply at login.
+  systemctl enable fabos-perf-mode-restore.service 2>/dev/null || true
+  systemctl --global enable fabos-perf-mode.service 2>/dev/null || true
+  if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload 2>/dev/null || true
+    # I/O scheduler rule (usr/lib/udev/rules.d/60-fabos-iosched.rules): apply to the disks already present. A "change"
+    # event only re-runs the rules; nothing is unmounted or re-probed.
+    udevadm control --reload 2>/dev/null || true
+    udevadm trigger --subsystem-match=block --action=change 2>/dev/null || true
+    # The saved mode's CPU settings, if a mode was chosen before this upgrade (no-op otherwise: ConditionPathExists).
+    systemctl start --no-block fabos-perf-mode-restore.service 2>/dev/null || true
+  fi
+;; esac
+exit 0

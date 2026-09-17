@@ -1,0 +1,18 @@
+Package: fabos-tuning
+Version: @DISTRO_VERSION@-@PKG_REVISION@
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: @VENDOR_NAME@ <support@patienceai.in>
+Homepage: @HOME_URL@
+Depends: systemd, udev, polkitd, power-profiles-daemon, libkf6config-bin, qdbus-qt6, libkscreen-bin
+Description: @DISTRO_NAME@ performance modes and system tuning (power, gaming, server)
+ The Performance mode of @DISTRO_NAME@ (quick settings > battery card, or
+ `fabos-perf-mode set MODE`): Power saver, Balanced, Performance, Gaming and
+ Server, each mapped to settings that can be read back — the
+ power-profiles-daemon profile, KWin tearing / variable refresh / effects,
+ PowerDevil display and sleep behaviour, the "Hey Fab" listener's duty, and
+ (through a one-shot root helper a logged-in user may start without a
+ password) the CPU frequency governor. The mode persists across reboots.
+ Also ships the I/O scheduler defaults per device class (udev) and a shorter
+ stop timeout for user services. Documented in docs/PERFORMANCE.md.

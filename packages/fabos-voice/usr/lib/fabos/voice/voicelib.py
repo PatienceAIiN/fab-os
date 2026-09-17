@@ -105,7 +105,10 @@ DEFAULT_SETTINGS = {
     "voice.kws_threshold": "1e-50",   # pocketsphinx p(hyp)/p(alt); 1e-50 = detection, 0 false hits on 22 s of hard negatives
     "voice.verify_wake": "true",      # second look at the wake clip with whisper.cpp before acting (near-misses like "hey bob ... fabulous")
     "voice.mic_allowed": "false",     # the microphone permission (Fab AI Controls › Settings › Voice, 1.0-8); permissions only enable
+    "voice.spotter": "on",            # on | battery-off | off — when the always-on "Hey Fab" listener may hold the microphone (spotter_policy)
 }
+SPOTTER_POLICIES = ("on", "battery-off", "off")
+PERF_MODE_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "fabos", "performance-mode")
 CLOUD_PROVIDERS = ("openai", "gemini")   # the agent's /speech endpoints use one of these
 
 # The offline voice. Received-Pronunciation English at 150 words a minute (default 175), pitch 45 (default 50),
@@ -591,6 +594,78 @@ def mic_present():
         if rc == 0:
             return any(line.strip() and ".monitor" not in line for line in out.splitlines())
     return False
+
+
+# --------------------------------------------------------------------------- spotter policy (docs/PERFORMANCE.md)
+def _read_text(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def performance_mode(path=None):
+    """The Fab OS performance mode chosen in quick settings / `fabos-perf-mode set` (power-saver | balanced | performance |
+    gaming | server), "" when none was ever chosen. One word in ~/.config/fabos/performance-mode; no process is spawned."""
+    m = _read_text(path or PERF_MODE_FILE).lower()
+    return m if m in ("power-saver", "balanced", "performance", "gaming", "server") else ""
+
+
+def spotter_policy(settings, mode=None):
+    """on | battery-off | off: the user's voice.spotter, tightened by the performance mode — Server turns the listener off
+    (a machine used as a server has nobody to talk to it), Power saver makes an "on" listener rest while on battery."""
+    pol = str((settings or {}).get("voice.spotter") or DEFAULT_SETTINGS["voice.spotter"]).strip().lower()
+    if pol not in SPOTTER_POLICIES:
+        pol = "on"
+    mode = performance_mode() if mode is None else mode
+    if mode == "server":
+        return "off"
+    if mode == "power-saver" and pol == "on":
+        return "battery-off"
+    return pol
+
+
+def on_battery(base="/sys/class/power_supply"):
+    """True when the machine runs on its battery: no mains/USB supply reports online and a battery reports Discharging.
+    sysfs only (no process). False on a desktop or in a VM without a power supply."""
+    mains_online = False
+    discharging = False
+    for d in glob.glob(os.path.join(base, "*")):
+        t = _read_text(os.path.join(d, "type"))
+        if t in ("Mains", "USB", "UPS"):
+            if _read_text(os.path.join(d, "online")) == "1":
+                mains_online = True
+        elif t == "Battery" and _read_text(os.path.join(d, "status")) == "Discharging":
+            discharging = True
+    return discharging and not mains_online
+
+
+def _session_bus_ok():
+    return bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS")) or os.path.exists(os.path.join(RUN_BASE, "bus"))
+
+
+def screen_locked():
+    """True while the screen locker is active (org.freedesktop.ScreenSaver GetActive, served by kscreenlocker); None when
+    the session bus or the interface is not reachable. One busctl call."""
+    if not _session_bus_ok() or not which("busctl"):
+        return None
+    rc, out, _ = _run(["busctl", "--user", "--timeout=2", "call", "org.freedesktop.ScreenSaver", "/ScreenSaver", "org.freedesktop.ScreenSaver", "GetActive"], timeout=3)
+    if rc != 0 or not out.startswith("b "):
+        return None
+    return out.split()[1] == "true"
+
+
+def session_idle_s():
+    """Seconds since the last keyboard/mouse input in the graphical session (org.freedesktop.ScreenSaver
+    GetSessionIdleTime), or None when unavailable. One busctl call."""
+    if not _session_bus_ok() or not which("busctl"):
+        return None
+    rc, out, _ = _run(["busctl", "--user", "--timeout=2", "call", "org.freedesktop.ScreenSaver", "/ScreenSaver", "org.freedesktop.ScreenSaver", "GetSessionIdleTime"], timeout=3)
+    parts = out.split()
+    if rc != 0 or len(parts) != 2 or not parts[1].isdigit():
+        return None
+    return int(parts[1])
 
 
 def mic_state(session=None):
@@ -1592,6 +1667,8 @@ def status(agent=None):
         "offline_only": truthy(settings.get("voice.offline_only", "false")),
         "model": MODEL_PATH if os.path.isfile(MODEL_PATH) else None,
         "spotter": spotter_ready(),
+        "spotter_policy": spotter_policy(settings),                # on | battery-off | off (voice.spotter + performance mode)
+        "spotter_state": st.get("spotter") or ("off" if not st else "idle"),   # listening | paused:<why> | off | idle (the daemon's own view)
         "session": session.get("server"),
         "source": src.get("name"),
         "source_description": src.get("description"),

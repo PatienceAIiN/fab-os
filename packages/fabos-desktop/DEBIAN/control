@@ -5,7 +5,7 @@ Priority: optional
 Architecture: all
 Maintainer: @VENDOR_NAME@ <support@patienceai.in>
 Homepage: @HOME_URL@
-Depends: fabos-branding, plasma-desktop, plasma-workspace, kwin-style-aurorae, sddm, fonts-inter, fonts-jetbrains-mono, breeze, breeze-icon-theme
+Depends: fabos-branding, fabos-tuning, plasma-desktop, plasma-workspace, kwin-style-aurorae, sddm, fonts-inter, fonts-jetbrains-mono, breeze, breeze-icon-theme
 Recommends: plasma-nm, plasma-pa, kscreen, powerdevil, bluedevil, kde-config-sddm, breeze-gtk-theme, xdg-desktop-portal-kde, systemd-zram-generator, systemd-oomd, network-manager, bluez, wireplumber, upower, power-profiles-daemon
 Description: @DISTRO_NAME@ desktop experience (Plasma 6 defaults, greeter, splash, wallpapers)
  Look-and-feel package, SDDM greeter theme, KSplash animation, procedural

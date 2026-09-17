@@ -1,0 +1,231 @@
+#!/bin/sh
+# Fab OS performance mode (docs/PERFORMANCE.md): one word, mapped to real settings that can be read back.
+#   fabos-perf-mode get                 the chosen mode (empty when none was ever chosen: the machine runs Balanced)
+#   fabos-perf-mode list                the five modes, one per line: id <TAB> label <TAB> what it does
+#   fabos-perf-mode set MODE            apply MODE and remember it in ~/.config/fabos/performance-mode
+#   fabos-perf-mode apply               re-apply the remembered mode (login: fabos-perf-mode.service)
+#   fabos-perf-mode status [--json]     everything the modes touch, as it is right now (read back, never assumed)
+#
+#   power-saver   power-profiles-daemon "power-saver"; the "Hey Fab" listener rests while on battery (voice.spotter
+#                 battery-off unless the user set off)
+#   balanced      power-profiles-daemon "balanced" — the default; everything the user chose in Settings stays
+#   performance   power-profiles-daemon "performance"
+#   gaming        performance + KWin AllowTearing=true (a full-screen game may present unsynchronised frames) + variable
+#                 refresh "Automatic" on every output + light effects (blur, translucency, magic lamp and dim-screen off;
+#                 rounded corners and fades stay) + CPU governor "performance" and split-lock mitigation off (root
+#                 helper, fabos-perf-mode@gaming.service)
+#   server        power-profiles-daemon "balanced"; no desktop effects at all; the display never dims or turns off, no
+#                 automatic sleep, closing the lid does nothing (the screen still locks after the usual idle time); the
+#                 listener is off
+# Entering gaming or server takes a snapshot of the user's own values of every key those modes write (kwinrc,
+# powerdevilrc, the per-output variable-refresh policy); leaving them restores exactly those values (or deletes the key,
+# so the system default applies again). A switch between the two puts the user's values back first, so nothing of
+# Server (lid and sleep ignored, every effect off) is carried into Gaming or the other way round.
+# The quick-settings battery card is the UI for this; the "Hey Fab" daemon reads the mode file itself.
+set -u
+CFG=${XDG_CONFIG_HOME:-$HOME/.config}
+DIR=$CFG/fabos; MODE_FILE=$DIR/performance-mode; SNAP=$DIR/performance-mode.snapshot
+MODES="power-saver balanced performance gaming server"
+PPD="busctl --system --timeout=3"; PPD_DEST=net.hadess.PowerProfiles; PPD_PATH=/net/hadess/PowerProfiles
+# every key a mode may write: FILE|GROUP|SUBGROUP-or-'-'|KEY (the snapshot records the user's own value of each).
+# Effect keys are <id>Enabled with the id from the effect's metadata.json: KWin 6.6's scripted effects are plain ids
+# (fade, scale, dimscreen, translucency, squash — /usr/share/kwin-wayland/effects/*/metadata.json), the C++ plugins keep
+# theirs (blur, magiclamp, slide, slidingpopups, kwin4_effect_shapecorners).
+KEYS="kwinrc|Plugins|-|blurEnabled
+kwinrc|Plugins|-|translucencyEnabled
+kwinrc|Plugins|-|magiclampEnabled
+kwinrc|Plugins|-|dimscreenEnabled
+kwinrc|Plugins|-|slideEnabled
+kwinrc|Plugins|-|fadeEnabled
+kwinrc|Plugins|-|scaleEnabled
+kwinrc|Plugins|-|slidingpopupsEnabled
+kwinrc|Plugins|-|kwin4_effect_shapecornersEnabled
+kwinrc|Compositing|-|AllowTearing
+powerdevilrc|AC|Display|TurnOffDisplayWhenIdle
+powerdevilrc|AC|Display|DimDisplayWhenIdle
+powerdevilrc|AC|SuspendAndShutdown|AutoSuspendAction
+powerdevilrc|AC|SuspendAndShutdown|LidAction
+powerdevilrc|Battery|Display|TurnOffDisplayWhenIdle
+powerdevilrc|Battery|Display|DimDisplayWhenIdle
+powerdevilrc|Battery|SuspendAndShutdown|AutoSuspendAction
+powerdevilrc|Battery|SuspendAndShutdown|LidAction"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+valid() { case " $MODES " in *" $1 "*) return 0;; esac; return 1; }
+die() { echo "fabos-perf-mode: $*" >&2; exit 2; }
+# kreadconfig6 / kwriteconfig6 with an optional second (nested) group: kr FILE GROUP SUB|- KEY ; kw ... KEY VALUE ; kdel ... KEY
+kr() { if [ "$3" = "-" ]; then kreadconfig6 --file "$1" --group "$2" --key "$4" --default "" 2>/dev/null; else kreadconfig6 --file "$1" --group "$2" --group "$3" --key "$4" --default "" 2>/dev/null; fi; }
+kw() { if [ "$3" = "-" ]; then kwriteconfig6 --file "$1" --group "$2" --key "$4" "$5" 2>/dev/null; else kwriteconfig6 --file "$1" --group "$2" --group "$3" --key "$4" "$5" 2>/dev/null; fi; }
+# the value of KEY in the USER's own FILE (not the merged view kreadconfig6 gives), or UNSET. SECTION is the header
+# without brackets: "Plugins" or "AC][Display" (KConfig writes nested groups as [AC][Display]).
+uval() {
+  f=$CFG/$1; [ -r "$f" ] || { echo UNSET; return; }
+  awk -v sec="[$2]" -v key="$3" 'BEGIN { v = "UNSET" } /^\[/ { cur = $0 } cur == sec && index($0, key "=") == 1 { v = substr($0, length(key) + 2) } END { print v }' "$f"
+}
+sect() { if [ "$2" = "-" ]; then printf '%s' "$1"; else printf '%s][%s' "$1" "$2"; fi; }
+# remove KEY from the USER's own FILE under SECTION (a value line or a "KEY[$d]" deletion marker), so the /etc/xdg default
+# cascades again. `kwriteconfig6 --delete` is not used for this: it leaves KEY[$d] behind, which hides the /etc/xdg value
+# and falls back to the program's compiled default — for AllowTearing that is true, the opposite of restoring the default.
+udel() {
+  f=$CFG/$1; [ -r "$f" ] || return 0
+  awk -v sec="[$2]" -v key="$3" '/^\[/ { cur = $0 } !(cur == sec && (index($0, key "=") == 1 || index($0, key "[$") == 1))' "$f" > "$f.fabos-tmp" && mv "$f.fabos-tmp" "$f"
+}
+# KWin, PowerDevil and kscreen-doctor are reached over the session bus; without one (a console login, the image build) skip them
+session_bus() { [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]; }
+
+take_snapshot() {
+  mkdir -p "$DIR" 2>/dev/null || return
+  : > "$SNAP"
+  printf '%s\n' "$KEYS" | while IFS='|' read -r f g s k; do
+    printf '%s|%s|%s|%s|%s\n' "$f" "$g" "$s" "$k" "$(uval "$f" "$(sect "$g" "$s")" "$k")" >> "$SNAP"
+  done
+  # the variable-refresh policy of every capable output, as "vrr|OUTPUT|-|-|POLICY" (Gaming sets Automatic on all of them)
+  vrr_outputs | while IFS='|' read -r o p; do [ "$p" = incapable ] || printf 'vrr|%s|-|-|%s\n' "$o" "$p" >> "$SNAP"; done
+}
+# restore_snapshot [keep]: put every snapshotted value back. `keep` leaves the snapshot file in place — a switch between
+# Gaming and Server restores the user's values before the next mode writes its own, and the snapshot must go on holding
+# the user's values, not the previous mode's.
+restore_snapshot() {
+  [ -r "$SNAP" ] || return 0
+  while IFS='|' read -r f g s k v; do
+    [ -n "$k" ] || continue
+    case "$f" in
+      vrr) vrr_set "$g" "$v";;
+      *) if [ "$v" = UNSET ]; then udel "$f" "$(sect "$g" "$s")" "$k"; else kw "$f" "$g" "$s" "$k" "$v"; fi;;
+    esac
+  done < "$SNAP"
+  [ "${1:-}" = keep ] || rm -f "$SNAP"
+}
+
+ppd_get() { v=$($PPD get-property $PPD_DEST $PPD_PATH $PPD_DEST ActiveProfile 2>/dev/null); v=${v#s \"}; v=${v%\"}; printf '%s' "$v"; }
+ppd_set() {
+  $PPD set-property $PPD_DEST $PPD_PATH $PPD_DEST ActiveProfile s "$1" >/dev/null 2>&1 && return 0
+  have powerprofilesctl && powerprofilesctl set "$1" >/dev/null 2>&1 && return 0
+  echo "fabos-perf-mode: power-profiles-daemon did not accept the profile '$1' (is it running?)" >&2; return 1
+}
+# the profiles this machine's power-profiles-daemon offers (one name per line): "performance" exists only with a platform
+# driver that can deliver it (intel_pstate, amd-pstate, some ACPI platform_profile firmware); a machine without one — a
+# virtual machine, an older laptop on the placeholder driver — has balanced and power-saver only
+ppd_profiles() { have powerprofilesctl && powerprofilesctl list 2>/dev/null | sed -n 's/^[ *]*\([a-z-]*\):$/\1/p'; }
+ppd_wanted() { case "$1" in power-saver) echo power-saver;; performance|gaming) echo performance;; *) echo balanced;; esac; }
+# what to set: the wanted profile, or balanced when performance is not offered here
+ppd_for() {
+  w=$(ppd_wanted "$1")
+  if [ "$w" = performance ]; then case " $(ppd_profiles | tr '\n' ' ') " in *" performance "*) ;; *) w=balanced;; esac; fi
+  echo "$w"
+}
+kwin_reconfigure() { session_bus && have qdbus6 && qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1; return 0; }
+# PowerDevil re-reads powerdevilrc on refreshStatus (what its own settings module calls after saving)
+powerdevil_refresh() { session_bus && have qdbus6 && qdbus6 org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement org.kde.Solid.PowerManagement.refreshStatus >/dev/null 2>&1; return 0; }
+# variable refresh rate: KWin keeps the policy per output in kwinoutputconfig.json; kscreen-doctor reads and sets it live.
+# vrr_outputs prints one "NAME|POLICY" line per output (POLICY: Never | Always | Automatic | incapable, as kscreen-doctor
+# -o words it); vrr_set NAME POLICY (kscreen-doctor wants the policy in lower case: output.NAME.vrrpolicy.automatic).
+vrr_outputs() {
+  session_bus && have kscreen-doctor || return 0
+  kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk '/^Output: / { name = $3 } /^[[:space:]]*Vrr: / { if (name != "") print name "|" $2 }'
+  return 0
+}
+vrr_set() {
+  [ -n "$1" ] && [ -n "$2" ] && [ "$2" != incapable ] || return 0
+  session_bus && have kscreen-doctor || return 0
+  kscreen-doctor "output.$1.vrrpolicy.$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" >/dev/null 2>&1
+  return 0
+}
+vrr_automatic() { vrr_outputs | while IFS='|' read -r o p; do [ "$p" = incapable ] || vrr_set "$o" Automatic; done; return 0; }
+# the root side (governor, split-lock): a one-shot system unit an active local user may start (polkit rule 49-fabos-perf-mode.rules)
+root_side() {
+  have systemctl || return 0
+  out=$(systemctl start "fabos-perf-mode@$1.service" 2>&1) || echo "fabos-perf-mode: CPU governor not changed (${out:-no permission}); the rest of the mode is in force" >&2
+  return 0
+}
+spotter_policy() {   # the same rule as voicelib.spotter_policy: the user's voice.spotter, tightened by the mode
+  u=""; have fabos && u=$(fabos settings 2>/dev/null | awk '$1 == "voice.spotter" { print $2 }')
+  case "$u" in on|battery-off|off) ;; *) u=on;; esac
+  case "$1" in server) echo off;; power-saver) if [ "$u" = on ]; then echo battery-off; else echo "$u"; fi;; *) echo "$u";; esac
+}
+
+apply_mode() {
+  m=$1
+  # Gaming and Server write keys the user may have set. The first of them snapshots the user's own values; a switch from
+  # one to the other first restores those values (snapshot kept), so nothing of the previous mode leaks into the next —
+  # Server's "lid closed does nothing, never sleep" must not survive into Gaming on a laptop; every other mode restores
+  # and drops the snapshot.
+  case "$m" in gaming|server) if [ -f "$SNAP" ]; then restore_snapshot keep; else take_snapshot; fi;; *) restore_snapshot;; esac
+  case "$m" in
+    gaming)
+      kw kwinrc Compositing - AllowTearing true
+      for e in blur translucency magiclamp dimscreen; do kw kwinrc Plugins - "${e}Enabled" false; done
+      ;;
+    server)
+      kw kwinrc Compositing - AllowTearing false
+      for e in blur translucency magiclamp dimscreen slide fade scale slidingpopups kwin4_effect_shapecorners; do kw kwinrc Plugins - "${e}Enabled" false; done
+      for g in AC Battery; do
+        kw powerdevilrc "$g" Display TurnOffDisplayWhenIdle false; kw powerdevilrc "$g" Display DimDisplayWhenIdle false
+        kw powerdevilrc "$g" SuspendAndShutdown AutoSuspendAction 0; kw powerdevilrc "$g" SuspendAndShutdown LidAction 0
+      done
+      ;;
+  esac
+  ppd_set "$(ppd_for "$m")"
+  [ "$m" = gaming ] && vrr_automatic
+  kwin_reconfigure; powerdevil_refresh
+  root_side "$m"
+}
+
+cmd_get() { m=""; [ -r "$MODE_FILE" ] && read -r m < "$MODE_FILE"; valid "${m:-x}" && printf '%s\n' "$m" || echo ""; }
+cmd_list() {
+  printf 'power-saver\tPower saver\tlowest power draw; the wake word rests while on battery\n'
+  printf 'balanced\tBalanced\tthe everyday default\n'
+  printf 'performance\tPerformance\tfull CPU speed\n'
+  printf 'gaming\tGaming\tfull speed, tearing and variable refresh allowed, light desktop effects, performance governor\n'
+  printf 'server\tServer\tnever sleeps or blanks the screen (even with the lid closed), no desktop effects, wake word off\n'
+}
+cmd_set() {
+  m=${1:-}; valid "$m" || die "unknown mode '$m' (one of: $MODES)"
+  have kwriteconfig6 || die "kwriteconfig6 missing (package libkf6config-bin)"
+  mkdir -p "$DIR" 2>/dev/null || die "cannot create $DIR"
+  apply_mode "$m"
+  printf '%s\n' "$m" > "$MODE_FILE"
+  echo "mode: $m  (power profile: $(ppd_get))"
+}
+cmd_apply() {
+  m=$(cmd_get); [ -n "$m" ] || exit 0
+  ppd_set "$(ppd_for "$m")"
+  [ "$m" = gaming ] && vrr_automatic
+  exit 0
+}
+# ---- status: read back
+jb() { case "$1" in true) printf 'true';; false) printf 'false';; *) printf 'null';; esac; }
+jn() { case "$1" in ''|*[!0-9-]*) printf 'null';; *) printf '%s' "$1";; esac; }
+js() { if [ -z "$1" ]; then printf 'null'; else printf '"%s"' "$(printf '%s' "$1" | sed 's/["\\]/\\&/g')"; fi; }
+cmd_status() {
+  m=$(cmd_get); p=$(ppd_get)
+  gov=""; [ -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ] && read -r gov < /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+  slm=""; [ -r /proc/sys/kernel/split_lock_mitigate ] && read -r slm < /proc/sys/kernel/split_lock_mitigate
+  rootm=""; [ -r /var/lib/fabos/perf-mode ] && read -r rootm < /var/lib/fabos/perf-mode
+  vrr=""; [ -r "$CFG/kwinoutputconfig.json" ] && vrr=$(tr -d '\n' < "$CFG/kwinoutputconfig.json" | sed -n 's/.*"vrrPolicy": *"\([A-Za-z]*\)".*/\1/p')
+  sp=$(spotter_policy "${m:-balanced}")
+  profiles=$(ppd_profiles | tr '\n' ' ')
+  if [ "${1:-}" = "--json" ]; then
+    plist=""; for x in $profiles; do plist="$plist${plist:+,}\"$x\""; done
+    printf '{"mode":%s,"persisted":%s,"ppd":%s,"ppd_available":%s,"ppd_profiles":[%s],"ppd_wanted":%s,"tearing":%s,"vrr":%s,' "$(js "${m:-balanced}")" "$([ -n "$m" ] && echo true || echo false)" "$(js "$p")" "$([ -n "$p" ] && echo true || echo false)" "$plist" "$(js "$(ppd_wanted "${m:-balanced}")")" "$(jb "$(kr kwinrc Compositing - AllowTearing)")" "$(js "$vrr")"
+    printf '"effects":{"blur":%s,"translucency":%s,"magiclamp":%s,"dimscreen":%s,"slide":%s,"corners":%s},' "$(jb "$(kr kwinrc Plugins - blurEnabled)")" "$(jb "$(kr kwinrc Plugins - translucencyEnabled)")" "$(jb "$(kr kwinrc Plugins - magiclampEnabled)")" "$(jb "$(kr kwinrc Plugins - dimscreenEnabled)")" "$(jb "$(kr kwinrc Plugins - slideEnabled)")" "$(jb "$(kr kwinrc Plugins - kwin4_effect_shapecornersEnabled)")"
+    printf '"spotter":%s,' "$(js "$sp")"
+    printf '"display":{"turn_off_when_idle":%s,"dim_when_idle":%s,"autosuspend":%s,"lid":%s},' "$(jb "$(kr powerdevilrc AC Display TurnOffDisplayWhenIdle)")" "$(jb "$(kr powerdevilrc AC Display DimDisplayWhenIdle)")" "$(jn "$(kr powerdevilrc AC SuspendAndShutdown AutoSuspendAction)")" "$(jn "$(kr powerdevilrc AC SuspendAndShutdown LidAction)")"
+    printf '"governor":%s,"split_lock_mitigate":%s,"root_mode":%s,"snapshot":%s}\n' "$(js "${gov:-unavailable}")" "$(js "${slm:-unavailable}")" "$(js "$rootm")" "$([ -f "$SNAP" ] && echo true || echo false)"
+  else
+    echo "mode:              ${m:-balanced}$([ -n "$m" ] || echo ' (never chosen)')"
+    echo "power profile:     ${p:-unavailable (power-profiles-daemon not running)}   (wanted: $(ppd_wanted "${m:-balanced}"); offered: ${profiles:-none})"
+    echo "tearing allowed:   $(kr kwinrc Compositing - AllowTearing)   variable refresh: ${vrr:-unknown}"
+    echo "effects:           blur=$(kr kwinrc Plugins - blurEnabled) translucency=$(kr kwinrc Plugins - translucencyEnabled) magiclamp=$(kr kwinrc Plugins - magiclampEnabled) dimscreen=$(kr kwinrc Plugins - dimscreenEnabled) slide=$(kr kwinrc Plugins - slideEnabled) corners=$(kr kwinrc Plugins - kwin4_effect_shapecornersEnabled)"
+    echo "wake-word policy:  $sp"
+    echo "display (AC):      turn off when idle=$(kr powerdevilrc AC Display TurnOffDisplayWhenIdle) dim=$(kr powerdevilrc AC Display DimDisplayWhenIdle) autosuspend=$(kr powerdevilrc AC SuspendAndShutdown AutoSuspendAction) lid=$(kr powerdevilrc AC SuspendAndShutdown LidAction)   (empty = system default)"
+    echo "cpu governor:      ${gov:-unavailable}   split_lock_mitigate: ${slm:-unavailable}   root-side mode: ${rootm:-none}"
+    echo "snapshot held:     $([ -f "$SNAP" ] && echo yes || echo no)"
+  fi
+}
+
+case "${1:-status}" in
+  get) cmd_get;; list) cmd_list;; set) cmd_set "${2:-}";; apply) cmd_apply;; status) cmd_status "${2:-}";;
+  -h|--help|help) sed -n '2,24p' "$0";;
+  *) die "usage: fabos-perf-mode get | list | set MODE | apply | status [--json]";;
+esac

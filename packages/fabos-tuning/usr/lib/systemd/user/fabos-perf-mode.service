@@ -1,0 +1,18 @@
+[Unit]
+Description=@DISTRO_NAME@ performance mode — re-apply the chosen mode at login
+Documentation=@DOCS_URL@
+# Runs only for a user who ever chose a mode (the file below is written by `fabos-perf-mode set`), so a fresh desktop
+# starts nothing extra. `apply` sets the power-profiles-daemon profile the mode asks for (power-profiles-daemon restores
+# its own last profile at boot, this covers a profile changed by another tool meanwhile) and re-issues the per-output
+# variable-refresh policy; KWin's and PowerDevil's keys are already in the user's configuration files.
+ConditionPathExists=%h/.config/fabos/performance-mode
+PartOf=graphical-session.target
+After=plasma-powerdevil.service plasma-kwin_wayland.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/fabos-perf-mode apply
+TimeoutStartSec=30
+
+[Install]
+WantedBy=graphical-session.target
