@@ -23,7 +23,8 @@ TAG=${1:?usage: release-github.sh vX.Y.Z [--ota] [--dry-run] [--draft] [--target
 REPO=PatienceAIiN/fab-os; BUILD=${FABOS_BUILD:-$HERE/build}; MODE=image; ISO=""; DRAFT=0; TARGET=""; DRY=0; SUITE=$DISTRO_CODENAME
 while [ $# -gt 0 ]; do case $1 in
   --repo) REPO=$2; shift;; --iso) ISO=$2; shift;; --draft) DRAFT=1;; --ota) MODE=ota;; --suite) SUITE=$2; shift;;
-  --target) TARGET=$2; shift;; --dry-run) DRY=1;; *) echo "release-github: unknown option $1" >&2; exit 2;; esac; shift; done
+# --target may be a short sha: GitHub rejects short target_commitish values, so resolve it to the full sha
+  --target) TARGET=$(git rev-parse --verify "$2^{commit}" 2>/dev/null || echo "$2"); shift;; --dry-run) DRY=1;; *) echo "release-github: unknown option $1" >&2; exit 2;; esac; shift; done
 die() { echo "release-github: $*" >&2; exit 1; }
 export APT_GNUPGHOME=${APT_GNUPGHOME:-$BUILD/secrets/gpg-home}
 
