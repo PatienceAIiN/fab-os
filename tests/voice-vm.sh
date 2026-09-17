@@ -130,8 +130,7 @@ res=$(vm "bash /tmp/r8-listen-vm.sh"); echo "$res" | grep -v '^[0-9]* *$' | head
 python3 - "$res" "$SENT" <<'EOP'
 import json, re, sys
 res, sent = sys.argv[1], sys.argv[2]
-head, _, trace = res.partition("trace:
-")
+head, _, trace = res.partition("trace:\n")
 kv = dict(l.split("=", 1) for l in head.splitlines() if "=" in l)
 norm = lambda s: re.sub(r"\s+", " ", re.sub(r"[^a-z ]", "", s.lower())).strip()
 t0 = int(kv.get("t0", "0")); states, first_rec, peak = [], None, 0.0

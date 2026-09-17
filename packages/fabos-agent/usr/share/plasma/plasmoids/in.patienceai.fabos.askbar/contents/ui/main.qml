@@ -252,7 +252,12 @@ PlasmoidItem {
         root.aiEnabled = j.ai_enabled === undefined ? true : !!j.ai_enabled
         root.provider = String(j.provider || "")
         if (j.voice) {   // the microphone permission and voice.enabled straight from the daemon (fresher than the 30 s fabos-voice status cache)
-            if (j.voice.mic_allowed !== undefined) root.voiceMicAllowed = String(j.voice.mic_allowed) === "true"
+            if (j.voice.mic_allowed !== undefined) {
+                root.voiceMicAllowed = String(j.voice.mic_allowed) === "true"
+                // the cached fabos-voice reason follows at once: un-dim the mic the moment Settings allows it, dim it when Settings forbids it
+                if (root.voiceMicAllowed && root.voiceReason === Agent.MIC_OFF_TIP) root.voiceReason = ""
+                else if (!root.voiceMicAllowed && root.voiceChecked) root.voiceReason = Agent.MIC_OFF_TIP
+            }
             if (j.voice.enabled !== undefined) root.voiceOn = String(j.voice.enabled) === "true"
         }
         if (j.ui_show_raw !== undefined) root.showRaw = j.ui_show_raw === true || String(j.ui_show_raw) === "true"

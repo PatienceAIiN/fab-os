@@ -179,7 +179,8 @@ def quick_passes():
                 # buttons follow the image's real voice status (a race that made this pass flaky)
                 wait_for(lambda: w.voice._status_proc is None, "initial voice probe")
                 w.voice.bin = fake_new
-                w.voice.status = {"stt": "whisper.cpp", "tts": "espeak-ng", "mic": True, "wake": False, "listening": False}
+                w.voice.status = {"stt": "whisper.cpp", "tts": "espeak-ng", "mic": True, "wake": False, "listening": False, "mic_allowed": True, "service": True,
+                                  "source": "alsa_input.pci-0000_00_1f.3.analog-stereo", "source_description": "Built-in Audio Analog Stereo"}   # what `fabos-voice -v status` reports
                 w.update_voice_buttons()
                 settings = cc.api("GET", "/settings")
                 assert settings["mail_provider_order"][0] == "gmail" and not settings["mail_oauth"]["google"], settings.get("mail_oauth")

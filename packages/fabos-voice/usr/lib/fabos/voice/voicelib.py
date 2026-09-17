@@ -71,8 +71,8 @@ FIRST_CHUNK_S = 1.5                                           # a recorder that 
 # Offline speech-to-text memory. 1.0-7 refused below 600 MB free — a figure a 4 GB laptop with a browser open often does not
 # have, so its microphone "did nothing". whisper-cli with tiny.en is a short-lived process per utterance (the model is NOT
 # kept resident: its memory is back the moment it exits — nothing to free after an idle minute). Its peak RSS is measured
-# in the 1.0-8 VM (tests/voice-vm.sh: /usr/bin/time -v on a spoken sentence) = WHISPER_PEAK_RSS_MB; the threshold is +20 %.
-WHISPER_PEAK_RSS_MB = int(os.environ.get("FABOS_VOICE_WHISPER_PEAK_MB", "175"))
+# in the 1.0-8 VM (tests/voice-vm.sh section 8: getrusage of the whisper-cli child on a spoken sentence) = WHISPER_PEAK_RSS_MB; the threshold is +20 %.
+WHISPER_PEAK_RSS_MB = int(os.environ.get("FABOS_VOICE_WHISPER_PEAK_MB", "174"))   # measured 178 144 KB (VM, 2 threads, a 3.4 s sentence) -> threshold 208 MB
 MEM_NEEDED_KB = int(WHISPER_PEAK_RSS_MB * 1.2) * 1024
 CHIME_PLAY_TIMEOUT_S = 2.0                                    # a player that hangs on the 180 ms chime must not delay the recording
 CHIME_MS = 180
