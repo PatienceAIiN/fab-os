@@ -18,7 +18,9 @@
 #                 automatic sleep, closing the lid does nothing (the screen still locks after the usual idle time); the
 #                 listener is off
 # Entering gaming or server takes a snapshot of the user's own values of every key those modes write (kwinrc,
-# powerdevilrc); leaving them restores exactly those values (or deletes the key, so the system default applies again).
+# powerdevilrc, the per-output variable-refresh policy); leaving them restores exactly those values (or deletes the key,
+# so the system default applies again). A switch between the two puts the user's values back first, so nothing of
+# Server (lid and sleep ignored, every effect off) is carried into Gaming or the other way round.
 # The quick-settings battery card is the UI for this; the "Hey Fab" daemon reads the mode file itself.
 set -u
 CFG=${XDG_CONFIG_HOME:-$HOME/.config}
@@ -77,14 +79,22 @@ take_snapshot() {
   printf '%s\n' "$KEYS" | while IFS='|' read -r f g s k; do
     printf '%s|%s|%s|%s|%s\n' "$f" "$g" "$s" "$k" "$(uval "$f" "$(sect "$g" "$s")" "$k")" >> "$SNAP"
   done
+  # the variable-refresh policy of every capable output, as "vrr|OUTPUT|-|-|POLICY" (Gaming sets Automatic on all of them)
+  vrr_outputs | while IFS='|' read -r o p; do [ "$p" = incapable ] || printf 'vrr|%s|-|-|%s\n' "$o" "$p" >> "$SNAP"; done
 }
+# restore_snapshot [keep]: put every snapshotted value back. `keep` leaves the snapshot file in place — a switch between
+# Gaming and Server restores the user's values before the next mode writes its own, and the snapshot must go on holding
+# the user's values, not the previous mode's.
 restore_snapshot() {
   [ -r "$SNAP" ] || return 0
   while IFS='|' read -r f g s k v; do
     [ -n "$k" ] || continue
-    if [ "$v" = UNSET ]; then udel "$f" "$(sect "$g" "$s")" "$k"; else kw "$f" "$g" "$s" "$k" "$v"; fi
+    case "$f" in
+      vrr) vrr_set "$g" "$v";;
+      *) if [ "$v" = UNSET ]; then udel "$f" "$(sect "$g" "$s")" "$k"; else kw "$f" "$g" "$s" "$k" "$v"; fi;;
+    esac
   done < "$SNAP"
-  rm -f "$SNAP"
+  [ "${1:-}" = keep ] || rm -f "$SNAP"
 }
 
 ppd_get() { v=$($PPD get-property $PPD_DEST $PPD_PATH $PPD_DEST ActiveProfile 2>/dev/null); v=${v#s \"}; v=${v%\"}; printf '%s' "$v"; }
@@ -107,14 +117,21 @@ ppd_for() {
 kwin_reconfigure() { session_bus && have qdbus6 && qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1; return 0; }
 # PowerDevil re-reads powerdevilrc on refreshStatus (what its own settings module calls after saving)
 powerdevil_refresh() { session_bus && have qdbus6 && qdbus6 org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement org.kde.Solid.PowerManagement.refreshStatus >/dev/null 2>&1; return 0; }
-# variable refresh rate: KWin keeps the policy per output in kwinoutputconfig.json; kscreen-doctor sets it live
-vrr_automatic() {
+# variable refresh rate: KWin keeps the policy per output in kwinoutputconfig.json; kscreen-doctor reads and sets it live.
+# vrr_outputs prints one "NAME|POLICY" line per output (POLICY: Never | Always | Automatic | incapable, as kscreen-doctor
+# -o words it); vrr_set NAME POLICY (kscreen-doctor wants the policy in lower case: output.NAME.vrrpolicy.automatic).
+vrr_outputs() {
   session_bus && have kscreen-doctor || return 0
-  kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^Output: *[0-9][0-9]* *\([^ ]*\).*/\1/p' | while read -r o; do
-    [ -n "$o" ] && kscreen-doctor "output.$o.vrrpolicy.automatic" >/dev/null 2>&1
-  done
+  kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk '/^Output: / { name = $3 } /^[[:space:]]*Vrr: / { if (name != "") print name "|" $2 }'
   return 0
 }
+vrr_set() {
+  [ -n "$1" ] && [ -n "$2" ] && [ "$2" != incapable ] || return 0
+  session_bus && have kscreen-doctor || return 0
+  kscreen-doctor "output.$1.vrrpolicy.$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" >/dev/null 2>&1
+  return 0
+}
+vrr_automatic() { vrr_outputs | while IFS='|' read -r o p; do [ "$p" = incapable ] || vrr_set "$o" Automatic; done; return 0; }
 # the root side (governor, split-lock): a one-shot system unit an active local user may start (polkit rule 49-fabos-perf-mode.rules)
 root_side() {
   have systemctl || return 0
@@ -129,7 +146,11 @@ spotter_policy() {   # the same rule as voicelib.spotter_policy: the user's voic
 
 apply_mode() {
   m=$1
-  case "$m" in gaming|server) [ -f "$SNAP" ] || take_snapshot;; *) restore_snapshot;; esac
+  # Gaming and Server write keys the user may have set. The first of them snapshots the user's own values; a switch from
+  # one to the other first restores those values (snapshot kept), so nothing of the previous mode leaks into the next —
+  # Server's "lid closed does nothing, never sleep" must not survive into Gaming on a laptop; every other mode restores
+  # and drops the snapshot.
+  case "$m" in gaming|server) if [ -f "$SNAP" ]; then restore_snapshot keep; else take_snapshot; fi;; *) restore_snapshot;; esac
   case "$m" in
     gaming)
       kw kwinrc Compositing - AllowTearing true
@@ -156,7 +177,7 @@ cmd_list() {
   printf 'balanced\tBalanced\tthe everyday default\n'
   printf 'performance\tPerformance\tfull CPU speed\n'
   printf 'gaming\tGaming\tfull speed, tearing and variable refresh allowed, light desktop effects, performance governor\n'
-  printf 'server\tServer\tnever sleeps or blanks the screen, no desktop effects, wake word off\n'
+  printf 'server\tServer\tnever sleeps or blanks the screen (even with the lid closed), no desktop effects, wake word off\n'
 }
 cmd_set() {
   m=${1:-}; valid "$m" || die "unknown mode '$m' (one of: $MODES)"
@@ -205,6 +226,6 @@ cmd_status() {
 
 case "${1:-status}" in
   get) cmd_get;; list) cmd_list;; set) cmd_set "${2:-}";; apply) cmd_apply;; status) cmd_status "${2:-}";;
-  -h|--help|help) sed -n '2,22p' "$0";;
+  -h|--help|help) sed -n '2,24p' "$0";;
   *) die "usage: fabos-perf-mode get | list | set MODE | apply | status [--json]";;
 esac

@@ -82,11 +82,11 @@ Findings, each one verified in the guest rather than assumed:
 
 | Area | Change | Package | Read it back |
 |---|---|---|---|
-| **Wake-word listener** | Voice-activity gate in front of pocketsphinx: the recorder keeps running (the ring buffer and the second-look verification need the whole clip), the decoder is fed only around speech-like audio (RMS ≥ 3× the running noise floor and ≥ 40; 300 ms pre-roll; 1.2 s hang-over so the endpointer closes the utterance). Silence and steady room noise cost the decoder nothing. | `fabos-voice` | `journalctl --user -u fabos-voiced` prints "decoder fed X s, gate held back Y s" when the spotter closes |
+| **Wake-word listener** | Voice-activity gate in front of pocketsphinx: the recorder keeps running (the ring buffer and the second-look verification need the whole clip), the decoder is fed only around speech-like audio (RMS ≥ 2× the running noise floor and ≥ 40; 1 s pre-roll; 1.2 s hang-over, then 0.5 s of digital silence so pocketsphinx's endpointer closes the utterance at once). Silence and steady room noise cost the decoder nothing. The parameters were set against pocketsphinx itself — see "Gate false negatives" below. | `fabos-voice` | `journalctl --user -u fabos-voiced` prints "decoder fed X s, gate held back Y s" when the spotter closes |
 | **Listener policy** | New setting `voice.spotter = on \| battery-off \| off` (`fabos settings voice.spotter battery-off`). `battery-off` releases the microphone after 5 min without input while discharging and reopens it within 10 s of the user's return; every policy pauses while the screen is locked (nobody should drive a locked machine by voice; the codec can power down). The performance mode tightens it: Server → off, Power saver → battery-off. | `fabos-voice` | `fabos-voice status` → `spotter_policy`, `spotter_state` (listening / paused:locked / paused:battery-idle / off) |
 | **Performance mode** | `fabos-perf-mode set power-saver \| balanced \| performance \| gaming \| server`, and the five-segment control in the quick-settings battery card. Table below. Persists across reboots (user file + `/var/lib/fabos/perf-mode` re-applied by `fabos-perf-mode-restore.service`). | new `fabos-tuning` (Depends of `fabos-desktop`) | `fabos-perf-mode status [--json]` |
-| **Gaming CPU governor** | `fabos-perf-mode@<mode>.service` (root, one-shot) writes `scaling_governor` (gaming → performance, power-saver → powersave, others → the value saved before the first change) and `kernel.split_lock_mitigate` (gaming → 0). A logged-in active local user may start exactly this unit without a password (`49-fabos-perf-mode.rules`). | `fabos-tuning` | `cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor`, `status --json` → `governor` |
-| **I/O scheduler** | udev: NVMe → `none`, other flash → `mq-deadline`, spinning disks → `bfq` (the kernel documentation's recommendation per class; bfq keeps an application start responsive while something else streams from a hard disk). Applied to present disks by the postinst. | `fabos-tuning` | `cat /sys/block/*/queue/scheduler` |
+| **Gaming CPU governor** | `fabos-perf-mode@<mode>.service` (root, one-shot) writes `scaling_governor` (gaming → performance; power-saver → powersave only under an active-mode pstate driver — intel_pstate / amd-pstate-epp, where the governors on offer are exactly `performance powersave` — because under acpi-cpufreq or a passive pstate mode "powersave" pins the lowest frequency; others → the value saved before the first change) and `kernel.split_lock_mitigate` (gaming → 0). A logged-in active local user may start exactly this unit without a password (`49-fabos-perf-mode.rules`: the template with one of the five mode names, verb `start`, active local session). | `fabos-tuning` | `cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor`, `status --json` → `governor` |
+| **I/O scheduler** | udev: NVMe → `none`, other flash → `mq-deadline`, spinning disks → `bfq` (the kernel documentation's recommendation per class; bfq keeps an application start responsive while something else streams from a hard disk). Whole devices only (`DEVTYPE=disk`); applied to present disks by the postinst. | `fabos-tuning` | `cat /sys/block/*/queue/scheduler` |
 | **Logout/shutdown** | `systemd --user` `DefaultTimeoutStopSec=15s` (stock 90 s): a user service that ignores SIGTERM no longer holds the session for a minute and a half. | `fabos-tuning` | `systemctl --user show -p DefaultTimeoutStopUSec` |
 | **Local model priority** | `fabos-llama.service` at `Nice=10` (was 5): generation saturates its threads; the compositor, the shell and the foreground app always win the core. Threads stay one per physical core, at most 8; the 10 min idle unload and the no-preload behaviour are asserted by the test. | `fabos-ai` | `systemctl --user show fabos-llama -p Nice` |
 
@@ -94,20 +94,26 @@ Findings, each one verified in the guest rather than assumed:
 
 | Mode | power-profiles-daemon | KWin | Display / sleep (PowerDevil) | Listener | CPU (root helper) |
 |---|---|---|---|---|---|
-| Power saver | `power-saver` | as the user has it | as the user has it | `battery-off` (unless the user set `off`) | governor `powersave` where offered |
+| Power saver | `power-saver` | as the user has it | as the user has it | `battery-off` (unless the user set `off`) | governor `powersave` under intel_pstate / amd-pstate-epp; unchanged elsewhere |
 | Balanced (default) | `balanced` | as the user has it | as the user has it | the user's `voice.spotter` | saved original governor |
 | Performance | `performance` | as the user has it | as the user has it | the user's `voice.spotter` | saved original governor |
-| Gaming | `performance` | `AllowTearing=true`; VRR `Automatic` on every output; blur, translucency, magic lamp, dim-screen off (rounded corners and fades stay) | as the user has it | the user's `voice.spotter` | governor `performance`, `split_lock_mitigate=0` |
+| Gaming | `performance` | `AllowTearing=true`; VRR `Automatic` on every output (each output's own policy is snapshotted and restored); blur, translucency, magic lamp, dim-screen off (rounded corners and fades stay) | as the user has it | the user's `voice.spotter` | governor `performance`, `split_lock_mitigate=0` |
 | Server | `balanced` | `AllowTearing=false`; every animation effect and the rounded corners off | display never dims or turns off, `AutoSuspendAction=0`, `LidAction=0` (AC and battery); the screen still locks after the usual idle time | `off` | saved original governor |
 
 The battery card shows the five modes as icon segments with the active mode named in an accent pill (rendered through
 the quick-settings QML harness with a stand-in `fabos-perf-mode`: `build/r8-perf/modes-render/light/quicksettings-open-end.png`;
 `tests/desktop-applets-qml-test.sh localhost/fabos:vm harness-qs` passes in both colour schemes with the fallback path).
 
-Entering Gaming or Server snapshots the user's own values of every key those modes write (`~/.config/fabos/performance-mode.snapshot`);
-leaving them restores exactly those values, or deletes the key so the `/etc/xdg` default applies again. KWin is told to
-`reconfigure`, PowerDevil to `refreshStatus`; nothing is restarted. The defaults of 1.0-7 (`AllowTearing=false`, blur on
-above 3.5 GB, `AnimationDurationFactor=0.5`) are unchanged for Balanced.
+Entering Gaming or Server snapshots the user's own values of every key those modes write (`~/.config/fabos/performance-mode.snapshot`:
+the kwinrc and powerdevilrc keys, and each output's variable-refresh policy from `kscreen-doctor -o`); leaving them
+restores exactly those values, or deletes the key so the `/etc/xdg` default applies again. Switching from one of the two
+to the other restores the user's values first (the snapshot is kept), so Server's "lid closed does nothing, never
+sleep" cannot survive into Gaming on a laptop, and Server's disabled effects do not linger there either — until the
+review of 1.0-8 that switch carried them over. KWin is told to `reconfigure`, PowerDevil to `refreshStatus`; nothing
+is restarted. The defaults of 1.0-7 (`AllowTearing=false`, blur on above 3.5 GB, `AnimationDurationFactor=0.5`) are
+unchanged for Balanced. Server is opt-in and its label says what it does ("never sleeps or blanks the screen, even with
+the lid closed"); PowerDevil's LowBattery profile is not written, so a Server-mode laptop that runs its battery down
+still takes the low-battery action.
 
 Deliberately **not** changed: `vm.swappiness`, zram size, systemd-oomd limits (no evidence in the measurements that
 memory pressure is the owner's lag; they are documented in docs/LOW-RAM.md), `LatencyPolicy` (does not exist in KWin
@@ -127,7 +133,7 @@ dpkg error, fabos-tuning's postinst enabled its units and re-ran the udev rule o
 |---|---|---|
 | system CPU busy (one core) | 2.3 % | 2.3 % |
 | voice pipeline (daemon + pw-record + pocketsphinx) | 0.67 %, 105 wake-ups/s | 0.77 %, 94 wake-ups/s² |
-| plasmashell / kwin_wayland | 0.33 % / 0.27 % | 0.15 % / 0.07 % |
+| plasmashell / kwin_wayland | 0.33 % / 0.27 % | 0.15 % / 0.07 %⁴ |
 | any other process ≥ 5 % | none | none |
 | task creations (system-wide) | 1.53/s | 1.56/s¹ (spawners: the bar's own status probe only) |
 | MemAvailable | 817 MB | 830 MB |
@@ -144,8 +150,11 @@ only on a user's action (load, pane shown, hover, switch; one probe per 10 s at 
 budget imposed on the bar. The final run's figure is the one in the table; the two earlier runs are kept under
 `build/r8-perf/after-run1-*` and `after-attempt3-cardprobe/` (whose `idle.json` carries the attribution).
 ² in the VM the microphone is near-silent, so the gate changes little on the CPU side (pocketsphinx already sat at
-0.05 %; the daemon's RMS pass adds ~0.1 %). What the gate buys is decoder time on a real microphone in a room with
-noise; what the *policy* buys is measured below — the whole capture chain gone.
+0.05 %; the daemon's RMS pass adds ~0.15 %, which is why the pipeline reads 0.77 % against 0.67 % before — in the VM
+the gate is a small net cost). What the gate buys is decoder time on a real microphone in a room with noise that
+pocketsphinx's own endpointer takes for speech; what the *policy* buys is measured below — the whole capture chain gone.
+⁴ nothing in 1.0-8 touches plasmashell or KWin at idle (the battery card probes only on user action); the lower
+figures are run-to-run variance of a shared host, not an improvement to claim.
 
 **Launch latency, 1.0-8** (cold / warm median, ms; final run): konsole 385 / 221 (1.0-7: 373 / 209), dolphin 319 / 260
 (274 / 198), kate 395 / 270 (317 / 214), firefox 2424 / 412 (1840 / 794). Within the run-to-run jitter of a shared host
@@ -175,6 +184,32 @@ its settings every 30 s; `fabos-voice status` shows `wake: false`); `on` → bac
 chain — 105 wake-ups/s and ~1 % of a core in the table above, plus the codec — stops; this is what Power saver on
 battery and Server do by themselves.
 
+**Gate false negatives** (review of 1.0-8, in the image with its own pocketsphinx, espeak-ng and sox). A gate that
+misses "Hey Fab" fails silently, so it was measured against the decoder rather than assumed: espeak-ng says "hey fab"
+(0.62 s) inside 2 s + 3 s of synthetic room noise — white, and one-pole low-passed "fan" noise — at RMS 60 / 200 / 500
+and speech-to-noise ratios 1.5 / 2 / 2.5 / 3 / 4 / 6 (36 clips); each clip goes to `pocketsphinx -keyphrase "hey fab"`
+ungated and through the real `_pump()` gate, and for the gated run the pipe is held open 2 s after the last byte
+(production has no end-of-file: an utterance the endpointer has not closed is reported only when the next loud sound
+arrives). Of the 19 clips pocketsphinx detects ungated:
+
+| gate | kept | lost | delayed (only at EOF) |
+|---|---|---|---|
+| ratio 3, 300 ms pre-roll, no tail (as first written) | 13 | 5 | 1 |
+| ratio 3, 300 ms pre-roll, 0.5 s silence tail | 14 | 5 | 0 |
+| ratio 2, 500 ms pre-roll, 0.5 s silence tail | 18 | 1 | 0 |
+| **ratio 2, 1 s pre-roll, 0.5 s silence tail (shipped)** | **19** | **0** | **0** |
+
+Two mechanisms: below ~2.5× the floor the ratio-3 gate never opened where pocketsphinx alone still detects (a real
+gate at 6 dB SNR vs the decoder's own limit), and the hang-over of room noise is not "silence" to pocketsphinx's
+endpointer, so the utterance stayed open — the digital-silence tail closes it at once. 20 s of steady noise (both
+kinds, RMS 200 and 500, two seeds) opens none of the variants for a single chunk, so the shipped parameters keep the
+saving on steady noise. Limits: a synthetic voice, synthetic noise and one phrase; pocketsphinx itself is marginal on
+this material (it misses the clean phrase in digital silence and detects inconsistently across ratios), so the numbers
+say "the gate loses nothing the decoder would have caught", not what the absolute detection rate on a laptop is — that
+needs a real voice in a real room, which the owner's hardware check should include (say "Hey Fab" from across the room
+with a fan running, before and after `fabos settings voice.spotter off`/`on` is not needed: compare with
+`journalctl --user -u fabos-voiced`, which prints "decoder fed X s, gate held back Y s" when the spotter closes).
+
 ## 4. Expected effect on a real laptop
 
 - **Battery**: the listener no longer keeps a decoder busy on room noise; with `voice.spotter=battery-off` (Power saver
@@ -192,7 +227,9 @@ battery and Server do by themselves.
   (2.15) and not installed by default; on the laptop, `sudo powertop --csv=/tmp/pt.csv --time=60` gives the per-process
   wake-up table this document infers.
 - The emulated microphone is **silent**, so the gate keeps the decoder fully idle; in a room with people talking the
-  decoder runs during speech (that is its job), roughly the fraction of time someone is speaking.
+  decoder runs during speech (that is its job), roughly the fraction of time someone is speaking. The gate's false
+  negatives were measured against pocketsphinx on synthetic speech and noise only (section 3); a real voice at a
+  distance in a real room is still to be checked on the laptop.
 - The local model **cannot run at 2 GB** (`ConditionMemory=>3G`); its idle unload is asserted from the unit files and the
   absence of any llama-server process after login, not from a live query.
 - Launch latencies are **software-rendered VM numbers**; a laptop with a GPU is several times faster. The budgets in
@@ -214,4 +251,10 @@ is not in Ubuntu 26.04), round-trips the five modes through `systemd-run --user`
 polkit would refuse; a process under the user manager is attributed to the active seat, which is how the card runs it),
 optionally sets Gaming and reboots to prove persistence, flips `voice.spotter` off and on, and always quits QEMU and
 deletes the overlay. Budgets: voice pipeline < 1.5 % of a core idle; plasmashell and kwin_wayland < 3 %; no other
-process ≥ 5 %; < 1.5 task creations/s; warm launch budgets per application and ≤ 1.25× + 200 ms of the baseline.
+process ≥ 5 %; < 2 task creations/s (system-wide, the bar's own probes included; 1.0-7 measured 1.53); warm launch
+budgets per application (konsole / dolphin / kate < 1000 ms, firefox < 4000 ms) and ≤ 1.5× + 300 ms of the baseline.
+The mode round trip runs power-saver → performance → gaming → server → balanced, so the Gaming ↔ Server switch is
+covered only in the Gaming → Server direction there; the Server → Gaming direction (the one that leaked Server's lid
+and sleep keys before the review fix) is asserted by `tests/perf/perf-mode-selftest.sh`, which runs the script from
+the source tree inside the image (`podman`, `localhost/fabos:vm`) with a user's own values set first, through
+server → gaming → server → balanced, and checks the user's kwinrc / powerdevilrc and the snapshot after each step.

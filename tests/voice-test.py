@@ -880,9 +880,10 @@ class DaemonUnit(unittest.TestCase):
 
     def test_voice_activity_gate_feeds_the_decoder_only_around_speech(self):
         """The recorder's whole stream enters the ring, but pocketsphinx gets nothing for silence or steady room noise
-        (RMS ~17 here, below GATE_MIN_FLOOR): a loud burst opens the gate with GATE_PREROLL_CHUNKS of context first and
-        keeps it open GATE_HANGOVER_CHUNKS after the last loud chunk, so the decoder sees the trailing silence that
-        ends the utterance. 5 quiet + 4 loud + 15 quiet chunks -> 3 + 4 + 12 = 19 chunks fed, 5 held back."""
+        (RMS ~17 here, below GATE_MIN_FLOOR): a loud burst opens the gate with GATE_PREROLL_CHUNKS of context first,
+        keeps it open GATE_HANGOVER_CHUNKS after the last loud chunk, and closes it with GATE_TAIL_CHUNKS of digital
+        silence so the decoder's endpointer ends the utterance at once, whatever the room noise. 20 quiet + 4 loud +
+        15 quiet chunks -> preroll + 4 + hangover real chunks fed (plus the zero tail), the rest held back."""
         import io
         import fabos_voiced as D
 
@@ -899,17 +900,22 @@ class DaemonUnit(unittest.TestCase):
             def close(self):
                 pass
 
-        quiet1, burst, quiet2 = pcm_noise(0.5, seed=3), pcm_noise(0.4, amp=3000, seed=4), pcm_noise(1.5, seed=5)
+        nq1, nq2 = 20, 15
+        quiet1, burst, quiet2 = pcm_noise(nq1 / 10.0, seed=3), pcm_noise(0.4, amp=3000, seed=4), pcm_noise(nq2 / 10.0, seed=5)
         self.assertLess(V.rms(quiet1[:V.CHUNK_BYTES]), D.GATE_MIN_FLOOR)
         self.assertGreater(V.rms(burst[:V.CHUNK_BYTES]), D.GATE_MIN_FLOOR * D.GATE_RATIO)
+        self.assertGreater(nq1, D.GATE_PREROLL_CHUNKS)
+        self.assertGreater(nq2, D.GATE_HANGOVER_CHUNKS)
         d = D.Voiced()
         sink = Sink()
         d._pump(types.SimpleNamespace(stdout=io.BytesIO(quiet1 + burst + quiet2)), types.SimpleNamespace(stdin=sink))
+        fed = D.GATE_PREROLL_CHUNKS + 4 + D.GATE_HANGOVER_CHUNKS
         self.assertEqual(b"".join(d.ring), quiet1 + burst + quiet2, "everything enters the ring")
-        self.assertEqual(len(sink.data), (D.GATE_PREROLL_CHUNKS + 4 + D.GATE_HANGOVER_CHUNKS) * V.CHUNK_BYTES, "preroll + burst + hangover reach the decoder")
-        self.assertEqual(sink.data[:D.GATE_PREROLL_CHUNKS * V.CHUNK_BYTES], quiet1[-D.GATE_PREROLL_CHUNKS * V.CHUNK_BYTES:], "the 300 ms before the onset go first")
+        self.assertEqual(len(sink.data), (fed + D.GATE_TAIL_CHUNKS) * V.CHUNK_BYTES, "preroll + burst + hangover + silence tail reach the decoder")
+        self.assertEqual(sink.data[:D.GATE_PREROLL_CHUNKS * V.CHUNK_BYTES], quiet1[-D.GATE_PREROLL_CHUNKS * V.CHUNK_BYTES:], "the second before the onset goes first")
         self.assertIn(burst, sink.data)
-        self.assertEqual(d.gate_stats, [D.GATE_PREROLL_CHUNKS + 4 + D.GATE_HANGOVER_CHUNKS, 5])
+        self.assertEqual(sink.data[-D.GATE_TAIL_CHUNKS * V.CHUNK_BYTES:], b"\0" * (D.GATE_TAIL_CHUNKS * V.CHUNK_BYTES), "the gate closes with digital silence")
+        self.assertEqual(d.gate_stats, [fed, (nq1 - D.GATE_PREROLL_CHUNKS) + (nq2 - D.GATE_HANGOVER_CHUNKS)])
         # digital silence (a muted or emulated microphone) costs the decoder nothing at all
         d = D.Voiced()
         sink = Sink()

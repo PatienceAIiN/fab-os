@@ -57,15 +57,22 @@ REPEAT_WINDOW_S = 30       # the same narration text is not spoken twice within 
 # Voice-activity gate in front of pocketsphinx (docs/PERFORMANCE.md). The recorder keeps running (its stream is what
 # the ring buffer and the wake verification need), but the decoder is fed only around speech-like audio: a 100 ms
 # chunk whose RMS is GATE_RATIO times the running noise floor (and above GATE_MIN_FLOOR: digital silence is 0). Then
-# the GATE_PREROLL_CHUNKS before it go in first, and feeding continues GATE_HANGOVER_CHUNKS past the last loud chunk so
-# pocketsphinx's own endpointer sees the trailing silence that closes the utterance and prints its line. In a quiet room
-# — or on the silent microphone of the test VM — the decoder therefore receives nothing and costs nothing; measured in
-# the image: pocketsphinx decoding a continuous 16 kHz stream is ~1.5 % of a core (60 s of audio = 0.9 s CPU) plus a
-# wake-up every 100 ms; gated, it sleeps in read().
-GATE_RATIO = V.SPEECH_RATIO          # 3.0, the same ratio the recorder's Segmenter uses to call a chunk speech
+# the GATE_PREROLL_CHUNKS before it go in first, feeding continues GATE_HANGOVER_CHUNKS past the last loud chunk, and
+# when the gate closes GATE_TAIL_CHUNKS of digital silence follow it: pocketsphinx's own endpointer does not always call
+# room noise silence, and an utterance it has not closed is reported only when the next loud sound arrives — the tail
+# closes it now. In a quiet room — or on the silent microphone of the test VM — the decoder therefore receives nothing
+# and costs nothing; measured in the image: pocketsphinx decoding a continuous 16 kHz stream is ~1.5 % of a core (60 s
+# of audio = 0.9 s CPU) plus a wake-up every 100 ms; gated, it sleeps in read().
+# The numbers were chosen against pocketsphinx itself (in the image: espeak-ng "hey fab" in white and low-passed noise
+# at 1.5-6x the noise RMS; docs/PERFORMANCE.md "Gate false negatives"): with ratio 3 / 300 ms pre-roll / no tail the
+# gate lost 5 of the 19 detections pocketsphinx made ungated and delayed 1; with ratio 2 / 1 s pre-roll / 0.5 s tail it
+# lost none, and 20 s of steady noise still never opened it.
+GATE_RATIO = 2.0                     # +6 dB over the running floor (the recorder's Segmenter uses 3.0 to END a request;
+                                     # a gate that misses "hey fab" fails silently, so this one errs towards opening)
 GATE_MIN_FLOOR = V.MIN_FLOOR         # 40
-GATE_PREROLL_CHUNKS = 3              # 300 ms before the onset
+GATE_PREROLL_CHUNKS = 10             # 1 s before the onset (pocketsphinx's mean normalisation needs the context)
 GATE_HANGOVER_CHUNKS = 12            # 1.2 s after the last loud chunk
+GATE_TAIL_CHUNKS = 5                 # 0.5 s of digital silence when the gate closes
 GATE_FLOOR_RISE = 1.02               # the floor follows a rising room level 2 % per chunk, a falling one at once
 # Spotter policy (voicelib.spotter_policy: voice.spotter on | battery-off | off, tightened by the performance mode):
 # battery-off releases the microphone after IDLE_ON_BATTERY_S without input while discharging and reopens it when the
@@ -331,12 +338,14 @@ class Voiced:
                         pre.append(chunk)
                         self.gate_stats[1] += 1
                         continue
-                    for c in pre:                      # the 300 ms before the onset were "held back" until now
+                    for c in pre:                      # the second before the onset was "held back" until now
                         spot.stdin.write(c)
                         self.gate_stats[0] += 1
                         self.gate_stats[1] -= 1
                     pre.clear()
                 spot.stdin.write(chunk)
+                if self.gate_enabled and hang == 0:    # the last hang-over chunk: the gate closes behind it, and a
+                    spot.stdin.write(b"\0" * (GATE_TAIL_CHUNKS * V.CHUNK_BYTES))   # silence tail closes the utterance
                 spot.stdin.flush()
                 self.gate_stats[0] += 1
         except (OSError, ValueError):

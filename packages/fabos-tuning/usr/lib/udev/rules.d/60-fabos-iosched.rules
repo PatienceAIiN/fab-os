@@ -5,8 +5,9 @@
 #   spinning disks  -> bfq          fair queueing keeps the desktop (and the application being started) responsive while
 #                                   something else streams from the disk; bfq is a module here (CONFIG_IOSCHED_BFQ=m)
 #                                   and the kernel loads it on this write
-# Partitions have no queue/ attributes, so the rules match whole devices only. Applied to devices already present by
+# The KERNEL patterns also match partitions (nvme0n1p1, sda1), which have no queue/ attributes; DEVTYPE=disk keeps the
+# rules to whole devices, so udev never logs a failed ATTR write for a partition. Applied to devices already present by
 # fabos-tuning's postinst (udevadm trigger --subsystem-match=block --action=change). Check: cat /sys/block/*/queue/scheduler
-ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/scheduler}="none"
-ACTION=="add|change", KERNEL=="sd[a-z]*|vd[a-z]*|mmcblk[0-9]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline"
-ACTION=="add|change", KERNEL=="sd[a-z]*|vd[a-z]*", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
+ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ENV{DEVTYPE}=="disk", ATTR{queue/scheduler}="none"
+ACTION=="add|change", KERNEL=="sd[a-z]*|vd[a-z]*|mmcblk[0-9]*", ENV{DEVTYPE}=="disk", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline"
+ACTION=="add|change", KERNEL=="sd[a-z]*|vd[a-z]*", ENV{DEVTYPE}=="disk", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"

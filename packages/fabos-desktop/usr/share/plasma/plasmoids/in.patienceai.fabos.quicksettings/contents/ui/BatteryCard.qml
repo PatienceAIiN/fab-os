@@ -49,7 +49,7 @@ Rectangle {
         { id: "balanced",    icon: "battery-profile-balanced",    label: "Balanced",    tip: "The everyday default." },
         { id: "performance", icon: "battery-profile-performance", label: "Performance", tip: "Full CPU speed." },
         { id: "gaming",      icon: "input-gaming",                label: "Gaming",      tip: "Full speed; tearing and variable refresh allowed; light desktop effects." },
-        { id: "server",      icon: "network-server",              label: "Server",      tip: "Never sleeps or blanks the screen; no desktop effects; wake word off." } ]
+        { id: "server",      icon: "network-server",              label: "Server",      tip: "Never sleeps or blanks the screen, even with the lid closed; no desktop effects; wake word off." } ]
     readonly property var profiles: [
         { id: "power-saver", icon: "battery-profile-powersave",   label: "Power saver", tip: "" },
         { id: "balanced",    icon: "battery-profile-balanced",    label: "Balanced",    tip: "" },

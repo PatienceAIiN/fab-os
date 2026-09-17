@@ -3,10 +3,14 @@
 # logged-in user through the polkit rule 49-fabos-perf-mode.rules) and by fabos-perf-mode-restore.service at boot.
 #   perf-mode-root.sh MODE          MODE = power-saver | balanced | performance | gaming | server
 # What it touches, and only this:
-#   /sys/devices/system/cpu/cpufreq/policy*/scaling_governor   gaming -> performance, power-saver -> powersave (when the
-#         driver offers them), every other mode -> what the machine had before the first change (saved once in
-#         /var/lib/fabos/perf-mode-governor.orig). power-profiles-daemon drives the energy-performance preference
-#         separately; the governor pins the frequency range on top of that. Absent cpufreq (virtual machines): nothing.
+#   /sys/devices/system/cpu/cpufreq/policy*/scaling_governor   gaming -> performance (when offered); power-saver ->
+#         powersave, but only under intel_pstate / amd-pstate-epp in active mode (the governors on offer are exactly
+#         "performance powersave" and powersave is the normal dynamic one there) — under a generic driver (acpi-cpufreq,
+#         the passive pstate modes with schedutil/ondemand on offer) "powersave" pins the LOWEST frequency, so there
+#         Power saver leaves the governor alone and power-profiles-daemon's profile does the saving; every other mode ->
+#         what the machine had before the first change (saved once in /var/lib/fabos/perf-mode-governor.orig).
+#         power-profiles-daemon drives the energy-performance preference separately; the governor pins the frequency
+#         range on top of that. Absent cpufreq (virtual machines): nothing.
 #   /proc/sys/kernel/split_lock_mitigate   gaming -> 0, others -> 1 (Intel 12th gen+: the kernel stalls a process that
 #         performs a split lock; some games do, and the stall reads as a stutter — the value gamemode uses, too).
 #   /var/lib/fabos/perf-mode                the mode, for the restore service.
@@ -23,9 +27,14 @@ if [ -n "$govs" ]; then
   first=$(echo "$govs" | head -1)
   if [ ! -f "$ORIG" ]; then read -r g < "$first" 2>/dev/null && printf '%s\n' "$g" > "$ORIG"; fi
   avail=""; read -r avail < "$(dirname "$first")/scaling_available_governors" 2>/dev/null
-  case "$MODE" in gaming) want=performance;; power-saver) want=powersave;; *) read -r want < "$ORIG" 2>/dev/null || want="";; esac
+  pstate=0; case " $avail " in " performance powersave "|" powersave performance ") pstate=1;; esac   # active-mode pstate driver
+  case "$MODE" in
+    gaming) want=performance;;
+    power-saver) if [ $pstate = 1 ]; then want=powersave; else read -r want < "$ORIG" 2>/dev/null || want=""; fi;;
+    *) read -r want < "$ORIG" 2>/dev/null || want="";;
+  esac
   case " $avail " in
-    *" $want "*) n=0; for f in $govs; do printf '%s\n' "$want" > "$f" 2>/dev/null && n=$((n+1)); done; echo "governor=$want policies=$n";;
+    *" $want "*) n=0; for f in $govs; do if { printf '%s\n' "$want" > "$f"; } 2>/dev/null; then n=$((n+1)); fi; done; echo "governor=$want policies=$n";;
     *) echo "governor=unchanged wanted=${want:-none} available='$avail'";;
   esac
 else
