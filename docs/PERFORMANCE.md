@@ -125,12 +125,12 @@ dpkg error, fabos-tuning's postinst enabled its units and re-ran the udev rule o
 
 | | 1.0-7 | 1.0-8 |
 |---|---|---|
-| system CPU busy (one core) | 2.3 % | 3.2 %¹ |
-| voice pipeline (daemon + pw-record + pocketsphinx) | 0.67 %, 105 wake-ups/s | 0.77 %, 105 wake-ups/s² |
-| plasmashell / kwin_wayland | 0.33 % / 0.27 % | 0.15 % / 0.05 % |
+| system CPU busy (one core) | 2.3 % | 2.3 % |
+| voice pipeline (daemon + pw-record + pocketsphinx) | 0.67 %, 105 wake-ups/s | 0.77 %, 94 wake-ups/s² |
+| plasmashell / kwin_wayland | 0.33 % / 0.27 % | 0.15 % / 0.07 % |
 | any other process ≥ 5 % | none | none |
-| task creations (system-wide) | 1.53/s | see ¹ |
-| MemAvailable | 817 MB | 805 MB |
+| task creations (system-wide) | 1.53/s | 1.56/s¹ (spawners: the bar's own status probe only) |
+| MemAvailable | 817 MB | 830 MB |
 | `/sys/block/vda/queue/scheduler` (rotational=1) | `[none]` | `[bfq]` |
 | `systemctl --user show -p DefaultTimeoutStopUSec` | 1 min 30 s | 15 s |
 | `fabos-llama.service` Nice | 5 | 10 |
@@ -147,9 +147,11 @@ budget imposed on the bar. The final run's figure is the one in the table; the t
 0.05 %; the daemon's RMS pass adds ~0.1 %). What the gate buys is decoder time on a real microphone in a room with
 noise; what the *policy* buys is measured below — the whole capture chain gone.
 
-**Launch latency, 1.0-8** (cold / warm median, ms): konsole 426 / 212 (1.0-7: 373 / 209), dolphin 334 / 241 (274 / 198),
-kate 362 / 262 (317 / 214), firefox 2870 / 730 (1840 / 794). Within the run-to-run jitter of a shared host; every warm
-value is under its budget and within 1.5× + 300 ms of the baseline. Nothing in 1.0-8 runs at launch time.
+**Launch latency, 1.0-8** (cold / warm median, ms; final run): konsole 385 / 221 (1.0-7: 373 / 209), dolphin 319 / 260
+(274 / 198), kate 395 / 270 (317 / 214), firefox 2424 / 412 (1840 / 794). Within the run-to-run jitter of a shared host
+(the two earlier 1.0-8 runs gave konsole 212 and 216, dolphin 241 and 242, kate 262 and 316, firefox 730 and 1372 ms
+warm); every warm value is under its budget and within 1.5× + 300 ms of the baseline. Nothing in 1.0-8 runs at launch
+time. Final run: **20 PASS / 0 FAIL / 0 SKIP** (`build/r8-perf/after/perf-vm.out`).
 
 **Performance modes, read back after `set` through `systemd-run --user`** (`modes.jsonl`):
 
