@@ -198,7 +198,7 @@ Item {
         check(vol && vol.x === 0 && vol.y === 88 && vol.width === cw && vol.height === 64, "row 2: volume slider full width at y 88 (64 px)")
         check(bri && bri.x === 0 && bri.y === 240 && bri.width === cw && bri.height === 64, "row 4: brightness slider full width at y 240 (under the microphone row at 164)")
         check(bat && bat.x === 0 && bat.y === 316 && bat.width === 2 * col + 12 && bat.height === 96 && dnd && dnd.x === 2 * (col + 12) && dnd.y === 316 && dnd.height === 96, "row 5: battery card two columns (96 px) + Do Not Disturb stretched to the row height")
-        check(night && night.visible && night.x === 0 && night.y === 424 && night.width === col && shot && shot.x === col + 12 && shot.y === 424 && shot.width === col && set && set.x === 2 * (col + 12) && set.y === 348 && set.width === cw - set.x, "row 6: Night light, Screenshot, Settings one column each (the last flush with the right edge)")
+        check(night && night.visible && night.x === 0 && night.y === 424 && night.width === col && shot && shot.x === col + 12 && shot.y === 424 && shot.width === col && set && set.x === 2 * (col + 12) && set.y === 424 && set.width === cw - set.x, "row 6: Night light, Screenshot, Settings one column each (the last flush with the right edge)")
         check(night.content && night.content.on === false && night.content.detail === "Off" && night.content.actionEnabled === true, "night light tile reads KWin's state: off, toggleable")
         check(tilesArea.height === root.tileLayout.height, "tiles area = layout height " + tilesArea.height)
         check(wifi.content && wifi.content.enabled === true && wifi.frame.visible === false && wifi.editBar.visible === false, "tiles are live outside edit mode (no frame, no handles)")
