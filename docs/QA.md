@@ -1448,4 +1448,30 @@ optional encryption in the installer and a readable installer sidebar, a public 
 
 ## Verification of the merged tree (branch r8/integration, package 1.0-8)
 
-<!-- R8-RESULTS -->
+Chain `build/final-chain-r8.sh` (log `build/final-chain-r8.out`), 2026-09-17 12:03–12:45 UTC, plus two follow-up runs:
+
+| check | result | log |
+|---|---|---|
+| secret scan (tree) | PASS | `build/r8c-secret-scan.out` |
+| daemon unit tests | 151 tests OK | `build/r8c-agent-test.out` |
+| voice / scheduler / updates-state suites | OK (5 voice engine tests skipped on the host) / OK / PASS | `build/r8c-*.out` |
+| ask bar, quick settings, dock JS suites | 38 / 24 / 25 groups | `build/r8c-*-js.out` |
+| disk-unlock helper (stubbed), binary-rebrand upgrade safety | pass / 8 of 8 | `build/r8c-disk-unlock-test.out`, `build/r8c-rebrand-upgrade.out` |
+| changelog gate | 29 / 29 | `build/r8c-changelog.out` |
+| login theme in the real greeter, Plymouth theme + initramfs, leave screen, ask-bar QML harness, updates banner | all exit 0 (harness 217 checks) | `build/r8c-sddm-theme.out`, `build/r8c-plymouth-theme.out`, `build/r8c-logout-screen.out`, `build/r8c-askbar-qml.out` |
+| Fab AI Controls renders (default, settings, schedule) | settings and schedule exit 0; the default pass timed out twice while the VM loaded the host and passed on an idle host | `build/r8c-controls-render*.out`, `build/r8c-controls-render-idle.out` |
+| installer offline audit | 174 / 174 | `build/r8c-calamares.out` |
+| branding (source tree + current image) / security | 230 / 230 · 72 / 72 | `build/r8c-branding.out`, `build/r8c-security.out` |
+| packages built and signed, both suites | 24 debs at 1.0-8 (12 packages incl. new `fabos-hardware`, `fabos-tuning`) | `build/publish-apt-*.out` |
+| over-the-air proof: 1.0-6 disk → 1.0-8 from the local repository, third-party updates held | **30 PASS / 0 FAIL** | `build/r8c-ota-local-vm.out`, `build/ota-local-vm-r8/` |
+| hardware + rebrand install proof with the built packages (booted VM; fingerprint stack and PAM order, camera stack, Fab Camera, mic tile driving the real default source) | **20 PASS / 0 FAIL** | `build/r8c-hardware-vm.out` |
+| performance measurement with the built packages (idle CPU, wake-ups, task creations, launch times, five modes read back, listener policy) | **14 PASS / 0 FAIL** | `build/r8c-perf-vm.out`, `build/r8c-perf-vm/perf-vm.json` |
+| disk-password diagnostics on the LUKS disk (fix branch, before merge; files merged without conflict) | 62 / 62 | `build/r8-disk-unlock-fix.out` |
+
+**Publication (2026-09-17, 18:25–18:35 IST):** `loom` and `loom-beta` rsynced to `https://fabos.patienceai.in/apt`; the
+public `Packages` index lists all twelve `fabos-*` packages at 1.0-8; `InRelease` carries a good signature from the Fab OS
+Archive key. Changelog entry 1.0-8 published on the site (`/changelog/`, feed item added), CDN purged. GitHub pre-release
+`v1.0.7` (over-the-air mode: notes, package index, signed sums, archive key; no image). No ISO was built or uploaded.
+
+**Public update-channel test** (`tests/update-channel-test.sh`, the same disk now at 1.0-7, pulling from the live repository):
+<!-- R8-PUBLIC -->
