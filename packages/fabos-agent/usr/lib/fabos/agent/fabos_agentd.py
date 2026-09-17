@@ -15,7 +15,9 @@ HTTP API on 127.0.0.1:8790 (bearer token in $XDG_RUNTIME_DIR/fabos-agent/token, 
        also under /status.capabilities); POST /tasks {research?, computer_use?} starts a chat with its own choice, PATCH /tasks/{id}
        {research | computer_use: bool} changes it for the whole chat (stored on the root task); GET /tasks/{id} carries the effective
        values + capabilities_source ("chat" | "global"). Off = the tools are absent from the model's list, the prompt says so, and a
-       call that still names one is refused (step decision "off-for-this-chat").
+       call that still names one is refused (step decision "off-for-this-chat"). run_shell stays, but a command that does what the
+       switch took away (starts a graphical program, types on the screen, drives the desktop over D-Bus, captures the screen; fetches
+       from the network) is refused the same way — a classifier of the known ways, not a sandbox (capability_shell_block).
   POST /providers/test {provider, api_key?, base_url?, model?} -> {ok, latency_ms, detail, models_sample?}
        a real, lightweight authenticated call to the provider (its model list); 401/403 = "key rejected",
        network failure = "cannot reach provider". Keys are never logged.
@@ -97,6 +99,121 @@ CAPABILITY_DEFAULTS = {v["setting"]: "true" for v in CAPABILITIES.values()}
 CAPABILITY_OFF_REPLY = {"research": "Research is off for this chat, so I cannot look that up on the web. Turn on the Research switch in the bar or in Fab AI Controls and ask me again.",
                         "computer_use": "Computer use is off for this chat, so I cannot open or type into applications. Turn on the Computer use switch in the bar or in Fab AI Controls and ask me again, or ask me to do it with a command instead."}
 
+# ---- run_shell under a switched-off switch. The shell tool stays (it is how files and commands get done; the session's Wayland socket
+# and D-Bus are reachable from it like from any program the user starts), so a command that does the very thing the switch took away
+# is refused in Agent._gate with the same decision, "off-for-this-chat": Computer use off -> nothing may reach the user's screen from
+# the shell either (keystroke / pointer injection, the session bus, launchers, screen capture, the executables of the installed
+# graphical applications unless run headless); Research off -> nothing may fetch from the network (HTTP clients, package installs,
+# remote git, a script's HTTP library; loopback targets are local and pass). Segment by segment (; && || | newlines), so `curl x; ls --help`
+# gets no pass from the ls. A classifier of the known ways, not a sandbox: the administrator's tools_denied / sandbox_network policies
+# are the hard controls (docs/design/MODES.md, "What the switches are — and are not").
+# The rules bind to a segment's COMMAND WORD — after VAR= assignments and the wrappers (sudo, env, setsid, nohup, timeout N, xargs …), or
+# right after `$(`, a backtick or `bash -c '` — never to an argument: `grep curl notes.txt` is a grep. Group 1 of every rule is the tool named.
+_PFX = r"(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S*)\s+)*(?:(?:sudo|doas|env|nice|nohup|time|command|builtin|exec|setsid|ionice|chrt|stdbuf|unbuffer|xargs|timeout\s+\S+)\s+(?:-\S+\s+)*)*"
+_CMD = r"(?:^\s*" + _PFX + r"|\$\(\s*" + _PFX + r"|`\s*" + _PFX + r"|-c\s+['\"]\s*" + _PFX + r")"
+GUI_SHELL = [
+    (_CMD + r"(wtype|ydotool|xdotool|kdotool|dotool|xte|wlrctl|xvkbd)\b", "sends keystrokes or pointer input to the screen"),
+    (_CMD + r"(qdbus6?|qdbus-qt[56])\b", "drives the desktop over the session bus"),
+    (_CMD + r"(busctl)\s+--user\b", "drives the desktop over the session bus"),
+    (_CMD + r"(dbus-send)\b(?![^\n;&|]*--system)", "drives the desktop over the session bus"),
+    (_CMD + r"(gdbus)\s+(?:call|emit)\b(?![^\n;&|]*--system)", "drives the desktop over the session bus"),
+    (_CMD + r"(kstart[56]?|kde-open[56]?|xdg-open|gtk-launch|kdialog|kquitapp[56]?|plasma-interactiveconsole|plasmawindowed)\b", "opens or closes something on the screen"),
+    (_CMD + r"(gio)\s+(?:open|launch)\b", "opens or closes something on the screen"),
+    (_CMD + r"(kioclient[56]?)\s+(?:exec|openProperties)\b", "opens or closes something on the screen"),
+    (_CMD + r"(flatpak|snap)\s+run\b", "opens or closes something on the screen"),
+    (_CMD + r"(spectacle|grim|grimshot|flameshot|ksnip|wf-recorder)\b", "captures the screen"),
+]
+NET_SHELL = [
+    (_CMD + r"(curl|wget2?|aria2c|axel|httpie|lynx|w3m|links2?|elinks|yt-dlp|youtube-dl)\b", "fetches from the network"),
+    (_CMD + r"(https?)\s", "fetches from the network"),
+    (_CMD + r"(pip[23]?|pipx|uv|conda|mamba|poetry|pdm)\s+(?:pip\s+)?(?:-[-\w=]+\s+)*(?:install|download|add|sync|update)\b", "installs packages from the network"),
+    (_CMD + r"(apt|apt-get|aptitude|dnf|yum|zypper|pacman|snap|flatpak|brew)\s+(?:-[-\w=]+\s+)*(?:install|update|upgrade|dist-upgrade|full-upgrade|download|source|remote-add|reinstall|-S[yu]*)\b",
+     "installs packages from the network"),
+    (_CMD + r"(git)\s+(?:-[-\w=]+\s+)*(?:clone|fetch|pull|ls-remote|remote\s+update|submodule\s+update)\b", "reaches a remote repository"),
+    (_CMD + r"(npm|yarn|pnpm|bun)\s+(?:install|add|i|ci|update|upgrade|create)\b", "installs packages from the network"),
+    (_CMD + r"(cargo)\s+(?:install|add|fetch|update)\b", "installs packages from the network"),
+    (_CMD + r"(go)\s+(?:get|install|mod\s+download)\b", "installs packages from the network"),
+    (_CMD + r"(gem|composer)\s+(?:install|require|update)\b", "installs packages from the network"),
+    (_CMD + r"(ollama)\s+pull\b", "installs packages from the network"),
+    (_CMD + r"(python[23]?|node|deno|bun|ruby|perl|php)\b[^\n;&|]*(?:urllib|requests\.|http\.client|httpx|aiohttp|urllib3|pycurl|ftplib|fetch\(|https?\.(?:get|request)\(|Net::HTTP|LWP::|"
+            r"file_get_contents\(\s*['\"]https?://)", "opens a network connection from a script"),
+]
+_NOT_AN_APP = {"sh", "bash", "dash", "zsh", "flatpak", "snap", "python", "python2", "python3", "perl", "ruby", "java", "node", "wine", "electron", "xdg-open", "gtk-launch"}
+_LAUNCH_PREFIX = {"sudo", "doas", "env", "nice", "nohup", "time", "command", "builtin", "exec", "setsid", "ionice", "chrt", "stdbuf", "unbuffer"}
+_GUI_EXEC_CACHE = {"at": 0.0, "names": frozenset()}
+
+
+def gui_executables():
+    """The executables of the installed graphical applications (the .desktop registry installed_apps reads; Terminal=true entries left
+    out; interpreters and wrappers never count) — what run_shell may not start while Computer use is off. Rescanned at most once a minute."""
+    now = time.time()
+    if now - _GUI_EXEC_CACHE["at"] > 60:
+        names = set()
+        for a in installed_apps():
+            if a.get("terminal"):
+                continue
+            try:
+                toks = shlex.split(a["exec"])
+            except ValueError:
+                toks = a["exec"].split()
+            while toks and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]) or os.path.basename(toks[0]) == "env"):
+                toks = toks[1:]
+            b = os.path.basename(toks[0]) if toks else ""
+            if b and b not in _NOT_AN_APP and not b.startswith("-"):
+                names.add(b)
+        _GUI_EXEC_CACHE.update(at=now, names=frozenset(names))
+    return _GUI_EXEC_CACHE["names"]
+
+
+def gui_app_in(segment, names=None):
+    """The installed graphical application a shell segment starts (its command word after env / setsid / nohup / timeout prefixes), or None."""
+    names = gui_executables() if names is None else names
+    try:
+        toks = shlex.split(segment, posix=True)
+    except ValueError:
+        toks = segment.split()
+    while toks and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]) or toks[0] in _LAUNCH_PREFIX or toks[0] == "timeout" or (toks[0].startswith("-") and len(toks) > 1)):
+        toks = toks[2:] if toks[0] == "timeout" else toks[1:]
+    b = os.path.basename(toks[0]) if toks else ""
+    return b if b in names else None
+
+
+def _loopback(host):
+    h = host.lower().strip("[]")
+    return h in ("localhost", "0.0.0.0", "::1") or h.startswith("127.")
+
+
+def capability_shell_block(caps, tool, inp):
+    """(capability, what) when `tool` is run_shell and its command does what a switched-off switch took away — reaches the screen
+    (Computer use off) or fetches from the network (Research off); None otherwise, and always None while both switches are on."""
+    if tool != "run_shell" or not caps or (caps.get("computer_use") is not False and caps.get("research") is not False):
+        return None
+    for seg in re.split(r"\|\||&&|[;|\n]", str((inp or {}).get("command") or "")):
+        if not seg.strip():
+            continue
+        if caps.get("computer_use") is False and not re.search(r"--(?:headless|convert-to|version|help)\b", seg):
+            for pat, what in GUI_SHELL:
+                m = re.search(pat, seg, re.I)
+                if m:
+                    return "computer_use", "%s (%s)" % (what, m.group(1))
+            app = gui_app_in(seg)
+            if app:
+                return "computer_use", "starts %s on the screen" % app
+        if caps.get("research") is False and not re.search(r"--(?:version|help)\b", seg):
+            hosts = re.findall(r"https?://([^/\s:'\"]+)", seg, re.I)
+            if hosts and all(_loopback(h) for h in hosts):
+                continue                                                        # a local service: not the web
+            for pat, what in NET_SHELL:
+                m = re.search(pat, seg, re.I)
+                if m:
+                    return "research", "%s (%s)" % (what, m.group(1))
+    return None
+
+
+def capability_from_reason(reason):
+    """The switch a _gate reason names ("Computer use is off for this chat: …" -> "computer_use"), or None."""
+    return next((k for k, spec in CAPABILITIES.items() if str(reason or "").startswith(spec["label"] + " is off for this chat")), None)
+
 
 def as_bool(v, default=None):
     """'true'/'false'/1/0/on/off/yes/no (any case) or a bool -> bool; None when it is none of these (the caller decides)."""
@@ -157,14 +274,17 @@ def capability_prompt(caps):
                      "reputable page, follow links, several pages when one is not enough), then answer with the facts and end with the sources as a "
                      "short 'Sources:' list of the URLs you read. Never invent a URL or a fact you did not read.")
     else:
-        lines.append("Research is OFF for this chat: web_fetch is not available and you must not reach the internet with run_shell either (no curl, "
-                     "wget, pip or apt fetching anything from the network). Answer from what you know or from this computer. If the request needs the web, say: \"%s\"" % CAPABILITY_OFF_REPLY["research"])
+        lines.append("Research is OFF for this chat: web_fetch is not available and run_shell may not fetch from the network either (no curl or wget, no pip, "
+                     "apt or npm installs, no git clone/fetch/pull, no HTTP library in a script) — such commands are refused; a local service on this computer "
+                     "(localhost) is fine. Answer from what you know or from this computer. If the request needs the web, say: \"%s\"" % CAPABILITY_OFF_REPLY["research"])
     if caps.get("computer_use", True):
         lines.append("Computer use is ON for this chat: you may open applications (open_app) and type into them (type_text) — show your work as described above.")
     else:
-        lines.append("Computer use is OFF for this chat: open_app and type_text are not available; nothing is opened or typed on the user's screen. Do "
-                     "the work with run_shell and the file tools, or answer directly, and skip the 'show your work' typing. If the request is to open or "
-                     "type into an application, say: \"%s\"" % CAPABILITY_OFF_REPLY["computer_use"])
+        lines.append("Computer use is OFF for this chat: open_app and type_text are not available, and run_shell may not reach the screen either — do not "
+                     "start graphical programs (dolphin, kate, firefox, libreoffice unless --headless), send keystrokes (wtype, ydotool, xdotool) or drive the "
+                     "desktop over D-Bus (qdbus6, kdialog, kioclient, kstart, xdg-open); such commands are refused. Nothing is opened or typed on the user's "
+                     "screen. Do the work with commands and the file tools, or answer directly, and skip the 'show your work' typing. If the request is to "
+                     "open or type into an application, say: \"%s\"" % CAPABILITY_OFF_REPLY["computer_use"])
     return lines
 
 
@@ -554,13 +674,13 @@ def installed_apps():
                         if sec != "[Desktop Entry]" or "=" not in line:
                             continue
                         k, v = line.split("=", 1)
-                        if k in ("Name", "Comment", "Exec", "MimeType", "Categories", "Keywords", "NoDisplay", "Hidden", "Type", "TryExec", "GenericName"):
+                        if k in ("Name", "Comment", "Exec", "MimeType", "Categories", "Keywords", "NoDisplay", "Hidden", "Type", "TryExec", "GenericName", "Terminal"):
                             ent.setdefault(k, v)
                 if ent.get("Type", "Application") != "Application" or ent.get("NoDisplay") == "true" or ent.get("Hidden") == "true" or not ent.get("Exec"):
                     continue
                 apps[fn] = {"id": fn[:-8], "name": ent.get("Name", fn), "generic": ent.get("GenericName", ""), "comment": ent.get("Comment", ""),
                             "exec": re.sub(r"\s%[a-zA-Z]", "", ent["Exec"]).strip(), "mime": ent.get("MimeType", "").strip(";"), "categories": ent.get("Categories", "").strip(";"),
-                            "keywords": ent.get("Keywords", "").strip(";")}
+                            "keywords": ent.get("Keywords", "").strip(";"), "terminal": ent.get("Terminal", "").strip().lower() == "true"}
             except OSError:
                 continue
     return list(apps.values())
@@ -1706,9 +1826,9 @@ def capability_lines_short(caps):
         return ""
     out = ""
     if caps.get("research", True) is False:
-        out += "\nResearch is OFF for this chat: there is no web_fetch and no curl/wget; if the task needs the web, reply: %s" % CAPABILITY_OFF_REPLY["research"]
+        out += "\nResearch is OFF for this chat: there is no web_fetch, and no curl/wget/pip/apt/git clone in run_shell (refused); if the task needs the web, reply: %s" % CAPABILITY_OFF_REPLY["research"]
     if caps.get("computer_use", True) is False:
-        out += "\nComputer use is OFF for this chat: there is no open_app and no type_text; do the work with commands and files, or reply: %s" % CAPABILITY_OFF_REPLY["computer_use"]
+        out += "\nComputer use is OFF for this chat: there is no open_app and no type_text, and run_shell may not start graphical programs or type on the screen (refused); do the work with commands and files, or reply: %s" % CAPABILITY_OFF_REPLY["computer_use"]
     return out
 
 
@@ -2682,6 +2802,10 @@ class FakeProvider:
                 addr = em.group(0) if em else "someone@example.com"
                 plan.append(tu("send_email", {"to": addr, "subject": "Note from Fab OS", "body": text}))
                 plan.append(tu("schedule_watch", {"kind": "email_reply", "from_contains": addr, "notify_message": "Reply received to your Fab OS note", "interval_minutes": 2}))
+        elif re.search(r"\bopen (?:the )?(?:files app|file manager|fab files|dolphin)\b.*\bfrom the shell\b", low):
+            # the Computer use switch reached through run_shell (docs/design/MODES.md): the daemon refuses the launcher when the switch is off
+            plan = [tu("run_shell", {"command": "xdg-open ~"})]
+            final = "Done, I have opened your home folder for you. Anything else?"
         elif re.search(r"\bopen (?:the )?(?:files app|file manager|fab files|dolphin)\b", low):
             # the Computer use switch (docs/design/MODES.md): with it on, ONE open_app step; with it off the tool is not offered (see below)
             plan = [tu("open_app", {"app": "dolphin"})]
@@ -2732,6 +2856,9 @@ class FakeProvider:
                 cap = capability_for_tool(c["name"])
                 if cap and c["name"] not in offered:            # Research / Computer use is off for this chat: no such step, the agreed sentence instead
                     return {"content": [{"type": "text", "text": CAPABILITY_OFF_REPLY[cap]}], "stop_reason": "end_turn"}
+        refused = str(last_result().get("error") or "")
+        if " is off for this chat: " in refused and "tell the user: " in refused:      # a run_shell the switch refused: say the sentence the result carries, stop
+            return {"content": [{"type": "text", "text": refused.split("tell the user: ", 1)[1]}], "stop_reason": "end_turn"}
         if n_results < len(plan):
             return {"content": [{"type": "text", "text": "Step %d/%d" % (n_results + 1, len(plan))}, plan[n_results]], "stop_reason": "tool_use"}
         return {"content": [{"type": "text", "text": final or "Done: executed %d steps for '%s'." % (len(plan), req[:60])}], "stop_reason": "end_turn"}
@@ -3049,6 +3176,15 @@ class Agent:
             sid = self.store.step(tid, "tool_call", name, json.dumps(inp)[:20000], "", risk, "off-for-this-chat", narration=narration)
             self.store.activity("agent", "tool_off_for_chat", tid, name)
             return sid, False, risk, reason
+        block = capability_shell_block((task or {}).get("_caps"), name, inp)
+        if block:
+            # the same switch reached through the shell: a command that starts a graphical program / types on the screen (Computer use off)
+            # or fetches from the network (Research off) is refused like the tool it stands in for — recorded, never asked, never run
+            cap, what = block
+            reason = "%s is off for this chat: this command %s" % (CAPABILITIES[cap]["label"], what)
+            sid = self.store.step(tid, "tool_call", name, json.dumps(inp)[:20000], "", risk, "off-for-this-chat", narration=narration)
+            self.store.activity("agent", "tool_off_for_chat", tid, "%s: %s" % (name, what))
+            return sid, False, risk, reason
         if not self.needs_approval(risk, mode):
             sid = self.store.step(tid, "tool_call", name, json.dumps(inp)[:20000], "", risk, "auto-approved", narration=narration)
             return sid, True, risk, reason
@@ -3119,8 +3255,9 @@ class Agent:
         inp = c["input"] if isinstance(c["input"], dict) else {}
         sid, ok, risk, reason = self._gate(tid, task, c["name"], inp)
         if not ok and " is off for this chat: " in reason:
-            cap = capability_for_tool(c["name"])
-            out, err = {"error": "%s. Do not retry it; %s" % (reason, "tell the user: " + CAPABILITY_OFF_REPLY.get(cap, "the switch turns it on."))}, True
+            cap = capability_for_tool(c["name"]) or capability_from_reason(reason)
+            out, err = {"error": "%s. Do not retry it%s; %s" % (reason, " or do the same thing with another command" if c["name"] == "run_shell" else "",
+                                                                 "tell the user: " + CAPABILITY_OFF_REPLY.get(cap, "the switch turns it on."))}, True
             done_line = "Sorry, %s is off for this chat." % CAPABILITIES[cap]["label"].lower() if cap else "Sorry, that is off for this chat."
         elif not ok:
             out, err = {"error": "Denied by user/policy (%s: %s). Do not retry the same action; explain or find an allowed way." % (risk, reason)}, True

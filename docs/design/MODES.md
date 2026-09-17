@@ -9,11 +9,32 @@ refused deterministically. Ask / auto / bypass permission modes are untouched by
 
 | Switch | Setting (default for new chats) | On | Off |
 |---|---|---|---|
-| **Research** | `agent.research` = `true` | the planner may use `web_fetch` and browse several pages; research style: *gather, then answer with the facts and end with a `Sources:` list of the URLs read* | `web_fetch` is not offered; the prompt forbids reaching the internet with `run_shell` (no curl / wget / pip / apt fetching anything from the network); a request that needs the web gets the agreed sentence naming the switch |
-| **Computer use** | `agent.computer_use` = `true` | the GUI tools `open_app` and `type_text` are offered ("show your work" stays as it is) | those tools are not offered; the planner is told to work with commands and files or to answer directly; a request to open or type into an application gets the agreed sentence naming the switch |
+| **Research** | `agent.research` = `true` | the planner may use `web_fetch` and browse several pages; research style: *gather, then answer with the facts and end with a `Sources:` list of the URLs read* | `web_fetch` is not offered, **and `run_shell` may not fetch from the network either**: a command that does (curl / wget / aria2c, pip / apt / npm / cargo installs, git clone / fetch / pull, a script's HTTP library) is refused with the same decision — a local service on this computer (localhost, 127.x) still passes; the prompt says so; a request that needs the web gets the agreed sentence naming the switch |
+| **Computer use** | `agent.computer_use` = `true` | the GUI tools `open_app` and `type_text` are offered ("show your work" stays as it is) | those tools are not offered, **and `run_shell` may not reach the screen either**: keystroke / pointer injection (wtype, ydotool, xdotool, kdotool), the session bus (qdbus6, dbus-send --session, gdbus, busctl --user), launchers (kstart, xdg-open, kde-open, gtk-launch, gio open, kioclient exec, kdialog, flatpak run), screen capture (spectacle, grim, …) and the executables of the installed graphical applications (the .desktop registry; `--headless` / `--convert-to` / `--version` / `--help` runs pass) are refused with the same decision; the planner is told to work with commands and files or to answer directly; a request to open or type into an application gets the agreed sentence naming the switch |
 
 The agreed sentences live in one place, `fabos_agentd.CAPABILITY_OFF_REPLY`; the prompt quotes them and the scripted test provider
 says them verbatim, so what the user reads is the same whichever model is behind the bar.
+
+## What the switches are — and are not
+
+A switch removes a capability from the **model**: its tools are gone from the list, the prompt says so, and the daemon refuses a call that
+still names one — or a `run_shell` command that does the same thing by hand (`fabos_agentd.capability_shell_block`, the table above). The
+shell has to stay: it is how files and commands get done, and it keeps the session's Wayland socket and D-Bus like any program the user
+starts, which is exactly why the shell rule exists. Honest limits:
+
+* **A classifier of the known ways, not a sandbox.** The shell rule names the input-injection tools, the session-bus clients, the
+  launchers, the screen-capture tools and the installed graphical applications' executables; the network rule names the HTTP clients,
+  the package managers' install verbs, remote git and the common HTTP libraries in a one-liner. A model that writes a novel program —
+  its own Wayland client, its own socket code in a file it then runs — is not caught by either. Segment by segment, so `curl x; ls --help`
+  gets no pass from the `ls`; `--help` / `--version` runs of the named tools pass on purpose.
+* **Research is about reading the web**, not about all networking: `ssh`, `rsync`, `ping` and the mail tools keep their own risk class and
+  the user's permission mode; loopback targets pass because a local service is not the web.
+* **Computer use is about the user's screen**: what opens, types, drives or captures it. `notify_user` (a notification) and the terminal
+  launchers of the .desktop registry (`Terminal=true`) are not part of it.
+* **The hard controls are the administrator's**: `tools_denied` removes a tool for good, `sandbox_network: false` takes the network out of
+  `run_shell` with a network namespace (`bwrap --unshare-net`). The switches are the user's per-chat choice on top of that, not a
+  replacement for it.
+* **Nothing else changes**: Ask / auto / bypass permission modes, the risk classes and the approval flow are untouched by either switch.
 
 ## Where the choice is kept
 
@@ -30,7 +51,9 @@ says them verbatim, so what the user reads is the same whichever model is behind
   `PUT /settings {agent.research: "false"}` (any of true/false/on/off/1/0; anything else is a 400).
 * **History.** Every task that ran with a switch off has a `verify · capabilities` row ("off for this chat: Computer use (tools not
   offered: open_app, type_text)"); a tool call the model still made is recorded with decision `off-for-this-chat` and the
-  narration "Sorry, computer use is off for this chat."; each change is an activity row `chat_capability`.
+  narration "Sorry, computer use is off for this chat." — a `run_shell` command the switch refused the same way, its activity row
+  `tool_off_for_chat` carrying the reason (`run_shell: starts dolphin on the screen`, `run_shell: fetches from the network (curl)`); the
+  model's tool result names the switch and the sentence to say; each change is an activity row `chat_capability`.
 
 ## The control (one design, two renderers)
 
@@ -65,8 +88,8 @@ seen on the VM, so the note never adds a row); while the request is in flight no
 (`modeInflight`); a failure is a sentence in the status line and a re-sync. A new chat is posted with the strip's state
 (`Modes.taskFields`), so it remembers them.
 
-**Fab AI Controls** (`ModeSwitch`, `ModeStrip` in `command_center.py`): the same strip in the chat header (hidden under 1060 px, where
-the composer's copy remains) and in the composer's second row beside the permission-mode chip; both are one state (`set_modes`) and move
+**Fab AI Controls** (`ModeSwitch`, `ModeStrip` in `command_center.py`): the same strip in the chat header (hidden while the main column
+is under 1110 px — a 1280 px window with the sidebar shows the composer's copy alone; a 1400 px window or the enlarged layout shows both) and in the composer's second row beside the permission-mode chip; both are one state (`set_modes`) and move
 together. With a chat open the strip shows that chat's effective values and a toggle PATCHes its root; on **New chat** it shows the
 defaults and a toggle PUTs the setting; the toast confirms either. Programmatic changes (switching chats) animate too.
 
@@ -78,6 +101,13 @@ defaults and a toggle PUTs the setting; the toast confirms either. Programmatic 
   makes is refused with decision `off-for-this-chat`; **research off → no `web_fetch`, nothing requested from the stub page; on → the
   page is fetched and the answer carries the fact and `Sources:`**; a default of off inherited by a new chat, switched back on for
   that chat through PATCH, makes the next follow-up fetch again.
+* `python3 tests/agent-test.py Daemon.test_41_a_switched_off_capability_binds_run_shell_too` — the shell rule: with Computer use off,
+  `wtype`, `setsid -f dolphin`, `qdbus6 … KWin`, `kstart6`, `xdg-open`, `kdialog`, `spectacle`, `flatpak run` are refused and `ls`,
+  `libreoffice --headless --convert-to`, `dolphin --version`, `dbus-send --system` pass; with Research off, `curl`, `wget`, `pip install`,
+  `apt-get install`, `git clone` / `pull`, a python `urllib` one-liner, `npm install`, `$(curl …)` are refused and `curl http://127.0.0.1…`,
+  `git status`, `pip list`, `echo see http://…`, `ssh`, `ping` pass; both on: nothing refused. Through `_gate` the step carries
+  `off-for-this-chat` and the reason; **end to end, the scripted provider asked to "open the files app from the shell" has its
+  `xdg-open` refused and answers with the sentence**.
 * `node tests/askbar-js-test.js` — the TOKENS block parses, equals the live object and the Python fallback; readers for
   /settings, /status and /tasks; the toggle state machine (PATCH in a chat with a boolean, PUT the default otherwise, messages);
   persistence per thread; tooltips, failure lines, the visibility rule; the knob formula; no banned words.

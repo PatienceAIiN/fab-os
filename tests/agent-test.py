@@ -1751,6 +1751,67 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         self.assertEqual((t["research"], t["capabilities_source"]), (True, "chat"))
         self.cli("settings", "agent.research", "true")
 
+    def test_41_a_switched_off_capability_binds_run_shell_too(self):
+        # The switch's promise holds for the shell as well (review of the track: run_shell keeps the session's Wayland socket and D-Bus, so
+        # `dolphin &` / `wtype` / `qdbus6` would have worked with Computer use off, and `curl` with Research off). With Computer use off a
+        # command that starts a graphical program, types on the screen, drives the session bus or captures the screen is refused in _gate
+        # (decision off-for-this-chat, the switch named); with Research off the same for whatever fetches from the network. Loopback targets,
+        # --headless / --version / --help runs, the system bus and plain commands pass; with both switches on nothing here is refused.
+        st = fa.Store(os.path.join(self.env["FABOS_AGENT_DATA"], "agent.db")); a = fa.Agent.__new__(fa.Agent); a.store = st
+        fa._GUI_EXEC_CACHE.update(at=time.time() + 3600, names=frozenset({"dolphin", "kate", "firefox", "libreoffice", "konsole"}))   # a fixed app registry
+        self.addCleanup(lambda: fa._GUI_EXEC_CACHE.update(at=0.0, names=frozenset()))
+        cu_off, r_off, both_on = {"research": True, "computer_use": False}, {"research": False, "computer_use": True}, {"research": True, "computer_use": True}
+        gui = ["wtype hello", "setsid -f dolphin ~/Downloads", "nohup kate ~/n.txt &", "WAYLAND_DISPLAY=wayland-0 firefox https://example.com", "timeout 5 konsole",
+               "qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure", "dbus-send --session --dest=org.kde.klauncher5 / org.kde.KLauncher.exec_blind", "busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure",
+               "kstart6 konsole", "xdg-open ~/Documents/a.pdf", "kdialog --msgbox hi", "ls; kioclient6 exec ~/a.txt", "spectacle -b -o /tmp/s.png", "flatpak run org.kde.okular",
+               "cd ~ && ydotool type hello", "bash -c 'xdotool key ctrl+s'"]
+        gui_ok = ["ls -la ~", "libreoffice --headless --convert-to pdf ~/a.odt", "dolphin --version", "firefox --help",
+                  "dbus-send --system --dest=org.freedesktop.NetworkManager /org/freedesktop/NetworkManager org.freedesktop.DBus.Introspectable.Introspect",
+                  "python3 -c 'print(1)'", "grep -r dolphin ~/notes", "kioclient6 copy a b", "notify-send hi", "echo kate > ~/apps.txt", "cat ~/kate-notes.txt"]
+        for cmd in gui:
+            b = fa.capability_shell_block(cu_off, "run_shell", {"command": cmd}); self.assertEqual(b and b[0], "computer_use", cmd)
+        for cmd in gui_ok:
+            self.assertIsNone(fa.capability_shell_block(cu_off, "run_shell", {"command": cmd}), cmd)
+        self.assertEqual(fa.capability_shell_block(cu_off, "run_shell", {"command": "setsid -f dolphin"}), ("computer_use", "starts dolphin on the screen"))
+        self.assertEqual(fa.capability_shell_block(cu_off, "run_shell", {"command": "wtype hi"}), ("computer_use", "sends keystrokes or pointer input to the screen (wtype)"))
+        net = ["curl -s https://example.com/", "wget https://example.com/x.zip", "pip install requests", "pip3 install --user rich", "apt-get install -y jq", "sudo apt update",
+               "git clone https://github.com/x/y", "cd ~/p && git pull", "python3 -c 'import urllib.request; print(urllib.request.urlopen(\"https://example.com\").read())'",
+               "node -e 'fetch(\"https://example.com\")'", "npm install left-pad", "yt-dlp https://youtu.be/x", "ls --help; curl https://example.com", "x=$(curl -s https://example.com)",
+               "http GET https://example.com", "cargo install ripgrep", "ollama pull llama3"]
+        net_ok = ["curl -s http://127.0.0.1:8790/status", "curl http://localhost:11434/api/tags", "git status", "git log -3", "apt list --installed", "pip list", "python3 -m http.server 8000",
+                  "echo see http://example.com", "curl --version", "cat ~/urls.txt", "grep curl ~/notes.txt", "ssh nas ls", "ping -c 1 192.168.1.1"]
+        for cmd in net:
+            b = fa.capability_shell_block(r_off, "run_shell", {"command": cmd}); self.assertEqual(b and b[0], "research", cmd)
+        for cmd in net_ok:
+            self.assertIsNone(fa.capability_shell_block(r_off, "run_shell", {"command": cmd}), cmd)
+        self.assertEqual(fa.capability_shell_block(r_off, "run_shell", {"command": "curl -s https://example.com/"}), ("research", "fetches from the network (curl)"))
+        for cmd in gui + net + gui_ok + net_ok:
+            self.assertIsNone(fa.capability_shell_block(both_on, "run_shell", {"command": cmd}), cmd)      # both on: the shell is untouched
+        self.assertIsNone(fa.capability_shell_block(cu_off, "web_fetch", {"url": "https://example.com"}))     # only the shell tool is classified here
+        self.assertIsNone(fa.capability_shell_block(None, "run_shell", {"command": "wtype x"}))                # no caps computed = nothing to bind
+        # through the gate: recorded with the decision and the switch, never run; the model is told what to do instead
+        tid = st.q("INSERT INTO tasks(request,status,created,updated,computer_use,research) VALUES('x','running',0,0,0,0)").lastrowid
+        task = st.one("SELECT * FROM tasks WHERE id=?", tid); task["_caps"] = fa.capabilities(st, task)
+        sid, ok, risk, reason = a._gate(tid, task, "run_shell", {"command": "setsid -f dolphin"})
+        self.assertFalse(ok); self.assertEqual(reason, "Computer use is off for this chat: this command starts dolphin on the screen")
+        self.assertEqual(st.one("SELECT decision FROM steps WHERE id=?", sid)["decision"], "off-for-this-chat")
+        a.tools = fa.Tools(st, a)
+        out, err, _inp = a._run_call(tid, task, {"id": "t1", "name": "run_shell", "input": {"command": "curl -s https://example.com/"}})
+        self.assertTrue(err); self.assertIn("Research is off for this chat: this command fetches from the network (curl)", out["error"])
+        self.assertIn("another command", out["error"]); self.assertIn(fa.CAPABILITY_OFF_REPLY["research"], out["error"])
+        self.assertEqual(st.one("SELECT narration_done FROM steps WHERE task_id=? ORDER BY id DESC LIMIT 1", tid)["narration_done"], "Sorry, research is off for this chat.")
+        self.assertTrue(any(e["kind"] == "tool_off_for_chat" and e["task_id"] == tid and "curl" in e["detail"] for e in self.cli("log", "--limit", "50")))
+        # the prompts say so before the model tries (free-form and stepwise alike)
+        self.assertIn("run_shell may not reach the screen", fa.build_system_prompt(st, "auto", [], cu_off)); self.assertIn("such commands are refused", fa.build_system_prompt(st, "auto", [], r_off))
+        self.assertIn("(refused)", fa.local_system_prompt("auto", dict(fa.NET_SKIPPED), r_off)); self.assertIn("may not start graphical programs", fa.local_system_prompt("auto", dict(fa.NET_SKIPPED), cu_off))
+        st.q("DELETE FROM tasks WHERE id=?", tid)
+        # end to end: the scripted provider, told to do it "from the shell", reaches for run_shell (xdg-open) — refused, and it says the sentence
+        r = self.api("POST", "/tasks", {"request": "open the files app from the shell", "mode": "bypass", "computer_use": False}); t = self.wait(r["id"]); self.assertEqual(t["status"], "done", t)
+        calls = [s for s in t["steps"] if s["kind"] == "tool_call"]
+        self.assertEqual([(s["name"], s["decision"]) for s in calls], [("run_shell", "off-for-this-chat")], t["steps"])
+        self.assertEqual(t["result"], fa.CAPABILITY_OFF_REPLY["computer_use"]); self.assertEqual(calls[0]["narration_done"], "Sorry, computer use is off for this chat.")
+        self.assertIn("xdg-open", json.loads(calls[0]["input"])["command"])
+
 
 class StepwiseUnits(unittest.TestCase):
     """In-process checks of the small-model driver's pieces (ADR-0020): plan parsing, deterministic step checks, the compact

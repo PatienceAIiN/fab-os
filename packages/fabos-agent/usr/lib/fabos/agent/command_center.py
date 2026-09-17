@@ -65,15 +65,30 @@ MODE_TOKENS_FALLBACK = {
 
 
 def load_mode_tokens(path=MODES_JS):
-    """(tokens, source): the JSON block of modes.js, or the fallback copy when the file is missing or unreadable."""
+    """(tokens, source): the JSON block of modes.js when it is complete (tokens_complete), else the fallback copy — for a missing,
+    unreadable or half-edited file. The file is package-owned (root, 0644): whoever can change it can change this program too."""
     try:
         with open(path, encoding="utf-8") as f:
             m = re.search(r"/\* MODES-TOKENS \*/\s*(\{.*?\})\s*/\* /MODES-TOKENS \*/", f.read(), re.S)
         if m:
-            return json.loads(m.group(1)), "file"
+            t = json.loads(m.group(1))
+            if tokens_complete(t):
+                return t, "file"
     except (OSError, ValueError):
         pass
     return json.loads(json.dumps(MODE_TOKENS_FALLBACK)), "fallback"
+
+
+def tokens_complete(t):
+    """True when a parsed block has every section and field the two strips paint from (both modes with their words) — a half-edited
+    modes.js falls back instead of taking the window down at import."""
+    try:
+        return (all(isinstance(t.get(k), dict) for k in ("switch", "motion", "strip")) and isinstance(t.get("modes"), list) and len(t["modes"]) == 2
+                and {"width", "height", "knob", "pad", "track_radius", "off_alpha", "focus_ring", "hover_lift"} <= set(t["switch"])
+                and {"knob_ms", "colour_ms", "reveal_ms"} <= set(t["motion"]) and {"height", "gap", "label_gap", "icon", "font_px", "confirm_ms"} <= set(t["strip"])
+                and all(isinstance(m, dict) and {"key", "setting", "label", "glyph", "tip_on", "tip_off"} <= set(m) for m in t["modes"]))
+    except (TypeError, AttributeError):
+        return False
 
 
 MODE_TOKENS, MODE_TOKENS_SOURCE = load_mode_tokens()
