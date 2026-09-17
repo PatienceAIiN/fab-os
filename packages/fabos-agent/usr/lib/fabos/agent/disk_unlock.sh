@@ -620,7 +620,10 @@ run_diagnose() {   # fills ITEMS and DIAG_*; prints nothing (cmd_diagnose prints
     return 0
   fi
   local dev switch configured fstype; dev=$(crypt_device)
-  fstype=$(lsblk -n -o FSTYPE "$dev" 2>/dev/null | head -1)
+  # the source device itself (-d: no children — without it lsblk also lists the opened mapper's ext4, first on a real disk); as root
+  # cryptsetup's own answer wins
+  if [ "$IS_ROOT" = 1 ] && command -v cryptsetup >/dev/null 2>&1 && cryptsetup isLuks "$dev" >/dev/null 2>&1; then fstype=crypto_LUKS
+  else fstype=$(lsblk -d -n -o FSTYPE "$dev" 2>/dev/null | head -1); fi
   if [ "$fstype" = crypto_LUKS ] || [ -z "$fstype" ]; then
     item root_luks pass "Root filesystem on an encrypted volume" "root is $ROOT_SRC, unlocked from $CT_SRC${fstype:+ ($fstype)}"
   else

@@ -42,7 +42,9 @@ echo "$STUB_ROOT_SRC"
 EOF
 cat > "$T/bin/lsblk" <<'EOF'
 #!/bin/sh
-echo "lsblk $*" >> "$STUB_LOG"; echo crypto_LUKS
+# like the real one: without -d the opened mapper (ext4) is listed too — on the real disk it came FIRST (r8 VM run 1); -d = the device only
+echo "lsblk $*" >> "$STUB_LOG"
+case " $* " in *" -d "*) echo crypto_LUKS;; *) echo ext4; echo crypto_LUKS;; esac
 EOF
 cat > "$T/bin/unmkinitramfs" <<'EOF'
 #!/bin/sh
@@ -63,6 +65,7 @@ for a in "$@"; do [ "$a" = "$STUB_PASS" ] && { echo "PASSPHRASE ON ARGV" >> "$ST
 case " $* " in
   *" luksDump "*)     # one slot for the passphrase, one more while the keyfile has a slot
     echo "Keyslots:"; echo "  0: luks2"; [ -f "$STUB_KEYFILE.slot" ] && echo "  1: luks2"; exit 0;;
+  *" isLuks "*) exit 0;;
   *" --test-passphrase "*)
     if [[ " $* " == *" --key-file "* ]]; then
       [ "${STUB_FAIL_KEYTEST:-0}" = 1 ] && exit 2
