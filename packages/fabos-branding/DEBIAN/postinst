@@ -17,7 +17,11 @@ case "$1" in configure)
   divert /etc/update-motd.d/00-header    /usr/lib/fabos/motd/00-header
   divert /etc/update-motd.d/10-help-text /usr/lib/fabos/motd/10-help-text
   # KDE telemetry / user-feedback KCM: hide it (reports go to Patience AI via fabos-feedback instead)
-  for f in /usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/systemsettings/kcm_feedback.so /usr/share/applications/kcm_feedback.desktop; do
+  # Also out (round 8): KDE's yearly donation-request service (already never loaded: /etc/xdg/kded6rc) and the "KWin"
+  # developer runner (KWin script console commands) — both list themselves under KDE names in Background Services /
+  # Fab Search's plugin page and neither is part of the product.
+  for f in /usr/lib/x86_64-linux-gnu/qt6/plugins/plasma/kcms/systemsettings/kcm_feedback.so /usr/share/applications/kcm_feedback.desktop \
+           /usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/kded/donationmessage.so /usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/krunner/krunner_kwin.so; do
     if [ -e "$f" ] && ! dpkg-divert --list "$f" | grep -q fabos-branding; then dpkg-divert --package fabos-branding --add --rename --divert "$f.disabled-by-fabos" "$f"; fi
   done
   # /etc/os-release must stay a symlink into /usr/lib

@@ -22,9 +22,14 @@ ABOUT = [("About &KDE", "About &Fab"), ("About KDE", "About Fab"),
          ("KDE Plasma Version", "Desktop UI Version"), ("KDE Frameworks Version", "App Frameworks Version"),
          ("KDE Plasma", "Fab OS UI "), ("KDE Frameworks", "UI Frameworks ")]
 NAMES = [("System Settings", "Fab OS Settings"), ("System Monitor", "Fab OS Monitor"), ("Info Center", "System Info")]
-PLASMA = ABOUT + [("Plasma ", "Fab OS "),                       # "Plasma Style" -> "Fab OS Style", "Plasma Search" -> "Fab OS Search", ...
+PLASMA = ABOUT + NAMES + [("Plasma ", "Fab OS "),               # "Plasma Style" -> "Fab OS Style", "Plasma Search" -> "Fab OS Search", ...
                   ("KWin Scripts", "WM Scripting"), ("Manage KWin scripts", "Manage WM scripting"),
-                  ("KRunner Settings", "Fab Search Setup"), ("Configure KRunner behavior", "Set up Fab Search behavior")]
+                  ("KRunner Settings", "Fab Search Setup"), ("Configure KRunner behavior", "Set up Fab Search behavior"),
+                  # round 8 (tests/rebrand-sweep-vm.sh): plugin metadata the widget explorer, Background Services and Info Center show
+                  ("KScreen 2", "Displays "),                                                   # kded display-management service
+                  ("Kate Sessions", "Text Sessions"), ("Kate session launcher", "Editor session opener"),
+                  ("Konsole Profiles", "Terminal Profile"), ("List and launch Konsole profiles", "List and open terminal profiles "),
+                  ("KWin Support information", "Compositor support notes")]                    # Info Center module description
 COMMON = WALLET + ABOUT + NAMES
 # whole NUL-terminated words (\0word\0): standalone C literals only
 NUL_PACKAGEKIT = [("Ubuntu ", "Fab OS ")]                        # origin label shown by Fab Software for archive packages
