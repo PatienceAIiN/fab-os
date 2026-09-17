@@ -39,8 +39,8 @@ both. The time zone is the system's (`/etc/timezone`, `/etc/localtime`) unless `
 (IANA name, validated). Items store the UTC instant **and** the zone name; repeating items keep their wall-clock time
 across DST (`next_occurrence` combines the local date with the local time).
 
-`tests/scheduler-test.py` carries the corpus: 66 phrasings with the expected local date/time, title, repeat and
-confirm flag, plus 13 that must fail.
+`tests/scheduler-test.py` carries the corpus: 66 cases — 53 phrasings with the expected local date/time, title, repeat
+and confirm flag, and 13 that must fail with a reason.
 
 ## Store
 

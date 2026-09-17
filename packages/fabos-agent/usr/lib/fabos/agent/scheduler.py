@@ -1147,6 +1147,7 @@ class SchedulerLoop(threading.Thread):
         self.tick = tick or int(os.environ.get("FABOS_SCHED_TICK", "30"))
         self.enabled = enabled or (lambda: True)
         self.stop = threading.Event()
+        self._tick_lock = threading.Lock()        # the loop thread and POST /schedule/tick never sweep/fire at the same time
         self.summary_sent = False
         self.last_mail = 0.0
         self.mail_report = None
@@ -1159,6 +1160,10 @@ class SchedulerLoop(threading.Thread):
                 self.log("scheduler loop error: %s" % e)
 
     def tick_once(self, now=None):
+        with self._tick_lock:
+            return self._tick(now)
+
+    def _tick(self, now=None):
         tz = self.sched.tz()
         now = now or dt.datetime.now(tz)
         clock = self.sched.clock()
