@@ -57,6 +57,7 @@ os.makedirs(os.environ["XDG_RUNTIME_DIR"], mode=0o700)
 os.environ.pop("FABOS_VOICE_FAKE_SPEAK", None)
 os.environ.pop("FABOS_VOICE_FAKE_LISTEN", None)
 os.environ["FABOS_VOICE_SESSION"] = "1"     # the recorder tests script their own microphone; pretend PipeWire is up
+os.environ["FABOS_VOICE_MIC_ALLOWED"] = "1" # the microphone permission (1.0-8) is on for every test unless a test says otherwise
 
 sys.path.insert(0, LIB)
 import phrases as P  # noqa: E402
@@ -630,7 +631,8 @@ class CLIContract(unittest.TestCase):
         r = self.run_cli("status")
         self.assertEqual(r.returncode, 0, r.stderr)
         st = json.loads(r.stdout.strip())
-        self.assertEqual(set(st), {"wake", "listening", "stt", "tts", "mic", "mic_reason", "stt_reason", "tts_reason"})
+        self.assertEqual(set(st), {"wake", "listening", "stt", "tts", "mic", "mic_allowed", "service", "mic_reason", "stt_reason", "tts_reason"})
+        self.assertEqual((st["mic_allowed"], st["service"]), (True, False))
         self.assertEqual({k: st[k] for k in ("wake", "listening", "stt", "tts", "mic")}, {"wake": False, "listening": False, "stt": "none", "tts": "none", "mic": False})
         self.assertEqual(len(r.stdout.strip().splitlines()), 1)
         # every unavailable piece says why
@@ -707,6 +709,147 @@ class CLIContract(unittest.TestCase):
             self.assertIn(cmd, r.stdout)
 
 
+class MicPermissionAndProgress(unittest.TestCase):
+    """1.0-8: the microphone permission (voice.mic_allowed — permissions only enable: listen-once, the spotter and the doctor's
+    capture refuse while it is off) and the live progress file of listen-once (--progress PATH) the ask bar and Fab AI
+    Controls show as "starting / speak now + level / understanding / error"."""
+
+    def env(self, **kw):
+        run = os.path.join(TMP, "perm-run")
+        os.makedirs(run, exist_ok=True)
+        e = dict(os.environ, PATH=BIN, XDG_RUNTIME_DIR=run, FABOS_VOICE_MODEL="/nonexistent/ggml-tiny.en.bin", FABOS_VOICE_MIC="1",
+                 FABOS_VOICE_SESSION="1", FABOS_VOICE_STATE_DIR=os.path.join(TMP, "perm-state"))
+        e.update(kw)
+        return e
+
+    def run_cli(self, *args, **envkw):
+        return subprocess.run([sys.executable, CLI] + list(args), env=self.env(**envkw), capture_output=True, text=True, timeout=60)
+
+    def test_listen_once_refuses_while_the_microphone_is_off_in_settings(self):
+        heard = os.path.join(TMP, "perm-heard.txt")
+        with open(heard, "w") as f:
+            f.write("open the files app\n")
+        r = self.run_cli("listen-once", "--timeout", "2", FABOS_VOICE_MIC_ALLOWED="0", FABOS_VOICE_FAKE_LISTEN=heard)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("Microphone is off in Settings", r.stderr)
+        self.assertIn("Allow Fab OS to use the microphone", r.stderr)
+        self.assertEqual(open(heard).read(), "open the files app\n", "nothing may be 'heard' while the permission is off")
+        r = self.run_cli("listen-once", "--timeout", "2", FABOS_VOICE_MIC_ALLOWED="1", FABOS_VOICE_FAKE_LISTEN=heard)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "open the files app"), r.stderr)
+
+    def test_status_and_doctor_show_the_permission(self):
+        st = json.loads(self.run_cli("status", FABOS_VOICE_MIC_ALLOWED="0").stdout)
+        self.assertFalse(st["mic_allowed"])
+        self.assertIn("service", st)
+        st = json.loads(self.run_cli("status", FABOS_VOICE_MIC_ALLOWED="1").stdout)
+        self.assertTrue(st["mic_allowed"])
+        d = json.loads(self.run_cli("doctor", "--quiet", "--json", FABOS_VOICE_MIC_ALLOWED="0").stdout)
+        stage = next(x for x in d["stages"] if x["stage"] == "mic-permission")
+        self.assertFalse(stage["ok"]); self.assertTrue(stage["required"]); self.assertIn("Allow Fab OS to use the microphone", stage["hint"])
+        cap = next(x for x in d["stages"] if x["stage"] == "capture")
+        self.assertFalse(cap["ok"]); self.assertIn("skipped", cap["detail"]); self.assertIn("Microphone is off", cap["detail"])
+        self.assertEqual([x["stage"] for x in d["stages"]][:4], ["audio-session", "default-source", "mic-permission", "capture"])
+        self.assertTrue(next(x for x in json.loads(self.run_cli("doctor", "--quiet", "--json").stdout)["stages"] if x["stage"] == "mic-permission")["ok"])
+
+    def test_mic_allowed_follows_the_agent_and_remembers_its_last_answer(self):
+        saved = os.environ.pop("FABOS_VOICE_MIC_ALLOWED", None)
+        cache = V.MIC_PERMISSION_CACHE
+        V.MIC_PERMISSION_CACHE = os.path.join(TMP, "perm-cache-%d" % os.getpid())
+        try:
+            self.assertFalse(V.mic_allowed({}), "unknown counts as off")
+            self.assertFalse(V.mic_allowed({"_agent_up": True}), "the agent's default is off")
+            self.assertTrue(V.mic_allowed({"_agent_up": True, "voice.mic_allowed": "true"}))
+            self.assertTrue(V.mic_allowed({"_agent_up": False}), "without the agent the last answer holds")
+            self.assertFalse(V.mic_allowed({"_agent_up": True, "voice.mic_allowed": "false"}))
+            self.assertFalse(V.mic_allowed({}))
+        finally:
+            V.MIC_PERMISSION_CACHE = cache
+            if saved is not None:
+                os.environ["FABOS_VOICE_MIC_ALLOWED"] = saved
+
+    def test_the_wake_daemon_does_not_listen_while_the_permission_is_off(self):
+        import fabos_voiced as D
+        saved = os.environ.pop("FABOS_VOICE_MIC_ALLOWED", None)
+        try:
+            d = D.Voiced.__new__(D.Voiced)
+            d._warned = set()
+            d.settings = dict(V.DEFAULT_SETTINGS, **{"_agent_up": True, "voice.enabled": "true"})
+            self.assertFalse(d.enabled())
+            d.settings["voice.mic_allowed"] = "true"
+            self.assertTrue(d.enabled())
+            d.settings["voice.enabled"] = "false"
+            self.assertFalse(d.enabled())
+        finally:
+            if saved is not None:
+                os.environ["FABOS_VOICE_MIC_ALLOWED"] = saved
+
+    def test_progress_levels_and_states_from_a_scripted_microphone(self):
+        path = os.path.join(TMP, "progress-%d.json" % os.getpid())
+        prog = V.Progress(path)
+        pcm = with_candidates([[sys.executable, "-c", TONE_THEN_SILENCE]], lambda: V.record_utterance(10, progress=prog))
+        self.assertGreater(len(pcm), 32000)
+        d = V.read_progress(path)
+        self.assertEqual(d["state"], "recording")
+        self.assertTrue(d["speech"])
+        self.assertGreater(d["peak"], 0.3, d)
+        self.assertGreaterEqual(d["seconds"], 1.0)
+        self.assertEqual(V.Progress.level_of(40.0, None), 0.0)
+        self.assertEqual(V.Progress.level_of(3040.0, 40.0), 1.0)
+        self.assertAlmostEqual(V.Progress.level_of(790.0, 40.0), 0.5, places=2)
+        self.assertEqual(V.Progress.level_of(100.0, 270.0), 0.0, "below the noise floor is silence")
+        self.assertEqual(V.read_progress(path + ".missing"), {})
+
+    def test_cli_progress_file_ends_in_done_or_error(self):
+        heard = os.path.join(TMP, "prog-heard.txt")
+        with open(heard, "w") as f:
+            f.write("hello there\n")
+        path = os.path.join(TMP, "cli-progress-%d.json" % os.getpid())
+        r = self.run_cli("listen-once", "--timeout", "2", "--progress", path, FABOS_VOICE_FAKE_LISTEN=heard)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        d = V.read_progress(path)
+        self.assertEqual((d["state"], d["text"], d["backend"]), ("done", "hello there", "fake"))
+        r = self.run_cli("listen-once", "--timeout", "2", "--progress", path, FABOS_VOICE_MIC_ALLOWED="0")
+        self.assertEqual(r.returncode, 4)
+        d = V.read_progress(path)
+        self.assertEqual((d["state"], d["code"]), ("error", 4)); self.assertIn("Microphone is off", d["reason"])
+        empty = os.path.join(TMP, "empty-heard.txt")
+        open(empty, "w").close()
+        r = self.run_cli("listen-once", "--timeout", "2", "--progress", path, FABOS_VOICE_FAKE_LISTEN=empty)
+        self.assertEqual(r.returncode, 3)
+        d = V.read_progress(path)
+        self.assertEqual((d["state"], d["code"]), ("error", 3)); self.assertTrue(d["reason"])
+
+    def test_speech_to_text_memory_threshold_is_measured_plus_20_percent(self):
+        self.assertEqual(V.MEM_NEEDED_KB, int(V.WHISPER_PEAK_RSS_MB * 1.2) * 1024)
+        self.assertLess(V.MEM_NEEDED_KB, 600 * 1024, "1.0-7's 600 MB refused a 4 GB laptop with a browser open")
+        self.assertIn("%d MB" % (V.MEM_NEEDED_KB // 1024), V.low_memory_text())
+        self.assertNotIn("{mb}", V.low_memory_text())
+        saved = V.mem_available_kb, V.whisper_ready
+        V.mem_available_kb = lambda: V.MEM_NEEDED_KB - 1
+        V.whisper_ready = lambda: True
+        try:
+            with self.assertRaises(V.NoBackend) as cm:
+                V.transcribe_whisper("/nonexistent.wav")
+            self.assertEqual(str(cm.exception), V.low_memory_text())
+        finally:
+            V.mem_available_kb, V.whisper_ready = saved
+        stages = [{"stage": "speech-to-text", "required": True, "ok": False, "detail": "x", "hint": P.DOCTOR_HINTS["speech-to-text"].replace("{mb}", str(V.MEM_NEEDED_KB // 1024))}]
+        self.assertIn("%d MB" % (V.MEM_NEEDED_KB // 1024), V.format_doctor(stages))
+
+    def test_chime_player_cannot_hold_the_recording_back(self):
+        saved = V.player_candidates, V.which
+        V.player_candidates = lambda path, sink=None: [[sys.executable, "-c", "import time; time.sleep(30)"]]
+        V.which = lambda *names: names[0]
+        try:
+            t0 = time.time()
+            V.play_file(V.chime_path(), timeout=0.5)
+        finally:
+            V.player_candidates, V.which = saved
+        self.assertLess(time.time() - t0, 3.0, "a hanging player must be given up after the cap")
+        self.assertEqual(V.CHIME_PLAY_TIMEOUT_S, 2.0)
+
+
 class FirstRun(unittest.TestCase):
     def test_notification_once_and_only_with_mic(self):
         sys.path.insert(0, LIB)
@@ -764,7 +907,7 @@ class DaemonUnit(unittest.TestCase):
         import fabos_voiced as D
         D.POLL_S = 0.02
         d = D.Voiced()
-        d.settings = dict(V.DEFAULT_SETTINGS, mode="auto", **{"ai.enabled": "true", "_agent_up": True})
+        d.settings = dict(V.DEFAULT_SETTINGS, mode="auto", **{"ai.enabled": "true", "_agent_up": True, "voice.mic_allowed": "true"})
         d.settings_ts = time.time() + 3600
         d.agent = types.SimpleNamespace(get=lambda path, timeout=None: polls.pop(0) if len(polls) > 1 else polls[0],
                                         post=lambda path, body, timeout=None: {"ok": True},
@@ -1124,7 +1267,7 @@ class EndToEnd(unittest.TestCase):
         heard = spoken_path + ".listen"
         with open(heard, "w") as f:
             f.write("\nstop that\n")          # 1st listen (approval): nothing heard; 2nd listen (after the wake): stop
-        self.api("PUT", "/settings", {"mode": "ask", "voice.enabled": "true"})
+        self.api("PUT", "/settings", {"mode": "ask", "voice.enabled": "true", "voice.mic_allowed": "true"})
         fake_mic = [sys.executable, "-c", "import sys,time\nwhile True:\n sys.stdout.buffer.write(b'\\0'*3200); sys.stdout.buffer.flush(); time.sleep(0.1)"]
         fake_spotter = [sys.executable, "-c",
                         "import sys,time,threading,json,os\n"

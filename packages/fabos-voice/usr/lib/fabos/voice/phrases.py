@@ -47,7 +47,8 @@ VOICE_UNAVAILABLE = "Voice is not available on this machine"
 NO_MIC = "No microphone found on this computer."
 NO_STT = "Speech recognition is not available: no offline model and no cloud provider key."
 NO_TTS = "Text to speech is not available on this machine."
-LOW_MEMORY = "Not enough free memory for offline speech recognition right now (it needs about 600 MB)."
+LOW_MEMORY = "Not enough free memory for offline speech recognition right now (it needs about {mb} MB)."   # {mb} = voicelib.MEM_NEEDED_KB
+MIC_OFF = "Microphone is off in Settings. Allow it in Fab AI Controls › Settings › Voice (“Allow Fab OS to use the microphone”)."
 WAKE_ON = "Okay, I am listening for 'Hey Fab'."
 WAKE_OFF = "Okay, I will stop listening for 'Hey Fab'. You can turn it back on any time."
 WAKE_UNSURE = "I thought I heard 'Hey Fab', but I am not sure. Say it once more if you need me."
@@ -69,7 +70,8 @@ DOCTOR_HINTS = {
     "audio-session": "Log in to the desktop (PipeWire starts with your session), or run: systemctl --user start pipewire pipewire-pulse wireplumber",
     "default-source": "Plug in or enable a microphone and pick it as the input device in the volume applet (or: pactl set-default-source NAME)",
     "capture": "Check the input device and its level in the volume applet; unmute with: pactl set-source-mute @DEFAULT_SOURCE@ 0",
-    "speech-to-text": "whisper.cpp and ggml-tiny.en.bin ship in /usr/share/fabos/voice with Fab OS; if it says low memory, close some apps (it needs about 600 MB free)",
+    "mic-permission": "Turn on “Allow Fab OS to use the microphone” in Fab AI Controls › Settings › Voice (or: fabos settings voice.mic_allowed true)",
+    "speech-to-text": "whisper.cpp and ggml-tiny.en.bin ship in /usr/share/fabos/voice with Fab OS; if it says low memory, close some apps (it needs about {mb} MB free)",
     "wake-word": "Install pocketsphinx and pocketsphinx-en-us; a custom voice.wake_word must use words from the shipped dictionary",
     "default-sink": "Pick an output device in the volume applet (or: pactl set-default-sink NAME)",
     "text-to-speech": "espeak-ng and pipewire-bin (pw-play) ship with Fab OS; check the output device and its volume in the volume applet",

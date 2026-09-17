@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """fabos-voiced — the always-on "Hey Fab" listener (per-user systemd service, fabos-voiced.service).
 
-Loop:  settings (GET /settings, refreshed every 30 s)  ->  is voice.enabled and a microphone present?
+Loop:  settings (GET /settings, refreshed every 30 s)  ->  is voice.enabled, the microphone allowed (voice.mic_allowed,
+       the permission switch in Fab AI Controls › Settings › Voice — permissions only enable) and a microphone present?
        -> pw-record | pocketsphinx -keyphrase "hey fab" live -   (the only always-on consumer, ~35 MB, offline)
        -> on the wake phrase: chime, "Listening…" notification, record + transcribe like `fabos-voice listen-once`,
           POST /tasks to the agent, then follow the task: speak every tool step's narration, ask for approvals
@@ -99,7 +100,12 @@ class Voiced:
         return V.truthy(self.settings.get(key, V.DEFAULT_SETTINGS.get(key, "false")))
 
     def enabled(self):
-        return self.flag("voice.enabled")
+        """voice.enabled AND the microphone permission: the spotter never opens the microphone while either is off."""
+        on = self.flag("voice.enabled")
+        if on and not V.mic_allowed(self.settings):
+            self.warn_once("microphone permission is off (Fab AI Controls › Settings › Voice); not listening for the wake word")
+            return False
+        return on
 
     def wake_word(self):
         """The configured phrase, lower-cased, letters only, every word known to the acoustic dictionary."""

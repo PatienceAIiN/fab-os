@@ -2,14 +2,19 @@
 """fabos-voice — talk to Fab OS from the command line (the VOICE CONTRACT every Fab OS UI calls).
 
   fabos-voice listen-once [--timeout SECONDS]   chime, record until ~1.2 s of silence (or the timeout, default 10 s),
-                                                print the recognised text on stdout; the reason for a failure goes to
+              [--progress PATH]                 print the recognised text on stdout; the reason for a failure goes to
                                                 stderr. Exit 3 = nothing heard (also: microphone muted or silent),
-                                                4 = no backend (no audio session, no microphone, no speech-to-text).
-                                                Never runs longer than the timeout plus a few seconds.
+                                                4 = no backend (microphone off in Settings, no audio session, no
+                                                microphone, no speech-to-text). Never runs longer than the timeout plus
+                                                a few seconds. --progress PATH keeps a JSON file with the live state for
+                                                the UI: {"state": starting|recording|transcribing|done|error, "level",
+                                                "peak", "speech", "seconds", "text"|"reason"+"code"} (see voicelib.Progress).
   fabos-voice say TEXT... | say --test           speak TEXT (blocking; one utterance at a time machine-wide); --test says
                                                 a two-sentence sample and prints the backend and sink used; exit 4 = no TTS
-  fabos-voice status                            one JSON line: {"wake","listening","stt","tts","mic",
-                                                "mic_reason","stt_reason","tts_reason"} (reasons are "" when fine)
+  fabos-voice status                            one JSON line: {"wake","listening","stt","tts","mic","mic_allowed",
+                                                "service","mic_reason","stt_reason","tts_reason"} (reasons are "" when
+                                                fine; mic_allowed = the permission in Fab AI Controls › Settings › Voice;
+                                                service = fabos-voiced is running)
   fabos-voice doctor [--json] [--quiet]         check every stage of the pipeline for real, one OK/FAIL line each with a fix
                                                 hint; exit 0 when every required stage passes (--quiet: render TTS, do not play)
   fabos-voice wake on|off                       turn the always-on "Hey Fab" listener on or off (voice.enabled)
@@ -38,9 +43,11 @@ import voicelib as V  # noqa: E402
 STT_BUDGET_S = V.WHISPER_TIMEOUT_S + 5      # after recording, the transcription gets at most this long
 
 
-def _watchdog(seconds, reason, code):
+def _watchdog(seconds, reason, code, progress=None):
     """A last line of defence against hanging: if the command is still running after `seconds`, say why and exit."""
     def fire():
+        if progress is not None:
+            progress.set("error", reason=reason, code=code)
         print(reason, file=sys.stderr, flush=True)
         os._exit(code)
     t = threading.Timer(seconds, fire)
@@ -52,17 +59,28 @@ def _watchdog(seconds, reason, code):
 def cmd_listen_once(a):
     agent = V.Agent()
     timeout = max(1.0, float(a.timeout))
-    wd = _watchdog(timeout + V.RECORD_GRACE_S + STT_BUDGET_S, "listen-once gave up: recording or transcription did not finish in time", V.EXIT_NOTHING_HEARD)
+    prog = V.Progress(a.progress) if a.progress else None
+    if prog is not None:
+        prog.set("starting")                    # before anything else: the UI shows "starting the microphone" within its next poll
+    wd = _watchdog(timeout + V.RECORD_GRACE_S + STT_BUDGET_S, "listen-once gave up: recording or transcription did not finish in time", V.EXIT_NOTHING_HEARD, prog)
     try:
-        text, backend = V.listen_once(timeout, agent)
+        text, backend = V.listen_once(timeout, agent, progress=prog)
     except V.NothingHeard as e:
-        print(e.reason or P.NOT_HEARD, file=sys.stderr)
+        reason = e.reason or P.NOT_HEARD
+        if prog is not None:
+            prog.set("error", reason=reason, code=V.EXIT_NOTHING_HEARD)
+        print(reason, file=sys.stderr)
         return V.EXIT_NOTHING_HEARD
     except V.NoBackend as e:
-        print(str(e) or P.NO_STT, file=sys.stderr)
+        reason = str(e) or P.NO_STT
+        if prog is not None:
+            prog.set("error", reason=reason, code=V.EXIT_NO_BACKEND)
+        print(reason, file=sys.stderr)
         return V.EXIT_NO_BACKEND
     finally:
         wd.cancel()
+    if prog is not None:
+        prog.set("done", text=text, backend=backend)
     print(text)
     if a.verbose:
         cap = V.LAST_CAPTURE.get("cmd")
@@ -93,7 +111,7 @@ def cmd_say(a):
     return V.EXIT_OK
 
 
-CONTRACT_KEYS = ("wake", "listening", "stt", "tts", "mic", "mic_reason", "stt_reason", "tts_reason")
+CONTRACT_KEYS = ("wake", "listening", "stt", "tts", "mic", "mic_allowed", "service", "mic_reason", "stt_reason", "tts_reason")
 
 
 def cmd_status(a):
@@ -144,6 +162,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("listen-once", help="record one utterance and print the text")
     p.add_argument("--timeout", type=float, default=V.DEFAULT_TIMEOUT_S, help="hard cap in seconds (default 10)")
+    p.add_argument("--progress", metavar="PATH", help="keep a JSON file with the live state (starting / recording + level / transcribing / done / error) for the UI")
     p.set_defaults(fn=cmd_listen_once)
     p = sub.add_parser("say", help="speak text (--test: a two-sentence sample, reporting backend and sink)")
     p.add_argument("--test", action="store_true", help="speak the sample line and print the backend, player and sink used")

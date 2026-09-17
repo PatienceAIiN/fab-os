@@ -8,7 +8,11 @@
     hard cap = timeout; a stream that is exactly zero for its first second is a muted or absent microphone
   * WAV writer/reader (stdlib wave)
   * speech-to-text: agent POST /speech/transcribe (cloud, when allowed) -> whisper.cpp with the shipped
-    tiny.en model (skipped when MemAvailable < 600 MB) -> NoBackend
+    tiny.en model (skipped when MemAvailable < MEM_NEEDED_KB: the measured peak of whisper-cli plus 20 %) -> NoBackend
+  * the microphone permission (agent setting voice.mic_allowed, Fab AI Controls › Settings › Voice): permissions only
+    enable — listen_once, the wake spotter and the doctor's capture refuse while it is off (mic_allowed)
+  * Progress: the live state of one listen-once run (starting / recording + level / transcribing / done / error) as a
+    JSON file for the UI that started it (`fabos-voice listen-once --progress PATH`)
   * text-to-speech: agent POST /speech/say (cloud, Indian-English voice) -> espeak-ng (en-gb-x-rp, slower and louder)
     rendered to WAV and played with pw-play -> paplay -> aplay at the default sink; one utterance at a time across every
     Fab OS process (an flock in $XDG_RUNTIME_DIR/fabos-voice) and never the same sentence twice from two players
@@ -64,7 +68,13 @@ DEFAULT_TIMEOUT_S = 10.0
 DEAD_STREAM_MS = 1000                                         # exactly-zero samples for this long = muted / absent microphone
 RECORD_GRACE_S = 3.0                                          # listen-once never runs longer than timeout + this
 FIRST_CHUNK_S = 1.5                                           # a recorder that delivers nothing within this is skipped
-MEM_NEEDED_KB = 600 * 1024
+# Offline speech-to-text memory. 1.0-7 refused below 600 MB free — a figure a 4 GB laptop with a browser open often does not
+# have, so its microphone "did nothing". whisper-cli with tiny.en is a short-lived process per utterance (the model is NOT
+# kept resident: its memory is back the moment it exits — nothing to free after an idle minute). Its peak RSS is measured
+# in the 1.0-8 VM (tests/voice-vm.sh: /usr/bin/time -v on a spoken sentence) = WHISPER_PEAK_RSS_MB; the threshold is +20 %.
+WHISPER_PEAK_RSS_MB = int(os.environ.get("FABOS_VOICE_WHISPER_PEAK_MB", "175"))
+MEM_NEEDED_KB = int(WHISPER_PEAK_RSS_MB * 1.2) * 1024
+CHIME_PLAY_TIMEOUT_S = 2.0                                    # a player that hangs on the 180 ms chime must not delay the recording
 CHIME_MS = 180
 PLAYBACK_WAIT_S = 20.0                                        # wait this long for another utterance to finish, then speak anyway
 PROBE_TIMEOUT_S = 3.0                                         # pactl / pw-cli / pw-dump answer within this or count as absent
@@ -94,6 +104,7 @@ DEFAULT_SETTINGS = {
     "voice.speak_full": "false",
     "voice.kws_threshold": "1e-50",   # pocketsphinx p(hyp)/p(alt); 1e-50 = detection, 0 false hits on 22 s of hard negatives
     "voice.verify_wake": "true",      # second look at the wake clip with whisper.cpp before acting (near-misses like "hey bob ... fabulous")
+    "voice.mic_allowed": "false",     # the microphone permission (Fab AI Controls › Settings › Voice, 1.0-8); permissions only enable
 }
 CLOUD_PROVIDERS = ("openai", "gemini")   # the agent's /speech endpoints use one of these
 
@@ -110,6 +121,34 @@ FAKE_LISTEN = os.environ.get("FABOS_VOICE_FAKE_LISTEN")
 # What the last capture / playback used; read by `fabos-voice -v`, `say --test`, doctor and the daemon's log lines.
 LAST_CAPTURE = {"cmd": None, "tried": []}
 LAST_PLAYBACK = {"backend": None, "player": None, "sink": None, "path": None}
+MIC_PERMISSION_CACHE = os.path.join(STATE_DIR, "mic-allowed")
+
+
+def mic_allowed(settings):
+    """The microphone permission — "Allow Fab OS to use the microphone" in Fab AI Controls › Settings › Voice (agent setting
+    voice.mic_allowed). Permissions only enable: unknown counts as off. The agent's answer is remembered in the state dir,
+    so a moment without the agent keeps the user's last choice instead of falling back to the default."""
+    ov = os.environ.get("FABOS_VOICE_MIC_ALLOWED")            # test hook
+    if ov is not None:
+        return truthy(ov)
+    if settings and settings.get("_agent_up"):
+        allowed = truthy(settings.get("voice.mic_allowed", DEFAULT_SETTINGS["voice.mic_allowed"]))
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(MIC_PERMISSION_CACHE, "w") as f:
+                f.write("1" if allowed else "0")
+        except OSError:
+            pass
+        return allowed
+    try:
+        with open(MIC_PERMISSION_CACHE) as f:
+            return f.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def low_memory_text():
+    return phrases.LOW_MEMORY.replace("{mb}", str(MEM_NEEDED_KB // 1024))
 
 
 class NothingHeard(Exception):
@@ -234,6 +273,65 @@ class Segmenter:
 
     def finish(self):
         return bytes(self.buf) if self.speech_started else None
+
+
+class Progress:
+    """The live state of one listen-once run for the UI that started it (`fabos-voice listen-once --progress PATH`): one JSON
+    object replaced atomically — {"state": starting|recording|transcribing|done|error, "level": 0..1 (the last 100 ms
+    relative to the noise floor), "peak": the loudest so far, "speech": words heard so far, "seconds": since the start,
+    "text" | "reason" + "code"}. A Plasma applet sees a command's output only when it ends, so this file is how the ask bar
+    can say "speak now" exactly when audio flows and show a level meter while it does (it polls every 150 ms); Fab AI
+    Controls polls it with a QTimer. The level alone is written at most about 12 times a second."""
+
+    def __init__(self, path):
+        self.path = path
+        self.t0 = time.time()
+        self.state = None
+        self.last_write = 0.0
+        self.level = 0.0
+        self.peak = 0.0
+        self.speech = False
+
+    @staticmethod
+    def level_of(level_rms, floor):
+        """0..1 from an RMS value: 0 at the noise floor, 1 at about 3000 above it (a normal speaking voice near a laptop)."""
+        base = floor if floor else MIN_FLOOR
+        if level_rms <= base:
+            return 0.0
+        return max(0.0, min(1.0, ((level_rms - base) / 3000.0) ** 0.5))
+
+    def chunk(self, level_rms, seg):
+        self.level = self.level_of(level_rms, seg.floor)
+        self.peak = max(self.peak, self.level)
+        self.speech = self.speech or seg.speech_started
+        self.set("recording")
+
+    def set(self, state, **extra):
+        if state == self.state and not extra and time.time() - self.last_write < 0.08:
+            return
+        self.state = state
+        d = {"state": state, "level": round(self.level, 3), "peak": round(self.peak, 3), "speech": self.speech,
+             "seconds": round(time.time() - self.t0, 2), "pid": os.getpid()}
+        d.update(extra)
+        tmp = self.path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            with open(tmp, "w") as f:
+                json.dump(d, f)
+            os.replace(tmp, self.path)
+            self.last_write = time.time()
+        except OSError:
+            pass
+
+
+def read_progress(path):
+    """The progress file as a dict ({} when absent or half-written)."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 # --------------------------------------------------------------------------- WAV
@@ -706,8 +804,9 @@ def stop_player():
             p.kill()
 
 
-def play_file(path, block=True, sink=None):
-    """Play a WAV/MP3 file with the first available player. Returns True when the audio was played.
+def play_file(path, block=True, sink=None, timeout=None):
+    """Play a WAV/MP3 file with the first available player. Returns True when the audio was played. `timeout` caps the
+    wait for one player (the chime: CHIME_PLAY_TIMEOUT_S); by default it is the file's duration plus 30 s.
 
     A player that ran for most of the file's duration DID play it, whatever its exit code (pw-play and paplay can exit
     non-zero after the last sample when the stream is torn down) — the next candidate must not play the same audio
@@ -725,7 +824,7 @@ def play_file(path, block=True, sink=None):
             continue
         _current_player = proc
         try:
-            rc = proc.wait(timeout=(dur + 30 if block else 5) if dur else (120 if block else 5))
+            rc = proc.wait(timeout=timeout or ((dur + 30 if block else 5) if dur else (120 if block else 5)))
         except subprocess.TimeoutExpired:
             proc.kill()
             rc = -9
@@ -749,7 +848,7 @@ def play_file(path, block=True, sink=None):
 
 def play_chime():
     try:
-        return play_file(chime_path())
+        return play_file(chime_path(), timeout=CHIME_PLAY_TIMEOUT_S)
     except Exception:
         return False
 
@@ -845,9 +944,10 @@ def playback_lock(max_wait=PLAYBACK_WAIT_S):
 
 
 # --------------------------------------------------------------------------- recording
-def record_utterance(timeout=DEFAULT_TIMEOUT_S, on_state=None, start_timeout=None, source=None):
+def record_utterance(timeout=DEFAULT_TIMEOUT_S, on_state=None, start_timeout=None, source=None, progress=None):
     """Record from the microphone until 1.2 s of silence after speech, or `timeout` seconds.
     `start_timeout` (daemon only; the CLI keeps to the contract) gives up early when speech has not begun by then.
+    `progress` (a Progress) gets every 100 ms chunk's level once audio flows — the UI's "speak now" and its meter.
     Never runs longer than timeout + RECORD_GRACE_S. Returns raw s16 PCM.
     Raises NoBackend (no audio session / no recorder / no device) or NothingHeard (silence, or a muted microphone:
     reason MIC_SILENT when the first second of the stream is exactly zero)."""
@@ -868,6 +968,8 @@ def record_utterance(timeout=DEFAULT_TIMEOUT_S, on_state=None, start_timeout=Non
             while True:
                 if chunk:
                     done = seg.feed(chunk)
+                    if progress is not None:
+                        progress.chunk(rms(chunk), seg)
                     if done is not None:
                         return done
                     if seg.dead_stream and not seg.speech_started:
@@ -1117,7 +1219,7 @@ def transcribe_whisper(wav_path):
         raise NoBackend(phrases.NO_STT)
     mem = mem_available_kb()
     if mem is not None and mem < MEM_NEEDED_KB:
-        raise NoBackend(phrases.LOW_MEMORY)
+        raise NoBackend(low_memory_text())
     threads = str(max(1, min(4, os.cpu_count() or 2)))
     cmd = scope_prefix() + ["whisper-cli", "-m", MODEL_PATH, "-l", "en", "-nt", "-np", "-t", threads, "-f", wav_path]
     try:
@@ -1159,10 +1261,15 @@ def transcribe(pcm, agent=None, settings=None):
             os.remove(wav)
 
 
-def listen_once(timeout=DEFAULT_TIMEOUT_S, agent=None, settings=None, chime=True, on_state=None, start_timeout=None):
-    """The VOICE CONTRACT 'listen-once': chime, record until silence, transcribe. Returns (text, backend)."""
+def listen_once(timeout=DEFAULT_TIMEOUT_S, agent=None, settings=None, chime=True, on_state=None, start_timeout=None, progress=None):
+    """The VOICE CONTRACT 'listen-once': chime, record until silence, transcribe. Returns (text, backend). Refuses first
+    (NoBackend MIC_OFF) while the microphone permission is off. `progress` (Progress) follows the run for the UI."""
     agent = agent or Agent()
     settings = settings or agent.settings(max_age=5)
+    if progress is not None:
+        progress.set("starting")
+    if not mic_allowed(settings):
+        raise NoBackend(phrases.MIC_OFF)
     if FAKE_LISTEN:
         return _fake_listen(), "fake"
     if not stt_backends(agent, settings):
@@ -1172,7 +1279,9 @@ def listen_once(timeout=DEFAULT_TIMEOUT_S, agent=None, settings=None, chime=True
         raise NoBackend(session["reason"])          # before the chime: nothing could play it anyway
     if chime:
         play_chime()
-    pcm = record_utterance(timeout, on_state=on_state, start_timeout=start_timeout)
+    pcm = record_utterance(timeout, on_state=on_state, start_timeout=start_timeout, progress=progress)
+    if progress is not None:
+        progress.set("transcribing")
     return transcribe(pcm, agent, settings)
 
 
@@ -1470,6 +1579,9 @@ def status(agent=None):
         "tts": tts_name,
         "mic": mic,
         "mic_reason": mic_why,
+        # 1.0-8 contract additions: the microphone permission (Fab AI Controls › Settings › Voice) and whether fabos-voiced is alive
+        "mic_allowed": mic_allowed(settings),
+        "service": bool(st),
         "stt_reason": "" if stt_name != "none" else stt_reason(agent, settings),
         "tts_reason": "" if tts_name != "none" else tts_reason(agent, settings, session),
         # extra, non-contract detail (UIs may ignore): why something is off, and the daemon's own view
@@ -1482,13 +1594,14 @@ def status(agent=None):
         "spotter": spotter_ready(),
         "session": session.get("server"),
         "source": src.get("name"),
+        "source_description": src.get("description"),
         "source_muted": src.get("muted"),
         "sink": default_sink().get("name") if session["ok"] else None,
     }
 
 
 # --------------------------------------------------------------------------- doctor
-DOCTOR_STAGES = ("audio-session", "default-source", "capture", "speech-to-text", "wake-word", "default-sink", "text-to-speech", "agent", "listener", "settings")
+DOCTOR_STAGES = ("audio-session", "default-source", "mic-permission", "capture", "speech-to-text", "wake-word", "default-sink", "text-to-speech", "agent", "listener", "settings")
 DOCTOR_OPTIONAL = ("agent", "listener", "settings")
 
 
@@ -1500,7 +1613,8 @@ def doctor(agent=None, play=True, tts_text=None):
     out = []
 
     def add(stage, ok, detail, hint=""):
-        out.append({"stage": stage, "required": stage not in DOCTOR_OPTIONAL, "ok": bool(ok), "detail": detail, "hint": "" if ok else (hint or phrases.DOCTOR_HINTS.get(stage, ""))})
+        hint = (hint or phrases.DOCTOR_HINTS.get(stage, "")).replace("{mb}", str(MEM_NEEDED_KB // 1024))
+        out.append({"stage": stage, "required": stage not in DOCTOR_OPTIONAL, "ok": bool(ok), "detail": detail, "hint": "" if ok else hint})
 
     # 1. the audio session
     session = audio_session()
@@ -1518,8 +1632,14 @@ def doctor(agent=None, play=True, tts_text=None):
     else:
         add("default-source", False, src.get("reason") or phrases.NO_SOURCE)
 
-    # 3. a one-second capture
-    if session["ok"] or (which("arecord") and alsa_capture_devices()):
+    # 3. the microphone permission (Fab AI Controls › Settings › Voice): permissions only enable — nothing records while it is off
+    allowed = mic_allowed(agent.settings(max_age=5))
+    add("mic-permission", allowed, "allowed (voice.mic_allowed)" if allowed else phrases.MIC_OFF)
+
+    # 4. a one-second capture
+    if not allowed:
+        add("capture", False, "skipped: " + phrases.MIC_OFF)
+    elif session["ok"] or (which("arecord") and alsa_capture_devices()):
         try:
             pcm, cmd = capture_seconds(1.0, target=src.get("name"))
             level = rms(pcm)
