@@ -4667,7 +4667,7 @@ def schedule_api(agent, method, p, qs, b):
                 return 201, r
             return (200 if r.get("needs_confirm") else 400), r
         if p == "/schedule/login-summary":
-            return 200, loop.send_login_summary(force=bool(b.get("force")))
+            return 200, loop.send_login_summary(force=bool(b.get("force")), session=str(b.get("session") or "")[:64] or None)
         if p == "/schedule/mail-intake/run":
             loop.last_mail = time.time()
             r = loop.run_mail_intake(now) or {}

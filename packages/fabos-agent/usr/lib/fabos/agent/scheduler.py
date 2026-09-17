@@ -932,7 +932,7 @@ class Notifier:
         self.backend = backend or os.environ.get("FABOS_SCHED_NOTIFY", "dbus")
         self.log = log or (lambda *a: None)
         self.tags = {}                      # notification id -> tag
-        self._loop = self._iface = self._glib = self._dbus = None
+        self._loop = self._iface = self._glib = self._dbus = self._bus = None
         self._ready = threading.Event()
         self._lock = threading.Lock()
         self.sent = []                      # (title, body, actions) — for tests and the activity log
@@ -954,11 +954,11 @@ class Notifier:
             import dbus, dbus.mainloop.glib
             from gi.repository import GLib
             dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-            bus = dbus.SessionBus()
-            self._iface = dbus.Interface(bus.get_object("org.freedesktop.Notifications", "/org/freedesktop/Notifications"), "org.freedesktop.Notifications")
-            bus.add_signal_receiver(self._on_action, "ActionInvoked", "org.freedesktop.Notifications")
-            bus.add_signal_receiver(self._on_closed, "NotificationClosed", "org.freedesktop.Notifications")
             self._glib, self._dbus = GLib, dbus
+            self._bus = dbus.SessionBus()
+            self._connect()
+            self._bus.add_signal_receiver(self._on_action, "ActionInvoked", "org.freedesktop.Notifications")
+            self._bus.add_signal_receiver(self._on_closed, "NotificationClosed", "org.freedesktop.Notifications")
             self._loop = GLib.MainLoop()
             self._ready.set()
             self._loop.run()
@@ -966,6 +966,13 @@ class Notifier:
             self.log("scheduler notifier: D-Bus path unavailable (%s); using notify-send" % str(e)[:160])
             self.backend = "notify-send"
             self._ready.set()
+
+    def _connect(self):
+        """A proxy that FOLLOWS the owner of org.freedesktop.Notifications: plasmashell restarts at every login (and on a
+        crash), and a proxy bound to its old unique name would fail with ServiceUnknown — seen in the VM proof, where the
+        first 'Today' summary after a re-login was lost that way."""
+        self._iface = self._dbus.Interface(self._bus.get_object("org.freedesktop.Notifications", "/org/freedesktop/Notifications", follow_name_owner_changes=True),
+                                           "org.freedesktop.Notifications")
 
     def _on_action(self, nid, key):
         tag = self.tags.pop(int(nid), None)
@@ -987,19 +994,25 @@ class Notifier:
             done = threading.Event()
 
             def do():
-                try:
-                    acts = []
-                    for aid, label in actions:
-                        acts += [aid, label]
-                    hints = {"urgency": self._dbus.Byte({"low": 0, "normal": 1, "critical": 2}.get(urgency, 1)), "desktop-entry": self.desktop_entry, "category": "im"}
-                    nid = int(self._iface.Notify(self.app, self._dbus.UInt32(0), self.icon, title, body, acts, hints, self._dbus.Int32(timeout_ms)))
-                    result["id"] = nid
-                    if tag is not None:
-                        with self._lock:
-                            self.tags[nid] = tag
-                except Exception as e:
-                    self.log("scheduler notifier: Notify failed (%s)" % str(e)[:160])
-                    result["error"] = str(e)
+                acts = []
+                for aid, label in actions:
+                    acts += [aid, label]
+                hints = {"urgency": self._dbus.Byte({"low": 0, "normal": 1, "critical": 2}.get(urgency, 1)), "desktop-entry": self.desktop_entry, "category": "im"}
+                for attempt in (1, 2):                  # a failed call (the server went away) gets ONE fresh proxy and a second try
+                    try:
+                        nid = int(self._iface.Notify(self.app, self._dbus.UInt32(0), self.icon, title, body, acts, hints, self._dbus.Int32(timeout_ms)))
+                        result["id"] = nid
+                        if tag is not None:
+                            with self._lock:
+                                self.tags[nid] = tag
+                        break
+                    except Exception as e:
+                        self.log("scheduler notifier: Notify failed (%s)%s" % (str(e)[:160], "; reconnecting" if attempt == 1 else "; using notify-send"))
+                        result["error"] = str(e)
+                        try:
+                            self._connect()
+                        except Exception as e2:
+                            self.log("scheduler notifier: reconnect failed (%s)" % str(e2)[:120])
                 done.set()
                 return False
             self._glib.idle_add(do)
@@ -1235,9 +1248,12 @@ class SchedulerLoop(threading.Thread):
         except Exception as e:
             return {"error": str(e)[:200]}
 
-    def session_key(self):
-        """One summary per login: the desktop session id when systemd gives one, else the boot id."""
-        sid = os.environ.get("XDG_SESSION_ID") or ""
+    def session_key(self, session=None):
+        """One summary per login: date + boot id + the graphical session's id. The caller (scheduler.py --login-summary, run
+        by the user unit at graphical-session.target) passes the session it found with loginctl — the daemon's own
+        environment holds the FIRST session's id for the life of the user manager, which would hide the summary from a
+        second login on the same day."""
+        sid = session or os.environ.get("XDG_SESSION_ID") or ""
         try:
             with open("/proc/sys/kernel/random/boot_id") as f:
                 boot = f.read().strip()
@@ -1245,9 +1261,9 @@ class SchedulerLoop(threading.Thread):
             boot = "noboot"
         return "%s:%s:%s" % (dt.date.today().isoformat(), boot, sid)
 
-    def send_login_summary(self, force=False, now=None):
+    def send_login_summary(self, force=False, now=None, session=None):
         """The 'Today: N items' notification (clicking opens the Schedule tab). Returns {sent, title, body, count, deduped}."""
-        key = self.session_key()
+        key = self.session_key(session)
         last = self.store.setting("scheduler.summary_sent", "")
         tz = self.sched.tz()
         now = now or dt.datetime.now(tz)
@@ -1410,15 +1426,29 @@ def notifications_server_up():
         return bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS"))
 
 
+def graphical_session_id():
+    """The id of this user's newest seat session (loginctl), else $XDG_SESSION_ID — the once-per-login key."""
+    try:
+        out = subprocess.run(["loginctl", "list-sessions", "--no-legend"], capture_output=True, text=True, timeout=5).stdout
+        me = str(os.getuid())
+        ids = [ln.split()[0] for ln in out.splitlines() if len(ln.split()) >= 4 and ln.split()[1] == me and ln.split()[3].startswith("seat")]
+        if ids:
+            return max(ids, key=lambda s: int(s) if s.isdigit() else 0)
+    except Exception:
+        pass
+    return os.environ.get("XDG_SESSION_ID") or ""
+
+
 def login_summary_cli(args):
-    """fabos-schedule-summary.service: wait for the agent (≤ 90 s) and for the notification server (≤ 60 s), then ask the
-    daemon to send today's summary; prints what it sent. Exit 0 even when there was nothing to do."""
+    """fabos-schedule-summary.service: wait for the agent (≤ 90 s) and for the notification server (≤ 60 s, then a few
+    seconds more for its popups to be ready), then ask the daemon to send today's summary for THIS login; prints what it
+    sent. Exit 0 even when there was nothing to do."""
     if not _wait_for(lambda: _daemon()[0] is not None and _call("GET", "/health", timeout=3).get("ok"), 90):
         print("fabos-schedule-summary: the agent service did not come up; no summary", file=sys.stderr)
         return 0
     _wait_for(notifications_server_up, 60, 2.0)
-    time.sleep(float(os.environ.get("FABOS_SUMMARY_DELAY", "2")))
-    r = _call("POST", "/schedule/login-summary", {"force": "--force" in args})
+    time.sleep(float(os.environ.get("FABOS_SUMMARY_DELAY", "5")))
+    r = _call("POST", "/schedule/login-summary", {"force": "--force" in args, "session": graphical_session_id()})
     print(json.dumps(r, ensure_ascii=False))
     return 0
 

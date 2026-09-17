@@ -1760,9 +1760,11 @@ print(json.dumps({"exit_code": r.returncode, "stdout": r.stdout[-30000:], "stder
         self.assertTrue(s["sent"]); self.assertRegex(s["title"], r"^Today: (\d+ items?|nothing scheduled)$"); self.assertLessEqual(len(s["body"].split("\n")), 7)
         st, s2 = self.http("POST", "/schedule/login-summary", {}); self.assertFalse(s2["sent"]); self.assertTrue(s2["deduped"])
         st, s3 = self.http("POST", "/schedule/login-summary", {"force": True}); self.assertTrue(s3["sent"])
+        st, s4 = self.http("POST", "/schedule/login-summary", {"session": "77"}); self.assertTrue(s4["sent"], "a second login the same day (new session id) gets its summary")
+        self.assertTrue(self.http("POST", "/schedule/login-summary", {"session": "77"})[1]["deduped"])
         st, today = self.http("GET", "/schedule/today"); self.assertEqual((today["title"], today["body"]), (s["title"], s["body"])); self.assertIn("items", today)
         shown = [ln for ln in self._nlog().splitlines() if re.search(r"desktop-entry:fabos-command-center -t 20000 Today: (\d+ items?|nothing scheduled)", ln)]
-        self.assertEqual(len(shown), 2, "the summary notification went out twice: once at 'login', once forced")
+        self.assertEqual(len(shown), 3, "the summary notification went out three times: at 'login', forced, and for the second session")
         self.assertNotIn(" -t ", lines[0], "a reminder popup has no timeout: it stays until answered")
         self.assertTrue(any(e["kind"] == "login_summary" for e in self.cli("log", "--limit", "40")))
 

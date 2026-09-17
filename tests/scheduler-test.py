@@ -302,9 +302,12 @@ class StoreAndLoop(unittest.TestCase):
         n = self.notifier.sent[-1]; self.assertEqual(n["title"], "Today: 7 items"); self.assertEqual(n["actions"][0], ("default", "Open")); self.assertEqual(n["tag"], ("summary", 0))
         self.assertEqual(s.get(1)["status"], "missed"); self.assertEqual(s.get(2)["when_local"][:16], "2026-09-18T07:00")   # one-off missed; repeating rolled
         self.assertEqual([i["title"] for i in s.list("missed", NOW)], ["Pay rent", "Yoga"])
-        # once per login: the second call is de-duplicated; force resends
+        # once per login: the second call is de-duplicated; a NEW graphical session (a second login the same day) gets it again; force resends
         r2 = loop.send_login_summary(now=NOW); self.assertFalse(r2["sent"]); self.assertTrue(r2["deduped"]); self.assertEqual(len(self.notifier.sent), 1)
-        self.assertTrue(loop.send_login_summary(force=True, now=NOW)["sent"]); self.assertEqual(len(self.notifier.sent), 2)
+        self.assertTrue(loop.send_login_summary(now=NOW, session="9")["sent"]); self.assertEqual(len(self.notifier.sent), 2)
+        self.assertTrue(loop.send_login_summary(now=NOW, session="9")["deduped"])
+        self.assertTrue(loop.send_login_summary(force=True, now=NOW, session="9")["sent"]); self.assertEqual(len(self.notifier.sent), 3)
+        self.assertEqual(self.notifier.sent[-1]["timeout_ms"], S.SUMMARY_TIMEOUT_MS)
         # nothing planned: still one line, and the loop tells about items missed during a sleep only after the summary went out
         empty = S.SchedulerLoop(fa.Store(os.path.join(self.tmp, "empty.db")), notifier=FakeNotifier(), tick=3600)
         e = empty.send_login_summary(now=NOW); self.assertEqual(e["title"], "Today: nothing scheduled"); self.assertIn("Nothing planned", e["body"])
